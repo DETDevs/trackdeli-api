@@ -1,5 +1,110 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import * as bcrypt from 'bcrypt';
+import { LoginDto } from './dto/login.dto';
+import { TokenResponseDto } from './dto/token-response.dto';
+import { JwtPayload } from '../../common/types/jwt-payload.interface';
+import { User } from '@prisma/client';
 
 @Injectable()
-export class AuthService {}
+export class AuthService {
+  constructor(
+    private prisma: PrismaService,
+    private jwtService: JwtService,
+    private configService: ConfigService,
+  ) {}
 
+  async validateUser(email: string, password: string): Promise<User | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      return null;
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+    if (!isPasswordValid) {
+      return null;
+    }
+
+    if (!user.isActive) {
+      throw new UnauthorizedException('Usuario inactivo');
+    }
+
+    return user;
+  }
+
+  async login(dto: LoginDto): Promise<TokenResponseDto> {
+    const user = await this.validateUser(dto.email, dto.password);
+    
+    if (!user) {
+      throw new UnauthorizedException('Credenciales inválidas');
+    }
+
+    const payload: JwtPayload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      businessId: user.businessId,
+    };
+
+    const tokens = this.generateTokens(payload);
+
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        businessId: user.businessId,
+      },
+    };
+  }
+
+  async refresh(userId: string, refreshToken: string): Promise<TokenResponseDto> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Usuario inválido o inactivo');
+    }
+
+    const payload: JwtPayload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      businessId: user.businessId,
+    };
+
+    const tokens = this.generateTokens(payload);
+
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        businessId: user.businessId,
+      },
+    };
+  }
+
+  private generateTokens(payload: JwtPayload): { accessToken: string; refreshToken: string } {
+    const accessToken = this.jwtService.sign(payload);
+    
+    const refreshToken = this.jwtService.sign(payload, {
+      secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+      expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRATION'),
+    });
+
+    return { accessToken, refreshToken };
+  }
+}
