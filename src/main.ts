@@ -1,0 +1,34 @@
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  
+  const configService = app.get(ConfigService);
+  
+  // CORS dynamic from env
+  const corsOrigins = configService.get<string>('CORS_ORIGINS');
+  const originsArray = corsOrigins ? corsOrigins.split(',') : [];
+  
+  app.enableCors({
+    origin: originsArray,
+  });
+
+  // Prefix
+  app.setGlobalPrefix('api/v1');
+
+  // Global Validation
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+    }),
+  );
+
+  const port = configService.get<number>('PORT') || 3000;
+  await app.listen(port);
+  console.log(`Application is running on: await app.getUrl()`);
+}
+bootstrap();

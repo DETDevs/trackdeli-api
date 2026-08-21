@@ -1,0 +1,180 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ENCARGADO
+  REPARTIDOR
+  SUPERADMIN
+}
+
+enum OrderStatus {
+  PENDIENTE
+  TOMADO
+  EN_CAMINO
+  CERCA_DEL_DESTINO
+  VERIFICANDO_ENTREGA
+  ENTREGADO
+  CANCELADO
+  INCIDENCIA
+  CERRADO
+}
+
+enum DeliveryPaymentStatus {
+  PAGADO
+  CONTRA_ENTREGA
+  GRATIS
+}
+
+enum OrderPhotoType {
+  ARMADO
+  ENTREGA
+}
+
+model Business {
+  id                     String   @id @default(uuid())
+  name                   String   @db.VarChar(100)
+  type                   String?  @db.VarChar(50)
+  logoUrl                String?  @db.VarChar(500)
+  defaultGeofenceRadiusM Int      @default(100)
+  createdAt              DateTime @default(now())
+
+  users  User[]
+  orders Order[]
+
+  @@map("businesses")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  businessId   String
+  name         String   @db.VarChar(100)
+  email        String   @unique @db.VarChar(150)
+  phone        String?  @db.VarChar(20)
+  passwordHash String   @db.VarChar(255)
+  role         UserRole
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  business              Business       @relation(fields: [businessId], references: [id])
+  createdOrders         Order[]        @relation("OrderCreatedBy")
+  deliveredOrders       Order[]        @relation("OrderDeliveredBy")
+  locationSnapshots     LocationSnapshot[]
+  notifications         Notification[]
+
+  @@map("users")
+}
+
+model Order {
+  id                    String                @id @default(uuid())
+  businessId            String
+  createdBy             String
+  deliveryUserId        String?
+  status                OrderStatus           @default(PENDIENTE)
+
+  customerName          String                @db.VarChar(100)
+  customerPhone         String                @db.VarChar(20)
+
+  destinationAddress    String?               @db.VarChar(300)
+  destinationLat        Decimal?              @db.Decimal(10, 7)
+  destinationLng        Decimal?              @db.Decimal(10, 7)
+  geofenceRadiusM       Int                   @default(100)
+
+  description           String?
+
+  deliveryPaymentStatus DeliveryPaymentStatus @default(GRATIS)
+  deliveryFee           Decimal               @default(0) @db.Decimal(10, 2)
+
+  deliveryConfirmationUrl String?             @db.VarChar(500)
+  signatureUrl            String?             @db.VarChar(500)
+
+  takenAt               DateTime?
+  deliveredAt           DateTime?
+  createdAt             DateTime              @default(now())
+
+  business              Business              @relation(fields: [businessId], references: [id])
+  creator               User                  @relation("OrderCreatedBy", fields: [createdBy], references: [id])
+  deliveryUser          User?                 @relation("OrderDeliveredBy", fields: [deliveryUserId], references: [id])
+  photos                OrderPhoto[]
+  trackingSession       TrackingSession?
+  locationSnapshots     LocationSnapshot[]
+  rating                Rating?
+  notifications         Notification[]
+
+  @@map("orders")
+}
+
+model OrderPhoto {
+  id        String         @id @default(uuid())
+  orderId   String
+  photoUrl  String         @db.VarChar(500)
+  type      OrderPhotoType
+  createdAt DateTime       @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@map("order_photos")
+}
+
+model TrackingSession {
+  id        String   @id @default(uuid())
+  orderId   String   @unique
+  token     String   @unique @db.VarChar(64)
+  isActive  Boolean  @default(true)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@map("tracking_sessions")
+}
+
+model LocationSnapshot {
+  id         String   @id @default(uuid())
+  orderId    String
+  userId     String
+  lat        Decimal  @db.Decimal(10, 7)
+  lng        Decimal  @db.Decimal(10, 7)
+  speed      Decimal? @db.Decimal(5, 2)
+  isMock     Boolean  @default(false)
+  recordedAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@map("location_snapshots")
+}
+
+model Rating {
+  id        String   @id @default(uuid())
+  orderId   String   @unique
+  stars     Int      @db.SmallInt
+  comment   String?
+  tipAmount Decimal  @default(0) @db.Decimal(10, 2)
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@map("ratings")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  orderId   String?
+  type      String   @db.VarChar(50)
+  title     String?  @db.VarChar(200)
+  body      String?
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user  User   @relation(fields: [userId], references: [id])
+  order Order? @relation(fields: [orderId], references: [id])
+
+  @@map("notifications")
+}
