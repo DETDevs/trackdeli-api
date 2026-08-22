@@ -5,10 +5,18 @@ import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
 import { Order, OrderStatus, UserRole } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
+import { TrackingGateway } from '../tracking/tracking.gateway';
+import { TrackingService } from '../tracking/tracking.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly trackingGateway: TrackingGateway,
+    private readonly trackingService: TrackingService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   private async toResponseDto(order: any): Promise<OrderResponseDto> {
     const trackingSession = await this.prisma.trackingSession.findUnique({
@@ -70,6 +78,16 @@ export class OrdersService {
         photos: true,
       },
     });
+
+    const repartidores = await this.prisma.user.findMany({
+      where: { businessId, role: 'REPARTIDOR', isActive: true },
+    });
+    
+    await Promise.allSettled(
+      repartidores.map(r =>
+        this.notificationsService.notifyNewOrderAvailable(r.id, order.id, order.customerName)
+      )
+    );
 
     return this.toResponseDto(order);
   }
@@ -147,7 +165,45 @@ export class OrdersService {
       },
     });
 
+    this.trackingGateway.emitOrderStatusChange(orderId, OrderStatus.TOMADO);
+
+    const orderData = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { deliveryUser: true },
+    });
+
+    if (orderData && orderData.deliveryUser) {
+      const encargado = await this.prisma.user.findFirst({
+        where: { businessId: orderData.businessId, role: 'ENCARGADO' },
+      });
+      if (encargado) {
+        await this.notificationsService.notifyOrderTaken(
+          encargado.id,
+          orderId,
+          orderData.deliveryUser.name,
+          orderData.customerName,
+        );
+      }
+    }
+
     return this.findOne(orderId, businessId);
+  }
+
+  async cancelOrder(id: string, businessId: string): Promise<OrderResponseDto> {
+    await this.prisma.order.update({
+      where: {
+        id,
+        businessId,
+      },
+      data: { status: OrderStatus.CANCELADO },
+    });
+
+    this.trackingGateway.emitOrderStatusChange(id, OrderStatus.CANCELADO);
+    
+    await this.trackingService.cleanupGeofenceFlag(id);
+    await this.trackingService.cleanupOrderRedisKeys(id);
+
+    return this.findOne(id, businessId);
   }
 
   async updateStatus(orderId: string, dto: UpdateOrderStatusDto, userId: string, role: UserRole, businessId: string): Promise<OrderResponseDto> {
@@ -177,6 +233,34 @@ export class OrdersService {
       where: { id: orderId },
       data: updateData,
     });
+
+    this.trackingGateway.emitOrderStatusChange(orderId, dto.status);
+
+    const encargado = await this.prisma.user.findFirst({
+      where: { businessId: order.businessId, role: 'ENCARGADO' },
+    });
+
+    if (dto.status === OrderStatus.ENTREGADO || dto.status === OrderStatus.CANCELADO) {
+      await this.trackingService.cleanupGeofenceFlag(orderId);
+      await this.trackingService.cleanupOrderRedisKeys(orderId);
+      
+      if (dto.status === OrderStatus.ENTREGADO && encargado) {
+        await this.notificationsService.notifyOrderDelivered(
+          encargado.id,
+          orderId,
+          order.customerName,
+        );
+      }
+    }
+
+    if (dto.status === OrderStatus.INCIDENCIA && encargado) {
+      await this.notificationsService.notifyOrderIncident(
+        encargado.id,
+        orderId,
+        order.customerName,
+        (dto as any).notes,
+      );
+    }
 
     return this.findOne(orderId, businessId);
   }

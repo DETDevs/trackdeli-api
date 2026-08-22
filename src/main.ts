@@ -13,7 +13,9 @@ async function bootstrap() {
   const originsArray = corsOrigins ? corsOrigins.split(',') : [];
   
   app.enableCors({
-    origin: originsArray,
+    origin: originsArray.length > 0 ? originsArray : '*',
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    credentials: true,
   });
 
   // Prefix
