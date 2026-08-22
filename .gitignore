@@ -3,3 +3,25 @@ dist/
 .env
 .DS_Store
 *.log
+
+# Documentos internos — nunca subir al repo
+ROADMAP_INTERNO.md
+NOTAS_INTERNAS.md
+TODO_PRIVADO.md
+docs/interno/
+.interno/
+ 
+# Variables de entorno
+.env
+.env.local
+.env.production
+ 
+# Credenciales y secrets
+*.pem
+*.p8
+*.p12
+*.key
+firebase-credentials.json
+service-account.json
+google-credentials.json
+ 

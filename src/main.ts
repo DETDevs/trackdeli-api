@@ -29,6 +29,7 @@ async function bootstrap() {
     }),
   );
 
+  app.use((req: any, res: any, next: any) => { res.setHeader('Content-Type', 'application/json; charset=utf-8'); next(); });
   const port = configService.get<number>('PORT') || 3000;
   await app.listen(port);
   console.log(`Application is running on: await app.getUrl()`);

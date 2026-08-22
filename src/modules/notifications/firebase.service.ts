@@ -6,15 +6,15 @@ import * as admin from 'firebase-admin';
 export class FirebaseService implements OnModuleInit {
   private app: admin.app.App;
 
-  constructor(private config: ConfigService) {}
+  constructor(private config: ConfigService) { }
 
   onModuleInit() {
     if (!admin.apps.length) {
       this.app = admin.initializeApp({
         credential: admin.credential.cert({
-          projectId: this.config.get('FIREBASE_PROJECT_ID'),
-          clientEmail: this.config.get('FIREBASE_CLIENT_EMAIL'),
-          privateKey: this.config.get('FIREBASE_PRIVATE_KEY')?.replace(/\\n/g, '\n'),
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
         }),
       });
     } else {
