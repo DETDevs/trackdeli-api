@@ -1,9 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FirebaseService } from './firebase.service';
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
+
   constructor(
     private prisma: PrismaService,
     private firebase: FirebaseService,
@@ -48,7 +50,14 @@ export class NotificationsService {
     const tokens = await this.getUserTokens(userId);
 
     if (tokens.length > 0) {
-      await this.firebase.sendToMultiple(tokens, title, body, data);
+      try {
+        await this.firebase.sendToMultiple(tokens, title, body, data);
+        this.logger.log(`[Notifications] Push enviado: userId=${userId}, tipo=${type}, título="${title}"`);
+      } catch (error: any) {
+        this.logger.warn(`[Notifications] Error enviando push: userId=${userId}, error=${error.message}`);
+      }
+    } else {
+      this.logger.debug(`[Notifications] Sin device tokens para userId=${userId} — notificación guardada pero no enviada por push`);
     }
   }
 

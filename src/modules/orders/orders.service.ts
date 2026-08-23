@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -11,6 +11,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly trackingGateway: TrackingGateway,
@@ -79,6 +81,8 @@ export class OrdersService {
       },
     });
 
+    this.logger.log(`[Orders] Pedido creado: id=${order.id}, cliente=${dto.customerName}, negocio=${businessId}, creadoPor=${createdBy}`);
+
     const repartidores = await this.prisma.user.findMany({
       where: { businessId, role: 'REPARTIDOR', isActive: true },
     });
@@ -135,6 +139,8 @@ export class OrdersService {
   }
 
   async takeOrder(orderId: string, deliveryUserId: string, businessId: string): Promise<OrderResponseDto> {
+    this.logger.log(`[Orders] Intento de tomar pedido: orderId=${orderId}, repartidor=${deliveryUserId}, negocio=${businessId}`);
+
     const result = await this.prisma.order.updateMany({
       where: {
         id: orderId,
@@ -150,6 +156,7 @@ export class OrdersService {
     });
 
     if (result.count === 0) {
+      this.logger.warn(`[Orders] CONFLICT takeOrder: orderId=${orderId} ya fue tomado. Repartidor intentado=${deliveryUserId}`);
       throw new ConflictException('Pedido no disponible — ya fue tomado por otro repartidor');
     }
 
@@ -165,6 +172,7 @@ export class OrdersService {
       },
     });
 
+    this.logger.log(`[Orders] Pedido tomado exitosamente: orderId=${orderId}, asignado a=${deliveryUserId}, token=${token}`);
     this.trackingGateway.emitOrderStatusChange(orderId, OrderStatus.TOMADO);
 
     const orderData = await this.prisma.order.findUnique({
@@ -219,7 +227,14 @@ export class OrdersService {
       throw new ForbiddenException('No tienes permiso para actualizar este pedido');
     }
 
-    this.validateStateTransition(order.status, dto.status, role);
+    this.logger.log(`[Orders] Cambio de estado: orderId=${orderId}, de=${order.status}, a=${dto.status}, usuario=${userId}, rol=${role}`);
+
+    try {
+      this.validateStateTransition(order.status, dto.status, role);
+    } catch (e) {
+      this.logger.warn(`[Orders] Transición inválida: orderId=${orderId}, de=${order.status}, a=${dto.status}, usuario=${userId}`);
+      throw e;
+    }
 
     const updateData: any = { status: dto.status };
     if (dto.status === OrderStatus.ENTREGADO) {
@@ -244,22 +259,28 @@ export class OrdersService {
       await this.trackingService.cleanupGeofenceFlag(orderId);
       await this.trackingService.cleanupOrderRedisKeys(orderId);
       
-      if (dto.status === OrderStatus.ENTREGADO && encargado) {
-        await this.notificationsService.notifyOrderDelivered(
-          encargado.id,
-          orderId,
-          order.customerName,
-        );
+      if (dto.status === OrderStatus.ENTREGADO) {
+        this.logger.log(`[Orders] Pedido ENTREGADO: orderId=${orderId}, repartidor=${userId}, cliente=${order.customerName}`);
+        if (encargado) {
+          await this.notificationsService.notifyOrderDelivered(
+            encargado.id,
+            orderId,
+            order.customerName,
+          );
+        }
       }
     }
 
-    if (dto.status === OrderStatus.INCIDENCIA && encargado) {
-      await this.notificationsService.notifyOrderIncident(
-        encargado.id,
-        orderId,
-        order.customerName,
-        (dto as any).notes,
-      );
+    if (dto.status === OrderStatus.INCIDENCIA) {
+      this.logger.warn(`[Orders] INCIDENCIA reportada: orderId=${orderId}, repartidor=${userId}, notas=${(dto as any).notes}`);
+      if (encargado) {
+        await this.notificationsService.notifyOrderIncident(
+          encargado.id,
+          orderId,
+          order.customerName,
+          (dto as any).notes,
+        );
+      }
     }
 
     return this.findOne(orderId, businessId);
@@ -303,6 +324,9 @@ export class OrdersService {
     }
 
     if (nextIndex !== currentIndex + 1) {
+      if (current === OrderStatus.EN_CAMINO && next === OrderStatus.VERIFICANDO_ENTREGA) {
+        return;
+      }
       throw new BadRequestException('Transición de estado no permitida');
     }
 

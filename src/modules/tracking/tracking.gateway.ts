@@ -12,6 +12,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import Redis from 'ioredis';
 import { ConfigService } from '@nestjs/config';
 import { TrackingService } from './tracking.service';
+import { Logger } from '@nestjs/common';
 
 @WebSocketGateway({
   namespace: '/tracking',
@@ -21,6 +22,8 @@ import { TrackingService } from './tracking.service';
   },
 })
 export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  private readonly logger = new Logger(TrackingGateway.name);
+
   @WebSocketServer()
   server: Server;
 
@@ -43,18 +46,18 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
     const ioServer = (server as any).server || server;
     if (typeof ioServer.adapter === 'function') {
       ioServer.adapter(createAdapter(pubClient, subClient));
-      console.log('WebSocket Redis adapter configured');
+      this.logger.log('[TrackingGateway] Gateway inicializado con Redis adapter');
     } else {
-      console.error('Cannot configure Redis adapter: adapter() method not found on server');
+      this.logger.error('Cannot configure Redis adapter: adapter() method not found on server');
     }
   }
 
   handleConnection(client: Socket) {
-    console.log(`Client connected: ${client.id}`);
+    this.logger.log(`[TrackingGateway] Cliente conectado: socketId=${client.id}`);
   }
 
   handleDisconnect(client: Socket) {
-    console.log(`Client disconnected: ${client.id}`);
+    this.logger.log(`[TrackingGateway] Cliente desconectado: socketId=${client.id}`);
   }
 
   @SubscribeMessage('join_order')
@@ -62,6 +65,7 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { orderId: string; token?: string }
   ) {
+    this.logger.log(`[TrackingGateway] join_order: socketId=${client.id}, orderId=${data.orderId}`);
     client.join(`order:${data.orderId}`);
     client.emit('joined_order', { orderId: data.orderId, room: `order:${data.orderId}` });
   }
@@ -86,6 +90,8 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
       isMock?: boolean;
     }
   ) {
+    this.logger.debug(`[TrackingGateway] location_updated: orderId=${data.orderId}, lat=${data.lat}, lng=${data.lng}, isMock=${data.isMock ?? false}`);
+
     // 1. Guardar última posición en Redis
     await this.trackingService.saveLastPosition(data.orderId, data.lat, data.lng, data.speed);
 

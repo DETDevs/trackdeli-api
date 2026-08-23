@@ -1,10 +1,11 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 @Injectable()
 export class TrackingService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(TrackingService.name);
   private redis: Redis;
 
   constructor(
@@ -172,7 +173,8 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       timestamp: new Date().toISOString(),
     });
 
-    console.log(`Geofence triggered for order ${orderId} - transitioning to CERCA_DEL_DESTINO`);
+    const distanceKm = this.calculateDistance(currentLat, currentLng, Number(order.destinationLat), Number(order.destinationLng));
+    this.logger.log(`[TrackingGateway] GEOFENCE TRIGGERED: orderId=${orderId}, distancia=${(distanceKm * 1000).toFixed(0)}m, radio=${order.geofenceRadiusM}m → CERCA_DEL_DESTINO`);
   }
 
   async cleanupGeofenceFlag(orderId: string): Promise<void> {
