@@ -138,4 +138,18 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
       timestamp: new Date().toISOString(),
     });
   }
+
+  @SubscribeMessage('join_business')
+  handleJoinBusiness(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { businessId: string }
+  ) {
+    client.join(`business:${data.businessId}`);
+    client.emit('joined_business', { businessId: data.businessId });
+    this.logger.log(`[TrackingGateway] join_business: socketId=${client.id}, businessId=${data.businessId}`);
+  }
+
+  emitToBusiness(businessId: string, event: string, data: any) {
+    this.server.to(`business:${businessId}`).emit(event, data);
+  }
 }

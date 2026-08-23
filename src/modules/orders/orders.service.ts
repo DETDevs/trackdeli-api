@@ -87,11 +87,24 @@ export class OrdersService {
       where: { businessId, role: 'REPARTIDOR', isActive: true },
     });
     
+    this.logger.log(`[Orders] Notificando a ${repartidores.length} repartidores del nuevo pedido`);
+
     await Promise.allSettled(
       repartidores.map(r =>
         this.notificationsService.notifyNewOrderAvailable(r.id, order.id, order.customerName)
       )
     );
+
+    this.trackingGateway.emitToOrder(order.id, 'new_order_created', {
+      orderId: order.id,
+      businessId: order.businessId,
+      customerName: order.customerName,
+      status: order.status,
+    });
+
+    this.trackingGateway.server
+      .to(`business:${businessId}`)
+      .emit('orders_updated', { businessId });
 
     return this.toResponseDto(order);
   }

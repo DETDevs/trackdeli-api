@@ -16,6 +16,7 @@ export class NotificationsService {
     token: string,
     platform: 'android' | 'ios',
   ): Promise<void> {
+    this.logger.log(`[Notifications] Device token registrado: userId=${userId}, platform=${platform}, token=${token.substring(0, 20)}...`);
     await this.prisma.deviceToken.upsert({
       where: { token },
       create: { userId, token, platform },

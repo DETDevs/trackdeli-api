@@ -35,6 +35,6 @@ export class AuthController {
 
   @Get('me')
   async me(@CurrentUser() user: JwtPayload) {
-    return user;
+    return this.authService.getProfile(user.sub);
   }
 }

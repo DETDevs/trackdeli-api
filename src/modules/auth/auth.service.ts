@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -73,7 +73,10 @@ export class AuthService {
 
   async refresh(userId: string, refreshToken: string): Promise<TokenResponseDto> {
     try {
-      const decoded = { sub: userId };
+      const decoded = this.jwtService.verify(refreshToken, {
+        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+      });
+
       const user = await this.prisma.user.findUnique({
         where: { id: decoded.sub },
       });
@@ -107,6 +110,31 @@ export class AuthService {
       this.logger.warn(`[Auth] Refresh fallido: userId=${userId}`);
       throw new UnauthorizedException('Refresh token inválido o expirado');
     }
+  }
+
+  async getProfile(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        businessId: true,
+        business: {
+          select: {
+            name: true,
+          }
+        }
+      }
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    return user;
   }
 
   private generateTokens(payload: JwtPayload): { accessToken: string; refreshToken: string } {
