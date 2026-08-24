@@ -4,5 +4,7 @@ export class BusinessResponseDto {
   type: string | null;
   logoUrl: string | null;
   defaultGeofenceRadiusM: number;
+  latitude: number | null;
+  longitude: number | null;
   createdAt: Date;
 }

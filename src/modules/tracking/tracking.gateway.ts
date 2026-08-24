@@ -153,3 +153,4 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.to(`business:${businessId}`).emit(event, data);
   }
 }
+

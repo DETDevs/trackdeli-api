@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber } from 'class-validator';
 
 export class UpdateBusinessDto {
   @IsString()
@@ -20,4 +20,16 @@ export class UpdateBusinessDto {
   @Min(30)
   @Max(500)
   defaultGeofenceRadiusM?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  latitude?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  longitude?: number;
 }

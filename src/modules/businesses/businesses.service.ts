@@ -15,6 +15,8 @@ export class BusinessesService {
       type: business.type,
       logoUrl: business.logoUrl,
       defaultGeofenceRadiusM: business.defaultGeofenceRadiusM,
+      latitude: business.latitude,
+      longitude: business.longitude,
       createdAt: business.createdAt,
     };
   }
@@ -47,6 +49,8 @@ export class BusinessesService {
         ...(dto.type !== undefined && { type: dto.type }),
         ...(dto.logoUrl !== undefined && { logoUrl: dto.logoUrl }),
         ...(dto.defaultGeofenceRadiusM !== undefined && { defaultGeofenceRadiusM: dto.defaultGeofenceRadiusM }),
+        ...(dto.latitude !== undefined && { latitude: dto.latitude }),
+        ...(dto.longitude !== undefined && { longitude: dto.longitude }),
       },
     });
 

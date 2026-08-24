@@ -84,13 +84,19 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getTrackingDataByToken(token: string) {
+    this.logger.debug(`[Tracking] Buscando sesión por token: ${token.substring(0, 20)}...`);
+
+    // Buscar SOLO por token — sin condiciones adicionales en el where
     const session = await this.prisma.trackingSession.findUnique({
       where: { token },
       include: {
         order: {
           include: {
             deliveryUser: {
-              select: { id: true, name: true }, 
+              select: { id: true, name: true },
+            },
+            business: {
+              select: { latitude: true, longitude: true, name: true },
             },
             photos: {
               where: { type: 'ARMADO' },
@@ -101,11 +107,26 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    if (!session || !session.isActive || session.expiresAt < new Date()) {
+    // Validar manualmente después de obtener el resultado
+    if (!session) {
+      this.logger.warn(`[Tracking] Token no encontrado en DB: ${token.substring(0, 20)}...`);
       return null;
     }
 
+    if (!session.isActive) {
+      this.logger.warn(`[Tracking] Token desactivado: orderId=${session.orderId}`);
+      return null;
+    }
+
+    if (session.expiresAt < new Date()) {
+      this.logger.warn(`[Tracking] Token expirado: orderId=${session.orderId}, expiresAt=${session.expiresAt.toISOString()}`);
+      return null;
+    }
+
+    // Obtener última posición de Redis
     const lastPosition = await this.getLastPosition(session.orderId);
+
+    this.logger.debug(`[Tracking] Sesión encontrada: orderId=${session.orderId}, status=${session.order.status}`);
 
     return {
       orderId: session.orderId,
@@ -113,10 +134,11 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       customerName: session.order.customerName,
       destinationLat: session.order.destinationLat,
       destinationLng: session.order.destinationLng,
+      geofenceRadiusM: session.order.geofenceRadiusM,
       deliveryUser: session.order.deliveryUser,
       photos: session.order.photos,
       lastPosition,
-      geofenceRadiusM: session.order.geofenceRadiusM,
+      business: session.order.business,
     };
   }
 
@@ -187,3 +209,4 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     await this.redis.del(`geofence_triggered:${orderId}`);
   }
 }
+

@@ -12,7 +12,7 @@ export class BusinessesController {
   constructor(private readonly service: BusinessesService) {}
 
   @Get('me')
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.REPARTIDOR)
   getMyBusiness(@CurrentUser() user: JwtPayload) {
     return this.service.findOne(user.businessId);
   }
