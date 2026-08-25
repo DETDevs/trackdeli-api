@@ -285,16 +285,22 @@ export class OrdersService {
     return this.findOne(id, businessId);
   }
 
-  async updateStatus(orderId: string, dto: UpdateOrderStatusDto, userId: string, role: UserRole, businessId: string): Promise<OrderResponseDto> {
+  async updateStatus(orderId: string, dto: UpdateOrderStatusDto, userId: string, role: UserRole, businessId: string | null): Promise<OrderResponseDto> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
     });
 
-    if (!order || order.businessId !== businessId) {
-      throw new NotFoundException('Pedido no encontrado');
+    const canAccess =
+      (role === UserRole.SUPERADMIN) ||
+      (businessId !== null && order?.businessId === businessId) ||
+      (order?.deliveryUserId === userId) ||
+      (order?.status === OrderStatus.PENDIENTE);
+
+    if (!order || !canAccess) {
+      throw new NotFoundException('Pedido no encontrado o no tienes permiso');
     }
 
-    if (role === UserRole.REPARTIDOR && order.deliveryUserId !== userId) {
+    if (role === UserRole.REPARTIDOR && order.deliveryUserId !== userId && order.status !== OrderStatus.PENDIENTE) {
       throw new ForbiddenException('No tienes permiso para actualizar este pedido');
     }
 
