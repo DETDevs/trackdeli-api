@@ -15,7 +15,9 @@ enum UserRole {
 
 enum OrderStatus {
   PENDIENTE
-  TOMADO
+  ACEPTADO
+  EN_CAMINO_AL_NEGOCIO
+  EN_EL_NEGOCIO
   EN_CAMINO
   CERCA_DEL_DESTINO
   VERIFICANDO_ENTREGA
@@ -36,6 +38,13 @@ enum OrderPhotoType {
   ENTREGA
 }
 
+enum VehicleType {
+  MOTO
+  BICICLETA
+  CARRO
+  A_PIE
+}
+
 model Business {
   id                     String   @id @default(uuid())
   name                   String   @db.VarChar(100)
@@ -54,16 +63,28 @@ model Business {
 
 model User {
   id           String   @id @default(uuid())
-  businessId   String
+  businessId   String?
   name         String   @db.VarChar(100)
   email        String   @unique @db.VarChar(150)
   phone        String?  @db.VarChar(20)
   passwordHash String   @db.VarChar(255)
-  role         UserRole
+  role         UserRole @default(REPARTIDOR)
   isActive     Boolean  @default(true)
+  
+  vehicleType      VehicleType?
+  vehiclePlate     String?
+  vehicleColor     String?
+  vehiclePhotoUrl  String?
+  profilePhotoUrl  String?
+  
+  currentLatitude  Float?
+  currentLongitude Float?
+  lastLocationAt   DateTime?
+  isAvailable      Boolean  @default(true)
+  
   createdAt    DateTime @default(now())
 
-  business              Business       @relation(fields: [businessId], references: [id])
+  business              Business?      @relation(fields: [businessId], references: [id])
   createdOrders         Order[]        @relation("OrderCreatedBy")
   deliveredOrders       Order[]        @relation("OrderDeliveredBy")
   locationSnapshots     LocationSnapshot[]
@@ -97,6 +118,8 @@ model Order {
   signatureUrl            String?             @db.VarChar(500)
 
   takenAt               DateTime?
+  arrivedAtBusinessAt   DateTime?
+  pickedUpAt            DateTime?
   deliveredAt           DateTime?
   createdAt             DateTime              @default(now())
 

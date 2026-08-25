@@ -116,6 +116,9 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
         data.isMock,
       );
 
+      // 4. Update user current location
+      await this.trackingService.updateUserLocation(data.userId, data.lat, data.lng);
+
       // 4. Verificar geofencing automático
       await this.trackingService.checkGeofenceAndTransition(
         data.orderId,

@@ -93,6 +93,51 @@ export class NotificationsService {
     );
   }
 
+  async notifyOrderOnWayToBusiness(
+    encargadoId: string,
+    orderId: string,
+    repartidorName: string,
+  ): Promise<void> {
+    await this.sendAndSave(
+      encargadoId,
+      orderId,
+      'ORDER_ON_WAY_TO_BUSINESS',
+      '🛵 Repartidor en camino',
+      `${repartidorName} va en camino a recoger el pedido`,
+      { orderId, type: 'ORDER_ON_WAY_TO_BUSINESS' },
+    );
+  }
+
+  async notifyOrderAtBusiness(
+    encargadoId: string,
+    orderId: string,
+    repartidorName: string,
+  ): Promise<void> {
+    await this.sendAndSave(
+      encargadoId,
+      orderId,
+      'ORDER_AT_BUSINESS',
+      '📍 Repartidor en el negocio',
+      `${repartidorName} llegó a tu negocio a recoger el pedido`,
+      { orderId, type: 'ORDER_AT_BUSINESS' },
+    );
+  }
+
+  async notifyOrderOnWay(
+    encargadoId: string,
+    orderId: string,
+    customerName: string,
+  ): Promise<void> {
+    await this.sendAndSave(
+      encargadoId,
+      orderId,
+      'ORDER_ON_WAY',
+      '🚚 Pedido en camino al cliente',
+      `El pedido de ${customerName} ya fue recogido y va en camino`,
+      { orderId, type: 'ORDER_ON_WAY' },
+    );
+  }
+
   async notifyOrderIncident(
     encargadoId: string,
     orderId: string,

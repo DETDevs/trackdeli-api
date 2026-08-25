@@ -93,7 +93,15 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
         order: {
           include: {
             deliveryUser: {
-              select: { id: true, name: true },
+              select: { 
+                id: true, 
+                name: true, 
+                phone: true,
+                vehicleType: true,
+                vehiclePlate: true,
+                vehicleColor: true,
+                profilePhotoUrl: true,
+              },
             },
             business: {
               select: { latitude: true, longitude: true, name: true },
@@ -157,12 +165,45 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
         destinationLng: true,
         geofenceRadiusM: true,
         deliveryUserId: true,
+        business: {
+          select: { latitude: true, longitude: true },
+        },
       },
     });
 
-    if (!order || order.status !== 'EN_CAMINO') return;
+    if (!order || order.deliveryUserId !== userId) return;
 
-    if (order.deliveryUserId !== userId) return;
+    if (order.status === 'EN_CAMINO_AL_NEGOCIO' && order.business?.latitude && order.business?.longitude) {
+      const geofenceBizKey = `geofence_biz_triggered:${orderId}`;
+      const alreadyTriggeredBiz = await this.redis.get(geofenceBizKey);
+      
+      if (!alreadyTriggeredBiz) {
+        const isNearBiz = this.isNearDestination(
+          currentLat,
+          currentLng,
+          Number(order.business.latitude),
+          Number(order.business.longitude),
+          100 // 100 metros para el negocio
+        );
+
+        if (isNearBiz) {
+          await this.redis.setex(geofenceBizKey, 3600, '1');
+          await this.prisma.order.update({
+            where: { id: orderId },
+            data: { 
+              status: 'EN_EL_NEGOCIO',
+              arrivedAtBusinessAt: new Date(),
+            },
+          });
+          gateway.emitOrderStatusChange(orderId, 'EN_EL_NEGOCIO');
+          gateway.emitToOrder(orderId, 'geofence_business_triggered', { orderId });
+          const distToBusiness = this.calculateDistance(currentLat, currentLng, Number(order.business.latitude), Number(order.business.longitude));
+          this.logger.log(`[TrackingGateway] GEOFENCE NEGOCIO TRIGGERED: orderId=${orderId}, distancia=${(distToBusiness * 1000).toFixed(0)}m → EN_EL_NEGOCIO`);
+        }
+      }
+    }
+
+    if (order.status !== 'EN_CAMINO') return;
 
     if (!order.destinationLat || !order.destinationLng) return;
 
@@ -207,6 +248,26 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     await this.redis.del(`last_position:${orderId}`);
     await this.redis.del(`last_snapshot:${orderId}`);
     await this.redis.del(`geofence_triggered:${orderId}`);
+    await this.redis.del(`geofence_biz_triggered:${orderId}`);
+  }
+
+  async updateUserLocation(userId: string, lat: number, lng: number): Promise<void> {
+    // Throttle user location update in DB to once per 10 seconds to avoid DB overload
+    const lastUpdateKey = `last_user_loc_update:${userId}`;
+    const lastUpdate = await this.redis.get(lastUpdateKey);
+    const now = Date.now();
+
+    if (!lastUpdate || now - parseInt(lastUpdate) >= 10000) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          currentLatitude: lat,
+          currentLongitude: lng,
+          lastLocationAt: new Date(),
+        },
+      });
+      await this.redis.setex(lastUpdateKey, 10, now.toString());
+    }
   }
 }
 

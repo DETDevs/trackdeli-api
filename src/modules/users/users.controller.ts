@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { UsersService } from './users.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -7,10 +8,40 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateRiderProfileDto } from './dto/update-rider-profile.dto';
 
 @Controller('users')
 export class UsersController {
   constructor(private readonly service: UsersService) {}
+
+  @Patch('me')
+  @Roles(UserRole.REPARTIDOR)
+  updateProfile(
+    @Body() dto: UpdateRiderProfileDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.updateProfile(user.sub, dto);
+  }
+
+  @Post('me/vehicle-photo')
+  @Roles(UserRole.REPARTIDOR)
+  @UseInterceptors(FileInterceptor('photo'))
+  uploadVehiclePhoto(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.uploadVehiclePhoto(user.sub, file);
+  }
+
+  @Post('me/profile-photo')
+  @Roles(UserRole.REPARTIDOR)
+  @UseInterceptors(FileInterceptor('photo'))
+  uploadProfilePhoto(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.uploadProfilePhoto(user.sub, file);
+  }
 
   @Get()
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)

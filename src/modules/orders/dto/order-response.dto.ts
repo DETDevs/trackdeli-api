@@ -28,4 +28,11 @@ export class OrderResponseDto {
   createdAt: Date;
   takenAt: Date | null;
   deliveredAt: Date | null;
+  business?: {
+    id: string;
+    name: string;
+    latitude: number | null;
+    longitude: number | null;
+    logoUrl: string | null;
+  };
 }

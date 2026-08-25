@@ -29,28 +29,36 @@ async function main() {
   });
   console.log(`Created encargado: ${encargado.name}`);
 
-  // 2 repartidores
+  // 2 repartidores independientes
   const repartidor1 = await prisma.user.create({
     data: {
-      businessId: business.id,
+      businessId: null,
       name: 'Juan Pérez',
       email: 'juan@demo.com',
       passwordHash,
       role: 'REPARTIDOR',
+      isAvailable: true,
+      vehicleType: 'MOTO',
+      vehiclePlate: 'M234-567',
+      vehicleColor: 'Rojo',
     },
   });
-  console.log(`Created repartidor: ${repartidor1.name}`);
+  console.log(`Created repartidor independiente: ${repartidor1.name}`);
 
   const repartidor2 = await prisma.user.create({
     data: {
-      businessId: business.id,
+      businessId: null,
       name: 'María García',
       email: 'maria@demo.com',
       passwordHash,
       role: 'REPARTIDOR',
+      isAvailable: true,
+      vehicleType: 'BICICLETA',
+      vehiclePlate: '',
+      vehicleColor: 'Azul',
     },
   });
-  console.log(`Created repartidor: ${repartidor2.name}`);
+  console.log(`Created repartidor independiente: ${repartidor2.name}`);
 
   console.log('Seed completed successfully!');
 }

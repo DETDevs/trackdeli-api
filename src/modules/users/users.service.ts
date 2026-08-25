@@ -2,13 +2,18 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateRiderProfileDto } from './dto/update-rider-profile.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import * as bcrypt from 'bcrypt';
 import { User, UserRole } from '@prisma/client';
+import { UploadService } from '../upload/upload.service';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly uploadService: UploadService,
+  ) {}
 
   private toResponseDto(user: User): UserResponseDto {
     const { passwordHash, ...rest } = user;
@@ -106,5 +111,81 @@ export class UsersService {
     });
 
     return this.toResponseDto(updatedUser);
+  }
+
+  async updateProfile(userId: string, dto: UpdateRiderProfileDto): Promise<UserResponseDto> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    if (user.role !== 'REPARTIDOR') {
+      throw new BadRequestException('Solo los repartidores pueden actualizar este perfil');
+    }
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(dto.name !== undefined && { name: dto.name }),
+        ...(dto.phone !== undefined && { phone: dto.phone }),
+        ...(dto.vehicleType !== undefined && { vehicleType: dto.vehicleType }),
+        ...(dto.vehiclePlate !== undefined && { vehiclePlate: dto.vehiclePlate }),
+        ...(dto.vehicleColor !== undefined && { vehicleColor: dto.vehicleColor }),
+        ...(dto.isAvailable !== undefined && { isAvailable: dto.isAvailable }),
+      },
+    });
+
+    return this.toResponseDto(updatedUser);
+  }
+
+  async uploadVehiclePhoto(userId: string, file: Express.Multer.File): Promise<{ url: string }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.role !== 'REPARTIDOR') {
+      throw new NotFoundException('Repartidor no encontrado');
+    }
+
+    if (user.vehiclePhotoUrl) {
+      try {
+        await this.uploadService.deletePhoto(user.vehiclePhotoUrl);
+      } catch (e) {
+        // Ignorar si no se pudo borrar la anterior
+      }
+    }
+
+    const url = await this.uploadService.uploadPhoto(file, 'users/vehicles');
+    
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { vehiclePhotoUrl: url },
+    });
+
+    return { url };
+  }
+
+  async uploadProfilePhoto(userId: string, file: Express.Multer.File): Promise<{ url: string }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.role !== 'REPARTIDOR') {
+      throw new NotFoundException('Repartidor no encontrado');
+    }
+
+    if (user.profilePhotoUrl) {
+      try {
+        await this.uploadService.deletePhoto(user.profilePhotoUrl);
+      } catch (e) {
+        // Ignorar si no se pudo borrar la anterior
+      }
+    }
+
+    const url = await this.uploadService.uploadPhoto(file, 'users/profiles');
+    
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { profilePhotoUrl: url },
+    });
+
+    return { url };
   }
 }

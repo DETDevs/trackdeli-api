@@ -48,6 +48,13 @@ export class OrdersService {
       createdAt: order.createdAt,
       takenAt: order.takenAt,
       deliveredAt: order.deliveredAt,
+      business: order.business ? {
+        id: order.business.id,
+        name: order.business.name,
+        latitude: order.business.latitude ? Number(order.business.latitude) : null,
+        longitude: order.business.longitude ? Number(order.business.longitude) : null,
+        logoUrl: order.business.logoUrl,
+      } : undefined,
     };
   }
 
@@ -109,105 +116,156 @@ export class OrdersService {
     return this.toResponseDto(order);
   }
 
-  async findAllByBusiness(businessId: string, userId: string, role: UserRole, filters?: { status?: OrderStatus }): Promise<OrderResponseDto[]> {
-    let whereClause: any = { businessId };
+  async findAllByBusiness(businessId: string | null, userId: string, role: UserRole, filters?: { status?: OrderStatus, latitude?: number, longitude?: number }): Promise<OrderResponseDto[]> {
+    let whereClause: any = {};
+    if (businessId) {
+      whereClause.businessId = businessId;
+    }
 
     if (role === UserRole.REPARTIDOR) {
-      whereClause.OR = [
-        { status: OrderStatus.PENDIENTE },
-        { deliveryUserId: userId },
-      ];
+      if (!businessId) {
+        whereClause.OR = [
+          { status: OrderStatus.PENDIENTE },
+          { deliveryUserId: userId },
+        ];
+      } else {
+        whereClause.OR = [
+          { status: OrderStatus.PENDIENTE, businessId },
+          { deliveryUserId: userId, businessId },
+        ];
+      }
     }
 
     if (filters?.status) {
       whereClause.status = filters.status;
     }
 
-    const orders = await this.prisma.order.findMany({
+    let orders = await this.prisma.order.findMany({
       where: whereClause,
       include: {
         deliveryUser: true,
         photos: true,
+        business: {
+          select: { id: true, name: true, latitude: true, longitude: true, logoUrl: true }
+        }
       },
       orderBy: { createdAt: 'desc' },
+      take: (!businessId && role === UserRole.REPARTIDOR) ? 20 : undefined,
     });
+
+    if (role === UserRole.REPARTIDOR && !businessId && filters?.latitude && filters?.longitude) {
+      const radiusKm = 10; // Defaulting to 10 for simplicity without messing up DI config if not there
+      orders = orders.filter(order => {
+        if (!order.business?.latitude || !order.business?.longitude) return true;
+        const dist = this.trackingService.calculateDistance(
+          Number(filters.latitude),
+          Number(filters.longitude),
+          Number(order.business.latitude),
+          Number(order.business.longitude),
+        );
+        return dist <= radiusKm;
+      });
+    }
 
     return Promise.all(orders.map(o => this.toResponseDto(o)));
   }
 
-  async findOne(id: string, businessId: string): Promise<OrderResponseDto> {
+  async findOne(id: string, businessId: string | null, userId?: string, role?: string): Promise<OrderResponseDto> {
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: {
         deliveryUser: true,
         photos: true,
+        business: {
+          select: { id: true, name: true, latitude: true, longitude: true, logoUrl: true }
+        }
       },
     });
 
-    if (!order || order.businessId !== businessId) {
+    if (!order) {
       throw new NotFoundException('Pedido no encontrado');
+    }
+
+    if (role) {
+      let canAccess = false;
+      if (role === UserRole.REPARTIDOR) {
+        canAccess = 
+          (businessId !== null && order.businessId === businessId) ||
+          (order.deliveryUserId === userId) ||
+          (order.status === OrderStatus.PENDIENTE);
+      } else if (role === UserRole.SUPERADMIN) {
+        canAccess = true;
+      } else {
+        // ENCARGADO
+        canAccess = (order.businessId === businessId);
+      }
+
+      if (!canAccess) {
+        throw new NotFoundException('Pedido no encontrado');
+      }
+    } else {
+      // Legacy / internal behavior when called by takeOrder, cancelOrder, updateStatus, etc.
+      if (businessId !== null && order.businessId !== businessId) {
+        throw new NotFoundException('Pedido no encontrado');
+      }
     }
 
     return this.toResponseDto(order);
   }
 
-  async takeOrder(orderId: string, deliveryUserId: string, businessId: string): Promise<OrderResponseDto> {
-    this.logger.log(`[Orders] Intento de tomar pedido: orderId=${orderId}, repartidor=${deliveryUserId}, negocio=${businessId}`);
+  async takeOrder(orderId: string, deliveryUserId: string): Promise<OrderResponseDto> {
+    this.logger.log(`[Orders] Intento de tomar pedido: orderId=${orderId}, repartidor=${deliveryUserId}`);
 
-    const result = await this.prisma.order.updateMany({
-      where: {
-        id: orderId,
-        businessId,
-        status: OrderStatus.PENDIENTE,
-        deliveryUserId: null,
-      },
-      data: {
-        status: OrderStatus.TOMADO,
-        deliveryUserId,
-        takenAt: new Date(),
-      },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { business: true },
+      });
 
-    if (result.count === 0) {
-      this.logger.warn(`[Orders] CONFLICT takeOrder: orderId=${orderId} ya fue tomado. Repartidor intentado=${deliveryUserId}`);
-      throw new ConflictException('Pedido no disponible — ya fue tomado por otro repartidor');
-    }
+      if (!order) {
+        throw new NotFoundException('Pedido no encontrado');
+      }
 
-    const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 12);
+      if (order.status !== OrderStatus.PENDIENTE) {
+        this.logger.warn(`[Orders] CONFLICT takeOrder: orderId=${orderId} ya fue tomado. Repartidor intentado=${deliveryUserId}`);
+        throw new ConflictException('Pedido no disponible — ya fue tomado por otro repartidor');
+      }
 
-    await this.prisma.trackingSession.create({
-      data: {
-        orderId,
-        token,
-        expiresAt,
-      },
-    });
+      const rider = await tx.user.findUnique({ where: { id: deliveryUserId } });
+      if (!rider || rider.role !== 'REPARTIDOR') {
+        throw new ForbiddenException();
+      }
 
-    this.logger.log(`[Orders] Pedido tomado exitosamente: orderId=${orderId}, asignado a=${deliveryUserId}, token=${token}`);
-    this.trackingGateway.emitOrderStatusChange(orderId, OrderStatus.TOMADO);
+      if (!rider.isAvailable) {
+        throw new ConflictException('No estás disponible para tomar pedidos');
+      }
 
-    const orderData = await this.prisma.order.findUnique({
-      where: { id: orderId },
-      include: { deliveryUser: true },
-    });
+      const updated = await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: OrderStatus.ACEPTADO,
+          deliveryUserId,
+          takenAt: new Date(),
+        },
+      });
 
-    if (orderData && orderData.deliveryUser) {
-      const encargado = await this.prisma.user.findFirst({
-        where: { businessId: orderData.businessId, role: 'ENCARGADO' },
+      this.logger.log(`[Orders] Pedido aceptado exitosamente: orderId=${orderId}, asignado a=${deliveryUserId}`);
+      this.trackingGateway.emitOrderStatusChange(orderId, OrderStatus.ACEPTADO);
+
+      const encargado = await tx.user.findFirst({
+        where: { businessId: order.businessId, role: 'ENCARGADO' },
       });
       if (encargado) {
         await this.notificationsService.notifyOrderTaken(
           encargado.id,
           orderId,
-          orderData.deliveryUser.name,
-          orderData.customerName,
+          rider.name,
+          order.customerName,
         );
       }
-    }
 
-    return this.findOne(orderId, businessId);
+      return this.findOne(orderId, order.businessId);
+    });
   }
 
   async cancelOrder(id: string, businessId: string): Promise<OrderResponseDto> {
@@ -252,6 +310,10 @@ export class OrdersService {
     const updateData: any = { status: dto.status };
     if (dto.status === OrderStatus.ENTREGADO) {
       updateData.deliveredAt = new Date();
+    } else if (dto.status === OrderStatus.EN_EL_NEGOCIO) {
+      updateData.arrivedAtBusinessAt = new Date();
+    } else if (dto.status === OrderStatus.EN_CAMINO) {
+      updateData.pickedUpAt = new Date();
     }
     
     // Notes or incidence logic goes here (create notification or incidence log in future)
@@ -261,6 +323,21 @@ export class OrdersService {
       where: { id: orderId },
       data: updateData,
     });
+
+    if (dto.status === OrderStatus.EN_CAMINO) {
+      const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
+      const expiresAt = new Date();
+      expiresAt.setHours(expiresAt.getHours() + 12);
+
+      await this.prisma.trackingSession.create({
+        data: {
+          orderId,
+          token,
+          expiresAt,
+        },
+      });
+      this.logger.log(`[Orders] Sesión de tracking generada para pedido en camino: orderId=${orderId}, token=${token}`);
+    }
 
     this.trackingGateway.emitOrderStatusChange(orderId, dto.status);
 
@@ -282,6 +359,14 @@ export class OrdersService {
           );
         }
       }
+    } else if (dto.status === OrderStatus.EN_CAMINO_AL_NEGOCIO && encargado) {
+      const rider = await this.prisma.user.findUnique({ where: { id: userId } });
+      await this.notificationsService.notifyOrderOnWayToBusiness(encargado.id, orderId, rider?.name || 'Repartidor');
+    } else if (dto.status === OrderStatus.EN_EL_NEGOCIO && encargado) {
+      const rider = await this.prisma.user.findUnique({ where: { id: userId } });
+      await this.notificationsService.notifyOrderAtBusiness(encargado.id, orderId, rider?.name || 'Repartidor');
+    } else if (dto.status === OrderStatus.EN_CAMINO && encargado) {
+      await this.notificationsService.notifyOrderOnWay(encargado.id, orderId, order.customerName);
     }
 
     if (dto.status === OrderStatus.INCIDENCIA) {
@@ -316,7 +401,9 @@ export class OrdersService {
 
     const flow: OrderStatus[] = [
       OrderStatus.PENDIENTE,
-      OrderStatus.TOMADO,
+      OrderStatus.ACEPTADO,
+      OrderStatus.EN_CAMINO_AL_NEGOCIO,
+      OrderStatus.EN_EL_NEGOCIO,
       OrderStatus.EN_CAMINO,
       OrderStatus.CERCA_DEL_DESTINO,
       OrderStatus.VERIFICANDO_ENTREGA,
@@ -344,7 +431,7 @@ export class OrdersService {
     }
 
     // Role specific transition checks
-    if (next === OrderStatus.TOMADO && role !== UserRole.REPARTIDOR) {
+    if (next === OrderStatus.ACEPTADO && role !== UserRole.REPARTIDOR) {
       throw new ForbiddenException('Solo repartidores pueden tomar pedidos');
     }
   }

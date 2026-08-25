@@ -59,8 +59,8 @@ export class UploadController {
       throw new BadRequestException('Pedido no encontrado');
     }
 
-    if (type === OrderPhotoType.ARMADO && order.status !== OrderStatus.TOMADO) {
-      throw new BadRequestException('Para subir foto de armado, el pedido debe estar en estado TOMADO');
+    if (type === OrderPhotoType.ARMADO && order.status !== OrderStatus.ACEPTADO && order.status !== OrderStatus.EN_EL_NEGOCIO) {
+      throw new BadRequestException('Para subir foto de armado, el pedido debe estar ACEPTADO o EN_EL_NEGOCIO');
     }
 
     if (type === OrderPhotoType.ENTREGA && order.status !== OrderStatus.VERIFICANDO_ENTREGA) {
@@ -84,7 +84,7 @@ export class UploadController {
       uploadedPhotos.push(orderPhoto);
     }
 
-    if (type === OrderPhotoType.ARMADO && order.status === OrderStatus.TOMADO) {
+    if (type === OrderPhotoType.ARMADO && (order.status === OrderStatus.ACEPTADO || order.status === OrderStatus.EN_EL_NEGOCIO)) {
       await this.prisma.order.update({
         where: { id: orderId },
         data: { status: OrderStatus.EN_CAMINO },

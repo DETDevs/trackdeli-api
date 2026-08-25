@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { RegisterRiderDto } from './dto/register-rider.dto';
 import { TokenResponseDto } from './dto/token-response.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -21,6 +22,12 @@ export class AuthController {
   @Public()
   async login(@Body() dto: LoginDto): Promise<TokenResponseDto> {
     return this.authService.login(dto);
+  }
+
+  @Post('register/rider')
+  @Public()
+  async registerRider(@Body() dto: RegisterRiderDto): Promise<TokenResponseDto> {
+    return this.authService.registerRider(dto);
   }
 
   @Post('refresh')

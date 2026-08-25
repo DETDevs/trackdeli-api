@@ -14,14 +14,19 @@ export class OrdersController {
 
   @Get()
   @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR, UserRole.SUPERADMIN)
-  findAll(@CurrentUser() user: JwtPayload, @Query('status') status?: OrderStatus) {
-    return this.service.findAllByBusiness(user.businessId, user.sub, user.role, { status });
+  findAll(
+    @CurrentUser() user: JwtPayload,
+    @Query('status') status?: OrderStatus,
+    @Query('latitude') latitude?: number,
+    @Query('longitude') longitude?: number,
+  ) {
+    return this.service.findAllByBusiness(user.businessId, user.sub, user.role, { status, latitude, longitude });
   }
 
   @Get(':id')
   @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR, UserRole.SUPERADMIN)
   findOne(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
-    return this.service.findOne(id, user.businessId);
+    return this.service.findOne(id, user.businessId, user.sub, user.role);
   }
 
   @Post()
@@ -33,7 +38,8 @@ export class OrdersController {
   @Post(':id/take')
   @Roles(UserRole.REPARTIDOR)
   takeOrder(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
-    return this.service.takeOrder(id, user.sub, user.businessId);
+    // Para REPARTIDOR, el businessId del token puede ser null si es independiente
+    return this.service.takeOrder(id, user.sub);
   }
 
   @Patch(':id/status')

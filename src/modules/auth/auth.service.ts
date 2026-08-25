@@ -1,10 +1,11 @@
-import { Injectable, UnauthorizedException, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, NotFoundException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
 import { TokenResponseDto } from './dto/token-response.dto';
+import { RegisterRiderDto } from './dto/register-rider.dto';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { User } from '@prisma/client';
 
@@ -71,6 +72,55 @@ export class AuthService {
     };
   }
 
+  async registerRider(dto: RegisterRiderDto): Promise<TokenResponseDto> {
+    try {
+      const passwordHash = await bcrypt.hash(dto.password, 10);
+      
+      const user = await this.prisma.user.create({
+        data: {
+          email: dto.email,
+          passwordHash,
+          name: dto.name,
+          phone: dto.phone,
+          role: 'REPARTIDOR',
+          businessId: null,
+          isAvailable: true,
+          vehicleType: dto.vehicleType,
+          vehiclePlate: dto.vehiclePlate,
+          vehicleColor: dto.vehicleColor,
+        },
+      });
+
+      this.logger.log(`[Auth] Nuevo repartidor registrado: email=${dto.email}`);
+
+      const payload: JwtPayload = {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        businessId: user.businessId,
+      };
+
+      const tokens = this.generateTokens(payload);
+
+      return {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          businessId: user.businessId,
+        },
+      };
+    } catch (error) {
+      if (error.code === 'P2002') {
+        throw new ConflictException('El correo electrónico ya está en uso');
+      }
+      throw error;
+    }
+  }
+
   async refresh(userId: string, refreshToken: string): Promise<TokenResponseDto> {
     try {
       const decoded = this.jwtService.verify(refreshToken, {
@@ -122,9 +172,19 @@ export class AuthService {
         phone: true,
         role: true,
         businessId: true,
+        vehicleType: true,
+        vehiclePlate: true,
+        vehicleColor: true,
+        vehiclePhotoUrl: true,
+        profilePhotoUrl: true,
+        isAvailable: true,
+        currentLatitude: true,
+        currentLongitude: true,
         business: {
           select: {
             name: true,
+            latitude: true,
+            longitude: true,
           }
         }
       }
