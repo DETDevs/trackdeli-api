@@ -85,12 +85,6 @@ export class UploadController {
       uploadedPhotos.push(orderPhoto);
     }
 
-    if (type === OrderPhotoType.ARMADO && (order.status === OrderStatus.ACEPTADO || order.status === OrderStatus.EN_EL_NEGOCIO)) {
-      await this.prisma.order.update({
-        where: { id: orderId },
-        data: { status: OrderStatus.EN_CAMINO },
-      });
-    }
 
     return uploadedPhotos;
   }
@@ -116,4 +110,5 @@ export class UploadController {
     });
   }
 }
+
 

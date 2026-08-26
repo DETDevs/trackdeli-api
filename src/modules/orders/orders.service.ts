@@ -397,6 +397,9 @@ export class OrdersService {
   }
 
   private validateStateTransition(current: OrderStatus, next: OrderStatus, role: UserRole) {
+    if (current === next) {
+      return; // Permite idempotencia
+    }
     if (next === OrderStatus.CANCELADO) {
       if (role !== UserRole.ENCARGADO && role !== UserRole.SUPERADMIN) {
         throw new ForbiddenException('Solo encargados pueden cancelar pedidos');
@@ -449,3 +452,4 @@ export class OrdersService {
     }
   }
 }
+
