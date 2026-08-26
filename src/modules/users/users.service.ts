@@ -15,7 +15,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
-  ) {}
+  ) { }
 
   private toResponseDto(user: User): UserResponseDto {
     const { passwordHash, ...rest } = user;
@@ -162,7 +162,7 @@ export class UsersService {
     }
 
     const url = await this.uploadService.uploadPhoto(file, 'users/vehicles');
-    
+
     await this.prisma.user.update({
       where: { id: userId },
       data: { vehiclePhotoUrl: url },
@@ -186,7 +186,7 @@ export class UsersService {
     }
 
     const url = await this.uploadService.uploadPhoto(file, 'users/profiles');
-    
+
     await this.prisma.user.update({
       where: { id: userId },
       data: { profilePhotoUrl: url },

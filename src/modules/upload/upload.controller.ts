@@ -55,8 +55,9 @@ export class UploadController {
       where: { id: orderId },
     });
 
-    if (!order || order.businessId !== user.businessId) {
-      throw new BadRequestException('Pedido no encontrado');
+    const canAccess = (user.role === UserRole.SUPERADMIN) || (user.businessId !== null && order.businessId === user.businessId) || (order.deliveryUserId === user.sub);
+    if (!order || !canAccess) {
+      throw new BadRequestException('Pedido no encontrado o sin acceso');
     }
 
     if (type === OrderPhotoType.ARMADO && order.status !== OrderStatus.ACEPTADO && order.status !== OrderStatus.EN_EL_NEGOCIO) {
@@ -104,8 +105,9 @@ export class UploadController {
       where: { id: orderId },
     });
 
-    if (!order || order.businessId !== user.businessId) {
-      throw new BadRequestException('Pedido no encontrado');
+    const canAccess = (user.role === UserRole.SUPERADMIN) || (user.businessId !== null && order.businessId === user.businessId) || (order.deliveryUserId === user.sub);
+    if (!order || !canAccess) {
+      throw new BadRequestException('Pedido no encontrado o sin acceso');
     }
 
     return this.prisma.orderPhoto.findMany({
@@ -114,3 +116,4 @@ export class UploadController {
     });
   }
 }
+
