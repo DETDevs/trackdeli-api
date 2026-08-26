@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -10,6 +10,8 @@ import { UploadService } from '../upload/upload.service';
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
@@ -68,6 +70,7 @@ export class UsersService {
       },
     });
 
+    this.logger.log(`[create] OK userId=${user.id}, email=${user.email}, rol=${user.role}, businessId=${businessId}`);
     return this.toResponseDto(user);
   }
 
@@ -89,6 +92,7 @@ export class UsersService {
       },
     });
 
+    this.logger.log(`[update] OK userId=${id}, camposModificados=${Object.keys(dto).join(',')}`);
     return this.toResponseDto(updatedUser);
   }
 
@@ -110,6 +114,7 @@ export class UsersService {
       data: { isActive: false },
     });
 
+    this.logger.log(`[deactivate] OK userId=${id} desactivado por requesterId=${requesterId}`);
     return this.toResponseDto(updatedUser);
   }
 
@@ -138,6 +143,7 @@ export class UsersService {
       },
     });
 
+    this.logger.log(`[updateProfile] OK userId=${userId}`);
     return this.toResponseDto(updatedUser);
   }
 

@@ -25,11 +25,13 @@ export class AuthService {
     });
 
     if (!user) {
+      this.logger.warn(`[validateUser] WARN usuario no encontrado: ${email}`);
       return null;
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
     if (!isPasswordValid) {
+      this.logger.warn(`[validateUser] WARN password incorrecta: ${email}`);
       return null;
     }
 
@@ -44,11 +46,10 @@ export class AuthService {
     const user = await this.validateUser(dto.email, dto.password);
     
     if (!user) {
-      this.logger.warn(`[Auth] Login fallido: email=${dto.email}, razón=credenciales inválidas`);
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
-    this.logger.log(`[Auth] Login exitoso: email=${dto.email}, rol=${user.role}, negocio=${user.businessId}`);
+    this.logger.log(`[login] OK email=${dto.email}, rol=${user.role}`);
 
     const payload: JwtPayload = {
       sub: user.id,
@@ -105,7 +106,7 @@ export class AuthService {
         },
       });
 
-      this.logger.log(`[Auth] Nuevo repartidor registrado: email=${dto.email}`);
+      this.logger.log(`[register] OK nuevo repartidor: ${dto.email}`);
 
       const payload: JwtPayload = {
         sub: user.id,
@@ -143,8 +144,10 @@ export class AuthService {
       };
     } catch (error) {
       if (error.code === 'P2002') {
+        this.logger.warn(`[register] WARN email ya existe: ${dto.email}`);
         throw new ConflictException('El correo electrónico ya está en uso');
       }
+      this.logger.error(`[register] ERROR: ${error.message}`, error.stack);
       throw error;
     }
   }
@@ -160,6 +163,7 @@ export class AuthService {
       });
 
       if (!user || !user.isActive) {
+        this.logger.warn(`[refresh] WARN usuario inválido o inactivo: userId=${decoded.sub}`);
         throw new UnauthorizedException('Usuario no válido o inactivo');
       }
 
@@ -179,7 +183,7 @@ export class AuthService {
 
       const tokens = this.generateTokens(payload);
       
-      this.logger.log(`[Auth] Token refrescado: userId=${user.id}`);
+      this.logger.log(`[refresh] OK userId=${user.id}`);
       return {
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
@@ -199,7 +203,7 @@ export class AuthService {
         },
       };
     } catch (error) {
-      this.logger.warn(`[Auth] Refresh fallido: userId=${userId}`);
+      this.logger.warn(`[refresh] WARN token inválido para userId=${userId}`);
       throw new UnauthorizedException('Refresh token inválido o expirado');
     }
   }

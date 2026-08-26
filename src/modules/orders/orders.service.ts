@@ -88,7 +88,7 @@ export class OrdersService {
       },
     });
 
-    this.logger.log(`[Orders] Pedido creado: id=${order.id}, cliente=${dto.customerName}, negocio=${businessId}, creadoPor=${createdBy}`);
+    this.logger.log(`[create] OK pedido creado: id=${order.id}, cliente=${dto.customerName}, negocio=${businessId}`);
 
     const repartidores = await this.prisma.user.findMany({
       where: { businessId, role: 'REPARTIDOR', isActive: true },
@@ -167,7 +167,9 @@ export class OrdersService {
       });
     }
 
-    return Promise.all(orders.map(o => this.toResponseDto(o)));
+    const result = await Promise.all(orders.map(o => this.toResponseDto(o)));
+    this.logger.log(`[findAll] userId=${userId}, role=${role}, businessId=${businessId} | OK - ${result.length} pedidos`);
+    return result;
   }
 
   async findOne(id: string, businessId: string | null, userId?: string, role?: string): Promise<OrderResponseDto> {
@@ -183,6 +185,7 @@ export class OrdersService {
     });
 
     if (!order) {
+      this.logger.warn(`[findOne] WARN pedido no encontrado: orderId=${id}`);
       throw new NotFoundException('Pedido no encontrado');
     }
 
@@ -201,11 +204,13 @@ export class OrdersService {
       }
 
       if (!canAccess) {
+        this.logger.warn(`[findOne] WARN acceso denegado: userId=${userId}, orderId=${id}, businessId=${businessId}`);
         throw new NotFoundException('Pedido no encontrado');
       }
     } else {
       // Legacy / internal behavior when called by takeOrder, cancelOrder, updateStatus, etc.
       if (businessId !== null && order.businessId !== businessId) {
+        this.logger.warn(`[findOne] WARN acceso denegado (legacy): orderId=${id}, businessId=${businessId}`);
         throw new NotFoundException('Pedido no encontrado');
       }
     }
@@ -214,7 +219,7 @@ export class OrdersService {
   }
 
   async takeOrder(orderId: string, deliveryUserId: string): Promise<OrderResponseDto> {
-    this.logger.log(`[Orders] Intento de tomar pedido: orderId=${orderId}, repartidor=${deliveryUserId}`);
+    this.logger.log(`[takeOrder] Intento de tomar pedido: orderId=${orderId}, repartidor=${deliveryUserId}`);
 
     return this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
@@ -227,7 +232,7 @@ export class OrdersService {
       }
 
       if (order.status !== OrderStatus.PENDIENTE) {
-        this.logger.warn(`[Orders] CONFLICT takeOrder: orderId=${orderId} ya fue tomado. Repartidor intentado=${deliveryUserId}`);
+        this.logger.warn(`[takeOrder] CONFLICT orderId=${orderId} ya fue tomado. Repartidor intentado=${deliveryUserId}`);
         throw new ConflictException('Pedido no disponible — ya fue tomado por otro repartidor');
       }
 
@@ -249,7 +254,7 @@ export class OrdersService {
         },
       });
 
-      this.logger.log(`[Orders] Pedido aceptado exitosamente: orderId=${orderId}, asignado a=${deliveryUserId}`);
+      this.logger.log(`[takeOrder] OK pedido aceptado: orderId=${orderId}, repartidor=${deliveryUserId}`);
       this.trackingGateway.emitOrderStatusChange(orderId, OrderStatus.ACEPTADO);
 
       const encargado = await tx.user.findFirst({
@@ -301,10 +306,11 @@ export class OrdersService {
     }
 
     if (role === UserRole.REPARTIDOR && order.deliveryUserId !== userId && order.status !== OrderStatus.PENDIENTE) {
+      this.logger.warn(`[updateStatus] WARN acceso denegado: userId=${userId}, orderId=${orderId}`);
       throw new ForbiddenException('No tienes permiso para actualizar este pedido');
     }
 
-    this.logger.log(`[Orders] Cambio de estado: orderId=${orderId}, de=${order.status}, a=${dto.status}, usuario=${userId}, rol=${role}`);
+    this.logger.log(`[updateStatus] Cambio de estado: orderId=${orderId}, de=${order.status}, a=${dto.status}, userId=${userId}`);
 
     try {
       this.validateStateTransition(order.status, dto.status, role);
@@ -433,6 +439,7 @@ export class OrdersService {
       if (current === OrderStatus.EN_CAMINO && next === OrderStatus.VERIFICANDO_ENTREGA) {
         return;
       }
+      this.logger.warn(`[updateStatus] WARN transición no permitida: ${current} → ${next}`);
       throw new BadRequestException('Transición de estado no permitida');
     }
 

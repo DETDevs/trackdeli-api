@@ -28,7 +28,7 @@ export class UploadService {
     file: Express.Multer.File,
     folder: string,
   ): Promise<string> {
-    this.logger.log(`[Upload] Subiendo foto: folder=${folder}, tamaño original=${file.size} bytes`);
+    this.logger.log(`[uploadPhoto] Iniciando: folder=${folder}, tamañoOriginal=${file.size} bytes`);
 
     try {
       const compressed = await (sharp as any)(file.buffer)
@@ -46,10 +46,10 @@ export class UploadService {
       }));
 
       const url = `${this.publicUrl}/${key}`;
-      this.logger.log(`[Upload] Foto subida exitosamente: key=${key}, url=${url}`);
+      this.logger.log(`[uploadPhoto] OK foto subida: key=${key}, tamañoComprimido=${compressed.length} bytes`);
       return url;
     } catch (error: any) {
-      this.logger.error(`[Upload] Error al subir foto: folder=${folder}, error=${error.message}`);
+      this.logger.error(`[uploadPhoto] ERROR al subir foto: folder=${folder}, error=${error.message}`, error.stack);
       throw error;
     }
   }

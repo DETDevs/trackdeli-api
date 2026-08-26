@@ -53,12 +53,12 @@ export class NotificationsService {
     if (tokens.length > 0) {
       try {
         await this.firebase.sendToMultiple(tokens, title, body, data);
-        this.logger.log(`[Notifications] Push enviado: userId=${userId}, tipo=${type}, título="${title}"`);
+        this.logger.log(`[sendAndSave] OK push enviado: userId=${userId}, tipo=${type}, título="${title}"`);
       } catch (error: any) {
-        this.logger.warn(`[Notifications] Error enviando push: userId=${userId}, error=${error.message}`);
+        this.logger.error(`[sendAndSave] ERROR enviando push: userId=${userId}, error=${error.message}`, error.stack);
       }
     } else {
-      this.logger.debug(`[Notifications] Sin device tokens para userId=${userId} — notificación guardada pero no enviada por push`);
+      this.logger.debug(`[sendAndSave] Sin device tokens para userId=${userId} — notificación guardada pero no enviada por push`);
     }
   }
 

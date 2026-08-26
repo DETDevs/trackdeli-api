@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UpdateBusinessDto } from './dto/update-business.dto';
 import { BusinessResponseDto } from './dto/business-response.dto';
@@ -6,6 +6,8 @@ import { Business } from '@prisma/client';
 
 @Injectable()
 export class BusinessesService {
+  private readonly logger = new Logger(BusinessesService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   private toResponseDto(business: Business): BusinessResponseDto {
@@ -53,6 +55,12 @@ export class BusinessesService {
         ...(dto.longitude !== undefined && { longitude: dto.longitude }),
       },
     });
+
+    if (dto.latitude !== undefined || dto.longitude !== undefined) {
+      this.logger.log(`[update] OK businessId=${id} ubicación actualizada a lat=${dto.latitude}, lng=${dto.longitude}`);
+    } else {
+      this.logger.log(`[update] OK businessId=${id}`);
+    }
 
     return this.toResponseDto(updated);
   }
