@@ -55,6 +55,13 @@ export class AuthService {
       email: user.email,
       role: user.role,
       businessId: user.businessId,
+          phone: user.phone,
+          vehicleType: user.vehicleType,
+          vehiclePlate: user.vehiclePlate,
+          vehicleColor: user.vehicleColor,
+          vehiclePhotoUrl: user.vehiclePhotoUrl,
+          profilePhotoUrl: user.profilePhotoUrl,
+          isAvailable: user.isAvailable,
     };
 
     const tokens = this.generateTokens(payload);
@@ -68,6 +75,13 @@ export class AuthService {
         email: user.email,
         role: user.role,
         businessId: user.businessId,
+          phone: user.phone,
+          vehicleType: user.vehicleType,
+          vehiclePlate: user.vehiclePlate,
+          vehicleColor: user.vehicleColor,
+          vehiclePhotoUrl: user.vehiclePhotoUrl,
+          profilePhotoUrl: user.profilePhotoUrl,
+          isAvailable: user.isAvailable,
       },
     };
   }
@@ -98,6 +112,13 @@ export class AuthService {
         email: user.email,
         role: user.role,
         businessId: user.businessId,
+          phone: user.phone,
+          vehicleType: user.vehicleType,
+          vehiclePlate: user.vehiclePlate,
+          vehicleColor: user.vehicleColor,
+          vehiclePhotoUrl: user.vehiclePhotoUrl,
+          profilePhotoUrl: user.profilePhotoUrl,
+          isAvailable: user.isAvailable,
       };
 
       const tokens = this.generateTokens(payload);
@@ -111,6 +132,13 @@ export class AuthService {
           email: user.email,
           role: user.role,
           businessId: user.businessId,
+          phone: user.phone,
+          vehicleType: user.vehicleType,
+          vehiclePlate: user.vehiclePlate,
+          vehicleColor: user.vehicleColor,
+          vehiclePhotoUrl: user.vehiclePhotoUrl,
+          profilePhotoUrl: user.profilePhotoUrl,
+          isAvailable: user.isAvailable,
         },
       };
     } catch (error) {
@@ -140,6 +168,13 @@ export class AuthService {
         email: user.email,
         role: user.role,
         businessId: user.businessId,
+          phone: user.phone,
+          vehicleType: user.vehicleType,
+          vehiclePlate: user.vehiclePlate,
+          vehicleColor: user.vehicleColor,
+          vehiclePhotoUrl: user.vehiclePhotoUrl,
+          profilePhotoUrl: user.profilePhotoUrl,
+          isAvailable: user.isAvailable,
       };
 
       const tokens = this.generateTokens(payload);
@@ -154,6 +189,13 @@ export class AuthService {
           email: user.email,
           role: user.role,
           businessId: user.businessId,
+          phone: user.phone,
+          vehicleType: user.vehicleType,
+          vehiclePlate: user.vehiclePlate,
+          vehicleColor: user.vehicleColor,
+          vehiclePhotoUrl: user.vehiclePhotoUrl,
+          profilePhotoUrl: user.profilePhotoUrl,
+          isAvailable: user.isAvailable,
         },
       };
     } catch (error) {
@@ -208,3 +250,4 @@ export class AuthService {
     return { accessToken, refreshToken };
   }
 }
+

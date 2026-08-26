@@ -9,5 +9,12 @@ export class TokenResponseDto {
     email: string;
     role: UserRole;
     businessId: string;
+    phone?: string | null;
+    vehicleType?: string | null;
+    vehiclePlate?: string | null;
+    vehicleColor?: string | null;
+    vehiclePhotoUrl?: string | null;
+    profilePhotoUrl?: string | null;
+    isAvailable?: boolean;
   };
 }

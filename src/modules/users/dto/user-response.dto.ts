@@ -8,5 +8,11 @@ export class UserResponseDto {
   role: UserRole;
   isActive: boolean;
   businessId: string;
+  vehicleType: string | null;
+  vehiclePlate: string | null;
+  vehicleColor: string | null;
+  vehiclePhotoUrl: string | null;
+  profilePhotoUrl: string | null;
+  isAvailable: boolean;
   createdAt: Date;
 }
