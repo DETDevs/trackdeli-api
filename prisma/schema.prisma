@@ -83,6 +83,7 @@ model Business {
   freeZoneKm             Float        @default(0)
   minRate                Float        @default(0)
   maxRate                Float        @default(0)
+  pricingZones           Json?
 
   createdAt              DateTime     @default(now())
 

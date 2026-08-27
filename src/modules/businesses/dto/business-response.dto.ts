@@ -15,5 +15,6 @@ export class BusinessResponseDto {
   freeZoneKm: number;
   minRate: number;
   maxRate: number;
+  pricingZones?: Array<{ id?: string; name: string; price: number }> | null;
   createdAt: Date;
 }

@@ -26,6 +26,7 @@ export class BusinessesService {
       freeZoneKm: business.freeZoneKm,
       minRate: business.minRate,
       maxRate: business.maxRate,
+      pricingZones: (business.pricingZones as any) || null,
       createdAt: business.createdAt,
     };
   }
@@ -66,6 +67,7 @@ export class BusinessesService {
         ...(dto.freeZoneKm !== undefined && { freeZoneKm: dto.freeZoneKm }),
         ...(dto.minRate !== undefined && { minRate: dto.minRate }),
         ...(dto.maxRate !== undefined && { maxRate: dto.maxRate }),
+        ...(dto.pricingZones !== undefined && { pricingZones: dto.pricingZones as any }),
       },
     });
 

@@ -62,4 +62,7 @@ export class UpdateBusinessDto {
   @IsNumber()
   @Min(0)
   maxRate?: number;
+
+  @IsOptional()
+  pricingZones?: Array<{ id?: string; name: string; price: number }>;
 }
