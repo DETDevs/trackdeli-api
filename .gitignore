@@ -15,6 +15,9 @@ docs/interno/
 .env
 .env.local
 .env.production
+.env.*
+*.env
+*.env.*
  
 # Credenciales y secrets
 *.pem

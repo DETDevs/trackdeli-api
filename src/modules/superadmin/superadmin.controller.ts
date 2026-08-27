@@ -6,12 +6,20 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { SuperAdminService } from './superadmin.service';
 import { SuperAdminGuard } from '../../common/guards/superadmin.guard';
 import { CreateBusinessSuperAdminDto } from './dto/create-business-superadmin.dto';
 import { OrdersMetricsQueryDto } from './dto/orders-metrics-query.dto';
+import { CreateMembershipDto } from './dto/create-membership.dto';
+import { UpdateMembershipDto } from './dto/update-membership.dto';
+import { MembershipsQueryDto } from './dto/memberships-query.dto';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { JwtPayload } from '../../common/types/jwt-payload.interface';
 
 @Controller('superadmin')
 @UseGuards(SuperAdminGuard)
@@ -25,6 +33,11 @@ export class SuperAdminController {
   @Get('businesses')
   async getBusinesses() {
     return this.superAdminService.getBusinesses();
+  }
+
+  @Get('businesses/:id/memberships')
+  async getBusinessMemberships(@Param('id') id: string) {
+    return this.superAdminService.getBusinessMemberships(id);
   }
 
   @Get('businesses/:id')
@@ -59,6 +72,49 @@ export class SuperAdminController {
   @Patch('riders/:id/toggle')
   async toggleRider(@Param('id') id: string) {
     return this.superAdminService.toggleRider(id);
+  }
+
+  // ==========================================
+  // MEMBRESÍAS
+  // ==========================================
+
+  @Get('memberships/expiring')
+  async getExpiringMemberships() {
+    return this.superAdminService.getExpiringMemberships();
+  }
+
+  @Get('memberships')
+  async getMemberships(@Query() query: MembershipsQueryDto) {
+    return this.superAdminService.getMemberships(query);
+  }
+
+  @Post('memberships')
+  async createMembership(
+    @Body() dto: CreateMembershipDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.createMembership(dto, user.sub);
+  }
+
+  @Post('memberships/:id/proof')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+    }),
+  )
+  async uploadPaymentProof(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.superAdminService.uploadPaymentProof(id, file);
+  }
+
+  @Patch('memberships/:id')
+  async updateMembership(
+    @Param('id') id: string,
+    @Body() dto: UpdateMembershipDto,
+  ) {
+    return this.superAdminService.updateMembership(id, dto);
   }
 
   // ==========================================

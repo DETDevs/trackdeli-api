@@ -25,7 +25,8 @@ export class CreateBusinessSuperAdminDto {
   type?: string;
 
   @IsObject()
+  @IsOptional()
   @ValidateNested()
   @Type(() => EncargadoDto)
-  encargado: EncargadoDto;
+  encargado?: EncargadoDto;
 }

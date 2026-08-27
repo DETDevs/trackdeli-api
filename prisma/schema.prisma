@@ -51,6 +51,21 @@ enum PricingModel {
   FREE
 }
 
+enum PaymentMethod {
+  TRANSFERENCIA
+  EFECTIVO
+  PAYPAL
+  BINANCE
+  OTRO
+}
+
+enum MembershipStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+  PENDING
+}
+
 model Business {
   id                     String       @id @default(uuid())
   name                   String       @db.VarChar(100)
@@ -71,10 +86,37 @@ model Business {
 
   createdAt              DateTime     @default(now())
 
-  users  User[]
-  orders Order[]
+  users       User[]
+  orders      Order[]
+  memberships Membership[]
 
   @@map("businesses")
+}
+
+model Membership {
+  id              String           @id @default(uuid())
+  businessId      String
+  business        Business         @relation(fields: [businessId], references: [id])
+
+  // Período de vigencia
+  startDate       DateTime
+  endDate         DateTime
+
+  // Pago
+  amount          Float
+  currency        String           @default("USD")
+  paymentMethod   PaymentMethod    @default(TRANSFERENCIA)
+  paymentProofUrl String?          @db.VarChar(500)
+  paidAt          DateTime?
+  notes           String?
+
+  status          MembershipStatus @default(ACTIVE)
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  createdBy       String
+
+  @@map("memberships")
 }
 
 model User {

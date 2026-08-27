@@ -14,6 +14,7 @@ import { RatingsModule } from './modules/ratings/ratings.module';
 import { SuperAdminModule } from './modules/superadmin/superadmin.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { MembershipGuard } from './common/guards/membership.guard';
 
 @Module({
   imports: [
@@ -40,6 +41,10 @@ import { RolesGuard } from './common/guards/roles.guard';
     {
       provide: APP_GUARD,
       useClass: RolesGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: MembershipGuard,
     },
   ],
 })

@@ -6,10 +6,32 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { UploadService } from '../upload/upload.service';
 import { CreateBusinessSuperAdminDto } from './dto/create-business-superadmin.dto';
 import { OrdersMetricsQueryDto } from './dto/orders-metrics-query.dto';
-import { OrderStatus, UserRole } from '@prisma/client';
+import { CreateMembershipDto } from './dto/create-membership.dto';
+import { UpdateMembershipDto } from './dto/update-membership.dto';
+import { MembershipsQueryDto } from './dto/memberships-query.dto';
+import { MembershipStatus, OrderStatus, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+
+function generateBusinessCredentials(businessName: string): {
+  email: string;
+  password: string;
+} {
+  const cleanName = businessName
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '')
+    .slice(0, 15);
+
+  const randomNum = Math.floor(Math.random() * 900) + 100;
+  const email = `${cleanName}@trackdeli.com`;
+  const password = `${cleanName.charAt(0).toUpperCase()}${cleanName.slice(1)}#${randomNum}`;
+
+  return { email, password };
+}
 
 const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.PENDIENTE,
@@ -26,7 +48,10 @@ const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
 export class SuperAdminService {
   private readonly logger = new Logger(SuperAdminService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly uploadService: UploadService,
+  ) {}
 
   // ==========================================
   // 1. NEGOCIOS
@@ -56,6 +81,10 @@ export class SuperAdminService {
             createdAt: true,
           },
         },
+        memberships: {
+          orderBy: { endDate: 'desc' },
+          take: 1,
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -67,6 +96,33 @@ export class SuperAdminService {
         ACTIVE_ORDER_STATUSES.includes(o.status),
       ).length;
 
+      const latestMembership = b.memberships[0];
+      let membershipStatus: 'ACTIVE' | 'EXPIRED' | 'NONE' = 'NONE';
+      let endDate: Date | null = null;
+      let daysLeft: number | null = null;
+
+      if (latestMembership) {
+        endDate = latestMembership.endDate;
+        const isCurrentlyActive =
+          latestMembership.status === MembershipStatus.ACTIVE &&
+          latestMembership.startDate <= now &&
+          latestMembership.endDate >= now;
+
+        if (isCurrentlyActive) {
+          membershipStatus = 'ACTIVE';
+          daysLeft = Math.max(
+            0,
+            Math.ceil(
+              (latestMembership.endDate.getTime() - now.getTime()) /
+                (1000 * 60 * 60 * 24),
+            ),
+          );
+        } else {
+          membershipStatus = 'EXPIRED';
+          daysLeft = 0;
+        }
+      }
+
       return {
         id: b.id,
         name: b.name,
@@ -75,6 +131,12 @@ export class SuperAdminService {
         latitude: b.latitude,
         longitude: b.longitude,
         isActive: b.isActive,
+        pricingModel: b.pricingModel,
+        baseRate: b.baseRate,
+        ratePerKm: b.ratePerKm,
+        freeZoneKm: b.freeZoneKm,
+        minRate: b.minRate,
+        maxRate: b.maxRate,
         createdAt: b.createdAt,
         _count: {
           orders: b._count.orders,
@@ -83,6 +145,11 @@ export class SuperAdminService {
         ordersToday,
         ordersThisMonth,
         activeOrders,
+        membership: {
+          status: membershipStatus,
+          endDate,
+          daysLeft,
+        },
       };
     });
   }
@@ -247,19 +314,27 @@ export class SuperAdminService {
   }
 
   async createBusiness(dto: CreateBusinessSuperAdminDto) {
-    this.logger.log(
-      `[createBusiness] Creando negocio '${dto.name}' con encargado ${dto.encargado.email}`,
-    );
+    this.logger.log(`[createBusiness] Creando negocio '${dto.name}'`);
+
+    let email = dto.encargado?.email;
+    let plainPassword = dto.encargado?.password;
+    let encargadoName = dto.encargado?.name || `Encargado ${dto.name}`;
+
+    if (!email || !plainPassword) {
+      const generated = generateBusinessCredentials(dto.name);
+      email = email || generated.email;
+      plainPassword = plainPassword || generated.password;
+    }
 
     const existingUser = await this.prisma.user.findUnique({
-      where: { email: dto.encargado.email },
+      where: { email },
     });
 
     if (existingUser) {
-      throw new ConflictException('El correo del encargado ya está registrado');
+      throw new ConflictException(`El correo '${email}' ya está registrado`);
     }
 
-    const passwordHash = await bcrypt.hash(dto.encargado.password, 10);
+    const passwordHash = await bcrypt.hash(plainPassword, 10);
 
     const result = await this.prisma.$transaction(async (tx) => {
       const business = await tx.business.create({
@@ -272,8 +347,8 @@ export class SuperAdminService {
 
       const encargado = await tx.user.create({
         data: {
-          name: dto.encargado.name,
-          email: dto.encargado.email,
+          name: encargadoName,
+          email,
           passwordHash,
           role: UserRole.ENCARGADO,
           businessId: business.id,
@@ -285,7 +360,7 @@ export class SuperAdminService {
     });
 
     this.logger.log(
-      `[createBusiness] OK negocio creado id=${result.business.id}, encargado=${result.encargado.id}`,
+      `[createBusiness] OK negocio creado id=${result.business.id}, encargado=${result.encargado.id} (email=${email})`,
     );
 
     return {
@@ -300,6 +375,7 @@ export class SuperAdminService {
         id: result.encargado.id,
         name: result.encargado.name,
         email: result.encargado.email,
+        temporaryPassword: plainPassword,
         role: result.encargado.role,
         isActive: result.encargado.isActive,
       },
@@ -910,5 +986,204 @@ export class SuperAdminService {
     logs.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
     return logs.slice(0, 100);
+  }
+
+  // ==========================================
+  // 5. MEMBRESÍAS
+  // ==========================================
+
+  async createMembership(dto: CreateMembershipDto, createdBy: string) {
+    this.logger.log(
+      `[createMembership] Registrando membresía para negocio=${dto.businessId}, monto=${dto.amount} ${dto.currency || 'USD'}`,
+    );
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: dto.businessId },
+    });
+
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    const membership = await this.prisma.membership.create({
+      data: {
+        businessId: dto.businessId,
+        startDate: new Date(dto.startDate),
+        endDate: new Date(dto.endDate),
+        amount: dto.amount,
+        currency: dto.currency || 'USD',
+        paymentMethod: dto.paymentMethod || 'TRANSFERENCIA',
+        paidAt: dto.paidAt ? new Date(dto.paidAt) : new Date(),
+        notes: dto.notes,
+        status: dto.status || MembershipStatus.ACTIVE,
+        createdBy,
+      },
+      include: {
+        business: {
+          select: { id: true, name: true, logoUrl: true },
+        },
+      },
+    });
+
+    this.logger.log(`[createMembership] OK membresía creada id=${membership.id}`);
+    return membership;
+  }
+
+  async uploadPaymentProof(id: string, file: Express.Multer.File) {
+    this.logger.log(`[uploadPaymentProof] Subiendo comprobante para membresía id=${id}`);
+
+    const membership = await this.prisma.membership.findUnique({
+      where: { id },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('Membresía no encontrada');
+    }
+
+    if (!file) {
+      throw new BadRequestException('Archivo de comprobante no proporcionado');
+    }
+
+    const proofUrl = await this.uploadService.uploadPhoto(file, `memberships/${id}`);
+
+    const updated = await this.prisma.membership.update({
+      where: { id },
+      data: { paymentProofUrl: proofUrl },
+      include: {
+        business: {
+          select: { id: true, name: true, logoUrl: true },
+        },
+      },
+    });
+
+    this.logger.log(`[uploadPaymentProof] OK comprobante subido: ${proofUrl}`);
+
+    return {
+      url: proofUrl,
+      membership: updated,
+    };
+  }
+
+  async getMemberships(query: MembershipsQueryDto) {
+    this.logger.log(`[getMemberships] Filtros: ${JSON.stringify(query)}`);
+
+    const where: any = {};
+
+    if (query.businessId) {
+      where.businessId = query.businessId;
+    }
+
+    if (query.status) {
+      where.status = query.status;
+    }
+
+    if (query.expiringSoon === 'true' || query.expiringSoon === (true as any)) {
+      const now = new Date();
+      const inFiveDays = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000);
+      where.status = MembershipStatus.ACTIVE;
+      where.endDate = {
+        gte: now,
+        lte: inFiveDays,
+      };
+    }
+
+    const memberships = await this.prisma.membership.findMany({
+      where,
+      include: {
+        business: {
+          select: { id: true, name: true, logoUrl: true },
+        },
+      },
+      orderBy: { endDate: 'desc' },
+    });
+
+    return memberships;
+  }
+
+  async getExpiringMemberships() {
+    this.logger.log('[getExpiringMemberships] Obteniendo membresías que vencen en 7 días');
+
+    const now = new Date();
+    const inSevenDays = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    const expiring = await this.prisma.membership.findMany({
+      where: {
+        status: MembershipStatus.ACTIVE,
+        endDate: {
+          gte: now,
+          lte: inSevenDays,
+        },
+      },
+      include: {
+        business: {
+          select: { id: true, name: true, logoUrl: true },
+        },
+      },
+      orderBy: { endDate: 'asc' },
+    });
+
+    return expiring.map((m) => {
+      const daysLeft = Math.max(
+        0,
+        Math.ceil((m.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)),
+      );
+      return {
+        ...m,
+        daysLeft,
+      };
+    });
+  }
+
+  async updateMembership(id: string, dto: UpdateMembershipDto) {
+    this.logger.log(`[updateMembership] Actualizando membresía id=${id}`);
+
+    const membership = await this.prisma.membership.findUnique({
+      where: { id },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('Membresía no encontrada');
+    }
+
+    const updated = await this.prisma.membership.update({
+      where: { id },
+      data: {
+        ...(dto.startDate !== undefined && { startDate: new Date(dto.startDate) }),
+        ...(dto.endDate !== undefined && { endDate: new Date(dto.endDate) }),
+        ...(dto.amount !== undefined && { amount: dto.amount }),
+        ...(dto.currency !== undefined && { currency: dto.currency }),
+        ...(dto.paymentMethod !== undefined && { paymentMethod: dto.paymentMethod }),
+        ...(dto.paidAt !== undefined && { paidAt: new Date(dto.paidAt) }),
+        ...(dto.notes !== undefined && { notes: dto.notes }),
+        ...(dto.status !== undefined && { status: dto.status }),
+      },
+      include: {
+        business: {
+          select: { id: true, name: true, logoUrl: true },
+        },
+      },
+    });
+
+    this.logger.log(`[updateMembership] OK membresía actualizada id=${id}`);
+    return updated;
+  }
+
+  async getBusinessMemberships(businessId: string) {
+    this.logger.log(`[getBusinessMemberships] Obteniendo historial para businessId=${businessId}`);
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+    });
+
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    const memberships = await this.prisma.membership.findMany({
+      where: { businessId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return memberships;
   }
 }
