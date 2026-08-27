@@ -32,12 +32,8 @@ export class AuthController {
 
   @Post('refresh')
   @Public()
-  @UseGuards(JwtRefreshGuard)
-  async refresh(@CurrentUser() user: JwtPayload): Promise<TokenResponseDto> {
-    // El interceptor del header via guard asume que mandaron su token, en la req hay payload
-    // Pero como no guardamos el refresh token en db, simplemente generamos uno nuevo.
-    // Usamos dummy refresh token empty para cumplir con la firma o extraemos req.headers.authorization
-    return this.authService.refresh(user.sub, '');
+  async refresh(@Body() body: { refreshToken: string }): Promise<TokenResponseDto> {
+    return this.authService.refresh(body.refreshToken);
   }
 
   @Get('me')

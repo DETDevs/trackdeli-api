@@ -152,18 +152,19 @@ export class AuthService {
     }
   }
 
-  async refresh(userId: string, refreshToken: string): Promise<TokenResponseDto> {
+  async refresh(refreshToken: string): Promise<TokenResponseDto> {
     try {
       const decoded = this.jwtService.verify(refreshToken, {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       });
+
+      this.logger.log(`[refresh] Intento de refresh — userId=${decoded?.sub}`);
 
       const user = await this.prisma.user.findUnique({
         where: { id: decoded.sub },
       });
 
       if (!user || !user.isActive) {
-        this.logger.warn(`[refresh] WARN usuario inválido o inactivo: userId=${decoded.sub}`);
         throw new UnauthorizedException('Usuario no válido o inactivo');
       }
 
@@ -172,18 +173,19 @@ export class AuthService {
         email: user.email,
         role: user.role,
         businessId: user.businessId,
-          phone: user.phone,
-          vehicleType: user.vehicleType,
-          vehiclePlate: user.vehiclePlate,
-          vehicleColor: user.vehicleColor,
-          vehiclePhotoUrl: user.vehiclePhotoUrl,
-          profilePhotoUrl: user.profilePhotoUrl,
-          isAvailable: user.isAvailable,
+        phone: user.phone,
+        vehicleType: user.vehicleType,
+        vehiclePlate: user.vehiclePlate,
+        vehicleColor: user.vehicleColor,
+        vehiclePhotoUrl: user.vehiclePhotoUrl,
+        profilePhotoUrl: user.profilePhotoUrl,
+        isAvailable: user.isAvailable,
       };
 
       const tokens = this.generateTokens(payload);
       
-      this.logger.log(`[refresh] OK userId=${user.id}`);
+      this.logger.log(`[refresh] OK — userId=${user.id}, nuevos tokens generados`);
+      
       return {
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
@@ -203,7 +205,7 @@ export class AuthService {
         },
       };
     } catch (error) {
-      this.logger.warn(`[refresh] WARN token inválido para userId=${userId}`);
+      this.logger.warn(`[refresh] WARN — token inválido: ${error.message}`);
       throw new UnauthorizedException('Refresh token inválido o expirado');
     }
   }
