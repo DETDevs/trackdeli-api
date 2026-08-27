@@ -1,4 +1,5 @@
-import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber, IsEnum } from 'class-validator';
+import { PricingModel } from '@prisma/client';
 
 export class UpdateBusinessDto {
   @IsString()
@@ -32,4 +33,33 @@ export class UpdateBusinessDto {
   @Min(-180)
   @Max(180)
   longitude?: number;
+
+  @IsOptional()
+  @IsEnum(PricingModel)
+  pricingModel?: PricingModel;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  baseRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  ratePerKm?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  freeZoneKm?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  minRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  maxRate?: number;
 }

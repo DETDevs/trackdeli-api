@@ -11,6 +11,7 @@ import { TrackingModule } from './modules/tracking/tracking.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { RatingsModule } from './modules/ratings/ratings.module';
+import { SuperAdminModule } from './modules/superadmin/superadmin.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -29,6 +30,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     NotificationsModule,
     UploadModule,
     RatingsModule,
+    SuperAdminModule,
   ],
   providers: [
     {

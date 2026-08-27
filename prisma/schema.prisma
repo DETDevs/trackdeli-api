@@ -45,15 +45,31 @@ enum VehicleType {
   A_PIE
 }
 
+enum PricingModel {
+  FIXED
+  PER_KM
+  FREE
+}
+
 model Business {
-  id                     String   @id @default(uuid())
-  name                   String   @db.VarChar(100)
-  type                   String?  @db.VarChar(50)
-  logoUrl                String?  @db.VarChar(500)
-  defaultGeofenceRadiusM Int      @default(100)
+  id                     String       @id @default(uuid())
+  name                   String       @db.VarChar(100)
+  type                   String?      @db.VarChar(50)
+  logoUrl                String?      @db.VarChar(500)
+  defaultGeofenceRadiusM Int          @default(100)
   latitude               Float?
   longitude              Float?
-  createdAt              DateTime @default(now())
+  isActive               Boolean      @default(true)
+
+  // Modelo de precios
+  pricingModel           PricingModel @default(FIXED)
+  baseRate               Float        @default(0)
+  ratePerKm              Float        @default(0)
+  freeZoneKm             Float        @default(0)
+  minRate                Float        @default(0)
+  maxRate                Float        @default(0)
+
+  createdAt              DateTime     @default(now())
 
   users  User[]
   orders Order[]
@@ -113,6 +129,7 @@ model Order {
 
   deliveryPaymentStatus DeliveryPaymentStatus @default(GRATIS)
   deliveryFee           Decimal               @default(0) @db.Decimal(10, 2)
+  distanceKm            Float                 @default(0)
 
   deliveryConfirmationUrl String?             @db.VarChar(500)
   signatureUrl            String?             @db.VarChar(500)

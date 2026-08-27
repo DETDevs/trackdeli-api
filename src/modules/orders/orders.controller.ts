@@ -23,6 +23,16 @@ export class OrdersController {
     return this.service.findAllByBusiness(user.businessId, user.sub, user.role, { status, latitude, longitude });
   }
 
+  @Get('calculate-fee')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  calculateFee(
+    @Query('destLat') destLat: string,
+    @Query('destLng') destLng: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.calculateFee(parseFloat(destLat), parseFloat(destLng), user.businessId);
+  }
+
   @Get(':id')
   @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR, UserRole.SUPERADMIN)
   findOne(@Param('id') id: string, @CurrentUser() user: JwtPayload) {

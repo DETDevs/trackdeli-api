@@ -19,6 +19,13 @@ export class BusinessesService {
       defaultGeofenceRadiusM: business.defaultGeofenceRadiusM,
       latitude: business.latitude,
       longitude: business.longitude,
+      isActive: business.isActive,
+      pricingModel: business.pricingModel,
+      baseRate: business.baseRate,
+      ratePerKm: business.ratePerKm,
+      freeZoneKm: business.freeZoneKm,
+      minRate: business.minRate,
+      maxRate: business.maxRate,
       createdAt: business.createdAt,
     };
   }
@@ -53,6 +60,12 @@ export class BusinessesService {
         ...(dto.defaultGeofenceRadiusM !== undefined && { defaultGeofenceRadiusM: dto.defaultGeofenceRadiusM }),
         ...(dto.latitude !== undefined && { latitude: dto.latitude }),
         ...(dto.longitude !== undefined && { longitude: dto.longitude }),
+        ...(dto.pricingModel !== undefined && { pricingModel: dto.pricingModel }),
+        ...(dto.baseRate !== undefined && { baseRate: dto.baseRate }),
+        ...(dto.ratePerKm !== undefined && { ratePerKm: dto.ratePerKm }),
+        ...(dto.freeZoneKm !== undefined && { freeZoneKm: dto.freeZoneKm }),
+        ...(dto.minRate !== undefined && { minRate: dto.minRate }),
+        ...(dto.maxRate !== undefined && { maxRate: dto.maxRate }),
       },
     });
 

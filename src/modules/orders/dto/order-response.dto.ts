@@ -13,6 +13,7 @@ export class OrderResponseDto {
   description: string | null;
   deliveryPaymentStatus: DeliveryPaymentStatus;
   deliveryFee: number;
+  distanceKm: number;
   deliveryUser: {
     id: string;
     name: string;

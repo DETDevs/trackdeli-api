@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { calculateDeliveryFee } from '../../common/utils/pricing.util';
 
 @Injectable()
 export class OrdersService {
@@ -38,6 +39,7 @@ export class OrdersService {
       description: order.description,
       deliveryPaymentStatus: order.deliveryPaymentStatus,
       deliveryFee: Number(order.deliveryFee),
+      distanceKm: Number(order.distanceKm || 0),
       deliveryUser: order.deliveryUser ? {
         id: order.deliveryUser.id,
         name: order.deliveryUser.name,
@@ -58,6 +60,34 @@ export class OrdersService {
     };
   }
 
+  async calculateFee(destLat: number, destLng: number, businessId: string | null) {
+    if (!businessId) {
+      throw new BadRequestException('El usuario no tiene negocio asociado');
+    }
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+    });
+
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    const result = calculateDeliveryFee(
+      business,
+      destLat,
+      destLng,
+    );
+
+    return {
+      fee: result.fee,
+      distanceKm: result.distanceKm,
+      breakdown: result.breakdown,
+      pricingModel: business.pricingModel,
+      currency: 'NIO',
+    };
+  }
+
   async create(dto: CreateOrderDto, createdBy: string, businessId: string): Promise<OrderResponseDto> {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
@@ -65,6 +95,37 @@ export class OrdersService {
 
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
+    }
+
+    let deliveryFee = dto.deliveryFee;
+    let distanceKm = 0;
+
+    if (
+      (deliveryFee === undefined || deliveryFee === null) &&
+      dto.destinationLat &&
+      dto.destinationLng
+    ) {
+      const pricing = calculateDeliveryFee(
+        business,
+        dto.destinationLat,
+        dto.destinationLng,
+      );
+      deliveryFee = pricing.fee;
+      distanceKm = pricing.distanceKm;
+
+      this.logger.log(
+        `[create] Tarifa calculada automáticamente: C$${deliveryFee} (${distanceKm} km) — ${pricing.breakdown}`,
+      );
+    } else if (dto.destinationLat && dto.destinationLng && business.latitude && business.longitude) {
+      const pricing = calculateDeliveryFee(
+        business,
+        dto.destinationLat,
+        dto.destinationLng,
+      );
+      distanceKm = pricing.distanceKm;
+      deliveryFee = deliveryFee ?? 0;
+    } else {
+      deliveryFee = deliveryFee ?? 0;
     }
 
     const order = await this.prisma.order.create({
@@ -77,7 +138,8 @@ export class OrdersService {
         geofenceRadiusM: business.defaultGeofenceRadiusM,
         description: dto.description,
         deliveryPaymentStatus: dto.deliveryPaymentStatus,
-        deliveryFee: dto.deliveryFee || 0,
+        deliveryFee,
+        distanceKm,
         status: OrderStatus.PENDIENTE,
         businessId,
         createdBy,
@@ -88,7 +150,7 @@ export class OrdersService {
       },
     });
 
-    this.logger.log(`[create] OK pedido creado: id=${order.id}, cliente=${dto.customerName}, negocio=${businessId}`);
+    this.logger.log(`[create] OK pedido creado: id=${order.id}, cliente=${dto.customerName}, negocio=${businessId}, tarifa=C$${deliveryFee}`);
 
     const repartidores = await this.prisma.user.findMany({
       where: { businessId, role: 'REPARTIDOR', isActive: true },
