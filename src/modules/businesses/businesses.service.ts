@@ -26,7 +26,7 @@ export class BusinessesService {
       freeZoneKm: business.freeZoneKm,
       minRate: business.minRate,
       maxRate: business.maxRate,
-      pricingZones: (business.pricingZones as any) || null,
+      pricingZones: (business as any).pricingZones ?? null,
       createdAt: business.createdAt,
     };
   }

@@ -137,7 +137,7 @@ export class SuperAdminService {
         freeZoneKm: b.freeZoneKm,
         minRate: b.minRate,
         maxRate: b.maxRate,
-        pricingZones: (b.pricingZones as any) || null,
+        pricingZones: (b as any).pricingZones ?? null,
         createdAt: b.createdAt,
         _count: {
           orders: b._count.orders,
@@ -261,7 +261,7 @@ export class SuperAdminService {
       freeZoneKm: business.freeZoneKm,
       minRate: business.minRate,
       maxRate: business.maxRate,
-      pricingZones: (business.pricingZones as any) || null,
+      pricingZones: (business as any).pricingZones ?? null,
       createdAt: business.createdAt,
       encargados: business.users,
       riders,
