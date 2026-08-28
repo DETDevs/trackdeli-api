@@ -12,6 +12,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { UploadModule } from './modules/upload/upload.module';
 import { RatingsModule } from './modules/ratings/ratings.module';
 import { SuperAdminModule } from './modules/superadmin/superadmin.module';
+import { PosModule } from './modules/pos/pos.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MembershipGuard } from './common/guards/membership.guard';
@@ -32,6 +33,7 @@ import { MembershipGuard } from './common/guards/membership.guard';
     UploadModule,
     RatingsModule,
     SuperAdminModule,
+    PosModule,
   ],
   providers: [
     {

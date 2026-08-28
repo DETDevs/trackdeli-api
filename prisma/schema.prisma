@@ -66,6 +66,41 @@ enum MembershipStatus {
   PENDING
 }
 
+// ─── POS ENUMS ───
+
+enum PosPaymentMethod {
+  EFECTIVO
+  TARJETA
+  TRANSFERENCIA
+  CREDITO
+  MIXTO
+}
+
+enum SaleStatus {
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum CashStatus {
+  OPEN
+  CLOSED
+}
+
+enum MovementType {
+  ENTRADA
+  SALIDA
+}
+
+enum StockMovementType {
+  COMPRA
+  VENTA
+  AJUSTE
+  DEVOLUCION
+  PERDIDA
+  TRASLADO
+}
+
 model Business {
   id                     String       @id @default(uuid())
   name                   String       @db.VarChar(100)
@@ -76,7 +111,11 @@ model Business {
   longitude              Float?
   isActive               Boolean      @default(true)
 
-  // Modelo de precios
+  // Módulos activos
+  hasTrackDeli           Boolean      @default(true)
+  hasPOS                 Boolean      @default(false)
+
+  // Modelo de precios (TrackDeli)
   pricingModel           PricingModel @default(FIXED)
   baseRate               Float        @default(0)
   ratePerKm              Float        @default(0)
@@ -89,11 +128,29 @@ model Business {
   whatsappNumber         String?      @db.VarChar(20)
   whatsappDisplay        String?      @db.VarChar(30)
 
+  // Configuración del POS
+  taxRate                Float        @default(0)
+  currency               String       @default("NIO") @db.VarChar(10)
+  invoicePrefix          String       @default("FAC") @db.VarChar(10)
+  invoiceCounter         Int          @default(1)
+  posAddress             String?      @db.VarChar(300)
+  posPhone               String?      @db.VarChar(30)
+  posFooter              String?      @db.VarChar(200)
+
   createdAt              DateTime     @default(now())
 
+  // TrackDeli relations
   users       User[]
   orders      Order[]
   memberships Membership[]
+
+  // POS relations
+  categories      Category[]
+  suppliers       Supplier[]
+  products        Product[]
+  sales           Sale[]
+  cashRegisters   CashRegister[]
+  cashMovements   CashMovement[]
 
   @@map("businesses")
 }
@@ -147,12 +204,19 @@ model User {
   
   createdAt    DateTime @default(now())
 
-  business              Business?      @relation(fields: [businessId], references: [id])
-  createdOrders         Order[]        @relation("OrderCreatedBy")
-  deliveredOrders       Order[]        @relation("OrderDeliveredBy")
+  // TrackDeli relations
+  business              Business?       @relation(fields: [businessId], references: [id])
+  createdOrders         Order[]         @relation("OrderCreatedBy")
+  deliveredOrders       Order[]         @relation("OrderDeliveredBy")
   locationSnapshots     LocationSnapshot[]
   notifications         Notification[]
   deviceTokens          DeviceToken[]
+
+  // POS relations
+  sales          Sale[]          @relation("CashierSales")
+  cashRegisters  CashRegister[]  @relation("CashierRegisters")
+  cashMovements  CashMovement[]  @relation("UserMovements")
+  stockMovements StockMovement[] @relation("UserStockMovements")
 
   @@map("users")
 }
@@ -273,11 +337,208 @@ model DeviceToken {
   id        String   @id @default(uuid())
   userId    String
   token     String   @unique
-  platform  String   @db.VarChar(10)  // 'android' | 'ios'
+  platform  String   @db.VarChar(10)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id])
 
   @@map("device_tokens")
+}
+
+// ═══════════════════════════════════════════════
+// POS MODELS
+// ═══════════════════════════════════════════════
+
+model Category {
+  id         String    @id @default(uuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id])
+  name       String    @db.VarChar(100)
+  color      String?   @db.VarChar(10)
+  icon       String?   @db.VarChar(50)
+  isActive   Boolean   @default(true)
+  products   Product[]
+  createdAt  DateTime  @default(now())
+
+  @@unique([businessId, name])
+  @@map("pos_categories")
+}
+
+model Supplier {
+  id         String    @id @default(uuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id])
+  name       String    @db.VarChar(100)
+  phone      String?   @db.VarChar(30)
+  email      String?   @db.VarChar(150)
+  address    String?   @db.VarChar(300)
+  notes      String?
+  isActive   Boolean   @default(true)
+  products   Product[]
+  createdAt  DateTime  @default(now())
+
+  @@map("pos_suppliers")
+}
+
+model Product {
+  id          String    @id @default(uuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id])
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id])
+  supplierId  String?
+  supplier    Supplier? @relation(fields: [supplierId], references: [id])
+
+  name        String    @db.VarChar(200)
+  description String?
+  barcode     String?   @db.VarChar(50)
+  sku         String?   @db.VarChar(50)
+  imageUrl    String?   @db.VarChar(500)
+
+  price       Float
+  cost        Float?
+  taxIncluded Boolean   @default(true)
+
+  trackStock  Boolean   @default(true)
+  stock       Int       @default(0)
+  minStock    Int       @default(5)
+  maxStock    Int?
+
+  isActive    Boolean   @default(true)
+
+  saleItems      SaleItem[]
+  stockMovements StockMovement[]
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([businessId, barcode])
+  @@unique([businessId, sku])
+  @@map("pos_products")
+}
+
+model Sale {
+  id             String           @id @default(uuid())
+  businessId     String
+  business       Business         @relation(fields: [businessId], references: [id])
+  cashRegisterId String?
+  cashRegister   CashRegister?    @relation(fields: [cashRegisterId], references: [id])
+  cashierId      String
+  cashier        User             @relation("CashierSales", fields: [cashierId], references: [id])
+
+  invoiceNumber  String           @db.VarChar(30)
+  invoiceDate    DateTime         @default(now())
+
+  customerName   String?          @db.VarChar(100)
+  customerPhone  String?          @db.VarChar(30)
+  customerRuc    String?          @db.VarChar(30)
+
+  items          SaleItem[]
+
+  subtotal       Float
+  discountAmount Float            @default(0)
+  taxAmount      Float            @default(0)
+  total          Float
+
+  paymentMethod  PosPaymentMethod @default(EFECTIVO)
+  amountPaid     Float
+  change         Float            @default(0)
+  reference      String?          @db.VarChar(100)
+
+  status         SaleStatus       @default(COMPLETED)
+  notes          String?
+  printCount     Int              @default(0)
+
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@map("pos_sales")
+}
+
+model SaleItem {
+  id          String   @id @default(uuid())
+  saleId      String
+  sale        Sale     @relation(fields: [saleId], references: [id])
+  productId   String?
+  product     Product? @relation(fields: [productId], references: [id])
+
+  productName String   @db.VarChar(200)
+  barcode     String?  @db.VarChar(50)
+  unitPrice   Float
+  quantity    Float
+  discount    Float    @default(0)
+  subtotal    Float
+
+  @@map("pos_sale_items")
+}
+
+model CashRegister {
+  id            String     @id @default(uuid())
+  businessId    String
+  business      Business   @relation(fields: [businessId], references: [id])
+  cashierId     String
+  cashier       User       @relation("CashierRegisters", fields: [cashierId], references: [id])
+
+  openedAt      DateTime   @default(now())
+  closedAt      DateTime?
+
+  openingCash   Float
+  closingCash   Float?
+  expectedCash  Float?
+  difference    Float?
+
+  totalSales    Float?
+  totalCash     Float?
+  totalCard     Float?
+  totalTransfer Float?
+
+  notes         String?
+  status        CashStatus @default(OPEN)
+
+  sales         Sale[]
+  movements     CashMovement[]
+
+  createdAt     DateTime   @default(now())
+
+  @@map("pos_cash_registers")
+}
+
+model CashMovement {
+  id             String       @id @default(uuid())
+  businessId     String
+  business       Business     @relation(fields: [businessId], references: [id])
+  cashRegisterId String
+  cashRegister   CashRegister @relation(fields: [cashRegisterId], references: [id])
+  userId         String
+  user           User         @relation("UserMovements", fields: [userId], references: [id])
+
+  type           MovementType
+  amount         Float
+  concept        String       @db.VarChar(300)
+
+  createdAt      DateTime     @default(now())
+
+  @@map("pos_cash_movements")
+}
+
+model StockMovement {
+  id          String            @id @default(uuid())
+  businessId  String
+  productId   String
+  product     Product           @relation(fields: [productId], references: [id])
+  userId      String
+  user        User              @relation("UserStockMovements", fields: [userId], references: [id])
+
+  type        StockMovementType
+  quantity    Int
+  stockBefore Int
+  stockAfter  Int
+  cost        Float?
+  concept     String            @db.VarChar(300)
+  reference   String?           @db.VarChar(100)
+
+  createdAt   DateTime          @default(now())
+
+  @@map("pos_stock_movements")
 }
