@@ -104,7 +104,15 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
               },
             },
             business: {
-              select: { latitude: true, longitude: true, name: true },
+              select: {
+                id: true,
+                latitude: true,
+                longitude: true,
+                name: true,
+                logoUrl: true,
+                whatsappNumber: true,
+                whatsappDisplay: true,
+              },
             },
             photos: {
               where: { type: 'ARMADO' },

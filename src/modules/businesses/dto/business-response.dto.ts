@@ -16,5 +16,7 @@ export class BusinessResponseDto {
   minRate: number;
   maxRate: number;
   pricingZones?: Array<{ id?: string; name: string; price: number }> | null;
+  whatsappNumber?: string | null;
+  whatsappDisplay?: string | null;
   createdAt: Date;
 }

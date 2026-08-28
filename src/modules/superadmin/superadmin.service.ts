@@ -51,7 +51,7 @@ export class SuperAdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
-  ) {}
+  ) { }
 
   // ==========================================
   // 1. NEGOCIOS
@@ -114,7 +114,7 @@ export class SuperAdminService {
             0,
             Math.ceil(
               (latestMembership.endDate.getTime() - now.getTime()) /
-                (1000 * 60 * 60 * 24),
+              (1000 * 60 * 60 * 24),
             ),
           );
         } else {
@@ -138,6 +138,8 @@ export class SuperAdminService {
         minRate: b.minRate,
         maxRate: b.maxRate,
         pricingZones: (b as any).pricingZones ?? null,
+        whatsappNumber: (b as any).whatsappNumber ?? null,
+        whatsappDisplay: (b as any).whatsappDisplay ?? null,
         createdAt: b.createdAt,
         _count: {
           orders: b._count.orders,
@@ -262,6 +264,8 @@ export class SuperAdminService {
       minRate: business.minRate,
       maxRate: business.maxRate,
       pricingZones: (business as any).pricingZones ?? null,
+      whatsappNumber: (business as any).whatsappNumber ?? null,
+      whatsappDisplay: (business as any).whatsappDisplay ?? null,
       createdAt: business.createdAt,
       encargados: business.users,
       riders,
@@ -349,6 +353,8 @@ export class SuperAdminService {
         data: {
           name: dto.name,
           type: dto.type || null,
+          whatsappNumber: dto.whatsappNumber || null,
+          whatsappDisplay: dto.whatsappDisplay || null,
           isActive: true,
         },
       });
@@ -448,10 +454,10 @@ export class SuperAdminService {
       const averageRating =
         ratings.length > 0
           ? Number(
-              (ratings.reduce((acc, curr) => acc + curr, 0) / ratings.length).toFixed(
-                1,
-              ),
-            )
+            (ratings.reduce((acc, curr) => acc + curr, 0) / ratings.length).toFixed(
+              1,
+            ),
+          )
           : null;
 
       const lastDeliveryAt = r.deliveredOrders[0]?.deliveredAt || null;
@@ -556,11 +562,11 @@ export class SuperAdminService {
       lastLocationAt: r.lastLocationAt,
       currentOrder: r.deliveredOrders[0]
         ? {
-            id: r.deliveredOrders[0].id,
-            status: r.deliveredOrders[0].status,
-            customerName: r.deliveredOrders[0].customerName,
-            businessName: r.deliveredOrders[0].business.name,
-          }
+          id: r.deliveredOrders[0].id,
+          status: r.deliveredOrders[0].status,
+          customerName: r.deliveredOrders[0].customerName,
+          businessName: r.deliveredOrders[0].business.name,
+        }
         : null,
     }));
   }
@@ -906,12 +912,12 @@ export class SuperAdminService {
     const logs: Array<{
       id: string;
       type:
-        | 'ORDER_CREATED'
-        | 'ORDER_DELIVERED'
-        | 'ORDER_CANCELLED'
-        | 'RIDER_REGISTERED'
-        | 'BUSINESS_CREATED'
-        | 'INCIDENCIA';
+      | 'ORDER_CREATED'
+      | 'ORDER_DELIVERED'
+      | 'ORDER_CANCELLED'
+      | 'RIDER_REGISTERED'
+      | 'BUSINESS_CREATED'
+      | 'INCIDENCIA';
       description: string;
       businessName: string | null;
       riderName: string | null;

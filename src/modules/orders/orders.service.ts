@@ -56,6 +56,8 @@ export class OrdersService {
         latitude: order.business.latitude ? Number(order.business.latitude) : null,
         longitude: order.business.longitude ? Number(order.business.longitude) : null,
         logoUrl: order.business.logoUrl,
+        whatsappNumber: (order.business as any).whatsappNumber ?? null,
+        whatsappDisplay: (order.business as any).whatsappDisplay ?? null,
       } : undefined,
     };
   }
@@ -208,15 +210,23 @@ export class OrdersService {
         deliveryUser: true,
         photos: true,
         business: {
-          select: { id: true, name: true, latitude: true, longitude: true, logoUrl: true }
-        }
+          select: {
+            id: true,
+            name: true,
+            latitude: true,
+            longitude: true,
+            logoUrl: true,
+            whatsappNumber: true,
+            whatsappDisplay: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take: (!businessId && role === UserRole.REPARTIDOR) ? 20 : undefined,
     });
 
     if (role === UserRole.REPARTIDOR && !businessId && filters?.latitude && filters?.longitude) {
-      const radiusKm = 10; // Defaulting to 10 for simplicity without messing up DI config if not there
+      const radiusKm = 10;
       orders = orders.filter(order => {
         if (!order.business?.latitude || !order.business?.longitude) return true;
         const dist = this.trackingService.calculateDistance(
@@ -241,8 +251,16 @@ export class OrdersService {
         deliveryUser: true,
         photos: true,
         business: {
-          select: { id: true, name: true, latitude: true, longitude: true, logoUrl: true }
-        }
+          select: {
+            id: true,
+            name: true,
+            latitude: true,
+            longitude: true,
+            logoUrl: true,
+            whatsappNumber: true,
+            whatsappDisplay: true,
+          },
+        },
       },
     });
 
@@ -390,27 +408,29 @@ export class OrdersService {
       updateData.pickedUpAt = new Date();
     }
     
-    // Notes or incidence logic goes here (create notification or incidence log in future)
-    // For now we just update the status
-
     await this.prisma.order.update({
       where: { id: orderId },
       data: updateData,
     });
 
     if (dto.status === OrderStatus.EN_CAMINO) {
-      const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
-      const expiresAt = new Date();
-      expiresAt.setHours(expiresAt.getHours() + 12);
-
-      await this.prisma.trackingSession.create({
-        data: {
-          orderId,
-          token,
-          expiresAt,
-        },
+      let trackingSession = await this.prisma.trackingSession.findUnique({
+        where: { orderId },
       });
-      this.logger.log(`[Orders] Sesión de tracking generada para pedido en camino: orderId=${orderId}, token=${token}`);
+
+      if (!trackingSession) {
+        const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
+        const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48h
+
+        trackingSession = await this.prisma.trackingSession.create({
+          data: {
+            orderId,
+            token,
+            expiresAt,
+          },
+        });
+        this.logger.log(`[Orders] Sesión de tracking generada para pedido en camino: orderId=${orderId}, token=${token}`);
+      }
     }
 
     this.trackingGateway.emitOrderStatusChange(orderId, dto.status);
@@ -495,7 +515,6 @@ export class OrdersService {
       throw new BadRequestException('Estado inválido');
     }
 
-    // Cerrado es solo sistema (ejemplo, despues de calificar)
     if (next === OrderStatus.CERRADO) {
        throw new ForbiddenException('No se puede cerrar manualmente');
     }
@@ -508,10 +527,8 @@ export class OrdersService {
       throw new BadRequestException('Transición de estado no permitida');
     }
 
-    // Role specific transition checks
     if (next === OrderStatus.ACEPTADO && role !== UserRole.REPARTIDOR) {
       throw new ForbiddenException('Solo repartidores pueden tomar pedidos');
     }
   }
 }
-

@@ -27,6 +27,8 @@ export class BusinessesService {
       minRate: business.minRate,
       maxRate: business.maxRate,
       pricingZones: (business as any).pricingZones ?? null,
+      whatsappNumber: (business as any).whatsappNumber ?? null,
+      whatsappDisplay: (business as any).whatsappDisplay ?? null,
       createdAt: business.createdAt,
     };
   }
@@ -68,6 +70,8 @@ export class BusinessesService {
         ...(dto.minRate !== undefined && { minRate: dto.minRate }),
         ...(dto.maxRate !== undefined && { maxRate: dto.maxRate }),
         ...(dto.pricingZones !== undefined && { pricingZones: dto.pricingZones as any }),
+        ...(dto.whatsappNumber !== undefined && { whatsappNumber: dto.whatsappNumber }),
+        ...(dto.whatsappDisplay !== undefined && { whatsappDisplay: dto.whatsappDisplay }),
       },
     });
 

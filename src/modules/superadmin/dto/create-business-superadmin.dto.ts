@@ -24,6 +24,14 @@ export class CreateBusinessSuperAdminDto {
   @IsOptional()
   type?: string;
 
+  @IsString()
+  @IsOptional()
+  whatsappNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  whatsappDisplay?: string;
+
   @IsObject()
   @IsOptional()
   @ValidateNested()

@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber, IsEnum } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber, IsEnum, Matches } from 'class-validator';
 import { PricingModel } from '@prisma/client';
 
 export class UpdateBusinessDto {
@@ -65,4 +65,15 @@ export class UpdateBusinessDto {
 
   @IsOptional()
   pricingZones?: Array<{ id?: string; name: string; price: number }>;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^[0-9]{10,15}$/, {
+    message: 'El número de WhatsApp debe tener entre 10 y 15 dígitos, sin espacios ni símbolos',
+  })
+  whatsappNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  whatsappDisplay?: string;
 }

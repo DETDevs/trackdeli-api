@@ -35,5 +35,7 @@ export class OrderResponseDto {
     latitude: number | null;
     longitude: number | null;
     logoUrl: string | null;
+    whatsappNumber?: string | null;
+    whatsappDisplay?: string | null;
   };
 }

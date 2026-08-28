@@ -85,6 +85,10 @@ model Business {
   maxRate                Float        @default(0)
   pricingZones           Json?
 
+  // Contacto del negocio
+  whatsappNumber         String?      @db.VarChar(20)
+  whatsappDisplay        String?      @db.VarChar(30)
+
   createdAt              DateTime     @default(now())
 
   users       User[]
