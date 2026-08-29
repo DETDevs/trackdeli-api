@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -102,6 +102,30 @@ export class OrdersController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.service.sendQuoteMessage(orderId, quoteId, user.sub, user.role, user.businessId, dto);
+  }
+
+  @Patch(':id/quotes/:quoteId')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.REPARTIDOR)
+  updateQuoteFeeDirect(
+    @Param('id') orderId: string,
+    @Param('quoteId') quoteId: string,
+    @Body() dto: UpdateQuoteFeeDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.updateQuoteFee(orderId, quoteId, user.sub, dto);
+  }
+
+  @Put(':id/quotes/:quoteId')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.REPARTIDOR)
+  updateQuoteFeeDirectPut(
+    @Param('id') orderId: string,
+    @Param('quoteId') quoteId: string,
+    @Body() dto: UpdateQuoteFeeDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.updateQuoteFee(orderId, quoteId, user.sub, dto);
   }
 
   @Patch(':id/quotes/:quoteId/update-fee')

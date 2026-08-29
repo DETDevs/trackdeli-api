@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
 } from '@nestjs/common';
 import { QuotesService } from './quotes.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
@@ -71,6 +72,28 @@ export class QuotesController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.quotesService.counterQuote(quoteId, dto, user.sub, user.businessId!);
+  }
+
+  @Patch(':id')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.REPARTIDOR)
+  updateFeeDirect(
+    @Param('id') quoteId: string,
+    @Body() dto: UpdateQuoteFeeDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.quotesService.updateFee(quoteId, dto, user.sub);
+  }
+
+  @Put(':id')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.REPARTIDOR)
+  updateFeePut(
+    @Param('id') quoteId: string,
+    @Body() dto: UpdateQuoteFeeDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.quotesService.updateFee(quoteId, dto, user.sub);
   }
 
   @Patch(':id/update-fee')
