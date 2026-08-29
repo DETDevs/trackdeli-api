@@ -55,9 +55,10 @@ enum VehicleType {
 }
 
 enum PricingModel {
+  FREE
   FIXED
   PER_KM
-  FREE
+  RIDER_QUOTE
 }
 
 enum PaymentMethod {

@@ -54,6 +54,11 @@ export function calculateDeliveryFee(
       breakdown = 'Envío gratis';
       break;
 
+    case PricingModel.RIDER_QUOTE:
+      fee = 0;
+      breakdown = 'Propuesta de repartidor (tarifa a negociar)';
+      break;
+
     case PricingModel.FIXED:
       fee = business.baseRate;
       breakdown = `Tarifa fija: C$${fee.toFixed(2)}`;
