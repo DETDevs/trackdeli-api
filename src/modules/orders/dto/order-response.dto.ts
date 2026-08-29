@@ -27,6 +27,7 @@ export class OrderResponseDto {
     createdAt: Date;
   }[];
   trackingToken: string | null;
+  trackingUrl?: string | null;
   createdAt: Date;
   takenAt: Date | null;
   deliveredAt: Date | null;

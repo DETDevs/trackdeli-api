@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -19,12 +20,17 @@ export class OrdersService {
     private readonly trackingGateway: TrackingGateway,
     private readonly trackingService: TrackingService,
     private readonly notificationsService: NotificationsService,
+    private readonly configService: ConfigService,
   ) {}
 
   private async toResponseDto(order: any): Promise<OrderResponseDto> {
     const trackingSession = await this.prisma.trackingSession.findUnique({
       where: { orderId: order.id },
     });
+
+    const trackingBaseUrl =
+      this.configService.get<string>('TRACKING_URL') ||
+      'https://trackdeli-web-tracking.vercel.app';
 
     return {
       id: order.id,
@@ -48,6 +54,9 @@ export class OrdersService {
       } : null,
       photos: order.photos || [],
       trackingToken: trackingSession ? trackingSession.token : null,
+      trackingUrl: trackingSession
+        ? `${trackingBaseUrl}/track/${trackingSession.token}`
+        : null,
       createdAt: order.createdAt,
       takenAt: order.takenAt,
       deliveredAt: order.deliveredAt,

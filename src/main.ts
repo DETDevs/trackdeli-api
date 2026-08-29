@@ -16,11 +16,16 @@ async function bootstrap() {
   
   // CORS dynamic from env
   const corsOrigins = configService.get<string>('CORS_ORIGINS');
-  const originsArray = corsOrigins ? corsOrigins.split(',') : [];
-  
+  const originsArray = corsOrigins
+    ? corsOrigins
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean)
+    : [];
+
   app.enableCors({
-    origin: originsArray.length > 0 ? originsArray : '*',
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    origin: originsArray.length > 0 ? originsArray : true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true,
   });
 

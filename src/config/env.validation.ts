@@ -22,4 +22,5 @@ export const envValidationSchema = Joi.object({
   FIREBASE_PRIVATE_KEY: Joi.string().optional().allow(''),
   MAPBOX_ACCESS_TOKEN: Joi.string().optional().allow(''),
   CORS_ORIGINS: Joi.string().required(),
+  TRACKING_URL: Joi.string().optional().default('https://trackdeli-web-tracking.vercel.app'),
 });
