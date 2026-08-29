@@ -30,13 +30,25 @@ export class QuotesController {
     return this.quotesService.createQuote(dto, user.sub);
   }
 
+  @Get('my-quotes')
+  @Roles(UserRole.REPARTIDOR)
+  getMyQuotes(@CurrentUser() user: JwtPayload) {
+    return this.quotesService.getMyQuotes(user.sub);
+  }
+
+  @Get()
+  @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR, UserRole.SUPERADMIN)
+  getQuotes(@CurrentUser() user: JwtPayload) {
+    return this.quotesService.getQuotes(user.sub, user.role, user.businessId);
+  }
+
   @Get('order/:orderId')
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR, UserRole.SUPERADMIN)
   getQuotesByOrder(
     @Param('orderId') orderId: string,
     @CurrentUser() user: JwtPayload,
   ) {
-    return this.quotesService.getQuotesByOrder(orderId, user.businessId, user.role);
+    return this.quotesService.getQuotesByOrder(orderId, user.businessId, user.sub, user.role);
   }
 
   @Post(':id/accept')

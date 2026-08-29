@@ -1,4 +1,4 @@
-﻿import {
+import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -122,7 +122,92 @@ export class QuotesService {
     return quote;
   }
 
-  async getQuotesByOrder(orderId: string, businessId: string | null, userRole: UserRole) {
+  async getMyQuotes(riderId: string) {
+    return this.prisma.orderQuote.findMany({
+      where: {
+        riderId,
+        status: { in: [QuoteStatus.PENDING, QuoteStatus.NEGOTIATING] },
+      },
+      include: {
+        order: {
+          select: {
+            id: true,
+            status: true,
+            customerName: true,
+            destinationAddress: true,
+            business: {
+              select: { name: true, latitude: true, longitude: true },
+            },
+          },
+        },
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async getQuotes(userId: string, userRole: UserRole, businessId: string | null) {
+    if (userRole === UserRole.REPARTIDOR) {
+      return this.prisma.orderQuote.findMany({
+        where: {
+          riderId: userId,
+          status: { notIn: [QuoteStatus.CANCELLED, QuoteStatus.REJECTED] },
+        },
+        include: {
+          order: {
+            select: {
+              id: true,
+              status: true,
+              customerName: true,
+              destinationAddress: true,
+              business: { select: { name: true, latitude: true, longitude: true } },
+            },
+          },
+          messages: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+
+    if (userRole === UserRole.ENCARGADO) {
+      return this.prisma.orderQuote.findMany({
+        where: {
+          order: { businessId: businessId! },
+          status: { notIn: [QuoteStatus.CANCELLED] },
+        },
+        include: {
+          rider: { select: { id: true, name: true, vehicleType: true, profilePhotoUrl: true } },
+          order: { select: { id: true, customerName: true, status: true, destinationAddress: true } },
+          messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+
+    if (userRole === UserRole.SUPERADMIN) {
+      return this.prisma.orderQuote.findMany({
+        where: {
+          status: { notIn: [QuoteStatus.CANCELLED] },
+        },
+        include: {
+          rider: { select: { id: true, name: true, vehicleType: true } },
+          order: { select: { id: true, customerName: true, status: true, business: { select: { name: true } } } },
+          messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+
+    throw new ForbiddenException();
+  }
+
+  async getQuotesByOrder(orderId: string, businessId: string | null, userId: string, userRole: UserRole) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
     });
@@ -133,6 +218,42 @@ export class QuotesService {
 
     if (userRole === UserRole.ENCARGADO && order.businessId !== businessId) {
       throw new ForbiddenException('Sin acceso a las propuestas de este negocio');
+    }
+
+    if (userRole === UserRole.REPARTIDOR) {
+      const myQuote = await this.prisma.orderQuote.findFirst({
+        where: { orderId, riderId: userId, status: { not: QuoteStatus.CANCELLED } },
+        include: {
+          rider: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              vehicleType: true,
+              vehicleColor: true,
+              vehiclePlate: true,
+              profilePhotoUrl: true,
+            },
+          },
+          messages: {
+            orderBy: { createdAt: 'asc' },
+            include: {
+              sender: { select: { id: true, name: true, role: true } },
+            },
+          },
+          order: {
+            select: {
+              id: true,
+              status: true,
+              customerName: true,
+              destinationAddress: true,
+              business: { select: { name: true } },
+            },
+          },
+        },
+      });
+      if (!myQuote) throw new NotFoundException('No tenés propuesta en este pedido');
+      return [myQuote];
     }
 
     return this.prisma.orderQuote.findMany({

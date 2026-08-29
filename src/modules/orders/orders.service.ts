@@ -548,7 +548,7 @@ export class OrdersService {
     }
   }
 
-  async getOrderQuotes(orderId: string, businessId: string | null, role?: string) {
+  async getOrderQuotes(orderId: string, businessId: string | null, userId?: string, role?: string) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
     });
@@ -559,6 +559,42 @@ export class OrdersService {
 
     if (role === UserRole.ENCARGADO && order.businessId !== businessId) {
       throw new ForbiddenException('Sin acceso a las propuestas de este negocio');
+    }
+
+    if (role === UserRole.REPARTIDOR) {
+      const myQuote = await this.prisma.orderQuote.findFirst({
+        where: { orderId, riderId: userId, status: { not: QuoteStatus.CANCELLED } },
+        include: {
+          rider: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              vehicleType: true,
+              vehicleColor: true,
+              vehiclePlate: true,
+              profilePhotoUrl: true,
+            },
+          },
+          messages: {
+            orderBy: { createdAt: 'asc' },
+            include: {
+              sender: { select: { id: true, name: true, role: true } },
+            },
+          },
+          order: {
+            select: {
+              id: true,
+              status: true,
+              customerName: true,
+              destinationAddress: true,
+              business: { select: { name: true } },
+            },
+          },
+        },
+      });
+      if (!myQuote) throw new NotFoundException('No tenés propuesta en este pedido');
+      return [myQuote];
     }
 
     return this.prisma.orderQuote.findMany({

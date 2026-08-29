@@ -63,12 +63,12 @@ export class OrdersController {
   }
 
   @Get(':id/quotes')
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR, UserRole.SUPERADMIN)
   getOrderQuotes(
     @Param('id') orderId: string,
     @CurrentUser() user: JwtPayload,
   ) {
-    return this.service.getOrderQuotes(orderId, user.businessId, user.role);
+    return this.service.getOrderQuotes(orderId, user.businessId, user.sub, user.role);
   }
 
   @Post(':id/quotes/:quoteId/accept')
