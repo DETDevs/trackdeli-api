@@ -62,6 +62,29 @@ export class NotificationsService {
     }
   }
 
+  async notifyUser(
+    userId: string,
+    options: { title: string; body: string; data?: Record<string, string> },
+  ): Promise<void> {
+    const type = options.data?.type || 'NOTIFICATION';
+    const orderId = options.data?.orderId || null;
+    await this.sendAndSave(userId, orderId, type, options.title, options.body, options.data);
+  }
+
+  async notifyBusiness(
+    businessId: string,
+    options: { title: string; body: string; data?: Record<string, string> },
+  ): Promise<void> {
+    const encargados = await this.prisma.user.findMany({
+      where: { businessId, role: 'ENCARGADO', isActive: true },
+      select: { id: true },
+    });
+
+    await Promise.allSettled(
+      encargados.map(e => this.notifyUser(e.id, options)),
+    );
+  }
+
   async notifyOrderTaken(
     encargadoId: string,
     orderId: string,

@@ -14,6 +14,7 @@ export class OrderResponseDto {
   deliveryPaymentStatus: DeliveryPaymentStatus;
   deliveryFee: number;
   distanceKm: number;
+  priceNegotiated?: boolean;
   deliveryUser: {
     id: string;
     name: string;

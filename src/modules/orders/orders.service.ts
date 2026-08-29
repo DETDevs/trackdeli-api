@@ -40,6 +40,7 @@ export class OrdersService {
       deliveryPaymentStatus: order.deliveryPaymentStatus,
       deliveryFee: Number(order.deliveryFee),
       distanceKm: Number(order.distanceKm || 0),
+      priceNegotiated: Boolean(order.priceNegotiated),
       deliveryUser: order.deliveryUser ? {
         id: order.deliveryUser.id,
         name: order.deliveryUser.name,
@@ -60,6 +61,29 @@ export class OrdersService {
         whatsappDisplay: (order.business as any).whatsappDisplay ?? null,
       } : undefined,
     };
+  }
+
+  async generateTrackingSession(orderId: string, tx?: any): Promise<string> {
+    const prismaClient = tx || this.prisma;
+    let trackingSession = await prismaClient.trackingSession.findUnique({
+      where: { orderId },
+    });
+
+    if (!trackingSession) {
+      const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
+      const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48h
+
+      trackingSession = await prismaClient.trackingSession.create({
+        data: {
+          orderId,
+          token,
+          expiresAt,
+        },
+      });
+      this.logger.log(`[Orders] Sesión de tracking generada: orderId=${orderId}, token=${token}`);
+    }
+
+    return trackingSession.token;
   }
 
   async calculateFee(destLat: number, destLng: number, businessId: string | null) {
@@ -189,12 +213,12 @@ export class OrdersService {
     if (role === UserRole.REPARTIDOR) {
       if (!businessId) {
         whereClause.OR = [
-          { status: OrderStatus.PENDIENTE },
+          { status: { in: [OrderStatus.PENDIENTE, OrderStatus.COTIZANDO] } },
           { deliveryUserId: userId },
         ];
       } else {
         whereClause.OR = [
-          { status: OrderStatus.PENDIENTE, businessId },
+          { status: { in: [OrderStatus.PENDIENTE, OrderStatus.COTIZANDO] }, businessId },
           { deliveryUserId: userId, businessId },
         ];
       }
@@ -275,7 +299,7 @@ export class OrdersService {
         canAccess = 
           (businessId !== null && order.businessId === businessId) ||
           (order.deliveryUserId === userId) ||
-          (order.status === OrderStatus.PENDIENTE);
+          (order.status === OrderStatus.PENDIENTE || order.status === OrderStatus.COTIZANDO);
       } else if (role === UserRole.SUPERADMIN) {
         canAccess = true;
       } else {
@@ -414,23 +438,7 @@ export class OrdersService {
     });
 
     if (dto.status === OrderStatus.EN_CAMINO) {
-      let trackingSession = await this.prisma.trackingSession.findUnique({
-        where: { orderId },
-      });
-
-      if (!trackingSession) {
-        const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
-        const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48h
-
-        trackingSession = await this.prisma.trackingSession.create({
-          data: {
-            orderId,
-            token,
-            expiresAt,
-          },
-        });
-        this.logger.log(`[Orders] Sesión de tracking generada para pedido en camino: orderId=${orderId}, token=${token}`);
-      }
+      await this.generateTrackingSession(orderId);
     }
 
     this.trackingGateway.emitOrderStatusChange(orderId, dto.status);
@@ -493,6 +501,14 @@ export class OrdersService {
       if (role !== UserRole.REPARTIDOR) {
         throw new ForbiddenException('Solo repartidores pueden reportar incidencias');
       }
+      return;
+    }
+
+    if (
+      (current === OrderStatus.PENDIENTE && next === OrderStatus.COTIZANDO) ||
+      (current === OrderStatus.COTIZANDO && next === OrderStatus.PENDIENTE) ||
+      (current === OrderStatus.COTIZANDO && next === OrderStatus.ACEPTADO)
+    ) {
       return;
     }
 

@@ -13,6 +13,7 @@ import { UploadModule } from './modules/upload/upload.module';
 import { RatingsModule } from './modules/ratings/ratings.module';
 import { SuperAdminModule } from './modules/superadmin/superadmin.module';
 import { PosModule } from './modules/pos/pos.module';
+import { QuotesModule } from './modules/quotes/quotes.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MembershipGuard } from './common/guards/membership.guard';
@@ -34,6 +35,7 @@ import { MembershipGuard } from './common/guards/membership.guard';
     RatingsModule,
     SuperAdminModule,
     PosModule,
+    QuotesModule,
   ],
   providers: [
     {

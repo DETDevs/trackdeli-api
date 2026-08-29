@@ -15,6 +15,7 @@ enum UserRole {
 
 enum OrderStatus {
   PENDIENTE
+  COTIZANDO
   ACEPTADO
   EN_CAMINO_AL_NEGOCIO
   EN_EL_NEGOCIO
@@ -25,6 +26,14 @@ enum OrderStatus {
   CANCELADO
   INCIDENCIA
   CERRADO
+}
+
+enum QuoteStatus {
+  PENDING
+  NEGOTIATING
+  ACCEPTED
+  REJECTED
+  CANCELLED
 }
 
 enum DeliveryPaymentStatus {
@@ -211,6 +220,8 @@ model User {
   locationSnapshots     LocationSnapshot[]
   notifications         Notification[]
   deviceTokens          DeviceToken[]
+  quotes                OrderQuote[]    @relation("RiderQuotes")
+  sentMessages          OrderMessage[]  @relation("SentMessages")
 
   // POS relations
   sales          Sale[]          @relation("CashierSales")
@@ -241,6 +252,7 @@ model Order {
   deliveryPaymentStatus DeliveryPaymentStatus @default(GRATIS)
   deliveryFee           Decimal               @default(0) @db.Decimal(10, 2)
   distanceKm            Float                 @default(0)
+  priceNegotiated       Boolean               @default(false)
 
   deliveryConfirmationUrl String?             @db.VarChar(500)
   signatureUrl            String?             @db.VarChar(500)
@@ -259,8 +271,51 @@ model Order {
   locationSnapshots     LocationSnapshot[]
   rating                Rating?
   notifications         Notification[]
+  quotes                OrderQuote[]
+  messages              OrderMessage[]
 
   @@map("orders")
+}
+
+model OrderQuote {
+  id                   String       @id @default(uuid())
+  orderId              String
+  order                Order        @relation(fields: [orderId], references: [id])
+  riderId              String
+  rider                User         @relation("RiderQuotes", fields: [riderId], references: [id])
+
+  proposedFee          Float
+  counterFee           Float?
+  finalFee             Float?
+
+  distanceToBusinessKm Float?
+  etaToBusinessMin     Int?
+
+  status               QuoteStatus  @default(PENDING)
+
+  messages             OrderMessage[]
+
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  @@unique([orderId, riderId])
+  @@map("order_quotes")
+}
+
+model OrderMessage {
+  id          String      @id @default(uuid())
+  orderId     String
+  order       Order       @relation(fields: [orderId], references: [id])
+  quoteId     String?
+  quote       OrderQuote? @relation(fields: [quoteId], references: [id])
+  senderId    String
+  sender      User        @relation("SentMessages", fields: [senderId], references: [id])
+  senderRole  UserRole
+  message     String      @db.VarChar(500)
+  isRead      Boolean     @default(false)
+  createdAt   DateTime    @default(now())
+
+  @@map("order_messages")
 }
 
 model OrderPhoto {

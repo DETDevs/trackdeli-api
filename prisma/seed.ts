@@ -41,6 +41,32 @@ async function main() {
     console.log(`Business already exists: ${business.name}`);
   }
 
+  // Membresía activa para el negocio demo
+  const now = new Date();
+  const startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const endDate = new Date(now.getFullYear() + 1, now.getMonth(), 1);
+  
+  await prisma.membership.upsert({
+    where: { id: 'demo-membership-' + business.id },
+    update: {
+      status: 'ACTIVE',
+      startDate,
+      endDate,
+    },
+    create: {
+      id: 'demo-membership-' + business.id,
+      businessId: business.id,
+      status: 'ACTIVE',
+      startDate,
+      endDate,
+      amount: 50,
+      currency: 'USD',
+      paymentMethod: 'TRANSFERENCIA',
+      createdBy: superadmin.id,
+    },
+  });
+  console.log('Membresía activa para negocio demo creada/actualizada');
+
   const passwordHash = await bcrypt.hash('demo123', 10);
 
   // 1 encargado: "Carlos López"

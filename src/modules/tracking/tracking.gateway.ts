@@ -152,8 +152,26 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.logger.log(`[TrackingGateway] join_business: socketId=${client.id}, businessId=${data.businessId}`);
   }
 
+  @SubscribeMessage('join_rider')
+  handleJoinRider(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { riderId: string }
+  ) {
+    client.join(`rider:${data.riderId}`);
+    client.emit('joined_rider', { riderId: data.riderId });
+    this.logger.log(`[TrackingGateway] join_rider: socketId=${client.id}, riderId=${data.riderId}`);
+  }
+
   emitToBusiness(businessId: string, event: string, data: any) {
     this.server.to(`business:${businessId}`).emit(event, data);
+  }
+
+  notifyBusiness(businessId: string, event: string, data: any) {
+    this.server.to(`business:${businessId}`).emit(event, data);
+  }
+
+  notifyRider(riderId: string, event: string, data: any) {
+    this.server.to(`rider:${riderId}`).emit(event, data);
   }
 }
 
