@@ -7,6 +7,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import { UpdateQuoteFeeDto } from '../quotes/dto/update-quote-fee.dto';
 
 @Controller('orders')
 export class OrdersController {
@@ -109,7 +110,7 @@ export class OrdersController {
   updateQuoteFeePatch(
     @Param('id') orderId: string,
     @Param('quoteId') quoteId: string,
-    @Body() dto: { newFee: number; message?: string },
+    @Body() dto: UpdateQuoteFeeDto,
     @CurrentUser() user: JwtPayload,
   ) {
     return this.service.updateQuoteFee(orderId, quoteId, user.sub, dto);
@@ -121,7 +122,7 @@ export class OrdersController {
   updateQuoteFeePost(
     @Param('id') orderId: string,
     @Param('quoteId') quoteId: string,
-    @Body() dto: { newFee: number; message?: string },
+    @Body() dto: UpdateQuoteFeeDto,
     @CurrentUser() user: JwtPayload,
   ) {
     return this.service.updateQuoteFee(orderId, quoteId, user.sub, dto);

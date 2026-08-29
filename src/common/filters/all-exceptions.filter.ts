@@ -29,16 +29,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const userId = request.user?.sub ?? 'anon';
 
     // Log detallado para 500s, warning para 4xx
+    const bodyStr = request.body ? JSON.stringify(request.body) : '{}';
     if (status >= 500) {
       this.logger.error(
-        `${request.method} ${request.url} → ${status}`,
+        `${request.method} ${request.url} → ${status} | body=${bodyStr} | userId=${userId}`,
         exception instanceof Error ? exception.stack : String(exception)
       );
     } else if (status >= 400) {
       this.logger.warn(
-        `${request.method} ${request.url} → ${status} | ${JSON.stringify(
+        `${request.method} ${request.url} → ${status} | err=${JSON.stringify(
           message
-        )} | userId=${userId}`
+        )} | userId=${userId} | body=${bodyStr}`
       );
     }
 

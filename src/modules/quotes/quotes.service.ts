@@ -407,16 +407,24 @@ export class QuotesService {
     userId: string,
     businessId: string,
   ) {
+    this.logger.log(
+      `[counterQuote] INCOMING REQUEST -> quoteId=${quoteId} userId=${userId} businessId=${businessId} body=${JSON.stringify(dto)}`,
+    );
+
     const quote = await this.prisma.orderQuote.findUnique({
       where: { id: quoteId },
       include: { order: { select: { businessId: true } }, rider: true },
     });
 
     if (!quote) {
+      this.logger.warn(`[counterQuote] ERROR 404: Propuesta ${quoteId} no encontrada`);
       throw new NotFoundException('Propuesta no encontrada');
     }
 
     if (quote.order.businessId !== businessId) {
+      this.logger.warn(
+        `[counterQuote] ERROR 403: quote.order.businessId=${quote.order.businessId} !== user.businessId=${businessId}`,
+      );
       throw new ForbiddenException('Sin acceso a esta propuesta');
     }
 
@@ -424,66 +432,94 @@ export class QuotesService {
       quote.status !== QuoteStatus.PENDING &&
       quote.status !== QuoteStatus.NEGOTIATING
     ) {
+      this.logger.warn(
+        `[counterQuote] ERROR 400: Estado "${quote.status}" no permite contraofertas. Se esperaba PENDING o NEGOTIATING`,
+      );
       throw new BadRequestException('Esta propuesta ya no está activa para negociar');
     }
 
-    await this.prisma.orderQuote.update({
-      where: { id: quoteId },
-      data: {
+    try {
+      await this.prisma.orderQuote.update({
+        where: { id: quoteId },
+        data: {
+          counterFee: dto.counterFee,
+          status: QuoteStatus.NEGOTIATING,
+        },
+      });
+
+      const message = await this.prisma.orderMessage.create({
+        data: {
+          orderId: quote.orderId,
+          quoteId: quote.id,
+          senderId: userId,
+          senderRole: UserRole.ENCARGADO,
+          message: dto.message,
+        },
+        include: {
+          sender: { select: { id: true, name: true, role: true } },
+        },
+      });
+
+      await this.notificationsService.notifyUser(quote.riderId, {
+        title: '💬 El negocio respondió tu propuesta',
+        body: dto.message,
+        data: {
+          type: 'QUOTE_COUNTER',
+          orderId: quote.orderId,
+          quoteId: quote.id,
+          counterFee: dto.counterFee.toString(),
+        },
+      });
+
+      this.trackingGateway.notifyRider(quote.riderId, 'quote_counter', {
+        quoteId: quote.id,
+        orderId: quote.orderId,
         counterFee: dto.counterFee,
-        status: QuoteStatus.NEGOTIATING,
-      },
-    });
-
-    const message = await this.prisma.orderMessage.create({
-      data: {
-        orderId: quote.orderId,
-        quoteId: quote.id,
-        senderId: userId,
-        senderRole: UserRole.ENCARGADO,
         message: dto.message,
-      },
-      include: {
-        sender: { select: { id: true, name: true, role: true } },
-      },
-    });
+      });
 
-    await this.notificationsService.notifyUser(quote.riderId, {
-      title: '💬 El negocio respondió tu propuesta',
-      body: dto.message,
-      data: {
-        type: 'QUOTE_COUNTER',
-        orderId: quote.orderId,
-        quoteId: quote.id,
-        counterFee: dto.counterFee.toString(),
-      },
-    });
+      this.logger.log(
+        `[counterQuote] OK: Contrapropuesta enviada para quote ${quoteId}: C$${dto.counterFee} por encargado ${userId}`,
+      );
 
-    this.trackingGateway.notifyRider(quote.riderId, 'quote_counter', {
-      quoteId: quote.id,
-      orderId: quote.orderId,
-      counterFee: dto.counterFee,
-      message: dto.message,
-    });
-
-    this.logger.log(
-      `[counterQuote] Contrapropuesta para quote ${quoteId}: C$${dto.counterFee}`,
-    );
-
-    return { success: true, counterFee: dto.counterFee, message };
+      return { success: true, counterFee: dto.counterFee, message };
+    } catch (err: any) {
+      this.logger.error(`[counterQuote] ERROR INESPERADO: ${err.message}`, err.stack);
+      throw err;
+    }
   }
 
   async updateFee(quoteId: string, dto: UpdateQuoteFeeDto, riderId: string) {
+    this.logger.log(
+      `[updateFee] INCOMING REQUEST -> quoteId=${quoteId} riderId=${riderId} body=${JSON.stringify(dto)}`,
+    );
+
+    const feeToSet = dto.newFee ?? dto.proposedFee ?? dto.fee ?? dto.counterFee;
+    if (feeToSet === undefined || isNaN(feeToSet) || feeToSet < 0) {
+      this.logger.warn(
+        `[updateFee] ERROR 400: Tarifa no especificada o inválida en body=${JSON.stringify(dto)} para quoteId=${quoteId} riderId=${riderId}`,
+      );
+      throw new BadRequestException(
+        'Debe proporcionar un valor numérico válido para newFee, proposedFee o fee',
+      );
+    }
+
     const quote = await this.prisma.orderQuote.findUnique({
       where: { id: quoteId },
       include: { order: { select: { businessId: true } }, rider: true },
     });
 
     if (!quote) {
+      this.logger.warn(
+        `[updateFee] ERROR 404: Propuesta con id ${quoteId} no encontrada en la BD`,
+      );
       throw new NotFoundException('Propuesta no encontrada');
     }
 
     if (quote.riderId !== riderId) {
+      this.logger.warn(
+        `[updateFee] ERROR 403: quote.riderId=${quote.riderId} no coincide con el usuario autenticado=${riderId}`,
+      );
       throw new ForbiddenException('No podés modificar esta propuesta');
     }
 
@@ -491,54 +527,62 @@ export class QuotesService {
       quote.status !== QuoteStatus.PENDING &&
       quote.status !== QuoteStatus.NEGOTIATING
     ) {
-      throw new BadRequestException('No podés modificar esta propuesta');
+      this.logger.warn(
+        `[updateFee] ERROR 400: Estado actual de la propuesta "${quote.status}" no permite modificación. Se esperaba PENDING o NEGOTIATING`,
+      );
+      throw new BadRequestException(`No podés modificar esta propuesta porque su estado es ${quote.status}`);
     }
 
-    await this.prisma.orderQuote.update({
-      where: { id: quoteId },
-      data: {
-        proposedFee: dto.newFee,
-        counterFee: null,
-        status: QuoteStatus.NEGOTIATING,
-      },
-    });
-
-    let messageRecord: any = null;
-    if (dto.message) {
-      messageRecord = await this.prisma.orderMessage.create({
+    try {
+      await this.prisma.orderQuote.update({
+        where: { id: quoteId },
         data: {
-          orderId: quote.orderId,
-          quoteId: quote.id,
-          senderId: riderId,
-          senderRole: UserRole.REPARTIDOR,
-          message: dto.message,
-        },
-        include: {
-          sender: { select: { id: true, name: true, role: true } },
+          proposedFee: feeToSet,
+          counterFee: null,
+          status: QuoteStatus.NEGOTIATING,
         },
       });
+
+      let messageRecord: any = null;
+      if (dto.message) {
+        messageRecord = await this.prisma.orderMessage.create({
+          data: {
+            orderId: quote.orderId,
+            quoteId: quote.id,
+            senderId: riderId,
+            senderRole: UserRole.REPARTIDOR,
+            message: dto.message,
+          },
+          include: {
+            sender: { select: { id: true, name: true, role: true } },
+          },
+        });
+      }
+
+      this.trackingGateway.notifyBusiness(quote.order.businessId, 'quote_updated', {
+        quoteId: quote.id,
+        orderId: quote.orderId,
+        riderId,
+        riderName: quote.rider?.name ?? 'El repartidor',
+        newFee: feeToSet,
+        message: dto.message,
+      });
+
+      await this.notificationsService.notifyBusiness(quote.order.businessId, {
+        title: '💰 Un rider actualizó su precio',
+        body: `${quote.rider?.name ?? 'El repartidor'} propone C$${feeToSet}${dto.message ? ': ' + dto.message : ''}`,
+        data: { type: 'QUOTE_UPDATED', orderId: quote.orderId, quoteId: quote.id },
+      });
+
+      this.logger.log(
+        `[updateFee] OK: Rider ${riderId} actualizó tarifa de quote ${quoteId} a C$${feeToSet}`,
+      );
+
+      return { success: true, newFee: feeToSet, message: messageRecord };
+    } catch (err: any) {
+      this.logger.error(`[updateFee] ERROR INESPERADO AL GUARDAR EN BD: ${err.message}`, err.stack);
+      throw err;
     }
-
-    this.trackingGateway.notifyBusiness(quote.order.businessId, 'quote_updated', {
-      quoteId: quote.id,
-      orderId: quote.orderId,
-      riderId,
-      riderName: quote.rider.name,
-      newFee: dto.newFee,
-      message: dto.message,
-    });
-
-    await this.notificationsService.notifyBusiness(quote.order.businessId, {
-      title: '💰 Un rider actualizó su precio',
-      body: `${quote.rider.name} propone C$${dto.newFee}${dto.message ? ': ' + dto.message : ''}`,
-      data: { type: 'QUOTE_UPDATED', orderId: quote.orderId, quoteId: quote.id },
-    });
-
-    this.logger.log(
-      `[updateFee] Rider ${riderId} actualizó tarifa de quote ${quoteId} a C$${dto.newFee}`,
-    );
-
-    return { success: true, newFee: dto.newFee, message: messageRecord };
   }
 
   async cancelQuote(quoteId: string, riderId: string) {
