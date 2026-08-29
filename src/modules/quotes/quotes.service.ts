@@ -498,6 +498,7 @@ export class QuotesService {
       where: { id: quoteId },
       data: {
         proposedFee: dto.newFee,
+        counterFee: null,
         status: QuoteStatus.NEGOTIATING,
       },
     });

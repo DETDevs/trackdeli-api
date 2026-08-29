@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
 } from '@nestjs/common';
 import { QuotesService } from './quotes.service';
@@ -72,10 +73,21 @@ export class QuotesController {
     return this.quotesService.counterQuote(quoteId, dto, user.sub, user.businessId!);
   }
 
-  @Post(':id/update-fee')
+  @Patch(':id/update-fee')
   @HttpCode(HttpStatus.OK)
   @Roles(UserRole.REPARTIDOR)
   updateFee(
+    @Param('id') quoteId: string,
+    @Body() dto: UpdateQuoteFeeDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.quotesService.updateFee(quoteId, dto, user.sub);
+  }
+
+  @Post(':id/update-fee')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.REPARTIDOR)
+  updateFeePost(
     @Param('id') quoteId: string,
     @Body() dto: UpdateQuoteFeeDto,
     @CurrentUser() user: JwtPayload,

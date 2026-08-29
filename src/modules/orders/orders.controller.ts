@@ -103,6 +103,30 @@ export class OrdersController {
     return this.service.sendQuoteMessage(orderId, quoteId, user.sub, user.role, user.businessId, dto);
   }
 
+  @Patch(':id/quotes/:quoteId/update-fee')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.REPARTIDOR)
+  updateQuoteFeePatch(
+    @Param('id') orderId: string,
+    @Param('quoteId') quoteId: string,
+    @Body() dto: { newFee: number; message?: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.updateQuoteFee(orderId, quoteId, user.sub, dto);
+  }
+
+  @Post(':id/quotes/:quoteId/update-fee')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.REPARTIDOR)
+  updateQuoteFeePost(
+    @Param('id') orderId: string,
+    @Param('quoteId') quoteId: string,
+    @Body() dto: { newFee: number; message?: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.updateQuoteFee(orderId, quoteId, user.sub, dto);
+  }
+
   @Get('health')
   @Public()
   healthCheck() {

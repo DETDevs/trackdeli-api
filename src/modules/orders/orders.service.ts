@@ -858,4 +858,76 @@ export class OrdersService {
 
     return message;
   }
+
+  async updateQuoteFee(
+    orderId: string,
+    quoteId: string,
+    riderId: string,
+    dto: { newFee: number; message?: string },
+  ) {
+    const quote = await this.prisma.orderQuote.findUnique({
+      where: { id: quoteId },
+      include: { order: { select: { businessId: true } }, rider: true },
+    });
+
+    if (!quote || quote.orderId !== orderId) {
+      throw new NotFoundException('Propuesta no encontrada para este pedido');
+    }
+
+    if (quote.riderId !== riderId) {
+      throw new ForbiddenException('Sin acceso');
+    }
+
+    if (
+      quote.status !== QuoteStatus.PENDING &&
+      quote.status !== QuoteStatus.NEGOTIATING
+    ) {
+      throw new BadRequestException('No podés modificar esta propuesta');
+    }
+
+    await this.prisma.orderQuote.update({
+      where: { id: quoteId },
+      data: {
+        proposedFee: dto.newFee,
+        counterFee: null,
+        status: QuoteStatus.NEGOTIATING,
+      },
+    });
+
+    let messageRecord: any = null;
+    if (dto.message) {
+      messageRecord = await this.prisma.orderMessage.create({
+        data: {
+          orderId: quote.orderId,
+          quoteId: quote.id,
+          senderId: riderId,
+          senderRole: UserRole.REPARTIDOR,
+          message: dto.message,
+        },
+        include: {
+          sender: { select: { id: true, name: true, role: true } },
+        },
+      });
+    }
+
+    this.trackingGateway.notifyBusiness(quote.order.businessId, 'quote_updated', {
+      quoteId: quote.id,
+      orderId: quote.orderId,
+      riderName: quote.rider.name ?? 'El repartidor',
+      newFee: dto.newFee,
+      message: dto.message,
+    });
+
+    await this.notificationsService.notifyBusiness(quote.order.businessId, {
+      title: '💰 Un rider actualizó su precio',
+      body: `${quote.rider.name} propone C$${dto.newFee}${dto.message ? ': ' + dto.message : ''}`,
+      data: { type: 'QUOTE_UPDATED', orderId: quote.orderId, quoteId: quote.id },
+    });
+
+    this.logger.log(
+      `[updateFee] quoteId=${quoteId} orderId=${orderId} riderId=${riderId} newFee=C$${dto.newFee}`,
+    );
+
+    return { success: true, newFee: dto.newFee, message: messageRecord };
+  }
 }
