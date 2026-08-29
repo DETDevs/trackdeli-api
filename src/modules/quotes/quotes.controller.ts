@@ -1,7 +1,9 @@
-﻿import {
+import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
 } from '@nestjs/common';
@@ -38,6 +40,7 @@ export class QuotesController {
   }
 
   @Post(':id/accept')
+  @HttpCode(HttpStatus.OK)
   @Roles(UserRole.ENCARGADO)
   acceptQuote(
     @Param('id') quoteId: string,
@@ -47,6 +50,7 @@ export class QuotesController {
   }
 
   @Post(':id/counter')
+  @HttpCode(HttpStatus.OK)
   @Roles(UserRole.ENCARGADO)
   counterQuote(
     @Param('id') quoteId: string,
@@ -57,6 +61,7 @@ export class QuotesController {
   }
 
   @Post(':id/update-fee')
+  @HttpCode(HttpStatus.OK)
   @Roles(UserRole.REPARTIDOR)
   updateFee(
     @Param('id') quoteId: string,
@@ -67,6 +72,7 @@ export class QuotesController {
   }
 
   @Post(':id/cancel')
+  @HttpCode(HttpStatus.OK)
   @Roles(UserRole.REPARTIDOR)
   cancelQuote(
     @Param('id') quoteId: string,

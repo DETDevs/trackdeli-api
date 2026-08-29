@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -60,6 +60,47 @@ export class OrdersController {
     @CurrentUser() user: JwtPayload
   ) {
     return this.service.updateStatus(id, dto, user.sub, user.role, user.businessId);
+  }
+
+  @Get(':id/quotes')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  getOrderQuotes(
+    @Param('id') orderId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.getOrderQuotes(orderId, user.businessId, user.role);
+  }
+
+  @Post(':id/quotes/:quoteId/accept')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.ENCARGADO)
+  acceptQuote(
+    @Param('id') orderId: string,
+    @Param('quoteId') quoteId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.acceptQuote(orderId, quoteId, user.businessId!);
+  }
+
+  @Get(':id/quotes/:quoteId/messages')
+  @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR, UserRole.SUPERADMIN)
+  getQuoteMessages(
+    @Param('id') orderId: string,
+    @Param('quoteId') quoteId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.getQuoteMessages(orderId, quoteId, user.sub, user.role, user.businessId);
+  }
+
+  @Post(':id/quotes/:quoteId/messages')
+  @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR)
+  sendQuoteMessage(
+    @Param('id') orderId: string,
+    @Param('quoteId') quoteId: string,
+    @Body() dto: { message: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.sendQuoteMessage(orderId, quoteId, user.sub, user.role, user.businessId, dto);
   }
 
   @Get('health')

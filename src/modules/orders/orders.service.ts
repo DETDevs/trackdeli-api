@@ -3,7 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
-import { Order, OrderStatus, UserRole } from '@prisma/client';
+import { Order, OrderStatus, QuoteStatus, UserRole } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
@@ -546,5 +546,280 @@ export class OrdersService {
     if (next === OrderStatus.ACEPTADO && role !== UserRole.REPARTIDOR) {
       throw new ForbiddenException('Solo repartidores pueden tomar pedidos');
     }
+  }
+
+  async getOrderQuotes(orderId: string, businessId: string | null, role?: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Pedido no encontrado');
+    }
+
+    if (role === UserRole.ENCARGADO && order.businessId !== businessId) {
+      throw new ForbiddenException('Sin acceso a las propuestas de este negocio');
+    }
+
+    return this.prisma.orderQuote.findMany({
+      where: {
+        orderId,
+        status: { not: QuoteStatus.CANCELLED },
+      },
+      include: {
+        rider: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            vehicleType: true,
+            vehicleColor: true,
+            vehiclePlate: true,
+            profilePhotoUrl: true,
+          },
+        },
+        messages: {
+          orderBy: { createdAt: 'asc' },
+          include: {
+            sender: { select: { id: true, name: true, role: true } },
+          },
+        },
+      },
+      orderBy: [{ distanceToBusinessKm: 'asc' }, { createdAt: 'asc' }],
+    });
+  }
+
+  async acceptQuote(orderId: string, quoteId: string, businessId: string) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const quote = await tx.orderQuote.findUnique({
+        where: { id: quoteId },
+        include: { order: true, rider: true },
+      });
+
+      if (!quote || quote.orderId !== orderId) {
+        throw new NotFoundException('Propuesta no encontrada para este pedido');
+      }
+
+      if (quote.order.businessId !== businessId) {
+        throw new ForbiddenException('Sin acceso a esta propuesta');
+      }
+
+      if (
+        quote.status !== QuoteStatus.PENDING &&
+        quote.status !== QuoteStatus.NEGOTIATING
+      ) {
+        throw new BadRequestException('Esta propuesta ya no puede aceptarse');
+      }
+
+      const finalFee = quote.counterFee ?? quote.proposedFee;
+
+      await tx.orderQuote.update({
+        where: { id: quoteId },
+        data: { status: QuoteStatus.ACCEPTED, finalFee },
+      });
+
+      await tx.orderQuote.updateMany({
+        where: {
+          orderId: quote.orderId,
+          id: { not: quoteId },
+          status: { in: [QuoteStatus.PENDING, QuoteStatus.NEGOTIATING] },
+        },
+        data: { status: QuoteStatus.REJECTED },
+      });
+
+      await tx.order.update({
+        where: { id: quote.orderId },
+        data: {
+          status: OrderStatus.ACEPTADO,
+          deliveryUserId: quote.riderId,
+          deliveryFee: finalFee,
+          priceNegotiated: true,
+          takenAt: new Date(),
+        },
+      });
+
+      const trackingToken = await this.generateTrackingSession(
+        quote.orderId,
+        tx,
+      );
+
+      const rejectedQuotes = await tx.orderQuote.findMany({
+        where: { orderId: quote.orderId, status: QuoteStatus.REJECTED },
+        select: { riderId: true },
+      });
+
+      return {
+        quote,
+        finalFee,
+        trackingToken,
+        rejectedRiderIds: rejectedQuotes.map((q) => q.riderId),
+      };
+    });
+
+    await this.notificationsService.notifyUser(result.quote.riderId, {
+      title: '✅ ¡Tu propuesta fue aceptada!',
+      body: `Podés salir a recoger el pedido. Tarifa acordada: C$${result.finalFee}`,
+      data: {
+        type: 'QUOTE_ACCEPTED',
+        orderId: result.quote.orderId,
+        trackingToken: result.trackingToken,
+      },
+    });
+
+    for (const riderId of result.rejectedRiderIds) {
+      await this.notificationsService.notifyUser(riderId, {
+        title: 'Pedido tomado por otro rider',
+        body: 'Tu propuesta no fue seleccionada para este pedido',
+        data: { type: 'QUOTE_REJECTED', orderId: result.quote.orderId },
+      });
+      this.trackingGateway.notifyRider(riderId, 'quote_rejected', {
+        orderId: result.quote.orderId,
+      });
+    }
+
+    this.trackingGateway.notifyBusiness(businessId, 'quote_accepted', {
+      orderId: result.quote.orderId,
+      riderId: result.quote.riderId,
+      finalFee: result.finalFee,
+    });
+
+    this.trackingGateway.notifyRider(result.quote.riderId, 'your_quote_accepted', {
+      orderId: result.quote.orderId,
+      finalFee: result.finalFee,
+      trackingToken: result.trackingToken,
+    });
+
+    this.trackingGateway.emitOrderStatusChange(
+      result.quote.orderId,
+      OrderStatus.ACEPTADO,
+    );
+
+    this.logger.log(
+      `[acceptQuote] Propuesta ${quoteId} aceptada para pedido ${orderId} — rider=${result.quote.riderId} fee=C$${result.finalFee}`,
+    );
+
+    return {
+      success: true,
+      finalFee: result.finalFee,
+      riderId: result.quote.riderId,
+      trackingToken: result.trackingToken,
+    };
+  }
+
+  async getQuoteMessages(
+    orderId: string,
+    quoteId: string,
+    userId: string,
+    role: UserRole,
+    businessId: string | null,
+  ) {
+    const quote = await this.prisma.orderQuote.findUnique({
+      where: { id: quoteId },
+      include: { order: true },
+    });
+
+    if (!quote || quote.orderId !== orderId) {
+      throw new NotFoundException('Propuesta no encontrada para este pedido');
+    }
+
+    if (role === UserRole.REPARTIDOR && quote.riderId !== userId) {
+      throw new ForbiddenException('Sin acceso a los mensajes de esta propuesta');
+    }
+
+    if (role === UserRole.ENCARGADO && quote.order.businessId !== businessId) {
+      throw new ForbiddenException('Sin acceso a los mensajes de esta propuesta');
+    }
+
+    await this.prisma.orderMessage.updateMany({
+      where: {
+        quoteId,
+        senderId: { not: userId },
+        isRead: false,
+      },
+      data: { isRead: true },
+    });
+
+    return this.prisma.orderMessage.findMany({
+      where: { quoteId },
+      include: {
+        sender: { select: { id: true, name: true, role: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  async sendQuoteMessage(
+    orderId: string,
+    quoteId: string,
+    userId: string,
+    role: UserRole,
+    businessId: string | null,
+    dto: { message: string },
+  ) {
+    const quote = await this.prisma.orderQuote.findUnique({
+      where: { id: quoteId },
+      include: { order: true, rider: true },
+    });
+
+    if (!quote || quote.orderId !== orderId) {
+      throw new NotFoundException('Propuesta no encontrada para este pedido');
+    }
+
+    if (role === UserRole.REPARTIDOR && quote.riderId !== userId) {
+      throw new ForbiddenException('Sin permiso para enviar mensajes en esta propuesta');
+    }
+
+    if (role === UserRole.ENCARGADO && quote.order.businessId !== businessId) {
+      throw new ForbiddenException('Sin permiso para enviar mensajes en esta propuesta');
+    }
+
+    const message = await this.prisma.orderMessage.create({
+      data: {
+        orderId: quote.orderId,
+        quoteId: quote.id,
+        senderId: userId,
+        senderRole: role,
+        message: dto.message,
+      },
+      include: {
+        sender: { select: { id: true, name: true, role: true } },
+      },
+    });
+
+    if (role === UserRole.ENCARGADO) {
+      this.trackingGateway.notifyRider(quote.riderId, 'new_message', {
+        quoteId: quote.id,
+        orderId: quote.orderId,
+        message,
+      });
+
+      await this.notificationsService.notifyUser(quote.riderId, {
+        title: '💬 Mensaje del negocio',
+        body: dto.message,
+        data: {
+          type: 'NEW_MESSAGE',
+          orderId: quote.orderId,
+          quoteId: quote.id,
+        },
+      });
+    } else {
+      this.trackingGateway.notifyBusiness(quote.order.businessId, 'new_message', {
+        quoteId: quote.id,
+        orderId: quote.orderId,
+        message,
+      });
+
+      await this.notificationsService.notifyBusiness(quote.order.businessId, {
+        title: `💬 Mensaje de ${quote.rider.name}`,
+        body: dto.message,
+        data: {
+          type: 'NEW_MESSAGE',
+          orderId: quote.orderId,
+          quoteId: quote.id,
+        },
+      });
+    }
+
+    return message;
   }
 }
