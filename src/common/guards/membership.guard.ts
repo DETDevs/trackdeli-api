@@ -9,7 +9,7 @@ import { Reflector } from '@nestjs/core';
 import { PrismaService } from '../../prisma/prisma.service';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { SKIP_MEMBERSHIP_KEY } from '../decorators/skip-membership.decorator';
-import { MembershipStatus, UserRole } from '@prisma/client';
+import { BusinessType, MembershipStatus, StatementStatus, UserRole } from '@prisma/client';
 
 @Injectable()
 export class MembershipGuard implements CanActivate {
@@ -38,34 +38,64 @@ export class MembershipGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const user = request.user;
 
-    // Solo para ENCARGADO — verificar membresía activa
+    // Solo para ENCARGADO — verificar estado financiero según tipo de negocio
     if (user && user.role === UserRole.ENCARGADO && user.businessId) {
       const path = request.route?.path || request.url || '';
-      // Permitir endpoints de perfil/refresh para que el frontend pueda cargar datos básicos del usuario
-      if (path.includes('/auth/me') || path.includes('/auth/refresh')) {
+      // Permitir endpoints de perfil/refresh/commissions/statements para que el encargado pueda revisar sus estados de cuenta
+      if (
+        path.includes('/auth/me') ||
+        path.includes('/auth/refresh') ||
+        path.includes('/commissions') ||
+        path.includes('/statements')
+      ) {
         return true;
       }
 
-      const now = new Date();
-      const activeMembership = await this.prisma.membership.findFirst({
-        where: {
-          businessId: user.businessId,
-          status: MembershipStatus.ACTIVE,
-          startDate: { lte: now },
-          endDate: { gte: now },
-        },
+      const business = await this.prisma.business.findUnique({
+        where: { id: user.businessId },
+        select: { businessType: true },
       });
 
-      // Si no tiene membresía activa, bloquear con 402 Payment Required
-      if (!activeMembership) {
-        throw new HttpException(
-          {
-            statusCode: 402,
-            message: 'Membresía vencida o inactiva. Contactá a TrackDeli para renovar.',
-            error: 'Payment Required',
+      if (business?.businessType === BusinessType.EMPRESA_RIDERS) {
+        const overdueStatement = await this.prisma.monthlyStatement.findFirst({
+          where: {
+            businessId: user.businessId,
+            status: StatementStatus.OVERDUE,
           },
-          HttpStatus.PAYMENT_REQUIRED,
-        );
+        });
+
+        if (overdueStatement) {
+          throw new HttpException(
+            {
+              statusCode: 402,
+              message: `Comisión pendiente de C$${overdueStatement.totalCommission.toFixed(2)}. Contactá a TrackDeli para regularizar.`,
+              error: 'Payment Required',
+            },
+            HttpStatus.PAYMENT_REQUIRED,
+          );
+        }
+      } else {
+        const now = new Date();
+        const activeMembership = await this.prisma.membership.findFirst({
+          where: {
+            businessId: user.businessId,
+            status: MembershipStatus.ACTIVE,
+            startDate: { lte: now },
+            endDate: { gte: now },
+          },
+        });
+
+        // Si no tiene membresía activa, bloquear con 402 Payment Required
+        if (!activeMembership) {
+          throw new HttpException(
+            {
+              statusCode: 402,
+              message: 'Membresía vencida o inactiva. Contactá a TrackDeli para renovar.',
+              error: 'Payment Required',
+            },
+            HttpStatus.PAYMENT_REQUIRED,
+          );
+        }
       }
     }
 

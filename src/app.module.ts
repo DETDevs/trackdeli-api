@@ -14,6 +14,9 @@ import { RatingsModule } from './modules/ratings/ratings.module';
 import { SuperAdminModule } from './modules/superadmin/superadmin.module';
 import { PosModule } from './modules/pos/pos.module';
 import { QuotesModule } from './modules/quotes/quotes.module';
+import { ClientsModule } from './modules/clients/clients.module';
+import { DispatchModule } from './modules/dispatch/dispatch.module';
+import { CommissionsModule } from './modules/commissions/commissions.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MembershipGuard } from './common/guards/membership.guard';
@@ -36,6 +39,9 @@ import { MembershipGuard } from './common/guards/membership.guard';
     SuperAdminModule,
     PosModule,
     QuotesModule,
+    ClientsModule,
+    DispatchModule,
+    CommissionsModule,
   ],
   providers: [
     {

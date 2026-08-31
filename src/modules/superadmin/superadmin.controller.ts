@@ -20,11 +20,15 @@ import { UpdateMembershipDto } from './dto/update-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
+import { CommissionsService } from '../commissions/commissions.service';
 
 @Controller('superadmin')
 @UseGuards(SuperAdminGuard)
 export class SuperAdminController {
-  constructor(private readonly superAdminService: SuperAdminService) {}
+  constructor(
+    private readonly superAdminService: SuperAdminService,
+    private readonly commissionsService: CommissionsService,
+  ) {}
 
   // ==========================================
   // NEGOCIOS
@@ -138,5 +142,42 @@ export class SuperAdminController {
   @Get('logs')
   async getRecentLogs() {
     return this.superAdminService.getRecentLogs();
+  }
+
+  // ==========================================
+  // COMISIONES Y ESTADOS DE CUENTA
+  // ==========================================
+
+  @Get('commissions')
+  async getCommissions(
+    @Query('month') month?: string,
+    @Query('year') year?: string,
+    @Query('businessId') businessId?: string,
+  ) {
+    return this.commissionsService.getAllCommissions(
+      month ? parseInt(month) : undefined,
+      year ? parseInt(year) : undefined,
+      businessId,
+    );
+  }
+
+  @Post('statements/generate')
+  async generateStatements(
+    @Body() dto: { month: number; year: number },
+  ) {
+    return this.commissionsService.generateMonthlyStatements(dto.month, dto.year);
+  }
+
+  @Patch('statements/:id/pay')
+  async payStatement(
+    @Param('id') id: string,
+    @Body() dto: { paidAmount?: number; notes?: string },
+  ) {
+    return this.commissionsService.payStatement(id, dto);
+  }
+
+  @Get('debtors')
+  async getDebtors() {
+    return this.commissionsService.getDebtors();
   }
 }

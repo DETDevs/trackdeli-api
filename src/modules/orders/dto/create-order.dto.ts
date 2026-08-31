@@ -36,4 +36,13 @@ export class CreateOrderDto {
   @IsOptional()
   @Min(0)
   deliveryFee?: number;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(150)
+  originBusinessName?: string;
+
+  @IsString()
+  @IsOptional()
+  originBusinessClientId?: string;
 }

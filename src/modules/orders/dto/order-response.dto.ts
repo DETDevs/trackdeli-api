@@ -28,6 +28,8 @@ export class OrderResponseDto {
   }[];
   trackingToken: string | null;
   trackingUrl?: string | null;
+  originBusinessName?: string | null;
+  originBusinessClientId?: string | null;
   createdAt: Date;
   takenAt: Date | null;
   deliveredAt: Date | null;

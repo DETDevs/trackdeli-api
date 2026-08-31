@@ -4,12 +4,14 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
-import { Order, OrderStatus, QuoteStatus, UserRole } from '@prisma/client';
+import { BusinessType, Order, OrderStatus, QuoteStatus, UserRole } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { calculateDeliveryFee } from '../../common/utils/pricing.util';
+import { DispatchService } from '../dispatch/dispatch.service';
+import { CommissionsService } from '../commissions/commissions.service';
 
 @Injectable()
 export class OrdersService {
@@ -21,6 +23,8 @@ export class OrdersService {
     private readonly trackingService: TrackingService,
     private readonly notificationsService: NotificationsService,
     private readonly configService: ConfigService,
+    private readonly dispatchService: DispatchService,
+    private readonly commissionsService: CommissionsService,
   ) {}
 
   private async toResponseDto(order: any): Promise<OrderResponseDto> {
@@ -57,6 +61,8 @@ export class OrdersService {
       trackingUrl: trackingSession
         ? `${trackingBaseUrl}/track/${trackingSession.token}`
         : null,
+      originBusinessName: order.originBusinessName ?? null,
+      originBusinessClientId: order.originBusinessClientId ?? null,
       createdAt: order.createdAt,
       takenAt: order.takenAt,
       deliveredAt: order.deliveredAt,
@@ -163,10 +169,22 @@ export class OrdersService {
       deliveryFee = deliveryFee ?? 0;
     }
 
+    let originBusinessName = dto.originBusinessName;
+    if (dto.originBusinessClientId && !originBusinessName) {
+      const client = await this.prisma.businessClient.findUnique({
+        where: { id: dto.originBusinessClientId },
+      });
+      if (client) {
+        originBusinessName = client.name;
+      }
+    }
+
     const order = await this.prisma.order.create({
       data: {
         customerName: dto.customerName,
         customerPhone: dto.customerPhone,
+        originBusinessName,
+        originBusinessClientId: dto.originBusinessClientId,
         destinationAddress: dto.destinationAddress,
         destinationLat: dto.destinationLat,
         destinationLng: dto.destinationLng,
@@ -210,6 +228,12 @@ export class OrdersService {
       .to(`business:${businessId}`)
       .emit('orders_updated', { businessId });
 
+    if (business.businessType === BusinessType.EMPRESA_RIDERS) {
+      this.dispatchService.dispatchOrder(order.id).catch((err) => {
+        this.logger.error(`[create] Error en dispatch automático: ${err.message}`, err.stack);
+      });
+    }
+
     return this.toResponseDto(order);
   }
 
@@ -222,12 +246,12 @@ export class OrdersService {
     if (role === UserRole.REPARTIDOR) {
       if (!businessId) {
         whereClause.OR = [
-          { status: { in: [OrderStatus.PENDIENTE, OrderStatus.COTIZANDO] } },
+          { status: { in: [OrderStatus.PENDIENTE, OrderStatus.COTIZANDO, OrderStatus.OFERTADO] } },
           { deliveryUserId: userId },
         ];
       } else {
         whereClause.OR = [
-          { status: { in: [OrderStatus.PENDIENTE, OrderStatus.COTIZANDO] }, businessId },
+          { status: { in: [OrderStatus.PENDIENTE, OrderStatus.COTIZANDO, OrderStatus.OFERTADO] }, businessId },
           { deliveryUserId: userId, businessId },
         ];
       }
@@ -308,7 +332,7 @@ export class OrdersService {
         canAccess = 
           (businessId !== null && order.businessId === businessId) ||
           (order.deliveryUserId === userId) ||
-          (order.status === OrderStatus.PENDIENTE || order.status === OrderStatus.COTIZANDO);
+          (order.status === OrderStatus.PENDIENTE || order.status === OrderStatus.COTIZANDO || order.status === OrderStatus.OFERTADO);
       } else if (role === UserRole.SUPERADMIN) {
         canAccess = true;
       } else {
@@ -462,6 +486,12 @@ export class OrdersService {
       
       if (dto.status === OrderStatus.ENTREGADO) {
         this.logger.log(`[Orders] Pedido ENTREGADO: orderId=${orderId}, repartidor=${userId}, cliente=${order.customerName}`);
+        
+        // Registrar comisión para TrackDeli
+        this.commissionsService.registerCommission(order).catch((err) => {
+          this.logger.error(`[updateStatus] Error registrando comisión: ${err.message}`, err.stack);
+        });
+
         if (encargado) {
           await this.notificationsService.notifyOrderDelivered(
             encargado.id,
@@ -516,7 +546,11 @@ export class OrdersService {
     if (
       (current === OrderStatus.PENDIENTE && next === OrderStatus.COTIZANDO) ||
       (current === OrderStatus.COTIZANDO && next === OrderStatus.PENDIENTE) ||
-      (current === OrderStatus.COTIZANDO && next === OrderStatus.ACEPTADO)
+      (current === OrderStatus.COTIZANDO && next === OrderStatus.ACEPTADO) ||
+      (current === OrderStatus.PENDIENTE && next === OrderStatus.OFERTADO) ||
+      (current === OrderStatus.OFERTADO && next === OrderStatus.PENDIENTE) ||
+      (current === OrderStatus.OFERTADO && next === OrderStatus.ACEPTADO) ||
+      (current === OrderStatus.OFERTADO && next === OrderStatus.OFERTADO)
     ) {
       return;
     }
@@ -967,5 +1001,29 @@ export class OrdersService {
       this.logger.error(`[updateQuoteFee] ERROR INESPERADO: ${err.message}`, err.stack);
       throw err;
     }
+  }
+
+  async acceptDispatch(orderId: string, riderId: string): Promise<OrderResponseDto> {
+    const order = await this.dispatchService.acceptDispatch(orderId, riderId);
+    await this.generateTrackingSession(orderId);
+    this.trackingGateway.emitOrderStatusChange(orderId, OrderStatus.ACEPTADO);
+
+    const encargado = await this.prisma.user.findFirst({
+      where: { businessId: order.businessId, role: UserRole.ENCARGADO },
+    });
+    if (encargado) {
+      await this.notificationsService.notifyOrderTaken(
+        encargado.id,
+        orderId,
+        order.deliveryUser?.name || 'Un repartidor',
+        order.customerName,
+      );
+    }
+
+    return this.findOne(orderId, null, riderId, UserRole.REPARTIDOR);
+  }
+
+  async rejectDispatch(orderId: string, riderId: string) {
+    return this.dispatchService.rejectDispatch(orderId, riderId);
   }
 }

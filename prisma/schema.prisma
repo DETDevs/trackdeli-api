@@ -15,6 +15,7 @@ enum UserRole {
 
 enum OrderStatus {
   PENDIENTE
+  OFERTADO
   COTIZANDO
   ACEPTADO
   EN_CAMINO_AL_NEGOCIO
@@ -26,6 +27,31 @@ enum OrderStatus {
   CANCELADO
   INCIDENCIA
   CERRADO
+}
+
+enum BusinessType {
+  NEGOCIO
+  EMPRESA_RIDERS
+}
+
+enum DispatchStatus {
+  SENT
+  ACCEPTED
+  REJECTED
+  TIMEOUT
+}
+
+enum CommissionStatus {
+  PENDING
+  INCLUDED
+  PAID
+}
+
+enum StatementStatus {
+  PENDING
+  PARTIAL
+  PAID
+  OVERDUE
 }
 
 enum QuoteStatus {
@@ -121,6 +147,13 @@ model Business {
   longitude              Float?
   isActive               Boolean      @default(true)
 
+  // Tipo de negocio y comisiones
+  businessType            BusinessType  @default(NEGOCIO)
+  commissionRate          Float         @default(0.15) // 15% default
+  altCommissionRate       Float         @default(0.12) // 12% para >40km
+  altCommissionDistanceKm Float         @default(40)   // umbral en km
+  dispatchTimeoutMin      Int           @default(3)    // minutos antes de pasar al siguiente
+
   // Módulos activos
   hasTrackDeli           Boolean      @default(true)
   hasPOS                 Boolean      @default(false)
@@ -153,6 +186,9 @@ model Business {
   users       User[]
   orders      Order[]
   memberships Membership[]
+  clients     BusinessClient[]
+  commissions OrderCommission[]
+  statements  MonthlyStatement[]
 
   // POS relations
   categories      Category[]
@@ -163,6 +199,21 @@ model Business {
   cashMovements   CashMovement[]
 
   @@map("businesses")
+}
+
+model BusinessClient {
+  id         String   @id @default(uuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+  name       String   @db.VarChar(150)
+  phone      String?  @db.VarChar(30)
+  address    String?  @db.VarChar(300)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  orders     Order[]
+
+  @@map("business_clients")
 }
 
 model Membership {
@@ -215,14 +266,15 @@ model User {
   createdAt    DateTime @default(now())
 
   // TrackDeli relations
-  business              Business?       @relation(fields: [businessId], references: [id])
-  createdOrders         Order[]         @relation("OrderCreatedBy")
-  deliveredOrders       Order[]         @relation("OrderDeliveredBy")
+  business              Business?          @relation(fields: [businessId], references: [id])
+  createdOrders         Order[]            @relation("OrderCreatedBy")
+  deliveredOrders       Order[]            @relation("OrderDeliveredBy")
   locationSnapshots     LocationSnapshot[]
   notifications         Notification[]
   deviceTokens          DeviceToken[]
-  quotes                OrderQuote[]    @relation("RiderQuotes")
-  sentMessages          OrderMessage[]  @relation("SentMessages")
+  quotes                OrderQuote[]       @relation("RiderQuotes")
+  sentMessages          OrderMessage[]     @relation("SentMessages")
+  dispatches            OrderDispatch[]    @relation("RiderDispatches")
 
   // POS relations
   sales          Sale[]          @relation("CashierSales")
@@ -242,6 +294,10 @@ model Order {
 
   customerName          String                @db.VarChar(100)
   customerPhone         String                @db.VarChar(20)
+
+  originBusinessName     String?               @db.VarChar(150)
+  originBusinessClientId String?
+  originBusinessClient   BusinessClient?       @relation(fields: [originBusinessClientId], references: [id])
 
   destinationAddress    String?               @db.VarChar(300)
   destinationLat        Decimal?              @db.Decimal(10, 7)
@@ -274,8 +330,65 @@ model Order {
   notifications         Notification[]
   quotes                OrderQuote[]
   messages              OrderMessage[]
+  dispatches            OrderDispatch[]
+  commission            OrderCommission?
 
   @@map("orders")
+}
+
+model OrderDispatch {
+  id          String         @id @default(uuid())
+  orderId     String
+  order       Order          @relation(fields: [orderId], references: [id])
+  riderId     String
+  rider       User           @relation("RiderDispatches", fields: [riderId], references: [id])
+  attempt     Int            // intento #1, #2, #3...
+  status      DispatchStatus @default(SENT)
+  sentAt      DateTime       @default(now())
+  respondedAt DateTime?
+  timeoutAt   DateTime       // cuando expira si no responde
+
+  @@index([orderId, attempt])
+  @@map("order_dispatches")
+}
+
+model OrderCommission {
+  id               String            @id @default(uuid())
+  orderId          String            @unique
+  order            Order             @relation(fields: [orderId], references: [id])
+  businessId       String
+  business         Business          @relation(fields: [businessId], references: [id])
+  deliveryFee      Float             // monto del envío cobrado al cliente
+  distanceKm       Float             // distancia recorrida
+  commissionRate   Float             // 0.15 o 0.12
+  commissionAmount Float             // monto de comisión = deliveryFee * commissionRate
+  status           CommissionStatus  @default(PENDING)
+  statementId      String?           // a qué estado de cuenta pertenece
+  statement        MonthlyStatement? @relation(fields: [statementId], references: [id])
+  createdAt        DateTime          @default(now())
+
+  @@map("order_commissions")
+}
+
+model MonthlyStatement {
+  id               String            @id @default(uuid())
+  businessId       String
+  business         Business          @relation(fields: [businessId], references: [id])
+  month            Int               // 1-12
+  year             Int
+  totalDeliveries  Int               // cantidad de pedidos entregados
+  totalDeliveryFee Float             // suma de todos los montos de envío
+  totalCommission  Float             // suma de todas las comisiones = lo que debe pagar
+  status           StatementStatus   @default(PENDING)
+  dueDate          DateTime          // fecha límite de pago (ej: 5 del mes siguiente)
+  paidAt           DateTime?
+  paidAmount       Float?            // puede ser pago parcial
+  notes            String?
+  commissions      OrderCommission[]
+  createdAt        DateTime          @default(now())
+
+  @@unique([businessId, month, year])
+  @@map("monthly_statements")
 }
 
 model OrderQuote {

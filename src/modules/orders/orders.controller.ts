@@ -53,6 +53,18 @@ export class OrdersController {
     return this.service.takeOrder(id, user.sub);
   }
 
+  @Post(':id/dispatch/accept')
+  @Roles(UserRole.REPARTIDOR)
+  acceptDispatch(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.service.acceptDispatch(id, user.sub);
+  }
+
+  @Post(':id/dispatch/reject')
+  @Roles(UserRole.REPARTIDOR)
+  rejectDispatch(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.service.rejectDispatch(id, user.sub);
+  }
+
   @Patch(':id/status')
   @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR, UserRole.SUPERADMIN)
   updateStatus(
