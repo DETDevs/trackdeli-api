@@ -12,7 +12,8 @@ import { OrdersMetricsQueryDto } from './dto/orders-metrics-query.dto';
 import { CreateMembershipDto } from './dto/create-membership.dto';
 import { UpdateMembershipDto } from './dto/update-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
-import { MembershipStatus, OrderStatus, UserRole } from '@prisma/client';
+import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
+import { BusinessType, MembershipStatus, OrderStatus, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 function generateBusinessCredentials(businessName: string): {
@@ -363,6 +364,11 @@ export class SuperAdminService {
         data: {
           name: dto.name,
           type: dto.type || null,
+          businessType: dto.businessType || BusinessType.NEGOCIO,
+          commissionRate: dto.commissionRate ?? 0.15,
+          altCommissionRate: dto.altCommissionRate ?? 0.12,
+          altCommissionDistanceKm: dto.altCommissionDistanceKm ?? 40,
+          dispatchTimeoutMin: dto.dispatchTimeoutMin ?? 3,
           whatsappNumber: dto.whatsappNumber || null,
           whatsappDisplay: dto.whatsappDisplay || null,
           isActive: true,
@@ -392,6 +398,11 @@ export class SuperAdminService {
         id: result.business.id,
         name: result.business.name,
         type: result.business.type,
+        businessType: result.business.businessType,
+        commissionRate: result.business.commissionRate,
+        altCommissionRate: result.business.altCommissionRate,
+        altCommissionDistanceKm: result.business.altCommissionDistanceKm,
+        dispatchTimeoutMin: result.business.dispatchTimeoutMin,
         isActive: result.business.isActive,
         createdAt: result.business.createdAt,
       },
@@ -404,6 +415,42 @@ export class SuperAdminService {
         isActive: result.encargado.isActive,
       },
     };
+  }
+
+  async updateBusiness(id: string, dto: UpdateBusinessDto) {
+    this.logger.log(`[updateBusiness] Actualizando negocio id=${id}`);
+    const business = await this.prisma.business.findUnique({
+      where: { id },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+    const updated = await this.prisma.business.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined && { name: dto.name }),
+        ...(dto.type !== undefined && { type: dto.type }),
+        ...(dto.logoUrl !== undefined && { logoUrl: dto.logoUrl }),
+        ...(dto.latitude !== undefined && { latitude: dto.latitude }),
+        ...(dto.longitude !== undefined && { longitude: dto.longitude }),
+        ...(dto.defaultGeofenceRadiusM !== undefined && { defaultGeofenceRadiusM: dto.defaultGeofenceRadiusM }),
+        ...(dto.pricingModel !== undefined && { pricingModel: dto.pricingModel }),
+        ...(dto.baseRate !== undefined && { baseRate: dto.baseRate }),
+        ...(dto.ratePerKm !== undefined && { ratePerKm: dto.ratePerKm }),
+        ...(dto.freeZoneKm !== undefined && { freeZoneKm: dto.freeZoneKm }),
+        ...(dto.minRate !== undefined && { minRate: dto.minRate }),
+        ...(dto.maxRate !== undefined && { maxRate: dto.maxRate }),
+        ...(dto.whatsappNumber !== undefined && { whatsappNumber: dto.whatsappNumber }),
+        ...(dto.whatsappDisplay !== undefined && { whatsappDisplay: dto.whatsappDisplay }),
+        ...(dto.businessType !== undefined && { businessType: dto.businessType }),
+        ...(dto.commissionRate !== undefined && { commissionRate: dto.commissionRate }),
+        ...(dto.altCommissionRate !== undefined && { altCommissionRate: dto.altCommissionRate }),
+        ...(dto.altCommissionDistanceKm !== undefined && { altCommissionDistanceKm: dto.altCommissionDistanceKm }),
+        ...(dto.dispatchTimeoutMin !== undefined && { dispatchTimeoutMin: dto.dispatchTimeoutMin }),
+      },
+    });
+    this.logger.log(`[updateBusiness] OK negocio actualizado id=${id}, businessType=${updated.businessType}`);
+    return updated;
   }
 
   // ==========================================

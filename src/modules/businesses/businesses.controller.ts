@@ -2,6 +2,7 @@ import { Body, Controller, ForbiddenException, Get, Param, Patch, Put } from '@n
 import { BusinessesService } from './businesses.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { SkipMembership } from '../../common/decorators/skip-membership.decorator';
 import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
@@ -12,6 +13,7 @@ export class BusinessesController {
   constructor(private readonly service: BusinessesService) {}
 
   @Get('me')
+  @SkipMembership()
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.REPARTIDOR)
   getMyBusiness(@CurrentUser() user: JwtPayload) {
     if (!user.businessId) {

@@ -58,7 +58,7 @@ export class SuperAdminController {
     @Param('id') id: string,
     @Body() dto: UpdateBusinessDto,
   ) {
-    return this.businessesService.update(id, dto);
+    return this.superAdminService.updateBusiness(id, dto);
   }
 
   @Put('businesses/:id')
@@ -66,7 +66,7 @@ export class SuperAdminController {
     @Param('id') id: string,
     @Body() dto: UpdateBusinessDto,
   ) {
-    return this.businessesService.update(id, dto);
+    return this.superAdminService.updateBusiness(id, dto);
   }
 
   @Patch('businesses/:id/toggle')

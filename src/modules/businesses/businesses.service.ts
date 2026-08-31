@@ -86,6 +86,11 @@ export class BusinessesService {
         ...(dto.pricingZones !== undefined && { pricingZones: dto.pricingZones as any }),
         ...(dto.whatsappNumber !== undefined && { whatsappNumber: dto.whatsappNumber }),
         ...(dto.whatsappDisplay !== undefined && { whatsappDisplay: dto.whatsappDisplay }),
+        ...(dto.businessType !== undefined && { businessType: dto.businessType }),
+        ...(dto.commissionRate !== undefined && { commissionRate: dto.commissionRate }),
+        ...(dto.altCommissionRate !== undefined && { altCommissionRate: dto.altCommissionRate }),
+        ...(dto.altCommissionDistanceKm !== undefined && { altCommissionDistanceKm: dto.altCommissionDistanceKm }),
+        ...(dto.dispatchTimeoutMin !== undefined && { dispatchTimeoutMin: dto.dispatchTimeoutMin }),
       },
     });
 
