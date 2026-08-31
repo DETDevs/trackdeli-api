@@ -26,4 +26,8 @@ export class RegisterRiderDto {
   @IsOptional()
   @IsString()
   vehicleColor?: string;
+
+  @IsOptional()
+  @IsString()
+  inviteCode?: string; // código de invitación de la empresa
 }

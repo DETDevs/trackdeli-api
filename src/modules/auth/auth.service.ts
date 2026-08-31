@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, Logger, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -89,37 +89,84 @@ export class AuthService {
 
   async registerRider(dto: RegisterRiderDto): Promise<TokenResponseDto> {
     try {
+      let businessId: string | null = null;
+      let inviteCodeRecord: any = null;
+
+      // Si se proporcionó un código, validarlo y obtener el businessId
+      if (dto.inviteCode) {
+        inviteCodeRecord = await this.prisma.inviteCode.findUnique({
+          where: { code: dto.inviteCode.trim().toUpperCase() },
+        });
+
+        if (!inviteCodeRecord || !inviteCodeRecord.isActive) {
+          throw new BadRequestException('Código de invitación inválido o inactivo');
+        }
+
+        if (inviteCodeRecord.expiresAt && new Date() > inviteCodeRecord.expiresAt) {
+          throw new BadRequestException('El código de invitación ha expirado');
+        }
+
+        if (
+          inviteCodeRecord.maxUses &&
+          inviteCodeRecord.usedCount >= inviteCodeRecord.maxUses
+        ) {
+          throw new BadRequestException('El código ha alcanzado el límite de usos');
+        }
+
+        businessId = inviteCodeRecord.businessId;
+      }
+
       const passwordHash = await bcrypt.hash(dto.password, 10);
-      
-      const user = await this.prisma.user.create({
-        data: {
-          email: dto.email,
-          passwordHash,
-          name: dto.name,
-          phone: dto.phone,
-          role: 'REPARTIDOR',
-          businessId: null,
-          isAvailable: true,
-          vehicleType: dto.vehicleType,
-          vehiclePlate: dto.vehiclePlate,
-          vehicleColor: dto.vehicleColor,
-        },
+
+      const user = await this.prisma.$transaction(async (tx) => {
+        const newUser = await tx.user.create({
+          data: {
+            email: dto.email,
+            passwordHash,
+            name: dto.name,
+            phone: dto.phone,
+            role: 'REPARTIDOR',
+            businessId,
+            isAvailable: true,
+            vehicleType: dto.vehicleType,
+            vehiclePlate: dto.vehiclePlate,
+            vehicleColor: dto.vehicleColor,
+          },
+        });
+
+        if (inviteCodeRecord) {
+          await tx.inviteCodeUsage.create({
+            data: {
+              inviteCodeId: inviteCodeRecord.id,
+              riderId: newUser.id,
+            },
+          });
+
+          await tx.inviteCode.update({
+            where: { id: inviteCodeRecord.id },
+            data: { usedCount: { increment: 1 } },
+          });
+        }
+
+        return newUser;
       });
 
-      this.logger.log(`[register] OK nuevo repartidor: ${dto.email}`);
+      this.logger.log(
+        `[register] OK nuevo repartidor: ${dto.email} → empresa: ${businessId ?? 'independiente'}`,
+      );
 
       const payload: JwtPayload = {
         sub: user.id,
         email: user.email,
         role: user.role,
         businessId: user.businessId,
-          phone: user.phone,
-          vehicleType: user.vehicleType,
-          vehiclePlate: user.vehiclePlate,
-          vehicleColor: user.vehicleColor,
-          vehiclePhotoUrl: user.vehiclePhotoUrl,
-          profilePhotoUrl: user.profilePhotoUrl,
-          isAvailable: user.isAvailable,
+        phone: user.phone,
+        vehicleType: user.vehicleType,
+        vehiclePlate: user.vehiclePlate,
+        vehicleColor: user.vehicleColor,
+        vehiclePhotoUrl: user.vehiclePhotoUrl,
+        profilePhotoUrl: user.profilePhotoUrl,
+        isAvailable: user.isAvailable,
       };
 
       const tokens = this.generateTokens(payload);
@@ -142,7 +189,10 @@ export class AuthService {
           isAvailable: user.isAvailable,
         },
       };
-    } catch (error) {
+    } catch (error: any) {
+      if (error instanceof BadRequestException || error instanceof ConflictException) {
+        throw error;
+      }
       if (error.code === 'P2002') {
         this.logger.warn(`[register] WARN email ya existe: ${dto.email}`);
         throw new ConflictException('El correo electrónico ya está en uso');

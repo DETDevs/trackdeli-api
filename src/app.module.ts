@@ -17,6 +17,7 @@ import { QuotesModule } from './modules/quotes/quotes.module';
 import { ClientsModule } from './modules/clients/clients.module';
 import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { CommissionsModule } from './modules/commissions/commissions.module';
+import { InviteCodesModule } from './modules/invite-codes/invite-codes.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MembershipGuard } from './common/guards/membership.guard';
@@ -42,6 +43,7 @@ import { MembershipGuard } from './common/guards/membership.guard';
     ClientsModule,
     DispatchModule,
     CommissionsModule,
+    InviteCodesModule,
   ],
   providers: [
     {

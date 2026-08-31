@@ -189,6 +189,7 @@ model Business {
   clients     BusinessClient[]
   commissions OrderCommission[]
   statements  MonthlyStatement[]
+  inviteCodes InviteCode[]
 
   // POS relations
   categories      Category[]
@@ -275,6 +276,7 @@ model User {
   quotes                OrderQuote[]       @relation("RiderQuotes")
   sentMessages          OrderMessage[]     @relation("SentMessages")
   dispatches            OrderDispatch[]    @relation("RiderDispatches")
+  inviteCodeUsage       InviteCodeUsage?
 
   // POS relations
   sales          Sale[]          @relation("CashierSales")
@@ -710,4 +712,32 @@ model StockMovement {
   createdAt   DateTime          @default(now())
 
   @@map("pos_stock_movements")
+}
+
+model InviteCode {
+  id          String    @id @default(uuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id])
+  code        String    @unique // ej: "RAPID2026" o UUID corto
+  description String?   @db.VarChar(100) // ej: "Para riders de Masaya"
+  maxUses     Int?      // null = usos ilimitados
+  usedCount   Int       @default(0)
+  isActive    Boolean   @default(true)
+  expiresAt   DateTime? // null = no expira
+  createdAt   DateTime  @default(now())
+
+  usages      InviteCodeUsage[]
+
+  @@map("invite_codes")
+}
+
+model InviteCodeUsage {
+  id           String     @id @default(uuid())
+  inviteCodeId String
+  inviteCode   InviteCode @relation(fields: [inviteCodeId], references: [id])
+  riderId      String     @unique // un rider solo puede usar un código
+  rider        User       @relation(fields: [riderId], references: [id])
+  usedAt       DateTime   @default(now())
+
+  @@map("invite_code_usages")
 }

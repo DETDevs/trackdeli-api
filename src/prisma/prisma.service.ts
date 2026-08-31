@@ -129,7 +129,33 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           CONSTRAINT "order_dispatches_riderId_fkey" FOREIGN KEY ("riderId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE
         );`,
 
-        `CREATE INDEX IF NOT EXISTS "order_dispatches_orderId_attempt_idx" ON "order_dispatches"("orderId", "attempt");`
+        `CREATE INDEX IF NOT EXISTS "order_dispatches_orderId_attempt_idx" ON "order_dispatches"("orderId", "attempt");`,
+
+        `CREATE TABLE IF NOT EXISTS "invite_codes" (
+          "id" TEXT NOT NULL,
+          "businessId" TEXT NOT NULL,
+          "code" VARCHAR(50) NOT NULL,
+          "description" VARCHAR(100),
+          "maxUses" INTEGER,
+          "usedCount" INTEGER NOT NULL DEFAULT 0,
+          "isActive" BOOLEAN NOT NULL DEFAULT true,
+          "expiresAt" TIMESTAMP(3),
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "invite_codes_pkey" PRIMARY KEY ("id"),
+          CONSTRAINT "invite_codes_code_key" UNIQUE ("code"),
+          CONSTRAINT "invite_codes_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+        );`,
+
+        `CREATE TABLE IF NOT EXISTS "invite_code_usages" (
+          "id" TEXT NOT NULL,
+          "inviteCodeId" TEXT NOT NULL,
+          "riderId" TEXT NOT NULL,
+          "usedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "invite_code_usages_pkey" PRIMARY KEY ("id"),
+          CONSTRAINT "invite_code_usages_riderId_key" UNIQUE ("riderId"),
+          CONSTRAINT "invite_code_usages_inviteCodeId_fkey" FOREIGN KEY ("inviteCodeId") REFERENCES "invite_codes"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+          CONSTRAINT "invite_code_usages_riderId_fkey" FOREIGN KEY ("riderId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+        );`
       ];
 
       for (const sql of ddlStatements) {
