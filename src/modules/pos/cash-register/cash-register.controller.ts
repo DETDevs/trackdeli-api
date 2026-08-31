@@ -1,4 +1,4 @@
-﻿import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
@@ -21,6 +21,11 @@ export class CashRegisterController {
     return this.service.findAll(resolveBusinessId(user, qBid));
   }
 
+  @Get("history")
+  getHistory(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
+    return this.service.findAll(resolveBusinessId(user, qBid));
+  }
+
   @Get("current")
   getCurrent(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
     return this.service.getCurrent(resolveBusinessId(user, qBid), user.sub);
@@ -35,6 +40,15 @@ export class CashRegisterController {
     return this.service.open(dto, resolveBusinessId(user, qBid), user.sub);
   }
 
+  @Post("close")
+  closeCurrent(
+    @Body() dto: CloseCashRegisterDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.close(null, dto, resolveBusinessId(user, qBid), user.sub);
+  }
+
   @Post(":id/close")
   close(
     @Param("id") id: string,
@@ -42,11 +56,30 @@ export class CashRegisterController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.close(id, dto, resolveBusinessId(user, qBid));
+    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub);
+  }
+
+  @Post("movements")
+  addMovementCurrent(
+    @Body() dto: CashMovementDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.addMovement(null, dto, resolveBusinessId(user, qBid), user.sub);
   }
 
   @Post(":id/movement")
   addMovement(
+    @Param("id") id: string,
+    @Body() dto: CashMovementDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.addMovement(id, dto, resolveBusinessId(user, qBid), user.sub);
+  }
+
+  @Post(":id/movements")
+  addMovementPlural(
     @Param("id") id: string,
     @Body() dto: CashMovementDto,
     @CurrentUser() user: JwtPayload,

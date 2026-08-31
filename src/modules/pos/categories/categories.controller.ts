@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PosGuard } from '../../../common/guards/pos.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -34,6 +34,16 @@ export class CategoriesController {
 
   @Patch(':id')
   update(
+    @Param('id') id: string,
+    @Body() dto: UpdateCategoryDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') queryBusinessId?: string,
+  ) {
+    return this.service.update(id, dto, resolveBusinessId(user, queryBusinessId));
+  }
+
+  @Put(':id')
+  updatePut(
     @Param('id') id: string,
     @Body() dto: UpdateCategoryDto,
     @CurrentUser() user: JwtPayload,

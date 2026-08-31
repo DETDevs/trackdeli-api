@@ -1,4 +1,4 @@
-﻿import { Controller, Get, Query, UseGuards } from "@nestjs/common";
+import { Controller, Get, Query, UseGuards } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
@@ -12,6 +12,17 @@ import { ReportsService } from "./reports.service";
 @Controller("pos/reports")
 export class ReportsController {
   constructor(private readonly service: ReportsService) {}
+
+  @Get()
+  overview(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getOverview(resolveBusinessId(user, qBid), period, from, to);
+  }
 
   @Get("sales-summary")
   salesSummary(

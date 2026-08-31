@@ -1,4 +1,4 @@
-﻿import { Body, Controller, Get, Patch, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Patch, Put, Query, UseGuards } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
@@ -27,4 +27,14 @@ export class SettingsController {
   ) {
     return this.service.updateSettings(resolveBusinessId(user, qBid), dto);
   }
+
+  @Put()
+  updateSettingsPut(
+    @Body() dto: UpdatePosSettingsDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.updateSettings(resolveBusinessId(user, qBid), dto);
+  }
 }
+

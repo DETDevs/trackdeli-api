@@ -1,15 +1,21 @@
-﻿import { IsEnum, IsNumber, IsString, MinLength, Min } from 'class-validator';
-import { MovementType } from '@prisma/client';
+import { IsNumber, IsString, IsOptional, Min } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CashMovementDto {
-  @IsEnum(MovementType)
-  type: MovementType;
+  @IsOptional()
+  @IsString()
+  type?: string;
 
+  @Type(() => Number)
   @IsNumber()
   @Min(0.01)
   amount: number;
 
+  @IsOptional()
   @IsString()
-  @MinLength(3)
-  concept: string;
+  concept?: string;
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
 }

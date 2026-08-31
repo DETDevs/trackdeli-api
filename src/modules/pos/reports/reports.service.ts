@@ -154,4 +154,50 @@ export class ReportsService {
       take: 200,
     });
   }
+
+  async getOverview(businessId: string, period?: string, from?: string, to?: string) {
+    let dateFrom = from;
+    let dateTo = to;
+    if (period && !from && !to) {
+      const now = new Date();
+      if (period === 'today') {
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        dateFrom = start.toISOString();
+      } else if (period === 'week') {
+        const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        dateFrom = start.toISOString();
+      } else if (period === 'month') {
+        const start = new Date(now.getFullYear(), now.getMonth(), 1);
+        dateFrom = start.toISOString();
+      } else if (period === 'year') {
+        const start = new Date(now.getFullYear(), 0, 1);
+        dateFrom = start.toISOString();
+      }
+    }
+
+    const summary = await this.getSalesSummary(businessId, dateFrom, dateTo);
+    const topProducts = await this.getTopProducts(businessId, dateFrom, dateTo, 5);
+    const lowStockProducts = await this.getStockAlerts(businessId);
+
+    const totalCash = summary.byPaymentMethod['EFECTIVO'] || 0;
+    const totalCard = summary.byPaymentMethod['TARJETA'] || 0;
+    const totalTransfer = summary.byPaymentMethod['TRANSFERENCIA'] || 0;
+
+    return {
+      totalSales: summary.totalRevenue,
+      salesCount: summary.totalSales,
+      averageTicket: summary.averageTicket,
+      totalCash,
+      totalCard,
+      totalTransfer,
+      topProducts: topProducts.map(p => ({
+        productId: p.name,
+        productName: p.name,
+        quantity: p.quantity,
+        revenue: p.revenue,
+      })),
+      lowStockProducts,
+      summary,
+    };
+  }
 }

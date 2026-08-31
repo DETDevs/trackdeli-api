@@ -1,5 +1,5 @@
-﻿import {
-  Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards,
+import {
+  Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
@@ -62,6 +62,16 @@ export class ProductsController {
 
   @Patch(":id")
   update(
+    @Param("id") id: string,
+    @Body() dto: UpdateProductDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.update(id, dto, resolveBusinessId(user, qBid));
+  }
+
+  @Put(":id")
+  updatePut(
     @Param("id") id: string,
     @Body() dto: UpdateProductDto,
     @CurrentUser() user: JwtPayload,

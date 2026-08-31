@@ -1,4 +1,4 @@
-﻿import {
+import {
   IsArray, IsEnum, IsNumber, IsOptional, IsString, Min, ValidateNested,
 } from "class-validator";
 import { Type } from "class-transformer";
@@ -16,15 +16,18 @@ export class CreateSaleItemDto {
   @IsString()
   barcode?: string;
 
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   unitPrice: number;
 
+  @Type(() => Number)
   @IsNumber()
   @Min(0.01)
   quantity: number;
 
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   discount?: number;
@@ -55,11 +58,13 @@ export class CreateSaleDto {
   @IsEnum(PosPaymentMethod)
   paymentMethod: PosPaymentMethod;
 
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   amountPaid: number;
 
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   discountAmount?: number;

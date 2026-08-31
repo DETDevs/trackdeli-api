@@ -1,4 +1,4 @@
-﻿import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PosGuard } from '../../../common/guards/pos.guard';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
@@ -30,8 +30,14 @@ export class SuppliersController {
     return this.service.update(id, dto, resolveBusinessId(user, qBid));
   }
 
+  @Put(':id')
+  updatePut(@Param('id') id: string, @Body() dto: UpdateSupplierDto, @CurrentUser() user: JwtPayload, @Query('businessId') qBid?: string) {
+    return this.service.update(id, dto, resolveBusinessId(user, qBid));
+  }
+
   @Delete(':id')
   remove(@Param('id') id: string, @CurrentUser() user: JwtPayload, @Query('businessId') qBid?: string) {
     return this.service.remove(id, resolveBusinessId(user, qBid));
   }
 }
+
