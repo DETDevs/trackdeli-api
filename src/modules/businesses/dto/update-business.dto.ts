@@ -1,5 +1,5 @@
 import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber, IsEnum, Matches } from 'class-validator';
-import { PricingModel } from '@prisma/client';
+import { BusinessType, PricingModel } from '@prisma/client';
 
 export class UpdateBusinessDto {
   @IsString()
@@ -76,4 +76,28 @@ export class UpdateBusinessDto {
   @IsOptional()
   @IsString()
   whatsappDisplay?: string;
+
+  @IsOptional()
+  @IsEnum(BusinessType)
+  businessType?: BusinessType;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  commissionRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  altCommissionRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  altCommissionDistanceKm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  dispatchTimeoutMin?: number;
 }

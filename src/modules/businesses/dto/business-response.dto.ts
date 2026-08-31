@@ -1,4 +1,4 @@
-import { PricingModel } from '@prisma/client';
+import { BusinessType, PricingModel } from '@prisma/client';
 
 export class BusinessResponseDto {
   id: string;
@@ -9,6 +9,13 @@ export class BusinessResponseDto {
   latitude: number | null;
   longitude: number | null;
   isActive: boolean;
+
+  // Modelo y comisiones
+  businessType: BusinessType;
+  commissionRate: number;
+  altCommissionRate: number;
+  altCommissionDistanceKm: number;
+  dispatchTimeoutMin: number;
 
   // Módulos activos
   hasTrackDeli: boolean;

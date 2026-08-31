@@ -5,6 +5,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UploadedFile,
   UseGuards,
@@ -21,6 +22,8 @@ import { MembershipsQueryDto } from './dto/memberships-query.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { CommissionsService } from '../commissions/commissions.service';
+import { BusinessesService } from '../businesses/businesses.service';
+import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
 
 @Controller('superadmin')
 @UseGuards(SuperAdminGuard)
@@ -28,6 +31,7 @@ export class SuperAdminController {
   constructor(
     private readonly superAdminService: SuperAdminService,
     private readonly commissionsService: CommissionsService,
+    private readonly businessesService: BusinessesService,
   ) {}
 
   // ==========================================
@@ -47,6 +51,22 @@ export class SuperAdminController {
   @Get('businesses/:id')
   async getBusinessById(@Param('id') id: string) {
     return this.superAdminService.getBusinessById(id);
+  }
+
+  @Patch('businesses/:id')
+  async updateBusiness(
+    @Param('id') id: string,
+    @Body() dto: UpdateBusinessDto,
+  ) {
+    return this.businessesService.update(id, dto);
+  }
+
+  @Put('businesses/:id')
+  async updateBusinessPut(
+    @Param('id') id: string,
+    @Body() dto: UpdateBusinessDto,
+  ) {
+    return this.businessesService.update(id, dto);
   }
 
   @Patch('businesses/:id/toggle')
