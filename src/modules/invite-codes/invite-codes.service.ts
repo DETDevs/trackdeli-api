@@ -15,25 +15,31 @@ export class InviteCodesService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  private generateOTP(): string {
+    // Genera número entre 100000 y 999999
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  }
+
   async createInviteCode(dto: CreateInviteCodeDto, businessId: string) {
-    const code =
-      dto.code?.trim().toUpperCase() ??
-      Math.random().toString(36).substring(2, 8).toUpperCase();
+    let code: string;
+    let attempts = 0;
 
-    const existing = await this.prisma.inviteCode.findUnique({
-      where: { code },
-    });
-
-    if (existing) {
-      throw new ConflictException('Ese código ya existe');
-    }
+    // Generar hasta encontrar uno único
+    do {
+      code = this.generateOTP();
+      const existing = await this.prisma.inviteCode.findUnique({
+        where: { code },
+      });
+      if (!existing) break;
+      attempts++;
+    } while (attempts < 10);
 
     const inviteCode = await this.prisma.inviteCode.create({
       data: {
         businessId,
         code,
         description: dto.description,
-        maxUses: dto.maxUses,
+        maxUses: dto.maxUses ?? null,
         expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
       },
       include: {
@@ -43,7 +49,7 @@ export class InviteCodesService {
       },
     });
 
-    this.logger.log(`[createInviteCode] Código creado: ${code} para negocio: ${businessId}`);
+    this.logger.log(`[createInviteCode] OTP creado: ${code} para negocio: ${businessId}`);
     return inviteCode;
   }
 
@@ -123,7 +129,7 @@ export class InviteCodesService {
   }
 
   async validateCode(code: string) {
-    const formattedCode = code.trim().toUpperCase();
+    const formattedCode = code.trim();
     const inviteCode = await this.prisma.inviteCode.findUnique({
       where: { code: formattedCode },
       include: {
@@ -133,20 +139,13 @@ export class InviteCodesService {
       },
     });
 
-    if (!inviteCode) {
-      throw new NotFoundException('Código de invitación inválido');
-    }
-
-    if (!inviteCode.isActive) {
-      throw new BadRequestException('Este código ya no está activo');
-    }
-
+    if (!inviteCode) throw new NotFoundException('Código inválido');
+    if (!inviteCode.isActive) throw new BadRequestException('Código inactivo');
     if (inviteCode.expiresAt && new Date() > inviteCode.expiresAt) {
-      throw new BadRequestException('Este código ha expirado');
+      throw new BadRequestException('Código expirado');
     }
-
     if (inviteCode.maxUses && inviteCode.usedCount >= inviteCode.maxUses) {
-      throw new BadRequestException('Este código ya alcanzó el límite de usos');
+      throw new BadRequestException('Código agotado');
     }
 
     return {
