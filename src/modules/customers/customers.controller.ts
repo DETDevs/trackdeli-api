@@ -89,8 +89,12 @@ export class CustomersController {
     );
   }
 
-  // 4. GET /customers/location-session/:token (Público)
-  @Get('customers/location-session/:token')
+  // 4. GET /customers/confirm-location/:token (Público, exclusivo de CustomerLocationSession)
+  @Get([
+    'customers/confirm-location/:token',
+    'customers/location-session/:token',
+    'confirm-location/:token',
+  ])
   @Public()
   async getLocationSession(@Param('token') token: string) {
     return this.customersService.getLocationSession(token);

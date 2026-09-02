@@ -256,12 +256,25 @@ export class CustomersService {
       },
     });
 
-    if (!session || !session.isActive || session.expiresAt < new Date()) {
-      throw new NotFoundException('Link de confirmación no válido o expirado');
+    if (!session || !session.isActive) {
+      throw new NotFoundException('Link de confirmación no válido');
+    }
+
+    const isExpired = session.expiresAt < new Date();
+    if (isExpired) {
+      throw new NotFoundException('El link de confirmación ha expirado');
     }
 
     return {
       valid: true,
+      expired: false,
+      customerId: session.customer.id,
+      name: session.customer.name,
+      phone: session.customer.phone,
+      lastLatitude: session.customer.lastLatitude,
+      lastLongitude: session.customer.lastLongitude,
+      lastAddressText: session.customer.lastAddressText,
+      lastConfirmedAt: session.customer.lastConfirmedAt,
       customer: {
         id: session.customer.id,
         name: session.customer.name,

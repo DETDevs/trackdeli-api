@@ -33,6 +33,14 @@ export class CustomerLocationConfirmationLinkDto {
 
 export class CustomerLocationSessionPublicDto {
   valid: boolean;
+  expired: boolean;
+  customerId?: string;
+  name?: string;
+  phone?: string;
+  lastLatitude?: number | null;
+  lastLongitude?: number | null;
+  lastAddressText?: string | null;
+  lastConfirmedAt?: Date | null;
   customer?: {
     id: string;
     name: string;

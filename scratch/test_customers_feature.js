@@ -224,13 +224,17 @@ async function runTests() {
   const customerIdA = linkResBody.customerId;
   const linkRes = linkResBody;
 
-  // 7. Acceso público sin JWT vía token
-  console.log('\n7️⃣ Consultando sesión pública por token (sin auth)...');
+  // 7. Acceso público sin JWT vía token exclusivo de confirm-location
+  console.log('\n7️⃣ Consultando sesión pública por token en /customers/confirm-location/:token (sin auth)...');
   const sessionRes = await request(
     'GET',
-    `/customers/location-session/${linkRes.token}`,
+    `/customers/confirm-location/${linkRes.token}`,
   );
-  console.log(`   ✅ Sesión válida: Cliente="${sessionRes.customer.name}", Negocio="${sessionRes.business.name}"`);
+  console.log(`   ✅ Sesión válida: Cliente="${sessionRes.name}", CustomerId="${sessionRes.customerId}", Negocio="${sessionRes.business.name}", Expired=${sessionRes.expired}`);
+
+  if (!sessionRes.customerId || !sessionRes.name || sessionRes.expired !== false) {
+    throw new Error(`Respuesta inválida en /customers/confirm-location/:token: ${JSON.stringify(sessionRes)}`);
+  }
 
   // 8. Verificación de WebSockets y Aislamiento de Salas
   console.log('\n8️⃣ Conectando WebSockets a salas business...');
