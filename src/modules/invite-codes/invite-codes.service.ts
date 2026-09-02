@@ -65,6 +65,52 @@ export class InviteCodesService {
     });
   }
 
+  async toggle(id: string, businessId?: string, isSuperAdmin = false) {
+    const inviteCode = await this.prisma.inviteCode.findUnique({
+      where: { id },
+    });
+
+    if (!inviteCode) {
+      throw new NotFoundException('Código de invitación no encontrado');
+    }
+
+    if (!isSuperAdmin && businessId && inviteCode.businessId !== businessId) {
+      throw new ForbiddenException('Sin acceso a este código');
+    }
+
+    const updated = await this.prisma.inviteCode.update({
+      where: { id },
+      data: { isActive: !inviteCode.isActive },
+    });
+
+    this.logger.log(
+      `[toggle] Código ${inviteCode.code} nuevo estado isActive: ${updated.isActive}`,
+    );
+    return updated;
+  }
+
+  async activate(id: string, businessId?: string, isSuperAdmin = false) {
+    const inviteCode = await this.prisma.inviteCode.findUnique({
+      where: { id },
+    });
+
+    if (!inviteCode) {
+      throw new NotFoundException('Código de invitación no encontrado');
+    }
+
+    if (!isSuperAdmin && businessId && inviteCode.businessId !== businessId) {
+      throw new ForbiddenException('Sin acceso a este código');
+    }
+
+    const updated = await this.prisma.inviteCode.update({
+      where: { id },
+      data: { isActive: true },
+    });
+
+    this.logger.log(`[activate] Código activado: ${inviteCode.code}`);
+    return updated;
+  }
+
   async deactivate(id: string, businessId?: string, isSuperAdmin = false) {
     const inviteCode = await this.prisma.inviteCode.findUnique({
       where: { id },

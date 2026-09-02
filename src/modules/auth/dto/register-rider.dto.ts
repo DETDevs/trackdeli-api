@@ -1,4 +1,4 @@
-import { IsEmail, IsEnum, IsOptional, IsString, Length, Matches, MinLength } from 'class-validator';
+import { IsEmail, IsEnum, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { VehicleType } from '@prisma/client';
 
 export class RegisterRiderDto {
@@ -29,7 +29,7 @@ export class RegisterRiderDto {
 
   @IsOptional()
   @IsString()
-  @Length(6, 6, { message: 'El código debe tener exactamente 6 dígitos' })
-  @Matches(/^\d{6}$/, { message: 'El código debe ser numérico' })
+  @MinLength(4)
+  @MaxLength(20)
   inviteCode?: string;
 }

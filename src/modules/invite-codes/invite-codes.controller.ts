@@ -37,6 +37,46 @@ export class InviteCodesController {
     return this.service.getInviteCodes(user.businessId!);
   }
 
+  @Patch(':id/toggle')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  toggle(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.service.toggle(
+      id,
+      user.businessId,
+      user.role === UserRole.SUPERADMIN,
+    );
+  }
+
+  @Put(':id/toggle')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  togglePut(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.service.toggle(
+      id,
+      user.businessId,
+      user.role === UserRole.SUPERADMIN,
+    );
+  }
+
+  @Patch(':id/activate')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  activate(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.service.activate(
+      id,
+      user.businessId,
+      user.role === UserRole.SUPERADMIN,
+    );
+  }
+
+  @Put(':id/activate')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  activatePut(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.service.activate(
+      id,
+      user.businessId,
+      user.role === UserRole.SUPERADMIN,
+    );
+  }
+
   @Patch(':id/deactivate')
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   deactivate(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
