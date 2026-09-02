@@ -35,7 +35,7 @@ export class OrdersService {
     // Obtener el dispatch activo (SENT) para retornar su timeoutAt al rider
     const activeDispatch = await this.prisma.orderDispatch.findFirst({
       where: { orderId: order.id, status: 'SENT' },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { sentAt: 'desc' },
     });
 
 
@@ -70,6 +70,14 @@ export class OrdersService {
         : null,
       originBusinessName: order.originBusinessName ?? null,
       originBusinessClientId: order.originBusinessClientId ?? null,
+      originBusinessClient: order.originBusinessClient ? {
+        id: order.originBusinessClient.id,
+        name: order.originBusinessClient.name,
+        address: order.originBusinessClient.address ?? null,
+        phone: order.originBusinessClient.phone ?? null,
+        latitude: order.originBusinessClient.latitude ? Number(order.originBusinessClient.latitude) : null,
+        longitude: order.originBusinessClient.longitude ? Number(order.originBusinessClient.longitude) : null,
+      } : null,
       createdAt: order.createdAt,
       activeDispatchTimeoutAt: activeDispatch?.timeoutAt ?? null,
       takenAt: order.takenAt,
@@ -285,6 +293,16 @@ export class OrdersService {
             whatsappDisplay: true,
           },
         },
+        originBusinessClient: {
+          select: {
+            id: true,
+            name: true,
+            address: true,
+            phone: true,
+            latitude: true,
+            longitude: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take: (!businessId && role === UserRole.REPARTIDOR) ? 20 : undefined,
@@ -324,6 +342,16 @@ export class OrdersService {
             logoUrl: true,
             whatsappNumber: true,
             whatsappDisplay: true,
+          },
+        },
+        originBusinessClient: {
+          select: {
+            id: true,
+            name: true,
+            address: true,
+            phone: true,
+            latitude: true,
+            longitude: true,
           },
         },
       },

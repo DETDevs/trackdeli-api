@@ -30,6 +30,14 @@ export class OrderResponseDto {
   trackingUrl?: string | null;
   originBusinessName?: string | null;
   originBusinessClientId?: string | null;
+  originBusinessClient?: {
+    id: string;
+    name: string;
+    address: string | null;
+    phone: string | null;
+    latitude: number | null;
+    longitude: number | null;
+  } | null;
   createdAt: Date;
   activeDispatchTimeoutAt?: Date | null;
   takenAt: Date | null;

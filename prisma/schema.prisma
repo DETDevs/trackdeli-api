@@ -209,6 +209,8 @@ model BusinessClient {
   name       String   @db.VarChar(150)
   phone      String?  @db.VarChar(30)
   address    String?  @db.VarChar(300)
+  latitude   Float?
+  longitude  Float?
   isActive   Boolean  @default(true)
   createdAt  DateTime @default(now())
 

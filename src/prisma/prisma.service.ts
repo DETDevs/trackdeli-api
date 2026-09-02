@@ -78,6 +78,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           CONSTRAINT "business_clients_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE RESTRICT ON UPDATE CASCADE
         );`,
 
+        `ALTER TABLE "business_clients" ADD COLUMN IF NOT EXISTS "latitude" DOUBLE PRECISION;`,
+        `ALTER TABLE "business_clients" ADD COLUMN IF NOT EXISTS "longitude" DOUBLE PRECISION;`,
+
+
         `CREATE TABLE IF NOT EXISTS "monthly_statements" (
           "id" TEXT NOT NULL,
           "businessId" TEXT NOT NULL,
