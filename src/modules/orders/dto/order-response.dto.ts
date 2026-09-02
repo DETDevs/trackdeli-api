@@ -31,6 +31,7 @@ export class OrderResponseDto {
   originBusinessName?: string | null;
   originBusinessClientId?: string | null;
   createdAt: Date;
+  activeDispatchTimeoutAt?: Date | null;
   takenAt: Date | null;
   deliveredAt: Date | null;
   business?: {

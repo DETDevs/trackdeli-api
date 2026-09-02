@@ -32,6 +32,13 @@ export class OrdersService {
       where: { orderId: order.id },
     });
 
+    // Obtener el dispatch activo (SENT) para retornar su timeoutAt al rider
+    const activeDispatch = await this.prisma.orderDispatch.findFirst({
+      where: { orderId: order.id, status: 'SENT' },
+      orderBy: { createdAt: 'desc' },
+    });
+
+
     const trackingBaseUrl =
       this.configService.get<string>('TRACKING_URL') ||
       'https://trackdeli-web-tracking.vercel.app';
@@ -64,6 +71,7 @@ export class OrdersService {
       originBusinessName: order.originBusinessName ?? null,
       originBusinessClientId: order.originBusinessClientId ?? null,
       createdAt: order.createdAt,
+      activeDispatchTimeoutAt: activeDispatch?.timeoutAt ?? null,
       takenAt: order.takenAt,
       deliveredAt: order.deliveredAt,
       business: order.business ? {
