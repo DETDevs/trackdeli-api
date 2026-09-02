@@ -7,6 +7,7 @@ import { TrackingModule } from '../tracking/tracking.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { DispatchModule } from '../dispatch/dispatch.module';
 import { CommissionsModule } from '../commissions/commissions.module';
+import { CustomersModule } from '../customers/customers.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { CommissionsModule } from '../commissions/commissions.module';
     NotificationsModule,
     DispatchModule,
     CommissionsModule,
+    CustomersModule,
   ],
   controllers: [OrdersController],
   providers: [OrdersService],

@@ -159,6 +159,39 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           CONSTRAINT "invite_code_usages_riderId_key" UNIQUE ("riderId"),
           CONSTRAINT "invite_code_usages_inviteCodeId_fkey" FOREIGN KEY ("inviteCodeId") REFERENCES "invite_codes"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
           CONSTRAINT "invite_code_usages_riderId_fkey" FOREIGN KEY ("riderId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+        );`,
+
+        `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "customerLocationMaxDays" INTEGER NOT NULL DEFAULT 30;`,
+
+        `CREATE TABLE IF NOT EXISTS "customers" (
+          "id" TEXT NOT NULL,
+          "businessId" TEXT NOT NULL,
+          "phone" VARCHAR(30) NOT NULL,
+          "name" VARCHAR(100) NOT NULL,
+          "lastLatitude" DOUBLE PRECISION,
+          "lastLongitude" DOUBLE PRECISION,
+          "lastAddressText" VARCHAR(300),
+          "lastConfirmedAt" TIMESTAMP(3),
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "customers_pkey" PRIMARY KEY ("id"),
+          CONSTRAINT "customers_businessId_phone_key" UNIQUE ("businessId", "phone"),
+          CONSTRAINT "customers_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+        );`,
+
+        `CREATE INDEX IF NOT EXISTS "customers_businessId_phone_idx" ON "customers"("businessId", "phone");`,
+        `CREATE INDEX IF NOT EXISTS "customers_businessId_name_idx" ON "customers"("businessId", "name");`,
+
+        `CREATE TABLE IF NOT EXISTS "customer_location_sessions" (
+          "id" TEXT NOT NULL,
+          "customerId" TEXT NOT NULL,
+          "token" VARCHAR(64) NOT NULL,
+          "isActive" BOOLEAN NOT NULL DEFAULT true,
+          "expiresAt" TIMESTAMP(3) NOT NULL,
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "customer_location_sessions_pkey" PRIMARY KEY ("id"),
+          CONSTRAINT "customer_location_sessions_token_key" UNIQUE ("token"),
+          CONSTRAINT "customer_location_sessions_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE CASCADE ON UPDATE CASCADE
         );`
       ];
 

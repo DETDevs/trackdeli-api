@@ -12,6 +12,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { calculateDeliveryFee } from '../../common/utils/pricing.util';
 import { DispatchService } from '../dispatch/dispatch.service';
 import { CommissionsService } from '../commissions/commissions.service';
+import { CustomersService } from '../customers/customers.service';
 
 @Injectable()
 export class OrdersService {
@@ -25,6 +26,7 @@ export class OrdersService {
     private readonly configService: ConfigService,
     private readonly dispatchService: DispatchService,
     private readonly commissionsService: CommissionsService,
+    private readonly customersService: CustomersService,
   ) {}
 
   private async toResponseDto(order: any): Promise<OrderResponseDto> {
@@ -220,6 +222,20 @@ export class OrdersService {
     });
 
     this.logger.log(`[create] OK pedido creado: id=${order.id}, cliente=${dto.customerName}, negocio=${businessId}, tarifa=C$${deliveryFee}`);
+
+    // Upsert automático del cliente recurrente
+    if (dto.customerPhone) {
+      this.customersService.upsertFromOrder({
+        businessId,
+        phone: dto.customerPhone,
+        name: dto.customerName,
+        destinationLat: dto.destinationLat,
+        destinationLng: dto.destinationLng,
+        destinationAddress: dto.destinationAddress,
+      }).catch((err) => {
+        this.logger.warn(`[create] Error en upsert de cliente recurrente: ${err.message}`);
+      });
+    }
 
     const repartidores = await this.prisma.user.findMany({
       where: { businessId, role: 'REPARTIDOR', isActive: true },

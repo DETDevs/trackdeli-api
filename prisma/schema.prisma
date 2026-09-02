@@ -180,6 +180,9 @@ model Business {
   posPhone               String?      @db.VarChar(30)
   posFooter              String?      @db.VarChar(200)
 
+  // Umbral de confirmación de ubicación de clientes (días)
+  customerLocationMaxDays Int          @default(30)
+
   createdAt              DateTime     @default(now())
 
   // TrackDeli relations
@@ -187,6 +190,7 @@ model Business {
   orders      Order[]
   memberships Membership[]
   clients     BusinessClient[]
+  customers   Customer[]
   commissions OrderCommission[]
   statements  MonthlyStatement[]
   inviteCodes InviteCode[]
@@ -459,6 +463,40 @@ model TrackingSession {
   order Order @relation(fields: [orderId], references: [id])
 
   @@map("tracking_sessions")
+}
+
+model Customer {
+  id              String                    @id @default(uuid())
+  businessId      String
+  business        Business                  @relation(fields: [businessId], references: [id])
+  phone           String                    @db.VarChar(30)
+  name            String                    @db.VarChar(100)
+  lastLatitude    Float?
+  lastLongitude   Float?
+  lastAddressText String?                   @db.VarChar(300)
+  lastConfirmedAt DateTime?
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  locationSessions CustomerLocationSession[]
+
+  @@unique([businessId, phone])
+  @@index([businessId, phone])
+  @@index([businessId, name])
+  @@map("customers")
+}
+
+model CustomerLocationSession {
+  id         String    @id @default(uuid())
+  customerId String
+  token      String    @unique @db.VarChar(64)
+  isActive   Boolean   @default(true)
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+
+  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@map("customer_location_sessions")
 }
 
 model LocationSnapshot {
