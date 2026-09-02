@@ -194,4 +194,87 @@ export class UsersService {
 
     return { url };
   }
+
+  async joinBusiness(userId: string, code: string) {
+    const formattedCode = code.trim();
+
+    // 1. Validar el código
+    const inviteCode = await this.prisma.inviteCode.findUnique({
+      where: { code: formattedCode },
+      include: {
+        business: {
+          select: { id: true, name: true },
+        },
+      },
+    });
+
+    if (!inviteCode) {
+      throw new NotFoundException('Código inválido');
+    }
+    if (!inviteCode.isActive) {
+      throw new BadRequestException('Este código ya no está activo');
+    }
+    if (inviteCode.expiresAt && new Date() > inviteCode.expiresAt) {
+      throw new BadRequestException('Este código ha expirado');
+    }
+    if (inviteCode.maxUses && inviteCode.usedCount >= inviteCode.maxUses) {
+      throw new BadRequestException('Este código ha alcanzado el límite de usos');
+    }
+
+    // 2. Verificar que el rider no esté ya en esa misma empresa
+    const rider = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, businessId: true },
+    });
+
+    if (rider?.businessId === inviteCode.businessId) {
+      throw new ConflictException('Ya pertenecés a esta empresa');
+    }
+
+    // 3. Actualizar businessId del rider + registrar uso del código
+    return this.prisma.$transaction(async (tx) => {
+      // Actualizar el rider
+      const updatedUser = await tx.user.update({
+        where: { id: userId },
+        data: { businessId: inviteCode.businessId },
+        select: {
+          id: true,
+          name: true,
+          businessId: true,
+          business: { select: { id: true, name: true } },
+        },
+      });
+
+      // Registrar el uso del código (upsert)
+      await tx.inviteCodeUsage.upsert({
+        where: { riderId: userId },
+        create: {
+          inviteCodeId: inviteCode.id,
+          riderId: userId,
+        },
+        update: {
+          inviteCodeId: inviteCode.id,
+          usedAt: new Date(),
+        },
+      });
+
+      // Incrementar contador de usos
+      await tx.inviteCode.update({
+        where: { id: inviteCode.id },
+        data: { usedCount: { increment: 1 } },
+      });
+
+      this.logger.log(
+        `[joinBusiness] riderId=${userId} → businessId=${inviteCode.businessId} (${inviteCode.business.name})`,
+      );
+
+      return {
+        success: true,
+        business: {
+          id: updatedUser.business?.id,
+          name: updatedUser.business?.name,
+        },
+      };
+    });
+  }
 }

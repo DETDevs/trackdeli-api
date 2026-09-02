@@ -9,10 +9,20 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateRiderProfileDto } from './dto/update-rider-profile.dto';
+import { JoinBusinessDto } from './dto/join-business.dto';
 
 @Controller('users')
 export class UsersController {
   constructor(private readonly service: UsersService) {}
+
+  @Post('me/join-business')
+  @Roles(UserRole.REPARTIDOR)
+  joinBusiness(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: JoinBusinessDto,
+  ) {
+    return this.service.joinBusiness(user.sub, dto.code);
+  }
 
   @Patch('me')
   @Roles(UserRole.REPARTIDOR)
