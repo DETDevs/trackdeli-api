@@ -17,6 +17,8 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { UserRole } from '@prisma/client';
 import { UpdateCustomerLocationDto } from './dto/update-customer-location.dto';
 
+import { CreateLocationConfirmationLinkDto } from './dto/create-location-link.dto';
+
 @Controller()
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
@@ -59,7 +61,21 @@ export class CustomersController {
     return this.customersService.lookup(businessId, phone);
   }
 
-  // 3. POST /customers/:id/location-confirmation-link
+  // 3a. POST /customers/location-confirmation-link (Body: { businessId, phone, name } con upsert automático)
+  @Post('customers/location-confirmation-link')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async createConfirmationLinkByData(
+    @Body() dto: CreateLocationConfirmationLinkDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.customersService.createLocationConfirmationLinkByData(
+      dto,
+      user.businessId,
+      user.role,
+    );
+  }
+
+  // 3b. POST /customers/:id/location-confirmation-link (por ID directo)
   @Post('customers/:id/location-confirmation-link')
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async createConfirmationLink(

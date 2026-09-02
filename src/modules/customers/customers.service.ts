@@ -125,6 +125,77 @@ export class CustomersService {
     };
   }
 
+  async createLocationConfirmationLinkByData(
+    dto: { businessId?: string; phone: string; name: string },
+    userBusinessId: string | null,
+    userRole: UserRole,
+  ): Promise<CustomerLocationConfirmationLinkDto> {
+    const businessId = dto.businessId || userBusinessId;
+    if (!businessId) {
+      throw new BadRequestException('businessId es requerido');
+    }
+
+    if (userRole !== UserRole.SUPERADMIN && businessId !== userBusinessId) {
+      throw new ForbiddenException('Sin acceso a este negocio');
+    }
+
+    const phone = (dto.phone || '').trim();
+    const name = (dto.name || '').trim();
+
+    if (!phone) {
+      throw new BadRequestException('El número de teléfono es requerido');
+    }
+    if (!name) {
+      throw new BadRequestException('El nombre del cliente es requerido');
+    }
+
+    // Upsert automático del Customer por (businessId, phone)
+    const customer = await this.prisma.customer.upsert({
+      where: {
+        businessId_phone: {
+          businessId,
+          phone,
+        },
+      },
+      update: {
+        name,
+      },
+      create: {
+        businessId,
+        phone,
+        name,
+      },
+    });
+
+    const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48 horas
+
+    await this.prisma.customerLocationSession.create({
+      data: {
+        customerId: customer.id,
+        token,
+        expiresAt,
+      },
+    });
+
+    const trackingBaseUrl =
+      this.configService.get<string>('TRACKING_URL') ||
+      'https://trackdeli-web-tracking.vercel.app';
+    const url = `${trackingBaseUrl}/confirm-location/${token}`;
+
+    this.logger.log(
+      `[Customers] Link de confirmación generado por datos: customerId=${customer.id}, phone=${phone}, token=${token}`,
+    );
+
+    return {
+      customerId: customer.id,
+      token,
+      url,
+      confirmationUrl: url,
+      expiresAt,
+    };
+  }
+
   async createLocationConfirmationLink(
     customerId: string,
     userBusinessId: string | null,
@@ -163,8 +234,10 @@ export class CustomersService {
     );
 
     return {
+      customerId: customer.id,
       token,
       url,
+      confirmationUrl: url,
       expiresAt,
     };
   }

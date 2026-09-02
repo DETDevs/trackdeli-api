@@ -199,17 +199,30 @@ async function runTests() {
   );
   console.log(`   ✅ Lookup A retornó: "${lookupResA.name}" (isLocationRecent: ${lookupResA.isLocationRecent})`);
 
-  // 6. Generación de Link de Confirmación de Ubicación
-  console.log('\n6️⃣ Generando link de confirmación de 48h para el cliente de Negocio A...');
-  const customerIdA = matchA.id;
-  const linkRes = await request(
+  // 6. Generación de Link de Confirmación de Ubicación (con { phone, name } y upsert)
+  console.log('\n6️⃣ Generando link de confirmación de 48h con body { phone, name } (upsert automático)...');
+  const testPhoneNew = '+50577770001';
+  const testNameNew = 'Cliente Nuevo Sin Pedido';
+
+  const linkResBody = await request(
     'POST',
-    `/customers/${customerIdA}/location-confirmation-link`,
-    {},
+    '/customers/location-confirmation-link',
+    {
+      phone: testPhoneNew,
+      name: testNameNew,
+    },
     tokenA,
   );
-  console.log(`   ✓ Link generado: token=${linkRes.token}`);
-  console.log(`   ✓ URL pública: ${linkRes.url}`);
+  console.log(`   ✓ Link generado por body: token=${linkResBody.token}`);
+  console.log(`   ✓ CustomerId creado/asociado: ${linkResBody.customerId}`);
+  console.log(`   ✓ ConfirmationUrl: ${linkResBody.confirmationUrl}`);
+
+  if (!linkResBody.customerId || !linkResBody.confirmationUrl || !linkResBody.token) {
+    throw new Error(`Fallo en respuesta de POST /customers/location-confirmation-link: ${JSON.stringify(linkResBody)}`);
+  }
+
+  const customerIdA = linkResBody.customerId;
+  const linkRes = linkResBody;
 
   // 7. Acceso público sin JWT vía token
   console.log('\n7️⃣ Consultando sesión pública por token (sin auth)...');

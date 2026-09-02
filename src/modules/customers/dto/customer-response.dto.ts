@@ -24,8 +24,10 @@ export class CustomerSearchResultDto {
 }
 
 export class CustomerLocationConfirmationLinkDto {
+  customerId: string;
   token: string;
   url: string;
+  confirmationUrl: string;
   expiresAt: Date;
 }
 
