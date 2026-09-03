@@ -6,7 +6,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 @Injectable()
 export class FirebaseService implements OnModuleInit {
   private readonly logger = new Logger(FirebaseService.name);
-  private app: admin.app.App;
+  private app: admin.app.App | null = null;
 
   constructor(
     private config: ConfigService,
@@ -14,18 +14,65 @@ export class FirebaseService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    if (!admin.apps.length) {
-      this.app = admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-        }),
-      });
-      this.logger.log(`[Firebase] Admin SDK inicializado para proyecto: ${process.env.FIREBASE_PROJECT_ID}`);
-    } else {
-      this.app = admin.apps[0]!;
+    try {
+      this.getApp();
+    } catch (err: any) {
+      this.logger.error(`[Firebase] Error en inicialización inicial: ${err.message}`, err.stack);
     }
+  }
+
+  private getApp(): admin.app.App {
+    if (this.app) {
+      return this.app;
+    }
+
+    const appName = 'trackdeli-backend';
+    const existingApp = admin.apps.find((a) => a?.name === appName);
+    if (existingApp) {
+      this.app = existingApp;
+      return this.app;
+    }
+
+    const projectId =
+      this.config.get<string>('FIREBASE_PROJECT_ID') ||
+      process.env.FIREBASE_PROJECT_ID;
+    const clientEmail =
+      this.config.get<string>('FIREBASE_CLIENT_EMAIL') ||
+      process.env.FIREBASE_CLIENT_EMAIL;
+    let privateKey =
+      this.config.get<string>('FIREBASE_PRIVATE_KEY') ||
+      process.env.FIREBASE_PRIVATE_KEY ||
+      '';
+
+    // Limpiar comillas envolventes que Railway o .env puedan agregar
+    if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+      privateKey = privateKey.slice(1, -1);
+    }
+    if (privateKey.startsWith("'") && privateKey.endsWith("'")) {
+      privateKey = privateKey.slice(1, -1);
+    }
+    // Normalizar saltos de línea escapados a reales
+    privateKey = privateKey.replace(/\\n/g, '\n');
+
+    if (!projectId || !clientEmail || !privateKey) {
+      this.logger.warn(
+        `[Firebase] Credenciales incompletas: projectId=${!!projectId}, clientEmail=${!!clientEmail}, privateKey=${!!privateKey}`,
+      );
+    }
+
+    this.app = admin.initializeApp(
+      {
+        credential: admin.credential.cert({
+          projectId,
+          clientEmail,
+          privateKey,
+        }),
+      },
+      appName,
+    );
+
+    this.logger.log(`[Firebase] Admin SDK inicializado exitosamente (app: ${appName}, project: ${projectId})`);
+    return this.app;
   }
 
   async sendToToken(
@@ -35,10 +82,22 @@ export class FirebaseService implements OnModuleInit {
     data?: Record<string, string>,
   ): Promise<void> {
     try {
-      await admin.messaging(this.app).send({
+      const app = this.getApp();
+
+      // Sanitizar data para asegurar que solo contenga strings y sin valores nulos/indefinidos
+      const sanitizedData: Record<string, string> = {};
+      if (data) {
+        for (const [key, value] of Object.entries(data)) {
+          if (value !== null && value !== undefined) {
+            sanitizedData[key] = String(value);
+          }
+        }
+      }
+
+      await app.messaging().send({
         token,
         notification: { title, body },
-        data: data || {},
+        data: sanitizedData,
         android: {
           priority: 'high',
           notification: {
@@ -57,15 +116,20 @@ export class FirebaseService implements OnModuleInit {
       });
       this.logger.log(`[FCM] Push enviado exitosamente al token ${token.substring(0, 20)}...`);
     } catch (error: any) {
-      this.logger.error(`[FCM] Error para token ${token.substring(0, 20)}...: ${error.message}`);
-      
+      this.logger.error(
+        `[FCM] Error para token ${token.substring(0, 20)}...: ${error.message}`,
+        error.stack,
+      );
+
       // Limpiar tokens inválidos o expirados de la base de datos
       if (
         error.code === 'messaging/registration-token-not-registered' ||
         error.code === 'messaging/invalid-registration-token' ||
         error.code === 'messaging/invalid-argument'
       ) {
-        this.logger.warn(`[FCM] Token inválido/expirado detectado. Eliminando de la BD: ${token.substring(0, 20)}...`);
+        this.logger.warn(
+          `[FCM] Token inválido/expirado detectado. Eliminando de la BD: ${token.substring(0, 20)}...`,
+        );
         try {
           await this.prisma.deviceToken.deleteMany({ where: { token } });
           this.logger.log(`[FCM] Token eliminado de la BD`);
@@ -85,7 +149,7 @@ export class FirebaseService implements OnModuleInit {
     if (!tokens.length) return;
 
     await Promise.allSettled(
-      tokens.map(token => this.sendToToken(token, title, body, data))
+      tokens.map((token) => this.sendToToken(token, title, body, data)),
     );
   }
 }
