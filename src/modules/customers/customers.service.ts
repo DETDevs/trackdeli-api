@@ -261,13 +261,14 @@ export class CustomersService {
     }
 
     const isExpired = session.expiresAt < new Date();
-    if (isExpired) {
-      throw new NotFoundException('El link de confirmación ha expirado');
-    }
+    const sessionStatus = ((session as any).status || 'PENDING') as 'PENDING' | 'RESPONDED';
 
     return {
       valid: true,
-      expired: false,
+      expired: isExpired,
+      sessionStatus,
+      status: sessionStatus,
+      respondedAt: (session as any).respondedAt ?? null,
       customerId: session.customer.id,
       name: session.customer.name,
       phone: session.customer.phone,
@@ -308,14 +309,14 @@ export class CustomersService {
     }
 
     // Validación de seguridad / autenticación:
-    // Si viene de un usuario autenticado (encargado/superadmin) con acceso a ese negocio
     const isAuthUser =
       userRole &&
       (userRole === UserRole.SUPERADMIN || customer.businessId === userBusinessId);
 
+    const token = dto.token || tokenParam;
+
     if (!isAuthUser) {
       // Validar por token temporal
-      const token = dto.token || tokenParam;
       if (!token) {
         throw new ForbiddenException('Token de confirmación requerido');
       }
@@ -348,9 +349,23 @@ export class CustomersService {
       if (dto.addressText !== undefined) updateData.lastAddressText = dto.addressText;
     }
 
-    const updated = await this.prisma.customer.update({
-      where: { id: customerId },
-      data: updateData,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const cust = await tx.customer.update({
+        where: { id: customerId },
+        data: updateData,
+      });
+
+      if (token) {
+        await tx.customerLocationSession.updateMany({
+          where: { customerId, token },
+          data: {
+            status: 'RESPONDED',
+            respondedAt: now,
+          },
+        });
+      }
+
+      return cust;
     });
 
     // Emisión por WebSocket a la sala business:${businessId}

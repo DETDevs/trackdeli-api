@@ -487,14 +487,16 @@ model Customer {
 }
 
 model CustomerLocationSession {
-  id         String    @id @default(uuid())
-  customerId String
-  token      String    @unique @db.VarChar(64)
-  isActive   Boolean   @default(true)
-  expiresAt  DateTime
-  createdAt  DateTime  @default(now())
+  id          String    @id @default(uuid())
+  customerId  String
+  token       String    @unique @db.VarChar(64)
+  isActive    Boolean   @default(true)
+  status      String    @default("PENDING") @db.VarChar(20)
+  respondedAt DateTime?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
 
-  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@map("customer_location_sessions")
 }

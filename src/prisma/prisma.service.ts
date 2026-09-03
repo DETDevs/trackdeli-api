@@ -187,12 +187,17 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           "customerId" TEXT NOT NULL,
           "token" VARCHAR(64) NOT NULL,
           "isActive" BOOLEAN NOT NULL DEFAULT true,
+          "status" VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+          "respondedAt" TIMESTAMP(3),
           "expiresAt" TIMESTAMP(3) NOT NULL,
           "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
           CONSTRAINT "customer_location_sessions_pkey" PRIMARY KEY ("id"),
           CONSTRAINT "customer_location_sessions_token_key" UNIQUE ("token"),
           CONSTRAINT "customer_location_sessions_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE CASCADE ON UPDATE CASCADE
-        );`
+        );`,
+
+        `ALTER TABLE "customer_location_sessions" ADD COLUMN IF NOT EXISTS "status" VARCHAR(20) NOT NULL DEFAULT 'PENDING';`,
+        `ALTER TABLE "customer_location_sessions" ADD COLUMN IF NOT EXISTS "respondedAt" TIMESTAMP(3);`
       ];
 
       for (const sql of ddlStatements) {

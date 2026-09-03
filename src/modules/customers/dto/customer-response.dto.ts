@@ -34,6 +34,9 @@ export class CustomerLocationConfirmationLinkDto {
 export class CustomerLocationSessionPublicDto {
   valid: boolean;
   expired: boolean;
+  sessionStatus?: 'PENDING' | 'RESPONDED';
+  status?: string;
+  respondedAt?: Date | null;
   customerId?: string;
   name?: string;
   phone?: string;

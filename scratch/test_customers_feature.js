@@ -291,6 +291,16 @@ async function runTests() {
     throw new Error(`Fallo de privacidad WebSocket: Negocio B recibió datos de Negocio A: ${JSON.stringify(eventReceivedB)}`);
   }
 
+  // Verificar que la sesión ahora refleja sessionStatus: 'RESPONDED' en tiempo real
+  const sessionAfterRes = await request(
+    'GET',
+    `/customers/confirm-location/${linkRes.token}`,
+  );
+  console.log(`   ✅ Estado de sesión reflejado post-respuesta: sessionStatus="${sessionAfterRes.sessionStatus}", respondedAt="${sessionAfterRes.respondedAt}"`);
+  if (sessionAfterRes.sessionStatus !== 'RESPONDED' || !sessionAfterRes.respondedAt) {
+    throw new Error(`Se esperaba sessionStatus 'RESPONDED' y respondedAt, recibido: ${JSON.stringify(sessionAfterRes)}`);
+  }
+
   // 10. Confirmación de misma dirección ("Sí, sigo acá")
   console.log('\n🔟 Probando confirmación de misma ubicación ("Sí, sigo acá")...');
   let confirmedEventA = null;
