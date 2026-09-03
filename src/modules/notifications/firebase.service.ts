@@ -55,9 +55,9 @@ export class FirebaseService implements OnModuleInit {
     privateKey = privateKey.replace(/\\n/g, '\n');
 
     if (!projectId || !clientEmail || !privateKey) {
-      this.logger.warn(
-        `[Firebase] Credenciales incompletas: projectId=${!!projectId}, clientEmail=${!!clientEmail}, privateKey=${!!privateKey}`,
-      );
+      const msg = `Credenciales de Firebase incompletas o no configuradas: projectId=${!!projectId}, clientEmail=${!!clientEmail}, privateKey=${!!privateKey}`;
+      this.logger.warn(`[Firebase] ${msg}`);
+      throw new Error(msg);
     }
 
     this.app = admin.initializeApp(
@@ -80,7 +80,7 @@ export class FirebaseService implements OnModuleInit {
     title: string,
     body: string,
     data?: Record<string, string>,
-  ): Promise<void> {
+  ): Promise<FirebaseSendResult> {
     try {
       const app = this.getApp();
 
@@ -94,7 +94,7 @@ export class FirebaseService implements OnModuleInit {
         }
       }
 
-      await app.messaging().send({
+      const messageId = await app.messaging().send({
         token,
         notification: { title, body },
         data: sanitizedData,
@@ -114,7 +114,8 @@ export class FirebaseService implements OnModuleInit {
           },
         },
       });
-      this.logger.log(`[FCM] Push enviado exitosamente al token ${token.substring(0, 20)}...`);
+      this.logger.log(`[FCM] Push enviado exitosamente al token ${token.substring(0, 20)}... (messageId: ${messageId})`);
+      return { success: true, messageId };
     } catch (error: any) {
       this.logger.error(
         `[FCM] Error para token ${token.substring(0, 20)}...: ${error.message}`,
@@ -137,6 +138,12 @@ export class FirebaseService implements OnModuleInit {
           this.logger.error(`[FCM] Error eliminando token de la BD: ${dbErr.message}`);
         }
       }
+
+      return {
+        success: false,
+        error: error.message,
+        errorCode: error.code || error.errorInfo?.code,
+      };
     }
   }
 
@@ -145,11 +152,63 @@ export class FirebaseService implements OnModuleInit {
     title: string,
     body: string,
     data?: Record<string, string>,
-  ): Promise<void> {
-    if (!tokens.length) return;
+  ): Promise<FirebaseMultipleSendResult> {
+    if (!tokens.length) {
+      return { sent: 0, failed: 0, total: 0, results: [], errors: [] };
+    }
 
-    await Promise.allSettled(
+    const settled = await Promise.allSettled(
       tokens.map((token) => this.sendToToken(token, title, body, data)),
     );
+
+    const results: FirebaseSendResult[] = [];
+    const errors: string[] = [];
+    let sent = 0;
+    let failed = 0;
+
+    for (const item of settled) {
+      if (item.status === 'fulfilled') {
+        results.push(item.value);
+        if (item.value.success) {
+          sent++;
+        } else {
+          failed++;
+          if (item.value.error && !errors.includes(item.value.error)) {
+            errors.push(item.value.error);
+          }
+        }
+      } else {
+        failed++;
+        const errMsg = item.reason?.message || String(item.reason);
+        results.push({ success: false, error: errMsg });
+        if (!errors.includes(errMsg)) {
+          errors.push(errMsg);
+        }
+      }
+    }
+
+    return {
+      sent,
+      failed,
+      total: tokens.length,
+      results,
+      errors,
+    };
   }
 }
+
+export interface FirebaseSendResult {
+  success: boolean;
+  messageId?: string;
+  error?: string;
+  errorCode?: string;
+}
+
+export interface FirebaseMultipleSendResult {
+  sent: number;
+  failed: number;
+  total: number;
+  results: FirebaseSendResult[];
+  errors: string[];
+}
+

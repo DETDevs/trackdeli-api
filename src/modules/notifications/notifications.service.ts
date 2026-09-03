@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { FirebaseService } from './firebase.service';
+import { FirebaseMultipleSendResult, FirebaseService } from './firebase.service';
 
 @Injectable()
 export class NotificationsService {
@@ -43,7 +43,7 @@ export class NotificationsService {
     title: string,
     body: string,
     data?: Record<string, string>,
-  ): Promise<void> {
+  ): Promise<{ saved: boolean; pushResult?: FirebaseMultipleSendResult }> {
     await this.prisma.notification.create({
       data: { userId, orderId, type, title, body },
     });
@@ -52,13 +52,42 @@ export class NotificationsService {
 
     if (tokens.length > 0) {
       try {
-        await this.firebase.sendToMultiple(tokens, title, body, data);
-        this.logger.log(`[sendAndSave] OK push enviado: userId=${userId}, tipo=${type}, título="${title}", dispositivos=${tokens.length}`);
+        const pushResult = await this.firebase.sendToMultiple(tokens, title, body, data);
+        if (pushResult.sent > 0 && pushResult.failed === 0) {
+          this.logger.log(
+            `[sendAndSave] OK push enviado: userId=${userId}, tipo=${type}, título="${title}", enviados=${pushResult.sent}/${pushResult.total}`,
+          );
+        } else if (pushResult.sent > 0 && pushResult.failed > 0) {
+          this.logger.warn(
+            `[sendAndSave] Push PARCIAL para userId=${userId}: tipo=${type}, enviados=${pushResult.sent}/${pushResult.total}, fallidos=${pushResult.failed} | Errores: ${pushResult.errors.join('; ')}`,
+          );
+        } else {
+          this.logger.error(
+            `[sendAndSave] Push FALLÓ para userId=${userId}: tipo=${type}, dispositivos=${tokens.length} | Causa: ${pushResult.errors.join('; ') || 'Error desconocido en Firebase'}`,
+          );
+        }
+        return { saved: true, pushResult };
       } catch (error: any) {
-        this.logger.error(`[sendAndSave] ERROR enviando push: userId=${userId}, error=${error.message}`, error.stack);
+        this.logger.error(
+          `[sendAndSave] ERROR no controlado enviando push: userId=${userId}, error=${error.message}`,
+          error.stack,
+        );
+        return {
+          saved: true,
+          pushResult: {
+            sent: 0,
+            failed: tokens.length,
+            total: tokens.length,
+            results: [],
+            errors: [error.message],
+          },
+        };
       }
     } else {
-      this.logger.debug(`[sendAndSave] Sin device tokens para userId=${userId} — notificación guardada en BD pero no enviada por push`);
+      this.logger.debug(
+        `[sendAndSave] Sin device tokens para userId=${userId} — notificación guardada en BD pero no enviada por push`,
+      );
+      return { saved: true };
     }
   }
 
@@ -72,17 +101,36 @@ export class NotificationsService {
       };
     }
 
-    await this.firebase.sendToMultiple(
+    const pushResult = await this.firebase.sendToMultiple(
       tokens,
       '🔔 Notificación de prueba',
       'El servicio de notificaciones Push de TrackDeli está funcionando correctamente.',
       { type: 'TEST', timestamp: new Date().toISOString() },
     );
 
+    if (pushResult.sent === 0) {
+      const errorDetail = pushResult.errors.join('; ') || 'Error de autenticación o envío en Firebase';
+      this.logger.error(`[sendTestPush] Falló envío a todos los dispositivos de userId=${userId}: ${errorDetail}`);
+      return {
+        success: false,
+        tokensCount: tokens.length,
+        message: `Fallo al enviar push: ${errorDetail}`,
+      };
+    }
+
+    if (pushResult.failed > 0) {
+      this.logger.warn(`[sendTestPush] Envío parcial a userId=${userId}: ${pushResult.sent}/${pushResult.total} enviados`);
+      return {
+        success: true,
+        tokensCount: pushResult.sent,
+        message: `Push de prueba enviado a ${pushResult.sent} de ${tokens.length} dispositivo(s). Fallaron ${pushResult.failed}.`,
+      };
+    }
+
     return {
       success: true,
-      tokensCount: tokens.length,
-      message: `Push de prueba enviado exitosamente a ${tokens.length} dispositivo(s).`,
+      tokensCount: pushResult.sent,
+      message: `Push de prueba enviado exitosamente a ${pushResult.sent} dispositivo(s).`,
     };
   }
 
