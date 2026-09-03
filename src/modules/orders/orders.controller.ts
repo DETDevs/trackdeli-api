@@ -46,11 +46,17 @@ export class OrdersController {
     return this.service.create(dto, user.sub, user.businessId);
   }
 
-  @Post(':id/take')
+  @Post([':id/take', ':id/take-order'])
   @Roles(UserRole.REPARTIDOR)
   takeOrder(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     // Para REPARTIDOR, el businessId del token puede ser null si es independiente
     return this.service.takeOrder(id, user.sub);
+  }
+
+  @Get(':id/dispatches')
+  @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR, UserRole.SUPERADMIN)
+  getDispatches(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.service.getOrderDispatches(id, user.sub, user.role, user.businessId);
   }
 
   @Post(':id/dispatch/accept')

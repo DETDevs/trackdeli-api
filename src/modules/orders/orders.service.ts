@@ -4,7 +4,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderResponseDto } from './dto/order-response.dto';
-import { BusinessType, Order, OrderStatus, QuoteStatus, UserRole } from '@prisma/client';
+import { BusinessType, DispatchStatus, Order, OrderStatus, QuoteStatus, UserRole } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
@@ -34,9 +34,13 @@ export class OrdersService {
       where: { orderId: order.id },
     });
 
-    // Obtener el dispatch activo (SENT) para retornar su timeoutAt al rider
+    // Obtener el dispatch activo (SENT) para retornar su timeoutAt al rider (solo si no ha expirado)
     const activeDispatch = await this.prisma.orderDispatch.findFirst({
-      where: { orderId: order.id, status: 'SENT' },
+      where: {
+        orderId: order.id,
+        status: DispatchStatus.SENT,
+        timeoutAt: { gt: new Date() },
+      },
       orderBy: { sentAt: 'desc' },
     });
 
@@ -411,31 +415,82 @@ export class OrdersService {
   async takeOrder(orderId: string, deliveryUserId: string): Promise<OrderResponseDto> {
     this.logger.log(`[takeOrder] Intento de tomar pedido: orderId=${orderId}, repartidor=${deliveryUserId}`);
 
-    return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.findUnique({
-        where: { id: orderId },
-        include: { business: true },
+    const existingOrder = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { business: true },
+    });
+
+    if (!existingOrder) {
+      throw new NotFoundException('Pedido no encontrado');
+    }
+
+    // 1. Si ya está asignado a este mismo rider, retornar sin error (idempotente)
+    if (existingOrder.deliveryUserId === deliveryUserId) {
+      this.logger.log(`[takeOrder] Pedido ya asignado a este mismo repartidor: orderId=${orderId}, repartidor=${deliveryUserId}`);
+      return this.findOne(orderId, existingOrder.businessId, deliveryUserId, UserRole.REPARTIDOR);
+    }
+
+    // 2. Si ya fue tomado por otro repartidor
+    if (existingOrder.deliveryUserId && existingOrder.deliveryUserId !== deliveryUserId) {
+      this.logger.warn(`[takeOrder] CONFLICT orderId=${orderId} ya fue tomado por otro repartidor (${existingOrder.deliveryUserId}). Repartidor intentado=${deliveryUserId}`);
+      throw new ConflictException('Pedido no disponible — ya fue tomado por otro repartidor');
+    }
+
+    // 3. Si el pedido fue cancelado
+    if (existingOrder.status === OrderStatus.CANCELADO) {
+      throw new BadRequestException('El pedido fue cancelado');
+    }
+
+    // 4. Verificar si hay un dispatch activo (status SENT y no expirado)
+    const activeDispatch = await this.prisma.orderDispatch.findFirst({
+      where: {
+        orderId,
+        status: DispatchStatus.SENT,
+        timeoutAt: { gt: new Date() },
+      },
+      orderBy: { sentAt: 'desc' },
+    });
+
+    if (activeDispatch) {
+      if (activeDispatch.riderId === deliveryUserId) {
+        // El pedido fue ofertado a este mismo rider: aceptar el dispatch
+        this.logger.log(`[takeOrder] Pedido ofertado activamente a este rider (dispatchId=${activeDispatch.id}). Aceptando despacho...`);
+        return this.acceptDispatch(orderId, deliveryUserId);
+      } else {
+        this.logger.warn(`[takeOrder] CONFLICT orderId=${orderId} ofertado a otro repartidor (${activeDispatch.riderId}). Repartidor intentado=${deliveryUserId}`);
+        throw new ConflictException('El pedido está actualmente en oferta para otro repartidor');
+      }
+    }
+
+    // 5. Validar que el estado permita tomar el pedido
+    const allowedStatuses: OrderStatus[] = [
+      OrderStatus.PENDIENTE,
+      OrderStatus.COTIZANDO,
+      OrderStatus.OFERTADO,
+    ];
+    if (!allowedStatuses.includes(existingOrder.status)) {
+      this.logger.warn(`[takeOrder] CONFLICT orderId=${orderId} no disponible en estado ${existingOrder.status}. Repartidor intentado=${deliveryUserId}`);
+      throw new ConflictException('Pedido no disponible');
+    }
+
+    const rider = await this.prisma.user.findUnique({ where: { id: deliveryUserId } });
+    if (!rider || rider.role !== UserRole.REPARTIDOR) {
+      throw new ForbiddenException();
+    }
+
+    if (!rider.isAvailable) {
+      throw new ConflictException('No estás disponible para tomar pedidos');
+    }
+
+    // 6. Tomar el pedido en transacción
+    await this.prisma.$transaction(async (tx) => {
+      // Si existía un dispatch previo para este rider (ej: expiró o reintento), marcarlo como ACCEPTED
+      await tx.orderDispatch.updateMany({
+        where: { orderId, riderId: deliveryUserId, status: DispatchStatus.SENT },
+        data: { status: DispatchStatus.ACCEPTED, respondedAt: new Date() },
       });
 
-      if (!order) {
-        throw new NotFoundException('Pedido no encontrado');
-      }
-
-      if (order.status !== OrderStatus.PENDIENTE) {
-        this.logger.warn(`[takeOrder] CONFLICT orderId=${orderId} ya fue tomado. Repartidor intentado=${deliveryUserId}`);
-        throw new ConflictException('Pedido no disponible — ya fue tomado por otro repartidor');
-      }
-
-      const rider = await tx.user.findUnique({ where: { id: deliveryUserId } });
-      if (!rider || rider.role !== 'REPARTIDOR') {
-        throw new ForbiddenException();
-      }
-
-      if (!rider.isAvailable) {
-        throw new ConflictException('No estás disponible para tomar pedidos');
-      }
-
-      const updated = await tx.order.update({
+      await tx.order.update({
         where: { id: orderId },
         data: {
           status: OrderStatus.ACEPTADO,
@@ -443,24 +498,25 @@ export class OrdersService {
           takenAt: new Date(),
         },
       });
-
-      this.logger.log(`[takeOrder] OK pedido aceptado: orderId=${orderId}, repartidor=${deliveryUserId}`);
-      this.trackingGateway.emitOrderStatusChange(orderId, OrderStatus.ACEPTADO);
-
-      const encargado = await tx.user.findFirst({
-        where: { businessId: order.businessId, role: 'ENCARGADO' },
-      });
-      if (encargado) {
-        await this.notificationsService.notifyOrderTaken(
-          encargado.id,
-          orderId,
-          rider.name,
-          order.customerName,
-        );
-      }
-
-      return this.findOne(orderId, order.businessId);
     });
+
+    this.logger.log(`[takeOrder] OK pedido aceptado: orderId=${orderId}, repartidor=${deliveryUserId}`);
+    await this.generateTrackingSession(orderId);
+    this.trackingGateway.emitOrderStatusChange(orderId, OrderStatus.ACEPTADO);
+
+    const encargado = await this.prisma.user.findFirst({
+      where: { businessId: existingOrder.businessId, role: UserRole.ENCARGADO },
+    });
+    if (encargado) {
+      await this.notificationsService.notifyOrderTaken(
+        encargado.id,
+        orderId,
+        rider.name,
+        existingOrder.customerName,
+      );
+    }
+
+    return this.findOne(orderId, existingOrder.businessId, deliveryUserId, UserRole.REPARTIDOR);
   }
 
   async cancelOrder(id: string, businessId: string): Promise<OrderResponseDto> {
@@ -1078,5 +1134,44 @@ export class OrdersService {
 
   async rejectDispatch(orderId: string, riderId: string) {
     return this.dispatchService.rejectDispatch(orderId, riderId);
+  }
+
+  async getOrderDispatches(
+    orderId: string,
+    userId: string,
+    role: string,
+    businessId?: string | null,
+  ) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, businessId: true, deliveryUserId: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Pedido no encontrado');
+    }
+
+    if (role === UserRole.ENCARGADO && businessId && order.businessId !== businessId) {
+      throw new ForbiddenException('No tienes acceso a los despachos de este pedido');
+    }
+
+    const dispatches = await this.prisma.orderDispatch.findMany({
+      where: { orderId },
+      include: {
+        rider: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            vehicleType: true,
+            vehiclePlate: true,
+            vehicleColor: true,
+          },
+        },
+      },
+      orderBy: { attempt: 'asc' },
+    });
+
+    return dispatches;
   }
 }
