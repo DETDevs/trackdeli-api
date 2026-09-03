@@ -231,16 +231,53 @@ export class DispatchService {
    */
   async acceptDispatch(orderId: string, riderId: string) {
     return this.prisma.$transaction(async (tx) => {
+      // 1. Buscar si existe oferta para este rider en este pedido
       const dispatch = await tx.orderDispatch.findFirst({
-        where: { orderId, riderId, status: DispatchStatus.SENT },
+        where: { orderId, riderId },
+        orderBy: { sentAt: 'desc' },
       });
 
       if (!dispatch) {
-        throw new BadRequestException('No tenés una oferta de pedido pendiente de respuesta');
+        // Verificar si la oferta está activa para otro rider
+        const activeOtherDispatch = await tx.orderDispatch.findFirst({
+          where: { orderId, status: DispatchStatus.SENT },
+        });
+        if (activeOtherDispatch) {
+          throw new BadRequestException('Esta oferta fue asignada a otro repartidor.');
+        }
+        throw new BadRequestException('No tenés una oferta de pedido pendiente de respuesta.');
       }
 
-      if (new Date() > dispatch.timeoutAt) {
-        throw new BadRequestException('El tiempo para responder a la oferta expiró');
+      // 2. Verificar estado de la oferta (con 10s de tolerancia para compensar latencia de red)
+      const isPastTimeout = new Date().getTime() > dispatch.timeoutAt.getTime() + 10000;
+      if (dispatch.status === DispatchStatus.TIMEOUT || isPastTimeout) {
+        throw new BadRequestException('El tiempo para responder a la oferta expiró.');
+      }
+
+      if (dispatch.status === DispatchStatus.REJECTED) {
+        throw new BadRequestException('Ya habías rechazado esta oferta.');
+      }
+
+      if (dispatch.status === DispatchStatus.ACCEPTED) {
+        throw new BadRequestException('Esta oferta ya fue aceptada.');
+      }
+
+      if (dispatch.status !== DispatchStatus.SENT) {
+        throw new BadRequestException(`La oferta ya no está disponible (${dispatch.status}).`);
+      }
+
+      // 3. Verificar estado del pedido
+      const currentOrder = await tx.order.findUnique({
+        where: { id: orderId },
+      });
+      if (!currentOrder) {
+        throw new NotFoundException('Pedido no encontrado.');
+      }
+      if (currentOrder.status === OrderStatus.CANCELADO) {
+        throw new BadRequestException('El pedido fue cancelado.');
+      }
+      if (currentOrder.deliveryUserId && currentOrder.deliveryUserId !== riderId) {
+        throw new BadRequestException('El pedido ya fue tomado por otro repartidor.');
       }
 
       await tx.orderDispatch.update({
@@ -268,12 +305,17 @@ export class DispatchService {
    */
   async rejectDispatch(orderId: string, riderId: string) {
     const dispatch = await this.prisma.orderDispatch.findFirst({
-      where: { orderId, riderId, status: DispatchStatus.SENT },
+      where: { orderId, riderId },
+      orderBy: { sentAt: 'desc' },
       include: { order: { include: { business: true } } },
     });
 
     if (!dispatch) {
-      throw new BadRequestException('No tenés una oferta de pedido pendiente de respuesta');
+      throw new BadRequestException('No tenés una oferta de pedido pendiente de respuesta.');
+    }
+
+    if (dispatch.status !== DispatchStatus.SENT) {
+      return { success: true, message: 'Oferta finalizada' };
     }
 
     await this.prisma.orderDispatch.update({

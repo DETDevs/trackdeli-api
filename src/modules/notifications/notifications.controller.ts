@@ -30,6 +30,12 @@ export class NotificationsController {
     return { message: 'Token removido' };
   }
 
+  @Post('test')
+  @Roles(UserRole.REPARTIDOR, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async sendTestPush(@CurrentUser() user: JwtPayload) {
+    return this.notificationsService.sendTestPush(user.sub);
+  }
+
   @Get()
   @Roles(UserRole.REPARTIDOR, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async getNotifications(@CurrentUser() user: JwtPayload) {

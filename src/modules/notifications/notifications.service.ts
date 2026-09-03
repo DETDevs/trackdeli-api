@@ -20,7 +20,7 @@ export class NotificationsService {
     await this.prisma.deviceToken.upsert({
       where: { token },
       create: { userId, token, platform },
-      update: { userId, updatedAt: new Date() },
+      update: { userId, platform, updatedAt: new Date() },
     });
   }
 
@@ -53,13 +53,37 @@ export class NotificationsService {
     if (tokens.length > 0) {
       try {
         await this.firebase.sendToMultiple(tokens, title, body, data);
-        this.logger.log(`[sendAndSave] OK push enviado: userId=${userId}, tipo=${type}, título="${title}"`);
+        this.logger.log(`[sendAndSave] OK push enviado: userId=${userId}, tipo=${type}, título="${title}", dispositivos=${tokens.length}`);
       } catch (error: any) {
         this.logger.error(`[sendAndSave] ERROR enviando push: userId=${userId}, error=${error.message}`, error.stack);
       }
     } else {
-      this.logger.debug(`[sendAndSave] Sin device tokens para userId=${userId} — notificación guardada pero no enviada por push`);
+      this.logger.debug(`[sendAndSave] Sin device tokens para userId=${userId} — notificación guardada en BD pero no enviada por push`);
     }
+  }
+
+  async sendTestPush(userId: string): Promise<{ success: boolean; tokensCount: number; message: string }> {
+    const tokens = await this.getUserTokens(userId);
+    if (tokens.length === 0) {
+      return {
+        success: false,
+        tokensCount: 0,
+        message: 'No hay device tokens registrados para este usuario en la base de datos. Abre la app del rider habiendo iniciado sesión para registrar tu dispositivo.',
+      };
+    }
+
+    await this.firebase.sendToMultiple(
+      tokens,
+      '🔔 Notificación de prueba',
+      'El servicio de notificaciones Push de TrackDeli está funcionando correctamente.',
+      { type: 'TEST', timestamp: new Date().toISOString() },
+    );
+
+    return {
+      success: true,
+      tokensCount: tokens.length,
+      message: `Push de prueba enviado exitosamente a ${tokens.length} dispositivo(s).`,
+    };
   }
 
   async notifyUser(
@@ -95,7 +119,7 @@ export class NotificationsService {
       encargadoId,
       orderId,
       'ORDER_TAKEN',
-      '📦 Pedido tomado',
+      '📋 Pedido tomado',
       `${repartidorName} tomó el pedido de ${customerName}`,
       { orderId, type: 'ORDER_TAKEN' },
     );
@@ -140,7 +164,7 @@ export class NotificationsService {
       encargadoId,
       orderId,
       'ORDER_AT_BUSINESS',
-      '📍 Repartidor en el negocio',
+      '🏪 Repartidor en el negocio',
       `${repartidorName} llegó a tu negocio a recoger el pedido`,
       { orderId, type: 'ORDER_AT_BUSINESS' },
     );
@@ -155,7 +179,7 @@ export class NotificationsService {
       encargadoId,
       orderId,
       'ORDER_ON_WAY',
-      '🚚 Pedido en camino al cliente',
+      '📦 Pedido en camino al cliente',
       `El pedido de ${customerName} ya fue recogido y va en camino`,
       { orderId, type: 'ORDER_ON_WAY' },
     );

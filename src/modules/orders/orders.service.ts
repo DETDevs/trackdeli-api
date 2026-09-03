@@ -82,6 +82,7 @@ export class OrdersService {
       } : null,
       createdAt: order.createdAt,
       activeDispatchTimeoutAt: activeDispatch?.timeoutAt ?? null,
+      activeDispatchRiderId: activeDispatch?.riderId ?? null,
       takenAt: order.takenAt,
       deliveredAt: order.deliveredAt,
       business: order.business ? {

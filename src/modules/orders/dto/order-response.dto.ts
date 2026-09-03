@@ -40,6 +40,7 @@ export class OrderResponseDto {
   } | null;
   createdAt: Date;
   activeDispatchTimeoutAt?: Date | null;
+  activeDispatchRiderId?: string | null;
   takenAt: Date | null;
   deliveredAt: Date | null;
   business?: {
