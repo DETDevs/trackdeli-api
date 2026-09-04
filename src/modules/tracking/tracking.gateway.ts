@@ -17,7 +17,9 @@ import { Logger } from '@nestjs/common';
 @WebSocketGateway({
   namespace: '/tracking',
   cors: {
-    origin: '*',
+    origin: (origin: string, callback: (err: Error | null, allow?: boolean) => void) => {
+      callback(null, true);
+    },
     credentials: true,
   },
 })
@@ -30,7 +32,7 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
   constructor(
     private readonly config: ConfigService,
     private readonly trackingService: TrackingService,
-  ) {}
+  ) { }
 
   async afterInit(server: Server) {
     const redisOptions = {
@@ -61,13 +63,31 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   @SubscribeMessage('join_order')
-  handleJoinOrder(
+  async handleJoinOrder(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { orderId: string; token?: string }
   ) {
     this.logger.log(`[TrackingGateway] join_order: socketId=${client.id}, orderId=${data.orderId}`);
     client.join(`order:${data.orderId}`);
-    client.emit('joined_order', { orderId: data.orderId, room: `order:${data.orderId}` });
+
+    // Obtener última posición para que el cliente la reciba al instante al conectarse
+    const lastPos = await this.trackingService.getLastPosition(data.orderId);
+    client.emit('joined_order', {
+      orderId: data.orderId,
+      room: `order:${data.orderId}`,
+      lastPosition: lastPos,
+    });
+
+    if (lastPos) {
+      client.emit('location_updated', {
+        orderId: data.orderId,
+        lat: lastPos.lat,
+        lng: lastPos.lng,
+        speed: lastPos.speed,
+        timestamp: lastPos.timestamp,
+        isMock: false,
+      });
+    }
   }
 
   @SubscribeMessage('leave_order')
@@ -95,8 +115,8 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
     // 1. Guardar última posición en Redis
     await this.trackingService.saveLastPosition(data.orderId, data.lat, data.lng, data.speed);
 
-    // 2. Emitir posición a todos los clientes en el room (excepto el emisor)
-    client.to(`order:${data.orderId}`).emit('location_updated', {
+    // 2. Emitir posición a todos los clientes en el room
+    this.server.to(`order:${data.orderId}`).emit('location_updated', {
       orderId: data.orderId,
       lat: data.lat,
       lng: data.lng,

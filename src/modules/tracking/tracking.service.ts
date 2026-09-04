@@ -31,7 +31,8 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   async saveLastPosition(orderId: string, lat: number, lng: number, speed?: number): Promise<void> {
     const key = `last_position:${orderId}`;
     const value = JSON.stringify({ lat, lng, speed, timestamp: new Date().toISOString() });
-    await this.redis.setex(key, 30, value);
+    // 7200s (2 horas) para asegurar que persista durante toda la vida del pedido
+    await this.redis.setex(key, 7200, value);
   }
 
   async getLastPosition(orderId: string): Promise<{ lat: number; lng: number; speed?: number; timestamp: string } | null> {
@@ -77,10 +78,10 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     currentLng: number,
     destLat: number,
     destLng: number,
-    radiusMeters: number,
+    radiusM: number,
   ): boolean {
     const distanceKm = this.calculateDistance(currentLat, currentLng, destLat, destLng);
-    return distanceKm * 1000 <= radiusMeters;
+    return distanceKm * 1000 <= radiusM;
   }
 
   async getTrackingDataByToken(token: string) {
@@ -101,6 +102,9 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
                 vehiclePlate: true,
                 vehicleColor: true,
                 profilePhotoUrl: true,
+                currentLatitude: true,
+                currentLongitude: true,
+                lastLocationAt: true,
               },
             },
             business: {
@@ -140,7 +144,24 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Obtener última posición de Redis
-    const lastPosition = await this.getLastPosition(session.orderId);
+    let lastPosition = await this.getLastPosition(session.orderId);
+
+    // Fallback de resiliencia: si aún no hay posición en Redis para esta orden,
+    // utilizar la última ubicación conocida del repartidor asignado
+    if (
+      !lastPosition &&
+      session.order.deliveryUser?.currentLatitude &&
+      session.order.deliveryUser?.currentLongitude
+    ) {
+      lastPosition = {
+        lat: session.order.deliveryUser.currentLatitude,
+        lng: session.order.deliveryUser.currentLongitude,
+        speed: 0,
+        timestamp: session.order.deliveryUser.lastLocationAt
+          ? session.order.deliveryUser.lastLocationAt.toISOString()
+          : new Date().toISOString(),
+      };
+    }
 
     this.logger.debug(`[Tracking] Sesión encontrada: orderId=${session.orderId}, status=${session.order.status}`);
 
