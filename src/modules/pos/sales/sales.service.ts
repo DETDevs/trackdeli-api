@@ -67,10 +67,28 @@ export class SalesService {
         );
       }
 
+      let cashRegisterId = dto.cashRegisterId || null;
+      if (!cashRegisterId) {
+        let activeRegister = await tx.cashRegister.findFirst({
+          where: { businessId, cashierId, status: "OPEN" },
+          select: { id: true },
+        });
+        if (!activeRegister) {
+          activeRegister = await tx.cashRegister.findFirst({
+            where: { businessId, status: "OPEN" },
+            orderBy: { openedAt: "desc" },
+            select: { id: true },
+          });
+        }
+        if (activeRegister) {
+          cashRegisterId = activeRegister.id;
+        }
+      }
+
       const sale = await tx.sale.create({
         data: {
           businessId,
-          cashRegisterId: dto.cashRegisterId || null,
+          cashRegisterId,
           cashierId,
           invoiceNumber,
           customerName: dto.customerName || null,
