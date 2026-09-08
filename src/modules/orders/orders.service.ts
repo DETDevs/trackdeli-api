@@ -29,20 +29,13 @@ export class OrdersService {
     private readonly customersService: CustomersService,
   ) {}
 
-  private async toResponseDto(order: any): Promise<OrderResponseDto> {
-    const trackingSession = await this.prisma.trackingSession.findUnique({
-      where: { orderId: order.id },
-    });
+  private toResponseDto(order: any): OrderResponseDto {
+    const trackingSession = order.trackingSession ?? null;
 
     // Obtener el dispatch activo (SENT) para retornar su timeoutAt al rider (solo si no ha expirado)
-    const activeDispatch = await this.prisma.orderDispatch.findFirst({
-      where: {
-        orderId: order.id,
-        status: DispatchStatus.SENT,
-        timeoutAt: { gt: new Date() },
-      },
-      orderBy: { sentAt: 'desc' },
-    });
+    const activeDispatch = Array.isArray(order.dispatches) && order.dispatches.length > 0
+      ? order.dispatches[0]
+      : null;
 
 
     const trackingBaseUrl =
@@ -223,6 +216,15 @@ export class OrdersService {
       include: {
         deliveryUser: true,
         photos: true,
+        trackingSession: true,
+        dispatches: {
+          where: {
+            status: DispatchStatus.SENT,
+            timeoutAt: { gt: new Date() },
+          },
+          take: 1,
+          orderBy: { sentAt: 'desc' },
+        },
       },
     });
 
@@ -324,6 +326,15 @@ export class OrdersService {
             longitude: true,
           },
         },
+        trackingSession: true,
+        dispatches: {
+          where: {
+            status: DispatchStatus.SENT,
+            timeoutAt: { gt: new Date() },
+          },
+          take: 1,
+          orderBy: { sentAt: 'desc' },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take: (!businessId && role === UserRole.REPARTIDOR) ? 20 : undefined,
@@ -343,7 +354,7 @@ export class OrdersService {
       });
     }
 
-    const result = await Promise.all(orders.map(o => this.toResponseDto(o)));
+    const result = orders.map(o => this.toResponseDto(o));
     this.logger.log(`[findAll] userId=${userId}, role=${role}, businessId=${businessId} | OK - ${result.length} pedidos`);
     return result;
   }
@@ -374,6 +385,15 @@ export class OrdersService {
             latitude: true,
             longitude: true,
           },
+        },
+        trackingSession: true,
+        dispatches: {
+          where: {
+            status: DispatchStatus.SENT,
+            timeoutAt: { gt: new Date() },
+          },
+          take: 1,
+          orderBy: { sentAt: 'desc' },
         },
       },
     });
@@ -578,6 +598,8 @@ export class OrdersService {
       where: { id: orderId },
       data: updateData,
     });
+
+    await this.trackingService.updateGeofenceMetaStatus(orderId, dto.status);
 
     if (dto.status === OrderStatus.EN_CAMINO) {
       await this.generateTrackingSession(orderId);

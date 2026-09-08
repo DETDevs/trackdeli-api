@@ -9,6 +9,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { haversineDistance } from '../../common/utils/pricing.util';
 import { DispatchStatus, OrderStatus, UserRole } from '@prisma/client';
+import { Cron } from '@nestjs/schedule';
 
 @Injectable()
 export class DispatchService {
@@ -198,6 +199,38 @@ export class DispatchService {
   }
 
   /**
+   * Reconcilia despachos expirados periódicamente cada 30 segundos.
+   * Respaldo crítico ante reinicios del backend que destruyen el setTimeout en memoria.
+   */
+  @Cron('*/30 * * * * *')
+  async reconcileExpiredDispatches(): Promise<void> {
+    try {
+      const expiredDispatches = await this.prisma.orderDispatch.findMany({
+        where: {
+          status: DispatchStatus.SENT,
+          timeoutAt: { lte: new Date() },
+        },
+        include: { order: true },
+      });
+
+      if (expiredDispatches.length > 0) {
+        this.logger.warn(
+          `[reconcileExpiredDispatches] Detectados ${expiredDispatches.length} despachos vencidos pendientes de reconciliación`,
+        );
+      }
+
+      for (const d of expiredDispatches) {
+        await this.handleTimeout(d.orderId, d.riderId, d.attempt);
+      }
+    } catch (err: any) {
+      this.logger.error(
+        `[reconcileExpiredDispatches] Error al reconciliar despachos: ${err.message}`,
+        err.stack,
+      );
+    }
+  }
+
+  /**
    * Maneja la expiración de tiempo de respuesta de un dispatch.
    */
   async handleTimeout(orderId: string, riderId: string, attempt: number): Promise<void> {
@@ -206,13 +239,18 @@ export class DispatchService {
     });
 
     if (!dispatch) {
-      return; // Ya fue aceptado o rechazado
+      return; // Ya fue aceptado, rechazado o procesado concurrentemente
     }
 
-    await this.prisma.orderDispatch.update({
-      where: { id: dispatch.id },
+    // Actualización atómica con filtro de estado SENT para evitar condiciones de carrera entre setTimeout y @Cron
+    const updateResult = await this.prisma.orderDispatch.updateMany({
+      where: { id: dispatch.id, status: DispatchStatus.SENT },
       data: { status: DispatchStatus.TIMEOUT, respondedAt: new Date() },
     });
+
+    if (updateResult.count === 0) {
+      return; // Ya fue procesado por otra ejecución concurrente
+    }
 
     this.logger.warn(`[dispatch] TIMEOUT orderId=${orderId} riderId=${riderId} attempt=${attempt}`);
 
@@ -225,6 +263,7 @@ export class DispatchService {
       await this.dispatchToNextRider(order, attempt + 1);
     }
   }
+
 
   /**
    * Repartidor acepta la asignación.
@@ -248,6 +287,21 @@ export class DispatchService {
         throw new BadRequestException('No tenés una oferta de pedido pendiente de respuesta.');
       }
 
+      // Verificar estado del pedido
+      const currentOrder = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { business: true, deliveryUser: true },
+      });
+      if (!currentOrder) {
+        throw new NotFoundException('Pedido no encontrado.');
+      }
+
+      // Idempotencia: si este rider ya aceptó la oferta y el pedido ya le fue asignado, retornar con éxito
+      if (dispatch.status === DispatchStatus.ACCEPTED && currentOrder.deliveryUserId === riderId) {
+        this.logger.log(`[dispatch] Reintento idempotente exitoso: orderId=${orderId} ya asignado a riderId=${riderId}`);
+        return currentOrder;
+      }
+
       // 2. Verificar estado de la oferta (con 10s de tolerancia para compensar latencia de red)
       const isPastTimeout = new Date().getTime() > dispatch.timeoutAt.getTime() + 10000;
       if (dispatch.status === DispatchStatus.TIMEOUT || isPastTimeout) {
@@ -266,13 +320,6 @@ export class DispatchService {
         throw new BadRequestException(`La oferta ya no está disponible (${dispatch.status}).`);
       }
 
-      // 3. Verificar estado del pedido
-      const currentOrder = await tx.order.findUnique({
-        where: { id: orderId },
-      });
-      if (!currentOrder) {
-        throw new NotFoundException('Pedido no encontrado.');
-      }
       if (currentOrder.status === OrderStatus.CANCELADO) {
         throw new BadRequestException('El pedido fue cancelado.');
       }

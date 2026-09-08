@@ -151,15 +151,19 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   emitToOrder(orderId: string, event: string, data: any) {
-    this.server.to(`order:${orderId}`).emit(event, data);
+    if (this.server) {
+      this.server.to(`order:${orderId}`).emit(event, data);
+    }
   }
 
   emitOrderStatusChange(orderId: string, status: string) {
-    this.server.to(`order:${orderId}`).emit('order_status_changed', {
-      orderId,
-      status,
-      timestamp: new Date().toISOString(),
-    });
+    if (this.server) {
+      this.server.to(`order:${orderId}`).emit('order_status_changed', {
+        orderId,
+        status,
+        timestamp: new Date().toISOString(),
+      });
+    }
   }
 
   @SubscribeMessage('join_business')
@@ -183,15 +187,21 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   emitToBusiness(businessId: string, event: string, data: any) {
-    this.server.to(`business:${businessId}`).emit(event, data);
+    if (this.server) {
+      this.server.to(`business:${businessId}`).emit(event, data);
+    }
   }
 
   notifyBusiness(businessId: string, event: string, data: any) {
-    this.server.to(`business:${businessId}`).emit(event, data);
+    if (this.server) {
+      this.server.to(`business:${businessId}`).emit(event, data);
+    }
   }
 
   notifyRider(riderId: string, event: string, data: any) {
-    this.server.to(`rider:${riderId}`).emit(event, data);
+    if (this.server) {
+      this.server.to(`rider:${riderId}`).emit(event, data);
+    }
   }
 }
 

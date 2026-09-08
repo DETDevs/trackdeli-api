@@ -179,13 +179,25 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async checkGeofenceAndTransition(
-    orderId: string,
-    userId: string,
-    currentLat: number,
-    currentLng: number,
-    gateway: any,
-  ): Promise<void> {
+  async getGeofenceMeta(orderId: string): Promise<{
+    status: string;
+    deliveryUserId: string | null;
+    destinationLat: number | null;
+    destinationLng: number | null;
+    geofenceRadiusM: number;
+    bizLat: number | null;
+    bizLng: number | null;
+  } | null> {
+    const key = `geofence_meta:${orderId}`;
+    const cached = await this.redis.get(key);
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch (err) {
+        this.logger.warn(`[getGeofenceMeta] Error parseando JSON de caché para orderId=${orderId}`);
+      }
+    }
+
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       select: {
@@ -200,9 +212,51 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    if (!order || order.deliveryUserId !== userId) return;
+    if (!order) return null;
 
-    if (order.status === 'EN_CAMINO_AL_NEGOCIO' && order.business?.latitude && order.business?.longitude) {
+    const meta = {
+      status: order.status,
+      deliveryUserId: order.deliveryUserId,
+      destinationLat: order.destinationLat ? Number(order.destinationLat) : null,
+      destinationLng: order.destinationLng ? Number(order.destinationLng) : null,
+      geofenceRadiusM: order.geofenceRadiusM,
+      bizLat: order.business?.latitude ? Number(order.business.latitude) : null,
+      bizLng: order.business?.longitude ? Number(order.business.longitude) : null,
+    };
+
+    // Cachear en Redis por 7200s (2 horas)
+    await this.redis.setex(key, 7200, JSON.stringify(meta));
+    return meta;
+  }
+
+  async setGeofenceMeta(orderId: string, meta: any): Promise<void> {
+    const key = `geofence_meta:${orderId}`;
+    await this.redis.setex(key, 7200, JSON.stringify(meta));
+  }
+
+  async updateGeofenceMetaStatus(orderId: string, status: string): Promise<void> {
+    const meta = await this.getGeofenceMeta(orderId);
+    if (meta) {
+      meta.status = status;
+      await this.setGeofenceMeta(orderId, meta);
+    }
+  }
+
+  async invalidateGeofenceMeta(orderId: string): Promise<void> {
+    await this.redis.del(`geofence_meta:${orderId}`);
+  }
+
+  async checkGeofenceAndTransition(
+    orderId: string,
+    userId: string,
+    currentLat: number,
+    currentLng: number,
+    gateway: any,
+  ): Promise<void> {
+    const meta = await this.getGeofenceMeta(orderId);
+    if (!meta || meta.deliveryUserId !== userId) return;
+
+    if (meta.status === 'EN_CAMINO_AL_NEGOCIO' && meta.bizLat && meta.bizLng) {
       const geofenceBizKey = `geofence_biz_triggered:${orderId}`;
       const alreadyTriggeredBiz = await this.redis.get(geofenceBizKey);
       
@@ -210,8 +264,8 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
         const isNearBiz = this.isNearDestination(
           currentLat,
           currentLng,
-          Number(order.business.latitude),
-          Number(order.business.longitude),
+          meta.bizLat,
+          meta.bizLng,
           100 // 100 metros para el negocio
         );
 
@@ -224,17 +278,19 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
               arrivedAtBusinessAt: new Date(),
             },
           });
+          meta.status = 'EN_EL_NEGOCIO';
+          await this.setGeofenceMeta(orderId, meta);
           gateway.emitOrderStatusChange(orderId, 'EN_EL_NEGOCIO');
           gateway.emitToOrder(orderId, 'geofence_business_triggered', { orderId });
-          const distToBusiness = this.calculateDistance(currentLat, currentLng, Number(order.business.latitude), Number(order.business.longitude));
+          const distToBusiness = this.calculateDistance(currentLat, currentLng, meta.bizLat, meta.bizLng);
           this.logger.log(`[TrackingGateway] GEOFENCE NEGOCIO TRIGGERED: orderId=${orderId}, distancia=${(distToBusiness * 1000).toFixed(0)}m → EN_EL_NEGOCIO`);
         }
       }
     }
 
-    if (order.status !== 'EN_CAMINO') return;
+    if (meta.status !== 'EN_CAMINO') return;
 
-    if (!order.destinationLat || !order.destinationLng) return;
+    if (!meta.destinationLat || !meta.destinationLng) return;
 
     const geofenceKey = `geofence_triggered:${orderId}`;
     const alreadyTriggered = await this.redis.get(geofenceKey);
@@ -243,9 +299,9 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     const isNear = this.isNearDestination(
       currentLat,
       currentLng,
-      Number(order.destinationLat),
-      Number(order.destinationLng),
-      order.geofenceRadiusM,
+      meta.destinationLat,
+      meta.destinationLng,
+      meta.geofenceRadiusM,
     );
 
     if (!isNear) return;
@@ -256,6 +312,8 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       where: { id: orderId },
       data: { status: 'CERCA_DEL_DESTINO' },
     });
+    meta.status = 'CERCA_DEL_DESTINO';
+    await this.setGeofenceMeta(orderId, meta);
 
     gateway.emitOrderStatusChange(orderId, 'CERCA_DEL_DESTINO');
 
@@ -265,8 +323,8 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       timestamp: new Date().toISOString(),
     });
 
-    const distanceKm = this.calculateDistance(currentLat, currentLng, Number(order.destinationLat), Number(order.destinationLng));
-    this.logger.log(`[TrackingGateway] GEOFENCE TRIGGERED: orderId=${orderId}, distancia=${(distanceKm * 1000).toFixed(0)}m, radio=${order.geofenceRadiusM}m → CERCA_DEL_DESTINO`);
+    const distanceKm = this.calculateDistance(currentLat, currentLng, meta.destinationLat, meta.destinationLng);
+    this.logger.log(`[TrackingGateway] GEOFENCE TRIGGERED: orderId=${orderId}, distancia=${(distanceKm * 1000).toFixed(0)}m, radio=${meta.geofenceRadiusM}m → CERCA_DEL_DESTINO`);
   }
 
   async cleanupGeofenceFlag(orderId: string): Promise<void> {
@@ -278,7 +336,9 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     await this.redis.del(`last_snapshot:${orderId}`);
     await this.redis.del(`geofence_triggered:${orderId}`);
     await this.redis.del(`geofence_biz_triggered:${orderId}`);
+    await this.redis.del(`geofence_meta:${orderId}`);
   }
+
 
   async updateUserLocation(userId: string, lat: number, lng: number): Promise<void> {
     // Throttle user location update in DB to once per 10 seconds to avoid DB overload

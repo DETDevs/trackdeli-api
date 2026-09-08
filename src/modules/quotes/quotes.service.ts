@@ -299,6 +299,18 @@ export class QuotesService {
         throw new ForbiddenException('Sin acceso a esta propuesta');
       }
 
+      // Idempotencia: si la propuesta ya fue aceptada y el pedido ya fue asignado a este repartidor
+      if (quote.status === QuoteStatus.ACCEPTED && quote.order.deliveryUserId === quote.riderId) {
+        this.logger.log(`[quotes] Reintento idempotente exitoso: quoteId=${quoteId}, orderId=${quote.orderId} ya aceptado`);
+        const tracking = await tx.trackingSession.findUnique({ where: { orderId: quote.orderId } });
+        return {
+          quote,
+          finalFee: quote.finalFee ?? quote.proposedFee,
+          trackingToken: tracking?.token || '',
+          rejectedRiderIds: [],
+        };
+      }
+
       if (
         quote.status !== QuoteStatus.PENDING &&
         quote.status !== QuoteStatus.NEGOTIATING

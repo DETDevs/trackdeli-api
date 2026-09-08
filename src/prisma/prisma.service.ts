@@ -6,7 +6,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
   private readonly logger = new Logger(PrismaService.name);
 
   constructor() {
+    let dbUrl = process.env.DATABASE_URL;
+    if (dbUrl && !dbUrl.includes('connection_limit')) {
+      const sep = dbUrl.includes('?') ? '&' : '?';
+      dbUrl = `${dbUrl}${sep}connection_limit=25&pool_timeout=10`;
+    }
+
     super({
+      datasources: dbUrl ? { db: { url: dbUrl } } : undefined,
       log: [
         { emit: 'event', level: 'query' },
         { emit: 'event', level: 'info' },
@@ -15,6 +22,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       ],
     });
   }
+
 
   async onModuleInit() {
     await this.$connect();
