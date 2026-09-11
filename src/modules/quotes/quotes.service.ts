@@ -15,6 +15,11 @@ import { CounterQuoteDto } from './dto/counter-quote.dto';
 import { UpdateQuoteFeeDto } from './dto/update-quote-fee.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { OrderStatus, QuoteStatus, UserRole } from '@prisma/client';
+import {
+  ACTIVE_ORDER_STATUSES,
+  MAX_ACTIVE_ORDERS_ERROR_MESSAGE,
+  MAX_ACTIVE_ORDERS_PER_RIDER,
+} from '../../common/constants/orders.constants';
 
 @Injectable()
 export class QuotesService {
@@ -46,6 +51,17 @@ export class QuotesService {
     );
     if (existingQuote) {
       throw new ConflictException('Ya tenés una propuesta activa para este pedido');
+    }
+
+    // Validar límite máximo de pedidos activos simultáneos
+    const activeOrdersCount = await this.prisma.order.count({
+      where: {
+        deliveryUserId: riderId,
+        status: { in: ACTIVE_ORDER_STATUSES },
+      },
+    });
+    if (activeOrdersCount >= MAX_ACTIVE_ORDERS_PER_RIDER) {
+      throw new ConflictException(MAX_ACTIVE_ORDERS_ERROR_MESSAGE);
     }
 
     const quote = await this.prisma.orderQuote.create({
@@ -316,6 +332,17 @@ export class QuotesService {
         quote.status !== QuoteStatus.NEGOTIATING
       ) {
         throw new BadRequestException('Esta propuesta ya no puede aceptarse');
+      }
+
+      // Validar límite máximo de pedidos activos para el repartidor
+      const activeOrdersCount = await tx.order.count({
+        where: {
+          deliveryUserId: quote.riderId,
+          status: { in: ACTIVE_ORDER_STATUSES },
+        },
+      });
+      if (activeOrdersCount >= MAX_ACTIVE_ORDERS_PER_RIDER) {
+        throw new ConflictException('El repartidor ya tiene el máximo de pedidos activos permitidos');
       }
 
       const finalFee = quote.counterFee ?? quote.proposedFee;

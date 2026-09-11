@@ -34,6 +34,12 @@ export class OrdersController {
     return this.service.calculateFee(parseFloat(destLat), parseFloat(destLng), user.businessId);
   }
 
+  @Get('my-active-orders')
+  @Roles(UserRole.REPARTIDOR)
+  findMyActiveOrders(@CurrentUser() user: JwtPayload) {
+    return this.service.findMyActiveOrders(user.sub);
+  }
+
   @Get(':id')
   @Roles(UserRole.ENCARGADO, UserRole.REPARTIDOR, UserRole.SUPERADMIN)
   findOne(@Param('id') id: string, @CurrentUser() user: JwtPayload) {

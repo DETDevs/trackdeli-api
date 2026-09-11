@@ -13,6 +13,11 @@ import { calculateDeliveryFee } from '../../common/utils/pricing.util';
 import { DispatchService } from '../dispatch/dispatch.service';
 import { CommissionsService } from '../commissions/commissions.service';
 import { CustomersService } from '../customers/customers.service';
+import {
+  ACTIVE_ORDER_STATUSES,
+  MAX_ACTIVE_ORDERS_ERROR_MESSAGE,
+  MAX_ACTIVE_ORDERS_PER_RIDER,
+} from '../../common/constants/orders.constants';
 
 @Injectable()
 export class OrdersService {
@@ -359,6 +364,54 @@ export class OrdersService {
     return result;
   }
 
+  async findMyActiveOrders(riderId: string): Promise<OrderResponseDto[]> {
+    const orders = await this.prisma.order.findMany({
+      where: {
+        deliveryUserId: riderId,
+        status: { in: ACTIVE_ORDER_STATUSES },
+      },
+      include: {
+        deliveryUser: true,
+        photos: true,
+        business: {
+          select: {
+            id: true,
+            name: true,
+            latitude: true,
+            longitude: true,
+            logoUrl: true,
+            whatsappNumber: true,
+            whatsappDisplay: true,
+          },
+        },
+        originBusinessClient: {
+          select: {
+            id: true,
+            name: true,
+            address: true,
+            phone: true,
+            latitude: true,
+            longitude: true,
+          },
+        },
+        trackingSession: true,
+        dispatches: {
+          where: {
+            status: DispatchStatus.SENT,
+            timeoutAt: { gt: new Date() },
+          },
+          take: 1,
+          orderBy: { sentAt: 'desc' },
+        },
+      },
+      orderBy: { takenAt: 'desc' },
+    });
+
+    const result = orders.map((o) => this.toResponseDto(o));
+    this.logger.log(`[findMyActiveOrders] riderId=${riderId} | OK - ${result.length} pedidos activos`);
+    return result;
+  }
+
   async findOne(id: string, businessId: string | null, userId?: string, role?: string): Promise<OrderResponseDto> {
     const order = await this.prisma.order.findUnique({
       where: { id },
@@ -500,6 +553,18 @@ export class OrdersService {
 
     if (!rider.isAvailable) {
       throw new ConflictException('No estás disponible para tomar pedidos');
+    }
+
+    // Validar límite máximo de pedidos activos simultáneos
+    const activeOrdersCount = await this.prisma.order.count({
+      where: {
+        deliveryUserId,
+        status: { in: ACTIVE_ORDER_STATUSES },
+      },
+    });
+    if (activeOrdersCount >= MAX_ACTIVE_ORDERS_PER_RIDER) {
+      this.logger.warn(`[takeOrder] CONFLICT orderId=${orderId} riderId=${deliveryUserId} ya tiene ${activeOrdersCount} pedidos activos (máximo: ${MAX_ACTIVE_ORDERS_PER_RIDER})`);
+      throw new ConflictException(MAX_ACTIVE_ORDERS_ERROR_MESSAGE);
     }
 
     // 6. Tomar el pedido en transacción
@@ -819,6 +884,17 @@ export class OrdersService {
         quote.status !== QuoteStatus.NEGOTIATING
       ) {
         throw new BadRequestException('Esta propuesta ya no puede aceptarse');
+      }
+
+      // Validar límite máximo de pedidos activos para el repartidor
+      const activeOrdersCount = await tx.order.count({
+        where: {
+          deliveryUserId: quote.riderId,
+          status: { in: ACTIVE_ORDER_STATUSES },
+        },
+      });
+      if (activeOrdersCount >= MAX_ACTIVE_ORDERS_PER_RIDER) {
+        throw new ConflictException('El repartidor ya tiene el máximo de pedidos activos permitidos');
       }
 
       const finalFee = quote.counterFee ?? quote.proposedFee;

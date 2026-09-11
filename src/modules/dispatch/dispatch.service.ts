@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -10,6 +11,11 @@ import { TrackingGateway } from '../tracking/tracking.gateway';
 import { haversineDistance } from '../../common/utils/pricing.util';
 import { DispatchStatus, OrderStatus, UserRole } from '@prisma/client';
 import { Cron } from '@nestjs/schedule';
+import {
+  ACTIVE_ORDER_STATUSES,
+  MAX_ACTIVE_ORDERS_ERROR_MESSAGE,
+  MAX_ACTIVE_ORDERS_PER_RIDER,
+} from '../../common/constants/orders.constants';
 
 @Injectable()
 export class DispatchService {
@@ -55,11 +61,17 @@ export class DispatchService {
     const triedRiderIds = triedDispatches.map((d) => d.riderId);
 
     // 2. Buscar repartidores disponibles no intentados
+    // El despacho automático en cascada solo oferta a riders completamente libres (0 pedidos activos)
     const whereRider: any = {
       role: UserRole.REPARTIDOR,
       isActive: true,
       isAvailable: true,
       id: { notIn: triedRiderIds },
+      deliveredOrders: {
+        none: {
+          status: { in: ACTIVE_ORDER_STATUSES },
+        },
+      },
     };
 
     // Si el negocio es EMPRESA_RIDERS, priorizar sus propios riders
@@ -325,6 +337,18 @@ export class DispatchService {
       }
       if (currentOrder.deliveryUserId && currentOrder.deliveryUserId !== riderId) {
         throw new BadRequestException('El pedido ya fue tomado por otro repartidor.');
+      }
+
+      // Validar límite máximo de pedidos activos simultáneos
+      const activeOrdersCount = await tx.order.count({
+        where: {
+          deliveryUserId: riderId,
+          status: { in: ACTIVE_ORDER_STATUSES },
+        },
+      });
+      if (activeOrdersCount >= MAX_ACTIVE_ORDERS_PER_RIDER) {
+        this.logger.warn(`[acceptDispatch] CONFLICT orderId=${orderId} riderId=${riderId} ya tiene ${activeOrdersCount} pedidos activos`);
+        throw new ConflictException(MAX_ACTIVE_ORDERS_ERROR_MESSAGE);
       }
 
       await tx.orderDispatch.update({
