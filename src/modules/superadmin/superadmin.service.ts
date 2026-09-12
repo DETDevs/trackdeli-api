@@ -86,6 +86,15 @@ export class SuperAdminService {
           orderBy: { endDate: 'desc' },
           take: 1,
         },
+        productSubscriptions: {
+          select: {
+            id: true,
+            productType: true,
+            status: true,
+            posVertical: true,
+            posMonthlyFee: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -159,6 +168,9 @@ export class SuperAdminService {
           endDate,
           daysLeft,
         },
+        productSubscriptions: b.productSubscriptions,
+        hasPOS: b.hasPOS,
+        hasTrackDeli: b.hasTrackDeli,
       };
     });
   }
@@ -194,6 +206,7 @@ export class SuperAdminService {
             },
           },
         },
+        productSubscriptions: true,
       },
     });
 
@@ -287,6 +300,9 @@ export class SuperAdminService {
         ordersCancelled: ordersCancelledMonth,
         deliveryRate: deliveryRateMonth,
       },
+      productSubscriptions: business.productSubscriptions,
+      hasPOS: business.hasPOS,
+      hasTrackDeli: business.hasTrackDeli,
     };
   }
 
