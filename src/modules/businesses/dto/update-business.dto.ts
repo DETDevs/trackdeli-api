@@ -1,5 +1,5 @@
 import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber, IsEnum, Matches } from 'class-validator';
-import { BusinessType, PricingModel } from '@prisma/client';
+import { BusinessType, PosVertical, PricingModel } from '@prisma/client';
 
 export class UpdateBusinessDto {
   @IsString()
@@ -99,5 +99,23 @@ export class UpdateBusinessDto {
   @IsOptional()
   @IsInt()
   @Min(1)
+  @Max(60)
   dispatchTimeoutMin?: number;
+
+  @IsOptional()
+  @IsEnum(PosVertical)
+  posVertical?: PosVertical;
+
+  @IsOptional()
+  @IsInt()
+  @Min(2)
+  @Max(50)
+  gridColumns?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(2)
+  @Max(50)
+  gridRows?: number;
 }
+

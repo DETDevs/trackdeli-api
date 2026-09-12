@@ -1,4 +1,4 @@
-import { BusinessType, PricingModel } from '@prisma/client';
+import { BusinessType, PosVertical, PricingModel } from '@prisma/client';
 
 export class BusinessResponseDto {
   id: string;
@@ -20,6 +20,11 @@ export class BusinessResponseDto {
   // Módulos activos
   hasTrackDeli: boolean;
   hasPOS: boolean;
+
+  // Vertical POS y grilla
+  posVertical: PosVertical;
+  gridColumns: number;
+  gridRows: number;
 
   // Precios TrackDeli
   pricingModel: PricingModel;
@@ -45,3 +50,4 @@ export class BusinessResponseDto {
 
   createdAt: Date;
 }
+

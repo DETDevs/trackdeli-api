@@ -27,6 +27,9 @@ export class BusinessesService {
       dispatchTimeoutMin: business.dispatchTimeoutMin,
       hasTrackDeli: business.hasTrackDeli,
       hasPOS: business.hasPOS,
+      posVertical: business.posVertical,
+      gridColumns: business.gridColumns,
+      gridRows: business.gridRows,
       pricingModel: business.pricingModel,
       baseRate: business.baseRate,
       ratePerKm: business.ratePerKm,
@@ -91,6 +94,9 @@ export class BusinessesService {
         ...(dto.altCommissionRate !== undefined && { altCommissionRate: dto.altCommissionRate }),
         ...(dto.altCommissionDistanceKm !== undefined && { altCommissionDistanceKm: dto.altCommissionDistanceKm }),
         ...(dto.dispatchTimeoutMin !== undefined && { dispatchTimeoutMin: dto.dispatchTimeoutMin }),
+        ...(dto.posVertical !== undefined && { posVertical: dto.posVertical }),
+        ...(dto.gridColumns !== undefined && { gridColumns: dto.gridColumns }),
+        ...(dto.gridRows !== undefined && { gridRows: dto.gridRows }),
       },
     });
 

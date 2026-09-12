@@ -1,4 +1,4 @@
-﻿import { Injectable, NotFoundException, Logger } from "@nestjs/common";
+import { Injectable, NotFoundException, Logger } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { UpdatePosSettingsDto } from "./dto/update-pos-settings.dto";
 
@@ -13,6 +13,7 @@ export class SettingsService {
       where: { id: businessId },
       select: {
         id: true, name: true, hasPOS: true, hasTrackDeli: true,
+        posVertical: true, gridColumns: true, gridRows: true,
         taxRate: true, currency: true, invoicePrefix: true, invoiceCounter: true,
         posAddress: true, posPhone: true, posFooter: true,
       },
@@ -30,6 +31,7 @@ export class SettingsService {
       data: dto,
       select: {
         id: true, name: true, hasPOS: true, hasTrackDeli: true,
+        posVertical: true, gridColumns: true, gridRows: true,
         taxRate: true, currency: true, invoicePrefix: true, invoiceCounter: true,
         posAddress: true, posPhone: true, posFooter: true,
       },

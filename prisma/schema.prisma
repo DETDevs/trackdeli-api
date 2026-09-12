@@ -137,6 +137,21 @@ enum StockMovementType {
   TRASLADO
 }
 
+enum PosVertical {
+  RETAIL
+  RESTAURANTE
+}
+
+enum TableShape {
+  ROUND
+  SQUARE
+}
+
+enum TableOrderStatus {
+  OPEN
+  CLOSED
+}
+
 model Business {
   id                     String       @id @default(uuid())
   name                   String       @db.VarChar(100)
@@ -180,6 +195,11 @@ model Business {
   posPhone               String?      @db.VarChar(30)
   posFooter              String?      @db.VarChar(200)
 
+  // Vertical de negocio (POS) y dimensiones del layout de mesas
+  posVertical            PosVertical  @default(RETAIL)
+  gridColumns            Int          @default(10)
+  gridRows               Int          @default(10)
+
   // Umbral de confirmación de ubicación de clientes (días)
   customerLocationMaxDays Int          @default(30)
 
@@ -196,12 +216,14 @@ model Business {
   inviteCodes InviteCode[]
 
   // POS relations
-  categories      Category[]
-  suppliers       Supplier[]
-  products        Product[]
-  sales           Sale[]
-  cashRegisters   CashRegister[]
-  cashMovements   CashMovement[]
+  categories       Category[]
+  suppliers        Supplier[]
+  products         Product[]
+  sales            Sale[]
+  cashRegisters    CashRegister[]
+  cashMovements    CashMovement[]
+  restaurantTables RestaurantTable[]
+  tableOrders      TableOrder[]
 
   @@map("businesses")
 }
@@ -620,8 +642,9 @@ model Product {
 
   isActive    Boolean   @default(true)
 
-  saleItems      SaleItem[]
-  stockMovements StockMovement[]
+  saleItems       SaleItem[]
+  stockMovements  StockMovement[]
+  tableOrderItems TableOrderItem[]
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -782,4 +805,62 @@ model InviteCodeUsage {
   usedAt       DateTime   @default(now())
 
   @@map("invite_code_usages")
+}
+
+// ═══════════════════════════════════════════════
+// POS RESTAURANT TABLES & TABLE ORDERS
+// ═══════════════════════════════════════════════
+
+model RestaurantTable {
+  id         String           @id @default(uuid())
+  businessId String
+  business   Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  number     String           @db.VarChar(50)
+  capacity   Int              @default(4)
+  shape      TableShape       @default(SQUARE)
+  gridX      Int
+  gridY      Int
+  isActive   Boolean          @default(true)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  orders     TableOrder[]
+
+  @@unique([businessId, number])
+  @@index([businessId])
+  @@map("pos_restaurant_tables")
+}
+
+model TableOrder {
+  id         String           @id @default(uuid())
+  businessId String
+  business   Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  tableId    String
+  table      RestaurantTable  @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  status     TableOrderStatus @default(OPEN)
+  createdAt  DateTime         @default(now())
+  closedAt   DateTime?
+  saleId     String?
+  notes      String?
+
+  items      TableOrderItem[]
+
+  @@index([businessId, status])
+  @@index([tableId, status])
+  @@map("pos_table_orders")
+}
+
+model TableOrderItem {
+  id           String      @id @default(uuid())
+  tableOrderId String
+  tableOrder   TableOrder  @relation(fields: [tableOrderId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product?    @relation(fields: [productId], references: [id])
+  productName  String      @db.VarChar(200)
+  quantity     Int
+  unitPrice    Float
+  notes        String?
+  createdAt    DateTime    @default(now())
+
+  @@map("pos_table_order_items")
 }

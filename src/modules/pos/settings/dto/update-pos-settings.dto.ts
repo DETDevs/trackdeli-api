@@ -1,6 +1,23 @@
-﻿import { IsNumber, Min, Max, IsOptional, IsString, MaxLength, Length } from 'class-validator';
+import { IsNumber, Min, Max, IsOptional, IsString, MaxLength, Length, IsEnum, IsInt } from 'class-validator';
+import { PosVertical } from '@prisma/client';
 
 export class UpdatePosSettingsDto {
+  @IsOptional()
+  @IsEnum(PosVertical)
+  posVertical?: PosVertical;
+
+  @IsOptional()
+  @IsInt()
+  @Min(2)
+  @Max(50)
+  gridColumns?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(2)
+  @Max(50)
+  gridRows?: number;
+
   @IsOptional()
   @IsNumber()
   @Min(0)
@@ -27,3 +44,4 @@ export class UpdatePosSettingsDto {
   @MaxLength(200)
   posFooter?: string;
 }
+
