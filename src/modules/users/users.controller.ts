@@ -56,9 +56,7 @@ export class UsersController {
   @Get()
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   findAll(@CurrentUser() user: JwtPayload) {
-    // If superadmin wants to list, we should probably allow businessId as query param,
-    // but the prompt explicitly states "Retorna repartidores del businessId del token", 
-    // so we strictly use user.businessId for both.
+
     return this.service.findAllByBusiness(user.businessId);
   }
 
@@ -96,3 +94,4 @@ export class UsersController {
     return { status: 'ok', module: 'users' };
   }
 }
+

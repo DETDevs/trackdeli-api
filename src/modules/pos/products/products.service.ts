@@ -106,7 +106,6 @@ export class ProductsService {
       if (existing) throw new ConflictException(`El SKU "${dto.sku}" ya está registrado`);
     }
 
-    // Resolver default de trackStock según vertical si no viene provisto ni trackStock ni trackInventory
     let trackStock = dto.trackStock ?? dto.trackInventory;
     if (trackStock === undefined) {
       const subscription = await this.prisma.businessProductSubscription.findUnique({
@@ -214,3 +213,4 @@ export class ProductsService {
     });
   }
 }
+

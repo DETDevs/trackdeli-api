@@ -149,7 +149,6 @@ export class CustomersService {
       throw new BadRequestException('El nombre del cliente es requerido');
     }
 
-    // Upsert automático del Customer por (businessId, phone)
     const customer = await this.prisma.customer.upsert({
       where: {
         businessId_phone: {
@@ -168,7 +167,7 @@ export class CustomersService {
     });
 
     const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
-    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48 horas
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
 
     await this.prisma.customerLocationSession.create({
       data: {
@@ -214,7 +213,7 @@ export class CustomersService {
     }
 
     const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
-    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48 horas
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
 
     await this.prisma.customerLocationSession.create({
       data: {
@@ -308,7 +307,6 @@ export class CustomersService {
       throw new NotFoundException('Cliente no encontrado');
     }
 
-    // Validación de seguridad / autenticación:
     const isAuthUser =
       userRole &&
       (userRole === UserRole.SUPERADMIN || customer.businessId === userBusinessId);
@@ -316,7 +314,7 @@ export class CustomersService {
     const token = dto.token || tokenParam;
 
     if (!isAuthUser) {
-      // Validar por token temporal
+
       if (!token) {
         throw new ForbiddenException('Token de confirmación requerido');
       }
@@ -368,7 +366,6 @@ export class CustomersService {
       return cust;
     });
 
-    // Emisión por WebSocket a la sala business:${businessId}
     if (isSameLocation) {
       this.trackingGateway.notifyBusiness(
         customer.businessId,
@@ -470,3 +467,4 @@ export class CustomersService {
     }
   }
 }
+

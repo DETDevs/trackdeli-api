@@ -20,8 +20,7 @@ export class LoggingInterceptor implements NestInterceptor {
 
     const req = context.switchToHttp().getRequest();
     const { method, url, user } = req;
-    
-    // Ignore internal metrics or noisy routes if needed in the future
+
     if (url.includes('/health')) {
       return next.handle();
     }
@@ -51,3 +50,4 @@ export class LoggingInterceptor implements NestInterceptor {
     );
   }
 }
+

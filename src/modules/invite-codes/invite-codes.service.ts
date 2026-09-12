@@ -16,7 +16,7 @@ export class InviteCodesService {
   constructor(private readonly prisma: PrismaService) {}
 
   private generateOTP(): string {
-    // Genera número entre 100000 y 999999
+
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
@@ -24,7 +24,6 @@ export class InviteCodesService {
     let code: string;
     let attempts = 0;
 
-    // Generar hasta encontrar uno único
     do {
       code = this.generateOTP();
       const existing = await this.prisma.inviteCode.findUnique({
@@ -206,3 +205,4 @@ export class InviteCodesService {
     };
   }
 }
+

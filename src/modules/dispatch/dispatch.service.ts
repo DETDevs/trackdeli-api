@@ -29,9 +29,6 @@ export class DispatchService {
     private readonly businessProductsService: BusinessProductsService,
   ) {}
 
-  /**
-   * Inicia el flujo de despacho en cascada para un pedido.
-   */
   async dispatchOrder(orderId: string): Promise<void> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
@@ -62,19 +59,14 @@ export class DispatchService {
     await this.dispatchToNextRider(order, 1);
   }
 
-  /**
-   * Intenta despachar el pedido al siguiente repartidor más cercano disponible.
-   */
   async dispatchToNextRider(order: any, attempt: number): Promise<void> {
-    // 1. Obtener IDs de repartidores ya intentados para este pedido
+
     const triedDispatches = await this.prisma.orderDispatch.findMany({
       where: { orderId: order.id },
       select: { riderId: true },
     });
     const triedRiderIds = triedDispatches.map((d) => d.riderId);
 
-    // 2. Buscar repartidores disponibles no intentados
-    // El despacho automático en cascada solo oferta a riders completamente libres (0 pedidos activos)
     const whereRider: any = {
       role: UserRole.REPARTIDOR,
       isActive: true,
@@ -87,7 +79,6 @@ export class DispatchService {
       },
     };
 
-    // Si el negocio es EMPRESA_RIDERS, priorizar sus propios riders
     if (order.business?.businessType === 'EMPRESA_RIDERS') {
       whereRider.businessId = order.businessId;
     }
@@ -96,7 +87,7 @@ export class DispatchService {
       where: {
         ...whereRider,
         lastLocationAt: {
-          gte: new Date(Date.now() - 30 * 60 * 1000), // Activos en últimos 30 min
+          gte: new Date(Date.now() - 30 * 60 * 1000),
         },
       },
       select: {
@@ -107,7 +98,6 @@ export class DispatchService {
       },
     });
 
-    // Fallback: si no hay con ubicación reciente, buscar cualquier rider activo disponible
     if (riders.length === 0) {
       riders = await this.prisma.user.findMany({
         where: whereRider,
@@ -120,7 +110,6 @@ export class DispatchService {
       });
     }
 
-    // 3. Si no hay riders disponibles
     if (riders.length === 0) {
       this.logger.warn(`[dispatch] Sin riders disponibles — orderId=${order.id} attempt=${attempt}`);
       await this.prisma.order.update({
@@ -142,7 +131,6 @@ export class DispatchService {
       return;
     }
 
-    // 4. Ordenar candidatos por distancia Haversine al negocio de origen
     const bizLat = Number(order.business.latitude);
     const bizLng = Number(order.business.longitude);
 
@@ -161,11 +149,9 @@ export class DispatchService {
 
     const targetRider = ridersWithDistance[0] ?? riders[0];
 
-    // 5. Calcular timeout
     const timeoutMinutes = order.business.dispatchTimeoutMin || 3;
     const timeoutAt = new Date(Date.now() + timeoutMinutes * 60 * 1000);
 
-    // 6. Registrar el intento de dispatch
     const dispatch = await this.prisma.orderDispatch.create({
       data: {
         orderId: order.id,
@@ -176,7 +162,6 @@ export class DispatchService {
       },
     });
 
-    // 7. Cambiar estado del pedido a OFERTADO
     await this.prisma.order.update({
       where: { id: order.id },
       data: { status: OrderStatus.OFERTADO },
@@ -184,7 +169,6 @@ export class DispatchService {
 
     this.trackingGateway.emitOrderStatusChange(order.id, OrderStatus.OFERTADO);
 
-    // 8. Notificar al rider seleccionado (Push + WebSocket)
     await this.notificationsService.sendAndSave(
       targetRider.id,
       order.id,
@@ -213,7 +197,6 @@ export class DispatchService {
       `[dispatch] orderId=${order.id} → riderId=${targetRider.id} (${targetRider.name}) attempt=${attempt} timeout=${timeoutMinutes}min`,
     );
 
-    // 9. Programar timeout automático
     setTimeout(async () => {
       try {
         await this.handleTimeout(order.id, targetRider.id, attempt);
@@ -223,10 +206,6 @@ export class DispatchService {
     }, timeoutMinutes * 60 * 1000);
   }
 
-  /**
-   * Reconcilia despachos expirados periódicamente cada 30 segundos.
-   * Respaldo crítico ante reinicios del backend que destruyen el setTimeout en memoria.
-   */
   @Cron('*/30 * * * * *')
   async reconcileExpiredDispatches(): Promise<void> {
     try {
@@ -255,26 +234,22 @@ export class DispatchService {
     }
   }
 
-  /**
-   * Maneja la expiración de tiempo de respuesta de un dispatch.
-   */
   async handleTimeout(orderId: string, riderId: string, attempt: number): Promise<void> {
     const dispatch = await this.prisma.orderDispatch.findFirst({
       where: { orderId, riderId, attempt, status: DispatchStatus.SENT },
     });
 
     if (!dispatch) {
-      return; // Ya fue aceptado, rechazado o procesado concurrentemente
+      return;
     }
 
-    // Actualización atómica con filtro de estado SENT para evitar condiciones de carrera entre setTimeout y @Cron
     const updateResult = await this.prisma.orderDispatch.updateMany({
       where: { id: dispatch.id, status: DispatchStatus.SENT },
       data: { status: DispatchStatus.TIMEOUT, respondedAt: new Date() },
     });
 
     if (updateResult.count === 0) {
-      return; // Ya fue procesado por otra ejecución concurrente
+      return;
     }
 
     this.logger.warn(`[dispatch] TIMEOUT orderId=${orderId} riderId=${riderId} attempt=${attempt}`);
@@ -289,20 +264,16 @@ export class DispatchService {
     }
   }
 
-
-  /**
-   * Repartidor acepta la asignación.
-   */
   async acceptDispatch(orderId: string, riderId: string) {
     return this.prisma.$transaction(async (tx) => {
-      // 1. Buscar si existe oferta para este rider en este pedido
+
       const dispatch = await tx.orderDispatch.findFirst({
         where: { orderId, riderId },
         orderBy: { sentAt: 'desc' },
       });
 
       if (!dispatch) {
-        // Verificar si la oferta está activa para otro rider
+
         const activeOtherDispatch = await tx.orderDispatch.findFirst({
           where: { orderId, status: DispatchStatus.SENT },
         });
@@ -312,7 +283,6 @@ export class DispatchService {
         throw new BadRequestException('No tenés una oferta de pedido pendiente de respuesta.');
       }
 
-      // Verificar estado del pedido
       const currentOrder = await tx.order.findUnique({
         where: { id: orderId },
         include: { business: true, deliveryUser: true },
@@ -321,13 +291,11 @@ export class DispatchService {
         throw new NotFoundException('Pedido no encontrado.');
       }
 
-      // Idempotencia: si este rider ya aceptó la oferta y el pedido ya le fue asignado, retornar con éxito
       if (dispatch.status === DispatchStatus.ACCEPTED && currentOrder.deliveryUserId === riderId) {
         this.logger.log(`[dispatch] Reintento idempotente exitoso: orderId=${orderId} ya asignado a riderId=${riderId}`);
         return currentOrder;
       }
 
-      // 2. Verificar estado de la oferta (con 10s de tolerancia para compensar latencia de red)
       const isPastTimeout = new Date().getTime() > dispatch.timeoutAt.getTime() + 10000;
       if (dispatch.status === DispatchStatus.TIMEOUT || isPastTimeout) {
         throw new BadRequestException('El tiempo para responder a la oferta expiró.');
@@ -352,7 +320,6 @@ export class DispatchService {
         throw new BadRequestException('El pedido ya fue tomado por otro repartidor.');
       }
 
-      // Validar límite máximo de pedidos activos simultáneos
       const activeOrdersCount = await tx.order.count({
         where: {
           deliveryUserId: riderId,
@@ -384,9 +351,6 @@ export class DispatchService {
     });
   }
 
-  /**
-   * Repartidor rechaza la asignación.
-   */
   async rejectDispatch(orderId: string, riderId: string) {
     const dispatch = await this.prisma.orderDispatch.findFirst({
       where: { orderId, riderId },
@@ -416,3 +380,4 @@ export class DispatchService {
     return { success: true, message: 'Oferta rechazada' };
   }
 }
+

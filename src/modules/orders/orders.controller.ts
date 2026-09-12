@@ -55,7 +55,7 @@ export class OrdersController {
   @Post([':id/take', ':id/take-order'])
   @Roles(UserRole.REPARTIDOR)
   takeOrder(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
-    // Para REPARTIDOR, el businessId del token puede ser null si es independiente
+
     return this.service.takeOrder(id, user.sub);
   }
 
@@ -182,3 +182,4 @@ export class OrdersController {
     return { status: 'ok', module: 'orders' };
   }
 }
+

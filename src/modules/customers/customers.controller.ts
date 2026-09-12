@@ -29,7 +29,6 @@ export class CustomersController {
     }
   }
 
-  // 1. GET /businesses/:businessId/customers/search?q=XXXX
   @Get(['businesses/:businessId/customers/search', 'businesses/me/customers/search'])
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async search(
@@ -45,7 +44,6 @@ export class CustomersController {
     return this.customersService.search(businessId, query);
   }
 
-  // 2. GET /businesses/:businessId/customers/lookup?phone=XXXX
   @Get(['businesses/:businessId/customers/lookup', 'businesses/me/customers/lookup'])
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async lookup(
@@ -61,7 +59,6 @@ export class CustomersController {
     return this.customersService.lookup(businessId, phone);
   }
 
-  // 3a. POST /customers/location-confirmation-link (Body: { businessId, phone, name } con upsert automático)
   @Post('customers/location-confirmation-link')
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async createConfirmationLinkByData(
@@ -75,7 +72,6 @@ export class CustomersController {
     );
   }
 
-  // 3b. POST /customers/:id/location-confirmation-link (por ID directo)
   @Post('customers/:id/location-confirmation-link')
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async createConfirmationLink(
@@ -89,7 +85,6 @@ export class CustomersController {
     );
   }
 
-  // 4. GET /customers/confirm-location/:token (Público, exclusivo de CustomerLocationSession)
   @Get([
     'customers/confirm-location/:token',
     'customers/location-session/:token',
@@ -100,7 +95,6 @@ export class CustomersController {
     return this.customersService.getLocationSession(token);
   }
 
-  // 5. PATCH /customers/:id/location (Público protegido por token o Autenticado)
   @Patch('customers/:id/location')
   @Public()
   async updateLocation(
@@ -120,3 +114,4 @@ export class CustomersController {
     );
   }
 }
+

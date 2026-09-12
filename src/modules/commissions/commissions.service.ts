@@ -13,9 +13,6 @@ export class CommissionsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * Registra la comisión correspondiente cuando un pedido pasa a ENTREGADO.
-   */
   async registerCommission(order: any): Promise<void> {
     const deliveryFee = Number(order.deliveryFee || 0);
     if (deliveryFee <= 0) {
@@ -23,7 +20,6 @@ export class CommissionsService {
       return;
     }
 
-    // Verificar si ya existe una comisión registrada para este pedido
     const existing = await this.prisma.orderCommission.findUnique({
       where: { orderId: order.id },
     });
@@ -62,9 +58,6 @@ export class CommissionsService {
     );
   }
 
-  /**
-   * Obtiene la lista de comisiones de un negocio.
-   */
   async getCommissions(businessId: string, month?: number, year?: number) {
     const where: any = { businessId };
 
@@ -90,9 +83,6 @@ export class CommissionsService {
     });
   }
 
-  /**
-   * Resumen de comisiones del mes actual para el encargado.
-   */
   async getSummary(businessId: string) {
     const now = new Date();
     const currentMonth = now.getMonth() + 1;
@@ -134,9 +124,6 @@ export class CommissionsService {
     };
   }
 
-  /**
-   * Historial de estados de cuenta mensuales del negocio.
-   */
   async getStatements(businessId: string) {
     return this.prisma.monthlyStatement.findMany({
       where: { businessId },
@@ -155,26 +142,16 @@ export class CommissionsService {
     });
   }
 
-  // ==========================================
-  // OPERACIONES SUPERADMIN
-  // ==========================================
-
-  /**
-   * Genera los estados de cuenta mensuales para todos los negocios de tipo EMPRESA_RIDERS
-   * que tengan comisiones pendientes en el mes especificado.
-   */
   async generateMonthlyStatements(month: number, year: number) {
     this.logger.log(`[generateMonthlyStatements] Generando estados de cuenta para ${month}/${year}`);
 
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59, 999);
 
-    // Fecha límite de pago: 5 del mes siguiente
     const nextMonth = month === 12 ? 1 : month + 1;
     const nextYear = month === 12 ? year + 1 : year;
     const dueDate = new Date(nextYear, nextMonth - 1, 5, 23, 59, 59, 999);
 
-    // Obtener todas las empresas con comisiones pendientes en este período
     const pendingCommissions = await this.prisma.orderCommission.findMany({
       where: {
         status: CommissionStatus.PENDING,
@@ -218,7 +195,6 @@ export class CommissionsService {
         },
       });
 
-      // Asociar comisiones al estado de cuenta
       const commIds = comms.map((c) => c.id);
       await this.prisma.orderCommission.updateMany({
         where: { id: { in: commIds } },
@@ -235,9 +211,6 @@ export class CommissionsService {
     return createdStatements;
   }
 
-  /**
-   * SuperAdmin registra el pago (total o parcial) de un estado de cuenta.
-   */
   async payStatement(
     statementId: string,
     dto: { paidAmount?: number; notes?: string },
@@ -279,11 +252,8 @@ export class CommissionsService {
     return updated;
   }
 
-  /**
-   * Lista empresas deudoras con estados de cuenta en OVERDUE o PARTIAL.
-   */
   async getDebtors() {
-    // Actualizar automáticamente a OVERDUE los estados PENDING o PARTIAL cuya fecha de vencimiento ya pasó
+
     const now = new Date();
     await this.prisma.monthlyStatement.updateMany({
       where: {
@@ -311,9 +281,6 @@ export class CommissionsService {
     });
   }
 
-  /**
-   * Listado global de comisiones para auditoría del SuperAdmin.
-   */
   async getAllCommissions(month?: number, year?: number, businessId?: string) {
     const where: any = {};
     if (businessId) where.businessId = businessId;
@@ -334,3 +301,4 @@ export class CommissionsService {
     });
   }
 }
+

@@ -70,7 +70,6 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.logger.log(`[TrackingGateway] join_order: socketId=${client.id}, orderId=${data.orderId}`);
     client.join(`order:${data.orderId}`);
 
-    // Obtener última posición para que el cliente la reciba al instante al conectarse
     const lastPos = await this.trackingService.getLastPosition(data.orderId);
     client.emit('joined_order', {
       orderId: data.orderId,
@@ -112,10 +111,8 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
   ) {
     this.logger.debug(`[TrackingGateway] location_updated: orderId=${data.orderId}, lat=${data.lat}, lng=${data.lng}, isMock=${data.isMock ?? false}`);
 
-    // 1. Guardar última posición en Redis
     await this.trackingService.saveLastPosition(data.orderId, data.lat, data.lng, data.speed);
 
-    // 2. Emitir posición a todos los clientes en el room
     this.server.to(`order:${data.orderId}`).emit('location_updated', {
       orderId: data.orderId,
       lat: data.lat,
@@ -125,7 +122,6 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
       timestamp: new Date().toISOString(),
     });
 
-    // 3. Guardar snapshot en DB cada 30 segundos
     if (data.userId) {
       await this.trackingService.saveSnapshotIfNeeded(
         data.orderId,
@@ -136,10 +132,8 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
         data.isMock,
       );
 
-      // 4. Update user current location
       await this.trackingService.updateUserLocation(data.userId, data.lat, data.lng);
 
-      // 4. Verificar geofencing automático
       await this.trackingService.checkGeofenceAndTransition(
         data.orderId,
         data.userId,

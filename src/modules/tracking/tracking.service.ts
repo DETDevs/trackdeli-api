@@ -31,7 +31,7 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   async saveLastPosition(orderId: string, lat: number, lng: number, speed?: number): Promise<void> {
     const key = `last_position:${orderId}`;
     const value = JSON.stringify({ lat, lng, speed, timestamp: new Date().toISOString() });
-    // 7200s (2 horas) para asegurar que persista durante toda la vida del pedido
+
     await this.redis.setex(key, 7200, value);
   }
 
@@ -62,7 +62,7 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   }
 
   calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
-    const R = 6371; // Radio de la Tierra en km
+    const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLng = (lng2 - lng1) * Math.PI / 180;
     const a =
@@ -70,7 +70,7 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
       Math.sin(dLng / 2) * Math.sin(dLng / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c; // Distance in km
+    return R * c;
   }
 
   isNearDestination(
@@ -87,16 +87,15 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   async getTrackingDataByToken(token: string) {
     this.logger.debug(`[Tracking] Buscando sesión por token: ${token.substring(0, 20)}...`);
 
-    // Buscar SOLO por token — sin condiciones adicionales en el where
     const session = await this.prisma.trackingSession.findUnique({
       where: { token },
       include: {
         order: {
           include: {
             deliveryUser: {
-              select: { 
-                id: true, 
-                name: true, 
+              select: {
+                id: true,
+                name: true,
                 phone: true,
                 vehicleType: true,
                 vehiclePlate: true,
@@ -127,7 +126,6 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    // Validar manualmente después de obtener el resultado
     if (!session) {
       this.logger.warn(`[Tracking] Token no encontrado en DB: ${token.substring(0, 20)}...`);
       return null;
@@ -143,11 +141,8 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    // Obtener última posición de Redis
     let lastPosition = await this.getLastPosition(session.orderId);
 
-    // Fallback de resiliencia: si aún no hay posición en Redis para esta orden,
-    // utilizar la última ubicación conocida del repartidor asignado
     if (
       !lastPosition &&
       session.order.deliveryUser?.currentLatitude &&
@@ -224,7 +219,6 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       bizLng: order.business?.longitude ? Number(order.business.longitude) : null,
     };
 
-    // Cachear en Redis por 7200s (2 horas)
     await this.redis.setex(key, 7200, JSON.stringify(meta));
     return meta;
   }
@@ -259,21 +253,21 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     if (meta.status === 'EN_CAMINO_AL_NEGOCIO' && meta.bizLat && meta.bizLng) {
       const geofenceBizKey = `geofence_biz_triggered:${orderId}`;
       const alreadyTriggeredBiz = await this.redis.get(geofenceBizKey);
-      
+
       if (!alreadyTriggeredBiz) {
         const isNearBiz = this.isNearDestination(
           currentLat,
           currentLng,
           meta.bizLat,
           meta.bizLng,
-          100 // 100 metros para el negocio
+          100
         );
 
         if (isNearBiz) {
           await this.redis.setex(geofenceBizKey, 3600, '1');
           await this.prisma.order.update({
             where: { id: orderId },
-            data: { 
+            data: {
               status: 'EN_EL_NEGOCIO',
               arrivedAtBusinessAt: new Date(),
             },
@@ -339,9 +333,8 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     await this.redis.del(`geofence_meta:${orderId}`);
   }
 
-
   async updateUserLocation(userId: string, lat: number, lng: number): Promise<void> {
-    // Throttle user location update in DB to once per 10 seconds to avoid DB overload
+
     const lastUpdateKey = `last_user_loc_update:${userId}`;
     const lastUpdate = await this.redis.get(lastUpdateKey);
     const now = Date.now();

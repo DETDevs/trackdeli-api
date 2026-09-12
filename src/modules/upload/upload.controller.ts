@@ -9,9 +9,6 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 
-// The requirements say to map photos to /orders/:id/photos
-// We will use @Controller() with absolute paths or split into two controllers.
-// Using @Controller('orders') for the photos and a separate or combined one for health.
 @Controller()
 export class UploadController {
   constructor(
@@ -73,7 +70,7 @@ export class UploadController {
 
     for (const file of files) {
       const photoUrl = await this.uploadService.uploadPhoto(file, folder);
-      
+
       const orderPhoto = await this.prisma.orderPhoto.create({
         data: {
           orderId,
@@ -81,10 +78,9 @@ export class UploadController {
           type,
         },
       });
-      
+
       uploadedPhotos.push(orderPhoto);
     }
-
 
     return uploadedPhotos;
   }
@@ -110,5 +106,4 @@ export class UploadController {
     });
   }
 }
-
 

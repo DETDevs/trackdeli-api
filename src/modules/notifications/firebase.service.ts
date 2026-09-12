@@ -44,14 +44,13 @@ export class FirebaseService implements OnModuleInit {
       process.env.FIREBASE_PRIVATE_KEY ||
       '';
 
-    // Limpiar comillas envolventes que Railway o .env puedan agregar
     if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
       privateKey = privateKey.slice(1, -1);
     }
     if (privateKey.startsWith("'") && privateKey.endsWith("'")) {
       privateKey = privateKey.slice(1, -1);
     }
-    // Normalizar saltos de línea escapados a reales
+
     privateKey = privateKey.replace(/\\n/g, '\n');
 
     if (!projectId || !clientEmail || !privateKey) {
@@ -84,7 +83,6 @@ export class FirebaseService implements OnModuleInit {
     try {
       const app = this.getApp();
 
-      // Sanitizar data para asegurar que solo contenga strings y sin valores nulos/indefinidos
       const sanitizedData: Record<string, string> = {};
       if (data) {
         for (const [key, value] of Object.entries(data)) {
@@ -122,7 +120,6 @@ export class FirebaseService implements OnModuleInit {
         error.stack,
       );
 
-      // Limpiar tokens inválidos o expirados de la base de datos
       if (
         error.code === 'messaging/registration-token-not-registered' ||
         error.code === 'messaging/invalid-registration-token' ||

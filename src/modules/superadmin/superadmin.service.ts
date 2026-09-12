@@ -54,10 +54,6 @@ export class SuperAdminService {
     private readonly uploadService: UploadService,
   ) { }
 
-  // ==========================================
-  // 1. NEGOCIOS
-  // ==========================================
-
   async getBusinesses() {
     this.logger.log('[getBusinesses] Obteniendo lista de negocios con métricas');
 
@@ -111,8 +107,6 @@ export class SuperAdminService {
       let endDate: Date | null = null;
       let daysLeft: number | null = null;
 
-      // Si el negocio no tiene DELIVERY contratado (solo-POS u otro caso),
-      // no calcular estado de membresía — no aplica.
       const deliverySub = b.productSubscriptions.find(
         (s) => s.productType === 'DELIVERY',
       );
@@ -223,7 +217,6 @@ export class SuperAdminService {
       throw new NotFoundException('Negocio no encontrado');
     }
 
-    // Repartidores que han trabajado con este negocio
     const ordersWithRiders = await this.prisma.order.findMany({
       where: {
         businessId: id,
@@ -249,7 +242,6 @@ export class SuperAdminService {
       .map((o) => o.deliveryUser)
       .filter((u): u is NonNullable<typeof u> => u !== null);
 
-    // Métricas del mes actual
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -478,10 +470,6 @@ export class SuperAdminService {
     return updated;
   }
 
-  // ==========================================
-  // 2. REPARTIDORES
-  // ==========================================
-
   async getRiders() {
     this.logger.log('[getRiders] Obteniendo lista de repartidores independientes');
 
@@ -570,7 +558,7 @@ export class SuperAdminService {
     const newStatus = !rider.isActive;
 
     if (!newStatus) {
-      // Si se va a desactivar, verificar que no tenga pedidos en curso
+
       const activeOrder = await this.prisma.order.findFirst({
         where: {
           deliveryUserId: id,
@@ -653,10 +641,6 @@ export class SuperAdminService {
     }));
   }
 
-  // ==========================================
-  // 3. MÉTRICAS GLOBALES
-  // ==========================================
-
   async getGlobalMetrics() {
     this.logger.log('[getGlobalMetrics] Calculando dashboard de métricas globales');
 
@@ -664,7 +648,6 @@ export class SuperAdminService {
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    // Totals
     const [
       businessesTotal,
       businessesActive,
@@ -685,7 +668,6 @@ export class SuperAdminService {
       this.prisma.order.count(),
     ]);
 
-    // Today metrics
     const [
       ordersCreatedToday,
       ordersDeliveredToday,
@@ -717,7 +699,6 @@ export class SuperAdminService {
       }),
     ]);
 
-    // Last 30 Days metrics
     const last30DaysOrders = await this.prisma.order.findMany({
       where: { createdAt: { gte: thirtyDaysAgo } },
       select: {
@@ -751,7 +732,6 @@ export class SuperAdminService {
         ? Number(((ordersDelivered30 / ordersCreated30) * 100).toFixed(1))
         : 0;
 
-    // Delivery duration calculation in minutes
     const deliveredWithTimes = last30DaysOrders.filter(
       (o) => o.status === OrderStatus.ENTREGADO && o.deliveredAt,
     );
@@ -766,7 +746,6 @@ export class SuperAdminService {
       avgDeliveryTimeMinutes = Math.round(totalMinutes / deliveredWithTimes.length);
     }
 
-    // Top businesses (last 30 days)
     const businessOrderCountMap: Record<
       string,
       { id: string; name: string; ordersCount: number }
@@ -785,7 +764,6 @@ export class SuperAdminService {
       .sort((a, b) => b.ordersCount - a.ordersCount)
       .slice(0, 5);
 
-    // Top riders (last 30 days)
     const riderDeliveriesMap: Record<
       string,
       { id: string; name: string; deliveriesCount: number }
@@ -807,7 +785,6 @@ export class SuperAdminService {
       .sort((a, b) => b.deliveriesCount - a.deliveriesCount)
       .slice(0, 5);
 
-    // Fetch average ratings for top riders
     const topRiders = await Promise.all(
       topRidersList.map(async (r) => {
         const ratingAgg = await this.prisma.rating.aggregate({
@@ -823,7 +800,6 @@ export class SuperAdminService {
       }),
     );
 
-    // Orders per day (last 30 days)
     const ordersPerDayMap: Record<string, { created: number; delivered: number }> = {};
     for (let i = 29; i >= 0; i--) {
       const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
@@ -920,7 +896,6 @@ export class SuperAdminService {
       }),
     ]);
 
-    // Status breakdown
     const statusCounts: Record<string, number> = {};
     let totalDeliveryFees = 0;
 
@@ -951,14 +926,9 @@ export class SuperAdminService {
     };
   }
 
-  // ==========================================
-  // 4. LOGS Y ACTIVIDAD DEL SISTEMA
-  // ==========================================
-
   async getRecentLogs() {
     this.logger.log('[getRecentLogs] Obteniendo últimas 100 actividades del sistema');
 
-    // 1. Órdenes recientes con cambios relevantes
     const recentOrders = await this.prisma.order.findMany({
       take: 60,
       orderBy: { createdAt: 'desc' },
@@ -968,7 +938,6 @@ export class SuperAdminService {
       },
     });
 
-    // 2. Repartidores registrados recientemente
     const recentRiders = await this.prisma.user.findMany({
       where: { role: UserRole.REPARTIDOR },
       take: 20,
@@ -980,7 +949,6 @@ export class SuperAdminService {
       },
     });
 
-    // 3. Negocios creados recientemente
     const recentBusinesses = await this.prisma.business.findMany({
       take: 20,
       orderBy: { createdAt: 'desc' },
@@ -1007,7 +975,6 @@ export class SuperAdminService {
       createdAt: Date;
     }> = [];
 
-    // Formatear órdenes
     for (const o of recentOrders) {
       if (o.status === OrderStatus.ENTREGADO && o.deliveredAt) {
         logs.push({
@@ -1052,7 +1019,6 @@ export class SuperAdminService {
       }
     }
 
-    // Formatear repartidores
     for (const r of recentRiders) {
       logs.push({
         id: `log-rider-${r.id}`,
@@ -1065,7 +1031,6 @@ export class SuperAdminService {
       });
     }
 
-    // Formatear negocios
     for (const b of recentBusinesses) {
       logs.push({
         id: `log-biz-${b.id}`,
@@ -1078,15 +1043,10 @@ export class SuperAdminService {
       });
     }
 
-    // Ordenar descendente por fecha y limitar a 100
     logs.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
     return logs.slice(0, 100);
   }
-
-  // ==========================================
-  // 5. MEMBRESÍAS
-  // ==========================================
 
   async createMembership(dto: CreateMembershipDto, createdBy: string) {
     this.logger.log(
@@ -1283,3 +1243,4 @@ export class SuperAdminService {
     return memberships;
   }
 }
+

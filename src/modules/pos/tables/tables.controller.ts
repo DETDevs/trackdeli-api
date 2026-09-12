@@ -30,10 +30,6 @@ import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
 export class TablesController {
   constructor(private readonly service: TablesService) {}
 
-  // ==========================================
-  // 1. GESTIÓN DE MESAS Y STATUS
-  // ==========================================
-
   @Get()
   findAll(
     @CurrentUser() user: JwtPayload,
@@ -77,10 +73,6 @@ export class TablesController {
   ) {
     return this.service.deleteTable(resolveBusinessId(user, qBid), id);
   }
-
-  // ==========================================
-  // 2. FLUJO DE PEDIDOS POR MESA
-  // ==========================================
 
   @Post(':id/open-order')
   @HttpCode(HttpStatus.OK)
@@ -157,3 +149,4 @@ export class TablesController {
     );
   }
 }
+

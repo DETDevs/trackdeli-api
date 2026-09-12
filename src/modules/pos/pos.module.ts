@@ -7,6 +7,7 @@ import { CashRegisterModule } from './cash-register/cash-register.module';
 import { ReportsModule } from './reports/reports.module';
 import { SettingsModule } from './settings/settings.module';
 import { TablesModule } from './tables/tables.module';
+import { OfflineModule } from './offline/offline.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { TablesModule } from './tables/tables.module';
     ReportsModule,
     SettingsModule,
     TablesModule,
+    OfflineModule,
   ],
 })
 export class PosModule {}

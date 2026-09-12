@@ -24,10 +24,6 @@ export class TablesService {
     private readonly salesService: SalesService,
   ) {}
 
-  // ==========================================
-  // 1. GESTIÓN DE MESAS (CRUD Y LAYOUT)
-  // ==========================================
-
   async findAllTables(businessId: string) {
     return this.prisma.restaurantTable.findMany({
       where: { businessId, isActive: true },
@@ -44,7 +40,6 @@ export class TablesService {
       throw new NotFoundException('Negocio no encontrado');
     }
 
-    // Validar límites de grilla
     if (
       dto.gridX < 0 ||
       dto.gridX >= business.gridColumns ||
@@ -56,7 +51,6 @@ export class TablesService {
       );
     }
 
-    // Validar nombre o número único por negocio entre mesas activas
     const existingNumber = await this.prisma.restaurantTable.findFirst({
       where: {
         businessId,
@@ -68,7 +62,6 @@ export class TablesService {
       throw new ConflictException(`Ya existe una mesa con el identificador "${dto.number}"`);
     }
 
-    // Validar colisión de celda en la grilla
     const existingPosition = await this.prisma.restaurantTable.findFirst({
       where: {
         businessId,
@@ -180,7 +173,6 @@ export class TablesService {
       throw new NotFoundException('Mesa no encontrada');
     }
 
-    // Verificar si la mesa tiene un pedido abierto en curso
     const openOrder = await this.prisma.tableOrder.findFirst({
       where: { tableId, status: TableOrderStatus.OPEN },
     });
@@ -188,7 +180,6 @@ export class TablesService {
       throw new BadRequestException('No se puede eliminar una mesa que tiene un pedido abierto en curso');
     }
 
-    // Soft delete para preservar historial de pedidos pasados y liberar el número/coordenadas
     await this.prisma.restaurantTable.update({
       where: { id: tableId },
       data: {
@@ -200,10 +191,6 @@ export class TablesService {
     this.logger.log(`[deleteTable] Mesa desactivada: id=${tableId} en businessId=${businessId}`);
     return { success: true, message: 'Mesa eliminada exitosamente' };
   }
-
-  // ==========================================
-  // 2. STATUS Y FLUJO DE PEDIDOS POR MESA
-  // ==========================================
 
   async getTablesStatus(businessId: string) {
     const tables = await this.prisma.restaurantTable.findMany({
@@ -264,7 +251,6 @@ export class TablesService {
       throw new NotFoundException('Mesa no encontrada');
     }
 
-    // Idempotencia: si ya existe una orden OPEN, devolverla
     const existingOrder = await this.prisma.tableOrder.findFirst({
       where: { tableId, status: TableOrderStatus.OPEN },
       include: {
@@ -342,7 +328,6 @@ export class TablesService {
       throw new NotFoundException('Mesa no encontrada');
     }
 
-    // Obtener o crear orden OPEN de forma idempotente
     let order = await this.prisma.tableOrder.findFirst({
       where: { tableId, status: TableOrderStatus.OPEN },
     });
@@ -353,7 +338,6 @@ export class TablesService {
       });
     }
 
-    // Procesar cada ítem tomando snapshot del precio actual del producto
     for (const item of dto.items) {
       const product = await this.prisma.product.findFirst({
         where: { id: item.productId, businessId, isActive: true },
@@ -362,7 +346,6 @@ export class TablesService {
         throw new NotFoundException(`Producto ${item.productId} no encontrado o inactivo`);
       }
 
-      // Si ya existe un ítem para el mismo producto y sin notas particulares, incrementar cantidad
       const existingItem = await this.prisma.tableOrderItem.findFirst({
         where: {
           tableOrderId: order.id,
@@ -382,7 +365,7 @@ export class TablesService {
             tableOrderId: order.id,
             productId: product.id,
             productName: product.name,
-            unitPrice: product.price, // Snapshot de precio
+            unitPrice: product.price,
             quantity: item.quantity,
             notes: item.notes?.trim() || null,
           },
@@ -454,13 +437,11 @@ export class TablesService {
       throw new BadRequestException('El pedido de la mesa no contiene productos para facturar');
     }
 
-    // Calcular subtotal de ítems
     let subtotal = 0;
     for (const item of order.items) {
       subtotal += item.quantity * item.unitPrice;
     }
 
-    // Obtener configuración de impuestos del negocio para calcular total preliminar
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
       select: { taxRate: true },
@@ -471,10 +452,8 @@ export class TablesService {
     const taxAmount = taxable * (taxRate / 100);
     const total = taxable + taxAmount;
 
-    // Si el cajero no especificó amountPaid, asumir que pagó el total exacto
     const amountPaid = dto.amountPaid !== undefined ? dto.amountPaid : Math.round(total * 100) / 100;
 
-    // Construir CreateSaleDto para reutilizar la lógica completa de facturación del POS
     const saleDto: CreateSaleDto = {
       paymentMethod: dto.paymentMethod || PosPaymentMethod.EFECTIVO,
       amountPaid,
@@ -493,10 +472,8 @@ export class TablesService {
       })),
     };
 
-    // 1. Crear venta en el POS (actualiza caja, impuestos, correlativo y stock)
     const sale = await this.salesService.create(saleDto, businessId, cashierId);
 
-    // 2. Cerrar TableOrder y vincular saleId
     const closedOrder = await this.prisma.tableOrder.update({
       where: { id: order.id },
       data: {
@@ -521,10 +498,6 @@ export class TablesService {
       },
     };
   }
-
-  // ==========================================
-  // HELPERS
-  // ==========================================
 
   private formatOrderResponse(order: any) {
     let subtotal = 0;
@@ -563,3 +536,4 @@ export class TablesService {
     };
   }
 }
+

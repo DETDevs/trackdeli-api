@@ -34,10 +34,6 @@ export class SuperAdminController {
     private readonly businessesService: BusinessesService,
   ) {}
 
-  // ==========================================
-  // NEGOCIOS
-  // ==========================================
-
   @Get('businesses')
   async getBusinesses() {
     return this.superAdminService.getBusinesses();
@@ -79,10 +75,6 @@ export class SuperAdminController {
     return this.superAdminService.createBusiness(dto);
   }
 
-  // ==========================================
-  // REPARTIDORES
-  // ==========================================
-
   @Get('riders/active')
   async getActiveRiders() {
     return this.superAdminService.getActiveRiders();
@@ -97,10 +89,6 @@ export class SuperAdminController {
   async toggleRider(@Param('id') id: string) {
     return this.superAdminService.toggleRider(id);
   }
-
-  // ==========================================
-  // MEMBRESÍAS
-  // ==========================================
 
   @Get('memberships/expiring')
   async getExpiringMemberships() {
@@ -123,7 +111,7 @@ export class SuperAdminController {
   @Post('memberships/:id/proof')
   @UseInterceptors(
     FileInterceptor('file', {
-      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+      limits: { fileSize: 5 * 1024 * 1024 },
     }),
   )
   async uploadPaymentProof(
@@ -141,10 +129,6 @@ export class SuperAdminController {
     return this.superAdminService.updateMembership(id, dto);
   }
 
-  // ==========================================
-  // MÉTRICAS
-  // ==========================================
-
   @Get('metrics')
   async getGlobalMetrics() {
     return this.superAdminService.getGlobalMetrics();
@@ -155,18 +139,10 @@ export class SuperAdminController {
     return this.superAdminService.getOrdersMetrics(query);
   }
 
-  // ==========================================
-  // LOGS / ACTIVIDAD
-  // ==========================================
-
   @Get('logs')
   async getRecentLogs() {
     return this.superAdminService.getRecentLogs();
   }
-
-  // ==========================================
-  // COMISIONES Y ESTADOS DE CUENTA
-  // ==========================================
 
   @Get('commissions')
   async getCommissions(
@@ -201,3 +177,4 @@ export class SuperAdminController {
     return this.commissionsService.getDebtors();
   }
 }
+

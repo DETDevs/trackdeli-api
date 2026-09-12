@@ -47,7 +47,6 @@ export class CashRegisterService {
 
     const initialAmount = Number(register.openingCash ?? register.initialAmount ?? 0);
 
-    // Si la caja está abierta o expectedCash no está persistido, calcularlo en tiempo real
     const liveExpectedCash = initialAmount + calculatedCash + movementsIn - movementsOut;
     const expectedCash = register.expectedCash != null ? Number(register.expectedCash) : liveExpectedCash;
 
@@ -315,3 +314,4 @@ export class CashRegisterService {
     };
   }
 }
+

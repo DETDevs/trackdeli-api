@@ -53,7 +53,6 @@ export class QuotesService {
       throw new ConflictException('Ya tenés una propuesta activa para este pedido');
     }
 
-    // Validar límite máximo de pedidos activos simultáneos
     const activeOrdersCount = await this.prisma.order.count({
       where: {
         deliveryUserId: riderId,
@@ -315,7 +314,6 @@ export class QuotesService {
         throw new ForbiddenException('Sin acceso a esta propuesta');
       }
 
-      // Idempotencia: si la propuesta ya fue aceptada y el pedido ya fue asignado a este repartidor
       if (quote.status === QuoteStatus.ACCEPTED && quote.order.deliveryUserId === quote.riderId) {
         this.logger.log(`[quotes] Reintento idempotente exitoso: quoteId=${quoteId}, orderId=${quote.orderId} ya aceptado`);
         const tracking = await tx.trackingSession.findUnique({ where: { orderId: quote.orderId } });
@@ -334,7 +332,6 @@ export class QuotesService {
         throw new BadRequestException('Esta propuesta ya no puede aceptarse');
       }
 
-      // Validar límite máximo de pedidos activos para el repartidor
       const activeOrdersCount = await tx.order.count({
         where: {
           deliveryUserId: quote.riderId,

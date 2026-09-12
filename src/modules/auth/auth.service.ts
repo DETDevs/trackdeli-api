@@ -44,7 +44,7 @@ export class AuthService {
 
   async login(dto: LoginDto): Promise<TokenResponseDto> {
     const user = await this.validateUser(dto.email, dto.password);
-    
+
     if (!user) {
       throw new UnauthorizedException('Credenciales inválidas');
     }
@@ -92,7 +92,6 @@ export class AuthService {
       let businessId: string | null = null;
       let inviteCodeRecord: any = null;
 
-      // Si se proporcionó un código, validarlo y obtener el businessId
       if (dto.inviteCode) {
         inviteCodeRecord = await this.prisma.inviteCode.findUnique({
           where: { code: dto.inviteCode.trim().toUpperCase() },
@@ -233,9 +232,9 @@ export class AuthService {
       };
 
       const tokens = this.generateTokens(payload);
-      
+
       this.logger.log(`[refresh] OK — userId=${user.id}, nuevos tokens generados`);
-      
+
       return {
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
@@ -297,7 +296,7 @@ export class AuthService {
 
   private generateTokens(payload: JwtPayload): { accessToken: string; refreshToken: string } {
     const accessToken = this.jwtService.sign(payload);
-    
+
     const refreshToken = this.jwtService.sign(payload, {
       secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRATION'),

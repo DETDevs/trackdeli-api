@@ -157,7 +157,7 @@ export class UsersService {
       try {
         await this.uploadService.deletePhoto(user.vehiclePhotoUrl);
       } catch (e) {
-        // Ignorar si no se pudo borrar la anterior
+
       }
     }
 
@@ -181,7 +181,7 @@ export class UsersService {
       try {
         await this.uploadService.deletePhoto(user.profilePhotoUrl);
       } catch (e) {
-        // Ignorar si no se pudo borrar la anterior
+
       }
     }
 
@@ -198,7 +198,6 @@ export class UsersService {
   async joinBusiness(userId: string, code: string) {
     const formattedCode = code.trim();
 
-    // 1. Validar el código
     const inviteCode = await this.prisma.inviteCode.findUnique({
       where: { code: formattedCode },
       include: {
@@ -221,7 +220,6 @@ export class UsersService {
       throw new BadRequestException('Este código ha alcanzado el límite de usos');
     }
 
-    // 2. Verificar que el rider no esté ya en esa misma empresa
     const rider = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { id: true, businessId: true },
@@ -231,9 +229,8 @@ export class UsersService {
       throw new ConflictException('Ya pertenecés a esta empresa');
     }
 
-    // 3. Actualizar businessId del rider + registrar uso del código
     return this.prisma.$transaction(async (tx) => {
-      // Actualizar el rider
+
       const updatedUser = await tx.user.update({
         where: { id: userId },
         data: { businessId: inviteCode.businessId },
@@ -245,7 +242,6 @@ export class UsersService {
         },
       });
 
-      // Registrar el uso del código (upsert)
       await tx.inviteCodeUsage.upsert({
         where: { riderId: userId },
         create: {
@@ -258,7 +254,6 @@ export class UsersService {
         },
       });
 
-      // Incrementar contador de usos
       await tx.inviteCode.update({
         where: { id: inviteCode.id },
         data: { usedCount: { increment: 1 } },
@@ -278,3 +273,4 @@ export class UsersService {
     });
   }
 }
+

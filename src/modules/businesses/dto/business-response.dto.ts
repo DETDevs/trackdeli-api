@@ -10,23 +10,19 @@ export class BusinessResponseDto {
   longitude: number | null;
   isActive: boolean;
 
-  // Modelo y comisiones
   businessType: BusinessType;
   commissionRate: number;
   altCommissionRate: number;
   altCommissionDistanceKm: number;
   dispatchTimeoutMin: number;
 
-  // Módulos activos
   hasTrackDeli: boolean;
   hasPOS: boolean;
 
-  // Vertical POS y grilla
   posVertical: PosVertical;
   gridColumns: number;
   gridRows: number;
 
-  // Precios TrackDeli
   pricingModel: PricingModel;
   baseRate: number;
   ratePerKm: number;
@@ -35,11 +31,9 @@ export class BusinessResponseDto {
   maxRate: number;
   pricingZones?: Array<{ id?: string; name: string; price: number }> | null;
 
-  // Contacto
   whatsappNumber?: string | null;
   whatsappDisplay?: string | null;
 
-  // Configuración POS
   taxRate: number;
   currency: string;
   invoicePrefix: string;

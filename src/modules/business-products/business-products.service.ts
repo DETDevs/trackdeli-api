@@ -24,14 +24,6 @@ export class BusinessProductsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  // ==========================================
-  // 1. MÉTODO PÚBLICO / REUTILIZABLE (GUARDS Y SERVICIOS)
-  // ==========================================
-
-  /**
-   * Verifica si un producto específico (DELIVERY o POS) está activo para un negocio.
-   * Única fuente de verdad reutilizable por PosGuard, OrdersService, DispatchService, etc.
-   */
   async isActive(businessId: string, productType: BusinessProductType): Promise<boolean> {
     if (!businessId) return false;
 
@@ -45,13 +37,6 @@ export class BusinessProductsService {
     return subscription?.status === BusinessProductStatus.ACTIVE;
   }
 
-  // ==========================================
-  // 2. CONSULTA DE PRODUCTOS Y AUDITORÍA
-  // ==========================================
-
-  /**
-   * Devuelve el estado actual de AMBOS productos (DELIVERY y POS) para el negocio.
-   */
   async getProducts(businessId: string) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
@@ -140,9 +125,6 @@ export class BusinessProductsService {
     };
   }
 
-  /**
-   * Consulta el log de auditoría completo de un producto en un negocio, ordenado por fecha desc.
-   */
   async getAuditLog(businessId: string, productType: BusinessProductType) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
@@ -158,10 +140,6 @@ export class BusinessProductsService {
       orderBy: { createdAt: 'desc' },
     });
   }
-
-  // ==========================================
-  // 3. ACTIVACIÓN DE PRODUCTO (IDEMPOTENTE Y SERIALIZABLE)
-  // ==========================================
 
   async activateProduct(
     businessId: string,
@@ -189,7 +167,6 @@ export class BusinessProductsService {
 
         const isAlreadyActive = existingSub?.status === BusinessProductStatus.ACTIVE;
 
-        // Construir datos de configuración según el tipo de producto
         const deliveryConfig =
           productType === BusinessProductType.DELIVERY
             ? {
@@ -229,7 +206,7 @@ export class BusinessProductsService {
             : {};
 
         if (isAlreadyActive) {
-          // Idempotente: confirmar estado y actualizar configuración
+
           const updatedSub = await tx.businessProductSubscription.update({
             where: { id: existingSub.id },
             data: {
@@ -238,7 +215,6 @@ export class BusinessProductsService {
             },
           });
 
-          // Registrar en auditoría como CONFIG_UPDATED
           await tx.businessProductAuditLog.create({
             data: {
               businessId,
@@ -263,7 +239,6 @@ export class BusinessProductsService {
             },
           });
 
-          // Sincronizar campos legacy en Business como fallback
           await this.syncLegacyBusinessFields(tx, businessId, productType, true, dto);
 
           this.logger.log(
@@ -278,7 +253,6 @@ export class BusinessProductsService {
           };
         }
 
-        // Nueva activación o reactivación
         const upsertedSub = await tx.businessProductSubscription.upsert({
           where: {
             businessId_productType: { businessId, productType },
@@ -305,7 +279,6 @@ export class BusinessProductsService {
           },
         });
 
-        // Registrar en auditoría como ACTIVATED
         await tx.businessProductAuditLog.create({
           data: {
             businessId,
@@ -321,7 +294,6 @@ export class BusinessProductsService {
           },
         });
 
-        // Sincronizar campos legacy en Business como fallback
         await this.syncLegacyBusinessFields(tx, businessId, productType, true, dto);
 
         this.logger.log(
@@ -337,10 +309,6 @@ export class BusinessProductsService {
       },
     );
   }
-
-  // ==========================================
-  // 4. DESACTIVACIÓN DE PRODUCTO (CON BLOQUEO Y FORCE)
-  // ==========================================
 
   async deactivateProduct(
     businessId: string,
@@ -376,7 +344,6 @@ export class BusinessProductsService {
           };
         }
 
-        // Verificar operaciones en curso que impiden desactivación
         let hasPendingOperations = false;
         const details: any = { productType };
 
@@ -417,14 +384,12 @@ export class BusinessProductsService {
           }
         }
 
-        // CASO 1: Operaciones en curso SIN force -> BLOQUEAR con 409 Conflict
         if (hasPendingOperations && !force) {
           const reasonMsg =
             productType === BusinessProductType.DELIVERY
               ? `${details.activeOrders} pedidos activos, ${details.activeDispatches} despachos en curso`
               : `${details.openCashRegisters} caja(s) registradora(s) abierta(s)`;
 
-          // Se persiste con this.prisma para que no se pierda en el rollback al lanzar ConflictException
           await this.prisma.businessProductAuditLog.create({
             data: {
               businessId,
@@ -448,7 +413,6 @@ export class BusinessProductsService {
           });
         }
 
-        // CASO 2: Operaciones en curso CON force -> DESACTIVACIÓN FORZADA
         if (hasPendingOperations && force) {
           const deactivatedSub = await tx.businessProductSubscription.update({
             where: { id: existingSub.id },
@@ -492,7 +456,6 @@ export class BusinessProductsService {
           };
         }
 
-        // CASO 3: Sin operaciones en curso -> DESACTIVACIÓN LIMPIA
         const deactivatedSub = await tx.businessProductSubscription.update({
           where: { id: existingSub.id },
           data: {
@@ -529,14 +492,6 @@ export class BusinessProductsService {
     );
   }
 
-  // ==========================================
-  // HELPERS: CONCURRENCIA SERIALIZABLE Y LEGACY SYNC
-  // ==========================================
-
-  /**
-   * Ejecuta una transacción con nivel de aislamiento Serializable.
-   * Si ocurre un conflicto de escritura concurrente (P2034), reintenta automáticamente hasta 3 veces con backoff.
-   */
   private async runWithSerializableRetry<T>(
     operationName: string,
     businessId: string,
@@ -568,9 +523,6 @@ export class BusinessProductsService {
     );
   }
 
-  /**
-   * Sincroniza campos legacy en el modelo Business como fallback para compatibilidad con código existente.
-   */
   private async syncLegacyBusinessFields(
     tx: Prisma.TransactionClient,
     businessId: string,
@@ -610,3 +562,4 @@ export class BusinessProductsService {
     }
   }
 }
+

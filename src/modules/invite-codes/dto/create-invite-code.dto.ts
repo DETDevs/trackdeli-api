@@ -4,14 +4,15 @@ export class CreateInviteCodeDto {
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  description?: string; // "Para riders zona norte"
+  description?: string;
 
   @IsOptional()
   @IsInt()
   @Min(1)
-  maxUses?: number; // null = ilimitado
+  maxUses?: number;
 
   @IsOptional()
   @IsDateString()
-  expiresAt?: string; // null = no expira
+  expiresAt?: string;
 }
+

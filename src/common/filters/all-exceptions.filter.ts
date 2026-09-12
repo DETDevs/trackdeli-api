@@ -28,7 +28,6 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const userId = request.user?.sub ?? 'anon';
 
-    // Log detallado para 500s, warning para 4xx
     const bodyStr = request.body ? JSON.stringify(request.body) : '{}';
     if (status >= 500) {
       this.logger.error(
@@ -58,3 +57,4 @@ export class AllExceptionsFilter implements ExceptionFilter {
     });
   }
 }
+

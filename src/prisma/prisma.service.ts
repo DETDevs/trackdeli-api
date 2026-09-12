@@ -32,15 +32,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
   async onModuleInit() {
     await this.$connect();
 
-    // @ts-ignore
-    this.$on('query', (e: any) => {
+    (this as any).$on('query', (e: any) => {
       if (e.duration > 500) {
         this.logger.warn(`Query lenta (${e.duration}ms): ${e.query}`);
       }
     });
 
-    // @ts-ignore
-    this.$on('error', (e: any) => {
+    (this as any).$on('error', (e: any) => {
       this.logger.error(`Prisma Error: ${e.message}`);
     });
 
@@ -52,9 +50,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       this.logger.log('[PrismaService] Verificando y sincronizando esquema de base de datos...');
 
       const ddlStatements: { name: string; sql: string }[] = [
-        // ==========================================
-        // 1. ENUMS BASE Y TRACKDELI
-        // ==========================================
+
         {
           name: 'Enums base (BusinessType, DispatchStatus, CommissionStatus, StatementStatus, OrderStatus.OFERTADO)',
           sql: `DO $$ BEGIN
@@ -76,9 +72,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           END $$;`,
         },
 
-        // ==========================================
-        // 2. COLUMNAS BASE EN TABLA businesses
-        // ==========================================
         {
           name: 'Columna businesses.businessType',
           sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "businessType" "BusinessType" NOT NULL DEFAULT 'NEGOCIO';`,
@@ -104,9 +97,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "customerLocationMaxDays" INTEGER NOT NULL DEFAULT 30;`,
         },
 
-        // ==========================================
-        // 3. COLUMNAS EN TABLA orders
-        // ==========================================
         {
           name: 'Columna orders.originBusinessName',
           sql: `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "originBusinessName" VARCHAR(150);`,
@@ -116,9 +106,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "originBusinessClientId" TEXT;`,
         },
 
-        // ==========================================
-        // 4. TABLA business_clients
-        // ==========================================
         {
           name: 'Tabla business_clients',
           sql: `CREATE TABLE IF NOT EXISTS "business_clients" (
@@ -142,9 +129,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `ALTER TABLE "business_clients" ADD COLUMN IF NOT EXISTS "longitude" DOUBLE PRECISION;`,
         },
 
-        // ==========================================
-        // 5. TABLA monthly_statements
-        // ==========================================
         {
           name: 'Tabla monthly_statements',
           sql: `CREATE TABLE IF NOT EXISTS "monthly_statements" (
@@ -167,9 +151,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           );`,
         },
 
-        // ==========================================
-        // 6. TABLA order_commissions
-        // ==========================================
         {
           name: 'Tabla order_commissions',
           sql: `CREATE TABLE IF NOT EXISTS "order_commissions" (
@@ -191,9 +172,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           );`,
         },
 
-        // ==========================================
-        // 7. TABLA order_dispatches
-        // ==========================================
         {
           name: 'Tabla order_dispatches',
           sql: `CREATE TABLE IF NOT EXISTS "order_dispatches" (
@@ -215,9 +193,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `CREATE INDEX IF NOT EXISTS "order_dispatches_orderId_attempt_idx" ON "order_dispatches"("orderId", "attempt");`,
         },
 
-        // ==========================================
-        // 8. TABLA invite_codes Y invite_code_usages
-        // ==========================================
         {
           name: 'Tabla invite_codes',
           sql: `CREATE TABLE IF NOT EXISTS "invite_codes" (
@@ -249,9 +224,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           );`,
         },
 
-        // ==========================================
-        // 9. TABLA customers Y customer_location_sessions
-        // ==========================================
         {
           name: 'Tabla customers',
           sql: `CREATE TABLE IF NOT EXISTS "customers" (
@@ -303,9 +275,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `ALTER TABLE "customer_location_sessions" ADD COLUMN IF NOT EXISTS "respondedAt" TIMESTAMP(3);`,
         },
 
-        // ==========================================
-        // 10. NUEVOS ENUMS TAREAS 22 Y 24
-        // ==========================================
         {
           name: 'Enums POS y Subscripciones (PosVertical, TableShape, TableOrderStatus, BusinessProductType, BusinessProductStatus, BusinessProductAction)',
           sql: `DO $$ BEGIN
@@ -330,9 +299,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           END $$;`,
         },
 
-        // ==========================================
-        // 11. COLUMNAS POS EN TABLA businesses (TAREA 22)
-        // ==========================================
         {
           name: 'Columna businesses.posVertical',
           sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "posVertical" "PosVertical" NOT NULL DEFAULT 'RETAIL';`,
@@ -358,9 +324,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "posFooter" VARCHAR(200);`,
         },
 
-        // ==========================================
-        // 12. TABLAS MESAS Y PEDIDOS POS (TAREA 22)
-        // ==========================================
         {
           name: 'Tabla pos_restaurant_tables',
           sql: `CREATE TABLE IF NOT EXISTS "pos_restaurant_tables" (
@@ -424,9 +387,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           );`,
         },
 
-        // ==========================================
-        // 13. TABLAS PRODUCTOS Y AUDITORÍA (TAREA 24)
-        // ==========================================
         {
           name: 'Tabla business_product_subscriptions',
           sql: `CREATE TABLE IF NOT EXISTS "business_product_subscriptions" (
@@ -475,12 +435,84 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `CREATE INDEX IF NOT EXISTS "business_product_audit_logs_businessId_productType_idx" ON "business_product_audit_logs"("businessId", "productType");`,
         },
 
-        // ==========================================
-        // 14. COLUMNAS PRODUCTOS POS
-        // ==========================================
         {
           name: 'Columna pos_products.trackStock',
           sql: `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "trackStock" BOOLEAN NOT NULL DEFAULT true;`,
+        },
+
+        {
+          name: 'Tabla pos_terminals',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_terminals" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "deviceIdentifier" VARCHAR(100) NOT NULL,
+            "name" VARCHAR(100) NOT NULL,
+            "isActive" BOOLEAN NOT NULL DEFAULT true,
+            "hasPendingOfflineSales" BOOLEAN NOT NULL DEFAULT false,
+            "pendingSalesCount" INTEGER NOT NULL DEFAULT 0,
+            "lastSeenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_terminals_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_terminals_businessId_deviceIdentifier_key" UNIQUE ("businessId", "deviceIdentifier"),
+            CONSTRAINT "pos_terminals_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Columna pos_sales.clientGeneratedId',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "clientGeneratedId" VARCHAR(100);`,
+        },
+        {
+          name: 'Columna pos_sales.occurredAt',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "occurredAt" TIMESTAMP(3);`,
+        },
+        {
+          name: 'Columna pos_sales.syncedAt',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "syncedAt" TIMESTAMP(3);`,
+        },
+        {
+          name: 'Columna pos_sales.isOffline',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "isOffline" BOOLEAN NOT NULL DEFAULT false;`,
+        },
+        {
+          name: 'Columna pos_sales.posTerminalId',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "posTerminalId" TEXT;`,
+        },
+        {
+          name: 'Índice único pos_sales.clientGeneratedId',
+          sql: `CREATE UNIQUE INDEX IF NOT EXISTS "pos_sales_clientGeneratedId_key" ON "pos_sales"("clientGeneratedId") WHERE "clientGeneratedId" IS NOT NULL;`,
+        },
+        {
+          name: 'Foreign key pos_sales.posTerminalId',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_sales_posTerminalId_fkey') THEN
+              ALTER TABLE "pos_sales" ADD CONSTRAINT "pos_sales_posTerminalId_fkey" FOREIGN KEY ("posTerminalId") REFERENCES "pos_terminals"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;`,
+        },
+        {
+          name: 'Tabla pos_inventory_discrepancies',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_inventory_discrepancies" (
+            "id" TEXT NOT NULL,
+            "productId" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "saleId" TEXT NOT NULL,
+            "expectedStock" INTEGER NOT NULL,
+            "resultingStock" INTEGER NOT NULL,
+            "resolved" BOOLEAN NOT NULL DEFAULT false,
+            "resolvedAt" TIMESTAMP(3),
+            "resolvedBy" TEXT,
+            "notes" TEXT,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_inventory_discrepancies_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_inventory_discrepancies_productId_fkey" FOREIGN KEY ("productId") REFERENCES "pos_products"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+            CONSTRAINT "pos_inventory_discrepancies_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_inventory_discrepancies_saleId_fkey" FOREIGN KEY ("saleId") REFERENCES "pos_sales"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice pos_inventory_discrepancies.businessId_resolved',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_inventory_discrepancies_businessId_resolved_idx" ON "pos_inventory_discrepancies"("businessId", "resolved");`,
         },
       ];
 
@@ -495,10 +527,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
 
       this.logger.log('[PrismaService] Esquema de base de datos verificado y listo.');
 
-      // Ejecutar backfill de productos para negocios existentes de forma automática e idempotente
       await this.ensureBusinessProductsBackfilled();
 
-      // Ejecutar reconciliación de trackStock para productos existentes según vertical
       await this.reconcileProductTrackStock();
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia general en auto-sincronización de esquema: ${err.message}`);
@@ -519,7 +549,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       let skipped = 0;
 
       for (const b of businesses) {
-        // 1. DELIVERY
+
         const existingDelivery = b.productSubscriptions.find(
           (s) => s.productType === BusinessProductType.DELIVERY,
         );
@@ -557,7 +587,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           deliveryCreated++;
         }
 
-        // 2. POS
         const existingPos = b.productSubscriptions.find(
           (s) => s.productType === BusinessProductType.POS,
         );
@@ -604,9 +633,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
         this.logger.log('[PrismaService] ✓ Suscripciones de productos ya estaban sincronizadas para todos los negocios.');
       }
 
-      // 3. Reconciliar posVertical: migrar valor del campo legacy Business.posVertical
-      //    → BusinessProductSubscription.posVertical si la suscripción POS lo tiene vacío o distinto.
-      //    Corre de forma idempotente en cada arranque y loguea cada negocio migrado.
       await this.reconcilePosVertical(businesses);
     } catch (backfillErr: any) {
       this.logger.warn(`[PrismaService] ⚠ Advertencia en backfill automático de productos: ${backfillErr.message}`);
@@ -617,14 +643,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
     try {
       let reconciled = 0;
       for (const b of businesses) {
-        // Solo actuar si el negocio tiene un posVertical no-default en el campo legacy
+
         if (!b.posVertical || b.posVertical === 'RETAIL') continue;
 
         const posSub = b.productSubscriptions.find(
           (s: any) => s.productType === BusinessProductType.POS,
         );
 
-        // Si la suscripción ya tiene el valor correcto, no hacer nada
         if (posSub && posSub.posVertical === b.posVertical) continue;
 
         const previousValue = posSub?.posVertical ?? null;
@@ -672,8 +697,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
         const vertical = b.productSubscriptions[0]?.posVertical || b.posVertical || PosVertical.RETAIL;
 
         if (vertical === PosVertical.RESTAURANTE) {
-          // En RESTAURANTE: por defecto productos sin stock asignado o stock <= 0 son platos preparados / sin límite (trackStock = false).
-          // Se respeta trackStock = true para aquellos con stock numérico finito (> 0).
+
           const res = await this.product.updateMany({
             where: {
               businessId: b.id,
@@ -703,5 +727,4 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
     }
   }
 }
-
 

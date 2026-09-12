@@ -2,7 +2,7 @@ import { IsEnum, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-v
 import { PosVertical } from '@prisma/client';
 
 export class ActivateProductDto {
-  // Configuración opcional DELIVERY
+
   @IsOptional()
   @IsNumber()
   @Min(0)
@@ -26,7 +26,6 @@ export class ActivateProductDto {
   @Max(60)
   dispatchTimeoutMin?: number;
 
-  // Configuración opcional POS
   @IsOptional()
   @IsEnum(PosVertical)
   posVertical?: PosVertical;
@@ -36,8 +35,8 @@ export class ActivateProductDto {
   @Min(0)
   posMonthlyFee?: number;
 
-  // Motivo opcional de activación / actualización
   @IsOptional()
   @IsString()
   reason?: string;
 }
+

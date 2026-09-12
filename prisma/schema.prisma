@@ -242,6 +242,8 @@ model Business {
   cashMovements    CashMovement[]
   restaurantTables RestaurantTable[]
   tableOrders      TableOrder[]
+  terminals        PosTerminal[]
+  inventoryDiscrepancies InventoryDiscrepancy[]
 
   // Subscripciones de Productos y Auditoría
   productSubscriptions BusinessProductSubscription[]
@@ -667,6 +669,7 @@ model Product {
   saleItems       SaleItem[]
   stockMovements  StockMovement[]
   tableOrderItems TableOrderItem[]
+  inventoryDiscrepancies InventoryDiscrepancy[]
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -685,6 +688,13 @@ model Sale {
   cashierId      String
   cashier        User             @relation("CashierSales", fields: [cashierId], references: [id])
 
+  clientGeneratedId String?        @unique
+  occurredAt        DateTime?
+  syncedAt          DateTime?
+  isOffline         Boolean        @default(false)
+  posTerminalId     String?
+  posTerminal       PosTerminal?   @relation(fields: [posTerminalId], references: [id])
+
   invoiceNumber  String           @db.VarChar(30)
   invoiceDate    DateTime         @default(now())
 
@@ -693,6 +703,7 @@ model Sale {
   customerRuc    String?          @db.VarChar(30)
 
   items          SaleItem[]
+  inventoryDiscrepancies InventoryDiscrepancy[]
 
   subtotal       Float
   discountAmount Float            @default(0)
@@ -934,5 +945,44 @@ model BusinessProductAuditLog {
 
   @@index([businessId, productType])
   @@map("business_product_audit_logs")
+}
+
+model PosTerminal {
+  id                     String    @id @default(uuid())
+  businessId             String
+  business               Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  deviceIdentifier       String    @db.VarChar(100)
+  name                   String    @db.VarChar(100)
+  isActive               Boolean   @default(true)
+  hasPendingOfflineSales Boolean   @default(false)
+  pendingSalesCount      Int       @default(0)
+  lastSeenAt             DateTime  @default(now())
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  sales                  Sale[]
+
+  @@unique([businessId, deviceIdentifier])
+  @@map("pos_terminals")
+}
+
+model InventoryDiscrepancy {
+  id             String    @id @default(uuid())
+  productId      String
+  product        Product   @relation(fields: [productId], references: [id])
+  businessId     String
+  business       Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  saleId         String
+  sale           Sale      @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  expectedStock  Int
+  resultingStock Int
+  resolved       Boolean   @default(false)
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  notes          String?
+  createdAt      DateTime  @default(now())
+
+  @@index([businessId, resolved])
+  @@map("pos_inventory_discrepancies")
 }
 

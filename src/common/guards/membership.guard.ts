@@ -38,10 +38,9 @@ export class MembershipGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const user = request.user;
 
-    // Solo para ENCARGADO — verificar estado financiero según tipo de negocio
     if (user && user.role === UserRole.ENCARGADO && user.businessId) {
       const path = request.route?.path || request.url || '';
-      // Permitir endpoints de perfil/refresh/commissions/statements para que el encargado pueda revisar sus estados de cuenta
+
       if (
         path.includes('/auth/me') ||
         path.includes('/auth/refresh') ||
@@ -85,7 +84,6 @@ export class MembershipGuard implements CanActivate {
           },
         });
 
-        // Si no tiene membresía activa, bloquear con 402 Payment Required
         if (!activeMembership) {
           throw new HttpException(
             {
@@ -102,3 +100,4 @@ export class MembershipGuard implements CanActivate {
     return true;
   }
 }
+

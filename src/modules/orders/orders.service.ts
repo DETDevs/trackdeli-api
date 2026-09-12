@@ -40,11 +40,9 @@ export class OrdersService {
   private toResponseDto(order: any): OrderResponseDto {
     const trackingSession = order.trackingSession ?? null;
 
-    // Obtener el dispatch activo (SENT) para retornar su timeoutAt al rider (solo si no ha expirado)
     const activeDispatch = Array.isArray(order.dispatches) && order.dispatches.length > 0
       ? order.dispatches[0]
       : null;
-
 
     const trackingBaseUrl =
       this.configService.get<string>('TRACKING_URL') ||
@@ -110,7 +108,7 @@ export class OrdersService {
 
     if (!trackingSession) {
       const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
-      const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48h
+      const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
 
       trackingSession = await prismaClient.trackingSession.create({
         data: {
@@ -249,7 +247,6 @@ export class OrdersService {
 
     this.logger.log(`[create] OK pedido creado: id=${order.id}, cliente=${dto.customerName}, negocio=${businessId}, tarifa=C$${deliveryFee}`);
 
-    // Upsert automático del cliente recurrente
     if (dto.customerPhone) {
       this.customersService.upsertFromOrder({
         businessId,
@@ -266,7 +263,7 @@ export class OrdersService {
     const repartidores = await this.prisma.user.findMany({
       where: { businessId, role: 'REPARTIDOR', isActive: true },
     });
-    
+
     this.logger.log(`[Orders] Notificando a ${repartidores.length} repartidores del nuevo pedido`);
 
     await Promise.allSettled(
@@ -473,14 +470,14 @@ export class OrdersService {
     if (role) {
       let canAccess = false;
       if (role === UserRole.REPARTIDOR) {
-        canAccess = 
+        canAccess =
           (businessId !== null && order.businessId === businessId) ||
           (order.deliveryUserId === userId) ||
           (order.status === OrderStatus.PENDIENTE || order.status === OrderStatus.COTIZANDO || order.status === OrderStatus.OFERTADO);
       } else if (role === UserRole.SUPERADMIN) {
         canAccess = true;
       } else {
-        // ENCARGADO
+
         canAccess = (order.businessId === businessId);
       }
 
@@ -489,7 +486,7 @@ export class OrdersService {
         throw new NotFoundException('Pedido no encontrado');
       }
     } else {
-      // Legacy / internal behavior when called by takeOrder, cancelOrder, updateStatus, etc.
+
       if (businessId !== null && order.businessId !== businessId) {
         this.logger.warn(`[findOne] WARN acceso denegado (legacy): orderId=${id}, businessId=${businessId}`);
         throw new NotFoundException('Pedido no encontrado');
@@ -511,24 +508,20 @@ export class OrdersService {
       throw new NotFoundException('Pedido no encontrado');
     }
 
-    // 1. Si ya está asignado a este mismo rider, retornar sin error (idempotente)
     if (existingOrder.deliveryUserId === deliveryUserId) {
       this.logger.log(`[takeOrder] Pedido ya asignado a este mismo repartidor: orderId=${orderId}, repartidor=${deliveryUserId}`);
       return this.findOne(orderId, existingOrder.businessId, deliveryUserId, UserRole.REPARTIDOR);
     }
 
-    // 2. Si ya fue tomado por otro repartidor
     if (existingOrder.deliveryUserId && existingOrder.deliveryUserId !== deliveryUserId) {
       this.logger.warn(`[takeOrder] CONFLICT orderId=${orderId} ya fue tomado por otro repartidor (${existingOrder.deliveryUserId}). Repartidor intentado=${deliveryUserId}`);
       throw new ConflictException('Pedido no disponible — ya fue tomado por otro repartidor');
     }
 
-    // 3. Si el pedido fue cancelado
     if (existingOrder.status === OrderStatus.CANCELADO) {
       throw new BadRequestException('El pedido fue cancelado');
     }
 
-    // 4. Verificar si hay un dispatch activo (status SENT y no expirado)
     const activeDispatch = await this.prisma.orderDispatch.findFirst({
       where: {
         orderId,
@@ -540,7 +533,7 @@ export class OrdersService {
 
     if (activeDispatch) {
       if (activeDispatch.riderId === deliveryUserId) {
-        // El pedido fue ofertado a este mismo rider: aceptar el dispatch
+
         this.logger.log(`[takeOrder] Pedido ofertado activamente a este rider (dispatchId=${activeDispatch.id}). Aceptando despacho...`);
         return this.acceptDispatch(orderId, deliveryUserId);
       } else {
@@ -549,7 +542,6 @@ export class OrdersService {
       }
     }
 
-    // 5. Validar que el estado permita tomar el pedido
     const allowedStatuses: OrderStatus[] = [
       OrderStatus.PENDIENTE,
       OrderStatus.COTIZANDO,
@@ -569,7 +561,6 @@ export class OrdersService {
       throw new ConflictException('No estás disponible para tomar pedidos');
     }
 
-    // Validar límite máximo de pedidos activos simultáneos
     const activeOrdersCount = await this.prisma.order.count({
       where: {
         deliveryUserId,
@@ -581,9 +572,8 @@ export class OrdersService {
       throw new ConflictException(MAX_ACTIVE_ORDERS_ERROR_MESSAGE);
     }
 
-    // 6. Tomar el pedido en transacción
     await this.prisma.$transaction(async (tx) => {
-      // Si existía un dispatch previo para este rider (ej: expiró o reintento), marcarlo como ACCEPTED
+
       await tx.orderDispatch.updateMany({
         where: { orderId, riderId: deliveryUserId, status: DispatchStatus.SENT },
         data: { status: DispatchStatus.ACCEPTED, respondedAt: new Date() },
@@ -628,7 +618,7 @@ export class OrdersService {
     });
 
     this.trackingGateway.emitOrderStatusChange(id, OrderStatus.CANCELADO);
-    
+
     await this.trackingService.cleanupGeofenceFlag(id);
     await this.trackingService.cleanupOrderRedisKeys(id);
 
@@ -672,7 +662,7 @@ export class OrdersService {
     } else if (dto.status === OrderStatus.EN_CAMINO) {
       updateData.pickedUpAt = new Date();
     }
-    
+
     await this.prisma.order.update({
       where: { id: orderId },
       data: updateData,
@@ -693,11 +683,10 @@ export class OrdersService {
     if (dto.status === OrderStatus.ENTREGADO || dto.status === OrderStatus.CANCELADO) {
       await this.trackingService.cleanupGeofenceFlag(orderId);
       await this.trackingService.cleanupOrderRedisKeys(orderId);
-      
+
       if (dto.status === OrderStatus.ENTREGADO) {
         this.logger.log(`[Orders] Pedido ENTREGADO: orderId=${orderId}, repartidor=${userId}, cliente=${order.customerName}`);
-        
-        // Registrar comisión para TrackDeli
+
         this.commissionsService.registerCommission(order).catch((err) => {
           this.logger.error(`[updateStatus] Error registrando comisión: ${err.message}`, err.stack);
         });
@@ -737,7 +726,7 @@ export class OrdersService {
 
   private validateStateTransition(current: OrderStatus, next: OrderStatus, role: UserRole) {
     if (current === next) {
-      return; // Permite idempotencia
+      return;
     }
     if (next === OrderStatus.CANCELADO) {
       if (role !== UserRole.ENCARGADO && role !== UserRole.SUPERADMIN) {
@@ -900,7 +889,6 @@ export class OrdersService {
         throw new BadRequestException('Esta propuesta ya no puede aceptarse');
       }
 
-      // Validar límite máximo de pedidos activos para el repartidor
       const activeOrdersCount = await tx.order.count({
         where: {
           deliveryUserId: quote.riderId,
@@ -1287,3 +1275,4 @@ export class OrdersService {
     return dispatches;
   }
 }
+

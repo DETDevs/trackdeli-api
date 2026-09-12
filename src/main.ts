@@ -11,10 +11,9 @@ async function bootstrap() {
       ? ['error', 'warn', 'log']
       : ['error', 'warn', 'log', 'debug', 'verbose'],
   });
-  
+
   const configService = app.get(ConfigService);
-  
-  // CORS dynamic from env
+
   const corsOrigins = configService.get<string>('CORS_ORIGINS');
   const originsArray = corsOrigins
     ? corsOrigins
@@ -29,10 +28,8 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // Prefix
   app.setGlobalPrefix('api/v1');
 
-  // Global Validation
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -49,3 +46,4 @@ async function bootstrap() {
   Logger.log(`Application is running on: await app.getUrl()`, 'Bootstrap');
 }
 bootstrap();
+

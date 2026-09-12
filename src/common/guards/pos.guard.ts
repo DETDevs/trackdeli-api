@@ -23,17 +23,14 @@ export class PosGuard implements CanActivate {
       throw new ForbiddenException('No autenticado');
     }
 
-    // REPARTIDOR nunca tiene acceso al POS
     if (user.role === UserRole.REPARTIDOR) {
       throw new ForbiddenException('Acceso denegado - el modulo POS no esta disponible para repartidores');
     }
 
-    // SUPERADMIN siempre tiene acceso (puede pasar ?businessId=xxx en la query)
     if (user.role === UserRole.SUPERADMIN) {
       return true;
     }
 
-    // ENCARGADO: verificar que su negocio tiene POS activo
     if (!user.businessId) {
       throw new ForbiddenException('Sin negocio asociado');
     }
@@ -61,3 +58,4 @@ export class PosGuard implements CanActivate {
     return true;
   }
 }
+

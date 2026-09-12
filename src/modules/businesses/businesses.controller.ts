@@ -17,7 +17,7 @@ export class BusinessesController {
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.REPARTIDOR)
   getMyBusiness(@CurrentUser() user: JwtPayload) {
     if (!user.businessId) {
-      return null; // Repartidores independientes no tienen negocio
+      return null;
     }
     return this.service.findOne(user.businessId);
   }
