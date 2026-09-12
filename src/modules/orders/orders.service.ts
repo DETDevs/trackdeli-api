@@ -13,6 +13,8 @@ import { calculateDeliveryFee } from '../../common/utils/pricing.util';
 import { DispatchService } from '../dispatch/dispatch.service';
 import { CommissionsService } from '../commissions/commissions.service';
 import { CustomersService } from '../customers/customers.service';
+import { BusinessProductsService } from '../business-products/business-products.service';
+import { BusinessProductType } from '@prisma/client';
 import {
   ACTIVE_ORDER_STATUSES,
   MAX_ACTIVE_ORDERS_ERROR_MESSAGE,
@@ -32,6 +34,7 @@ export class OrdersService {
     private readonly dispatchService: DispatchService,
     private readonly commissionsService: CommissionsService,
     private readonly customersService: CustomersService,
+    private readonly businessProductsService: BusinessProductsService,
   ) {}
 
   private toResponseDto(order: any): OrderResponseDto {
@@ -157,6 +160,17 @@ export class OrdersService {
 
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
+    }
+
+    const isDeliveryActive = await this.businessProductsService.isActive(
+      businessId,
+      BusinessProductType.DELIVERY,
+    );
+
+    if (!isDeliveryActive) {
+      throw new ForbiddenException(
+        'El servicio de Delivery no está activo para este negocio. Contactá a TrackDeli.',
+      );
     }
 
     let deliveryFee = dto.deliveryFee;

@@ -1,15 +1,19 @@
-import {
+ï»¿import {
   Injectable,
   CanActivate,
   ExecutionContext,
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { UserRole } from '@prisma/client';
+import { BusinessProductType, UserRole } from '@prisma/client';
+import { BusinessProductsService } from '../../modules/business-products/business-products.service';
 
 @Injectable()
 export class PosGuard implements CanActivate {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly businessProductsService: BusinessProductsService,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
@@ -21,7 +25,7 @@ export class PosGuard implements CanActivate {
 
     // REPARTIDOR nunca tiene acceso al POS
     if (user.role === UserRole.REPARTIDOR) {
-      throw new ForbiddenException('Acceso denegado — el módulo POS no está disponible para repartidores');
+      throw new ForbiddenException('Acceso denegado - el modulo POS no esta disponible para repartidores');
     }
 
     // SUPERADMIN siempre tiene acceso (puede pasar ?businessId=xxx en la query)
@@ -36,16 +40,21 @@ export class PosGuard implements CanActivate {
 
     const business = await this.prisma.business.findUnique({
       where: { id: user.businessId },
-      select: { hasPOS: true, isActive: true },
+      select: { isActive: true },
     });
 
     if (!business?.isActive) {
       throw new ForbiddenException('Negocio inactivo');
     }
 
-    if (!business?.hasPOS) {
+    const isPosActive = await this.businessProductsService.isActive(
+      user.businessId,
+      BusinessProductType.POS,
+    );
+
+    if (!isPosActive) {
       throw new ForbiddenException(
-        'El módulo POS no está activo para este negocio. Contactá a TrackDeli.',
+        'El modulo POS no esta activo para este negocio. Contacta a TrackDeli.',
       );
     }
 

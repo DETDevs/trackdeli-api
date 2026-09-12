@@ -152,6 +152,24 @@ enum TableOrderStatus {
   CLOSED
 }
 
+enum BusinessProductType {
+  DELIVERY
+  POS
+}
+
+enum BusinessProductStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum BusinessProductAction {
+  ACTIVATED
+  DEACTIVATED
+  DEACTIVATION_BLOCKED
+  DEACTIVATION_FORCED
+  CONFIG_UPDATED
+}
+
 model Business {
   id                     String       @id @default(uuid())
   name                   String       @db.VarChar(100)
@@ -162,14 +180,14 @@ model Business {
   longitude              Float?
   isActive               Boolean      @default(true)
 
-  // Tipo de negocio y comisiones
+  // Tipo de negocio y comisiones [DEPRECATED: Usar BusinessProductSubscription con productType=DELIVERY]
   businessType            BusinessType  @default(NEGOCIO)
-  commissionRate          Float         @default(0.15) // 15% default
-  altCommissionRate       Float         @default(0.12) // 12% para >40km
-  altCommissionDistanceKm Float         @default(40)   // umbral en km
-  dispatchTimeoutMin      Int           @default(3)    // minutos antes de pasar al siguiente
+  commissionRate          Float         @default(0.15) // 15% default [DEPRECATED]
+  altCommissionRate       Float         @default(0.12) // 12% para >40km [DEPRECATED]
+  altCommissionDistanceKm Float         @default(40)   // umbral en km [DEPRECATED]
+  dispatchTimeoutMin      Int           @default(3)    // minutos antes de pasar al siguiente [DEPRECATED]
 
-  // Módulos activos
+  // Módulos activos [DEPRECATED: Usar BusinessProductSubscription con productType=POS / DELIVERY]
   hasTrackDeli           Boolean      @default(true)
   hasPOS                 Boolean      @default(false)
 
@@ -224,6 +242,10 @@ model Business {
   cashMovements    CashMovement[]
   restaurantTables RestaurantTable[]
   tableOrders      TableOrder[]
+
+  // Subscripciones de Productos y Auditoría
+  productSubscriptions BusinessProductSubscription[]
+  productAuditLogs     BusinessProductAuditLog[]
 
   @@map("businesses")
 }
@@ -864,3 +886,53 @@ model TableOrderItem {
 
   @@map("pos_table_order_items")
 }
+
+// ═══════════════════════════════════════════════
+// BUSINESS PRODUCT SUBSCRIPTIONS & AUDIT LOGS
+// ═══════════════════════════════════════════════
+
+model BusinessProductSubscription {
+  id                      String                 @id @default(uuid())
+  businessId              String
+  business                Business               @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  productType             BusinessProductType
+  status                  BusinessProductStatus  @default(INACTIVE)
+
+  // Config específica de cada producto — nullable porque no aplica al otro tipo
+  // DELIVERY:
+  commissionRate          Decimal?               @db.Decimal(10, 4)
+  altCommissionRate       Decimal?               @db.Decimal(10, 4)
+  altCommissionDistanceKm Decimal?               @db.Decimal(10, 2)
+  dispatchTimeoutMin      Int?
+  // POS:
+  posVertical             PosVertical?
+  posMonthlyFee           Decimal?               @db.Decimal(10, 2)
+
+  activatedAt             DateTime?
+  activatedBy             String?                // userId del SuperAdmin que activó
+  deactivatedAt           DateTime?
+  deactivatedBy           String?
+
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+
+  @@unique([businessId, productType])
+  @@index([businessId])
+  @@map("business_product_subscriptions")
+}
+
+model BusinessProductAuditLog {
+  id           String                  @id @default(uuid())
+  businessId   String
+  business     Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  productType  BusinessProductType
+  action       BusinessProductAction
+  performedBy  String                  // userId del SuperAdmin o 'system-migration'
+  reason       String?                 // motivo opcional ingresado por el SuperAdmin
+  metadata     Json?                   // detalle extra (ej. qué bloqueó la desactivación, o los valores de plan al momento de activar)
+  createdAt    DateTime                @default(now())
+
+  @@index([businessId, productType])
+  @@map("business_product_audit_logs")
+}
+

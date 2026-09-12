@@ -9,13 +9,14 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { haversineDistance } from '../../common/utils/pricing.util';
-import { DispatchStatus, OrderStatus, UserRole } from '@prisma/client';
+import { BusinessProductType, DispatchStatus, OrderStatus, UserRole } from '@prisma/client';
 import { Cron } from '@nestjs/schedule';
 import {
   ACTIVE_ORDER_STATUSES,
   MAX_ACTIVE_ORDERS_ERROR_MESSAGE,
   MAX_ACTIVE_ORDERS_PER_RIDER,
 } from '../../common/constants/orders.constants';
+import { BusinessProductsService } from '../business-products/business-products.service';
 
 @Injectable()
 export class DispatchService {
@@ -25,6 +26,7 @@ export class DispatchService {
     private readonly prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
     private readonly trackingGateway: TrackingGateway,
+    private readonly businessProductsService: BusinessProductsService,
   ) {}
 
   /**
@@ -38,6 +40,17 @@ export class DispatchService {
 
     if (!order) {
       this.logger.warn(`[dispatchOrder] Pedido no encontrado: orderId=${orderId}`);
+      return;
+    }
+
+    const isDeliveryActive = await this.businessProductsService.isActive(
+      order.businessId,
+      BusinessProductType.DELIVERY,
+    );
+    if (!isDeliveryActive) {
+      this.logger.warn(
+        `[dispatchOrder] Producto DELIVERY inactivo para negocio — orderId=${orderId} businessId=${order.businessId}. Despacho cancelado/omitido.`,
+      );
       return;
     }
 

@@ -20,6 +20,7 @@ import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { CommissionsModule } from './modules/commissions/commissions.module';
 import { InviteCodesModule } from './modules/invite-codes/invite-codes.module';
 import { CustomersModule } from './modules/customers/customers.module';
+import { BusinessProductsModule } from './modules/business-products/business-products.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MembershipGuard } from './common/guards/membership.guard';
@@ -48,6 +49,7 @@ import { MembershipGuard } from './common/guards/membership.guard';
     CommissionsModule,
     InviteCodesModule,
     CustomersModule,
+    BusinessProductsModule,
   ],
   providers: [
     {
