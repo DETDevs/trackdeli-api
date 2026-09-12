@@ -591,9 +591,53 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       } else {
         this.logger.log('[PrismaService] ✓ Suscripciones de productos ya estaban sincronizadas para todos los negocios.');
       }
+
+      // 3. Reconciliar posVertical: migrar valor del campo legacy Business.posVertical
+      //    → BusinessProductSubscription.posVertical si la suscripción POS lo tiene vacío o distinto.
+      //    Corre de forma idempotente en cada arranque y loguea cada negocio migrado.
+      await this.reconcilePosVertical(businesses);
     } catch (backfillErr: any) {
       this.logger.warn(`[PrismaService] ⚠ Advertencia en backfill automático de productos: ${backfillErr.message}`);
     }
   }
+
+  private async reconcilePosVertical(businesses: any[]) {
+    try {
+      let reconciled = 0;
+      for (const b of businesses) {
+        // Solo actuar si el negocio tiene un posVertical no-default en el campo legacy
+        if (!b.posVertical || b.posVertical === 'RETAIL') continue;
+
+        const posSub = b.productSubscriptions.find(
+          (s: any) => s.productType === BusinessProductType.POS,
+        );
+
+        // Si la suscripción ya tiene el valor correcto, no hacer nada
+        if (posSub && posSub.posVertical === b.posVertical) continue;
+
+        const previousValue = posSub?.posVertical ?? null;
+
+        await this.businessProductSubscription.updateMany({
+          where: { businessId: b.id, productType: BusinessProductType.POS },
+          data: { posVertical: b.posVertical },
+        });
+
+        this.logger.log(
+          `[PrismaService] ✓ posVertical reconciliado: negocio="${b.name}" (${b.id}) ` +
+          `suscripción: ${previousValue ?? 'null'} → ${b.posVertical}`,
+        );
+        reconciled++;
+      }
+
+      if (reconciled === 0) {
+        this.logger.log('[PrismaService] ✓ posVertical ya sincronizado en todas las suscripciones POS.');
+      } else {
+        this.logger.log(`[PrismaService] ✓ posVertical reconciliado en ${reconciled} negocio(s).`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ Advertencia en reconciliación de posVertical: ${err.message}`);
+    }
+  }
 }
+
 

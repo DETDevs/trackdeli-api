@@ -107,11 +107,20 @@ export class SuperAdminService {
       ).length;
 
       const latestMembership = b.memberships[0];
-      let membershipStatus: 'ACTIVE' | 'EXPIRED' | 'NONE' = 'NONE';
+      let membershipStatus: 'ACTIVE' | 'EXPIRED' | 'NONE' | 'NOT_CONTRACTED' = 'NONE';
       let endDate: Date | null = null;
       let daysLeft: number | null = null;
 
-      if (latestMembership) {
+      // Si el negocio no tiene DELIVERY contratado (solo-POS u otro caso),
+      // no calcular estado de membresía — no aplica.
+      const deliverySub = b.productSubscriptions.find(
+        (s) => s.productType === 'DELIVERY',
+      );
+      const hasDeliveryContracted = deliverySub?.status === 'ACTIVE';
+
+      if (!hasDeliveryContracted) {
+        membershipStatus = 'NOT_CONTRACTED';
+      } else if (latestMembership) {
         endDate = latestMembership.endDate;
         const isCurrentlyActive =
           latestMembership.status === MembershipStatus.ACTIVE &&
