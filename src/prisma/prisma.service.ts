@@ -419,7 +419,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT "pos_table_order_items_pkey" PRIMARY KEY ("id"),
             CONSTRAINT "pos_table_order_items_tableOrderId_fkey" FOREIGN KEY ("tableOrderId") REFERENCES "pos_table_orders"("id") ON DELETE CASCADE ON UPDATE CASCADE,
-            CONSTRAINT "pos_table_order_items_productId_fkey" FOREIGN KEY ("productId") REFERENCES "products"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+            CONSTRAINT "pos_table_order_items_productId_fkey" FOREIGN KEY ("productId") REFERENCES "pos_products"("id") ON DELETE RESTRICT ON UPDATE CASCADE
           );`,
         },
 
