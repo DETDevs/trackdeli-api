@@ -1,4 +1,4 @@
-﻿import { IsString, MinLength, IsOptional, IsNumber, Min, IsBoolean, IsInt } from 'class-validator';
+import { IsString, MinLength, IsOptional, IsNumber, Min, IsBoolean, IsInt } from 'class-validator';
 
 export class CreateProductDto {
   @IsString()
@@ -41,6 +41,10 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   trackStock?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  trackInventory?: boolean;
 
   @IsOptional()
   @IsInt()

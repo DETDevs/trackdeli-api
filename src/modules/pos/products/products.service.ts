@@ -1,10 +1,11 @@
-﻿import {
+import {
   Injectable,
   NotFoundException,
   BadRequestException,
   ConflictException,
   Logger,
 } from "@nestjs/common";
+import { BusinessProductType, PosVertical } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
@@ -15,6 +16,14 @@ export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  private mapProductWithInventory(product: any) {
+    if (!product) return product;
+    return {
+      ...product,
+      trackInventory: product.trackStock,
+    };
+  }
 
   async findAll(
     businessId: string,
@@ -50,10 +59,12 @@ export class ProductsService {
     });
 
     if (filters?.lowStock) {
-      return products.filter((p) => p.trackStock && p.stock <= p.minStock);
+      return products
+        .filter((p) => p.trackStock && p.stock <= p.minStock)
+        .map((p) => this.mapProductWithInventory(p));
     }
 
-    return products;
+    return products.map((p) => this.mapProductWithInventory(p));
   }
 
   async findOne(id: string, businessId: string) {
@@ -62,7 +73,7 @@ export class ProductsService {
       include: { category: true, supplier: true },
     });
     if (!product) throw new NotFoundException("Producto no encontrado");
-    return product;
+    return this.mapProductWithInventory(product);
   }
 
   async findByBarcode(businessId: string, barcode: string) {
@@ -72,7 +83,7 @@ export class ProductsService {
       include: { category: true },
     });
     if (!product) throw new NotFoundException("Producto no encontrado");
-    return product;
+    return this.mapProductWithInventory(product);
   }
 
   async create(dto: CreateProductDto, businessId: string) {
@@ -95,10 +106,29 @@ export class ProductsService {
       if (existing) throw new ConflictException(`El SKU "${dto.sku}" ya está registrado`);
     }
 
-    return this.prisma.product.create({
-      data: { ...dto, businessId },
+    // Resolver default de trackStock según vertical si no viene provisto ni trackStock ni trackInventory
+    let trackStock = dto.trackStock ?? dto.trackInventory;
+    if (trackStock === undefined) {
+      const subscription = await this.prisma.businessProductSubscription.findUnique({
+        where: { businessId_productType: { businessId, productType: BusinessProductType.POS } },
+        select: { posVertical: true },
+      });
+      const business = await this.prisma.business.findUnique({
+        where: { id: businessId },
+        select: { posVertical: true },
+      });
+      const vertical = subscription?.posVertical || business?.posVertical || PosVertical.RETAIL;
+      trackStock = vertical === PosVertical.RESTAURANTE ? false : true;
+    }
+
+    const { trackInventory, ...productData } = dto;
+
+    const product = await this.prisma.product.create({
+      data: { ...productData, trackStock, businessId },
       include: { category: true },
     });
+
+    return this.mapProductWithInventory(product);
   }
 
   async update(id: string, dto: UpdateProductDto, businessId: string) {
@@ -112,18 +142,27 @@ export class ProductsService {
       if (existing) throw new ConflictException(`El código de barras "${dto.barcode}" ya está registrado`);
     }
 
+    const trackStock = dto.trackStock ?? dto.trackInventory;
+    const { trackInventory, ...updateData } = dto;
+    if (trackStock !== undefined) {
+      (updateData as any).trackStock = trackStock;
+    }
+
     this.logger.log(`[update] id=${id} businessId=${businessId}`);
-    return this.prisma.product.update({
+    const updated = await this.prisma.product.update({
       where: { id },
-      data: dto,
+      data: updateData,
       include: { category: true },
     });
+
+    return this.mapProductWithInventory(updated);
   }
 
   async remove(id: string, businessId: string) {
     const product = await this.prisma.product.findFirst({ where: { id, businessId } });
     if (!product) throw new NotFoundException("Producto no encontrado");
-    return this.prisma.product.update({ where: { id }, data: { isActive: false } });
+    const removed = await this.prisma.product.update({ where: { id }, data: { isActive: false } });
+    return this.mapProductWithInventory(removed);
   }
 
   async adjustStock(productId: string, dto: AdjustStockDto, userId: string, businessId: string) {

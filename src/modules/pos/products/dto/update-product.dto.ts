@@ -1,4 +1,4 @@
-﻿import { IsString, IsOptional, IsNumber, Min, IsBoolean, IsInt } from 'class-validator';
+import { IsString, IsOptional, IsNumber, Min, IsBoolean, IsInt } from 'class-validator';
 
 export class UpdateProductDto {
   @IsOptional()
@@ -42,6 +42,10 @@ export class UpdateProductDto {
   @IsOptional()
   @IsBoolean()
   trackStock?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  trackInventory?: boolean;
 
   @IsOptional()
   @IsInt()

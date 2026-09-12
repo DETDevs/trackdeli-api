@@ -33,7 +33,7 @@ export class SalesService {
         if (item.productId) {
           const product = await tx.product.findFirst({ where: { id: item.productId, businessId } });
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
-          if (product.trackStock && product.stock < item.quantity) {
+          if (product.trackStock === true && product.stock < item.quantity) {
             throw new BadRequestException(
               `Stock insuficiente para "${product.name}". Disponible: ${product.stock}`
             );

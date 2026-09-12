@@ -4,6 +4,7 @@ import {
   BusinessProductType,
   BusinessProductStatus,
   BusinessProductAction,
+  PosVertical,
 } from '@prisma/client';
 
 @Injectable()
@@ -473,6 +474,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Índice business_product_audit_logs.businessId_productType',
           sql: `CREATE INDEX IF NOT EXISTS "business_product_audit_logs_businessId_productType_idx" ON "business_product_audit_logs"("businessId", "productType");`,
         },
+
+        // ==========================================
+        // 14. COLUMNAS PRODUCTOS POS
+        // ==========================================
+        {
+          name: 'Columna pos_products.trackStock',
+          sql: `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "trackStock" BOOLEAN NOT NULL DEFAULT true;`,
+        },
       ];
 
       for (const step of ddlStatements) {
@@ -488,6 +497,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
 
       // Ejecutar backfill de productos para negocios existentes de forma automática e idempotente
       await this.ensureBusinessProductsBackfilled();
+
+      // Ejecutar reconciliación de trackStock para productos existentes según vertical
+      await this.reconcileProductTrackStock();
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia general en auto-sincronización de esquema: ${err.message}`);
     }
@@ -636,6 +648,58 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ Advertencia en reconciliación de posVertical: ${err.message}`);
+    }
+  }
+
+  private async reconcileProductTrackStock() {
+    try {
+      this.logger.log('[PrismaService] Verificando backfill de trackStock para productos...');
+      const businesses = await this.business.findMany({
+        select: {
+          id: true,
+          name: true,
+          posVertical: true,
+          productSubscriptions: {
+            where: { productType: BusinessProductType.POS },
+            select: { posVertical: true },
+          },
+        },
+      });
+
+      let updatedCount = 0;
+
+      for (const b of businesses) {
+        const vertical = b.productSubscriptions[0]?.posVertical || b.posVertical || PosVertical.RETAIL;
+
+        if (vertical === PosVertical.RESTAURANTE) {
+          // En RESTAURANTE: por defecto productos sin stock asignado o stock <= 0 son platos preparados / sin límite (trackStock = false).
+          // Se respeta trackStock = true para aquellos con stock numérico finito (> 0).
+          const res = await this.product.updateMany({
+            where: {
+              businessId: b.id,
+              stock: { lte: 0 },
+              trackStock: true,
+            },
+            data: {
+              trackStock: false,
+            },
+          });
+          if (res.count > 0) {
+            this.logger.log(
+              `[PrismaService] ✓ Actualizados ${res.count} producto(s) a trackStock=false para el restaurante "${b.name}" (${b.id})`,
+            );
+            updatedCount += res.count;
+          }
+        }
+      }
+
+      if (updatedCount === 0) {
+        this.logger.log('[PrismaService] ✓ trackStock ya sincronizado para todos los productos.');
+      } else {
+        this.logger.log(`[PrismaService] ✓ Backfill de trackStock completado: ${updatedCount} producto(s) actualizados.`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ Advertencia en backfill de trackStock: ${err.message}`);
     }
   }
 }

@@ -3,6 +3,7 @@ dist/
 .env
 .DS_Store
 *.log
+scratch/
 
 # Documentos internos — nunca subir al repo
 ROADMAP_INTERNO.md
