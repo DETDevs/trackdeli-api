@@ -4,12 +4,15 @@ import { PosGuard } from '../../../common/guards/pos.guard';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../../common/types/jwt-payload.interface';
+import { Roles } from '../../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 import { resolveBusinessId } from '../pos.utils';
 import { SuppliersService } from './suppliers.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 
 @SkipMembershipCheck()
+@Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
 @UseGuards(JwtAuthGuard, PosGuard)
 @Controller('pos/suppliers')
 export class SuppliersController {

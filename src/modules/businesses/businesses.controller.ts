@@ -14,7 +14,7 @@ export class BusinessesController {
 
   @Get('me')
   @SkipMembership()
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.REPARTIDOR)
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.REPARTIDOR, UserRole.CAJERO)
   getMyBusiness(@CurrentUser() user: JwtPayload) {
     if (!user.businessId) {
       return null;
@@ -29,7 +29,7 @@ export class BusinessesController {
   }
 
   @Get(':id')
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.REPARTIDOR)
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.REPARTIDOR, UserRole.CAJERO)
   getBusinessById(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     if (user.role !== UserRole.SUPERADMIN && user.businessId !== id) {
       throw new ForbiddenException('No tienes permiso para ver este negocio');

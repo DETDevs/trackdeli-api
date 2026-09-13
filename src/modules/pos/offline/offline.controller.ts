@@ -14,6 +14,8 @@ import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from "../../../common/decorators/skip-membership.decorator";
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from "../../../common/types/jwt-payload.interface";
+import { Roles } from "../../../common/decorators/roles.decorator";
+import { UserRole } from "@prisma/client";
 import { resolveBusinessId } from "../pos.utils";
 import { OfflineService } from "./offline.service";
 import {
@@ -70,6 +72,7 @@ export class OfflineController {
   }
 
   @Get("terminals")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   getTerminals(
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
@@ -78,6 +81,7 @@ export class OfflineController {
   }
 
   @Patch("terminals/:id")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   updateTerminal(
     @Param("id") id: string,
     @Body() dto: UpdateTerminalStatusDto,
@@ -88,6 +92,7 @@ export class OfflineController {
   }
 
   @Get("inventory-discrepancies")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   getDiscrepancies(
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
@@ -98,6 +103,7 @@ export class OfflineController {
   }
 
   @Patch("inventory-discrepancies/:id/resolve")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   resolveDiscrepancy(
     @Param("id") id: string,
     @Body() dto: ResolveDiscrepancyDto,

@@ -4,6 +4,8 @@ import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from "../../../common/types/jwt-payload.interface";
+import { Roles } from "../../../common/decorators/roles.decorator";
+import { UserRole } from "@prisma/client";
 import { resolveBusinessId } from "../pos.utils";
 import { SettingsService } from "./settings.service";
 import { UpdatePosSettingsDto } from "./dto/update-pos-settings.dto";
@@ -20,6 +22,7 @@ export class SettingsController {
   }
 
   @Patch()
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   updateSettings(
     @Body() dto: UpdatePosSettingsDto,
     @CurrentUser() user: JwtPayload,
@@ -29,6 +32,7 @@ export class SettingsController {
   }
 
   @Put()
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   updateSettingsPut(
     @Body() dto: UpdatePosSettingsDto,
     @CurrentUser() user: JwtPayload,

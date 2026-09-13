@@ -6,6 +6,8 @@ import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from "../../../common/types/jwt-payload.interface";
+import { Roles } from "../../../common/decorators/roles.decorator";
+import { UserRole } from "@prisma/client";
 import { resolveBusinessId } from "../pos.utils";
 import { ProductsService } from "./products.service";
 import { CreateProductDto } from "./dto/create-product.dto";
@@ -52,6 +54,7 @@ export class ProductsController {
   }
 
   @Post()
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   create(
     @Body() dto: CreateProductDto,
     @CurrentUser() user: JwtPayload,
@@ -61,6 +64,7 @@ export class ProductsController {
   }
 
   @Patch(":id")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   update(
     @Param("id") id: string,
     @Body() dto: UpdateProductDto,
@@ -71,6 +75,7 @@ export class ProductsController {
   }
 
   @Put(":id")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   updatePut(
     @Param("id") id: string,
     @Body() dto: UpdateProductDto,
@@ -81,6 +86,7 @@ export class ProductsController {
   }
 
   @Delete(":id")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   remove(
     @Param("id") id: string,
     @CurrentUser() user: JwtPayload,
@@ -90,6 +96,7 @@ export class ProductsController {
   }
 
   @Post(":id/stock")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   adjustStock(
     @Param("id") id: string,
     @Body() dto: AdjustStockDto,
@@ -100,6 +107,7 @@ export class ProductsController {
   }
 
   @Get(":id/movements")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   getMovements(
     @Param("id") id: string,
     @CurrentUser() user: JwtPayload,

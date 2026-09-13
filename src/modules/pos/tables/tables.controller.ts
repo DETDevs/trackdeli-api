@@ -16,6 +16,8 @@ import { PosGuard } from '../../../common/guards/pos.guard';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../../common/types/jwt-payload.interface';
+import { Roles } from '../../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 import { resolveBusinessId } from '../pos.utils';
 import { TablesService } from './tables.service';
 import { CreateTableDto } from './dto/create-table.dto';
@@ -39,6 +41,7 @@ export class TablesController {
   }
 
   @Post()
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   createTable(
     @Body() dto: CreateTableDto,
     @CurrentUser() user: JwtPayload,
@@ -56,6 +59,7 @@ export class TablesController {
   }
 
   @Patch(':id')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   updateTable(
     @Param('id') id: string,
     @Body() dto: UpdateTableDto,
@@ -66,6 +70,7 @@ export class TablesController {
   }
 
   @Delete(':id')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   deleteTable(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,

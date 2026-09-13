@@ -4,10 +4,13 @@ import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from "../../../common/types/jwt-payload.interface";
+import { Roles } from "../../../common/decorators/roles.decorator";
+import { UserRole } from "@prisma/client";
 import { resolveBusinessId } from "../pos.utils";
 import { ReportsService } from "./reports.service";
 
 @SkipMembershipCheck()
+@Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
 @UseGuards(JwtAuthGuard, PosGuard)
 @Controller("pos/reports")
 export class ReportsController {
