@@ -1,4 +1,4 @@
-import { IsString, MinLength, IsOptional, IsNumber, Min, IsBoolean, IsInt } from 'class-validator';
+import { IsString, MinLength, IsOptional, IsNumber, Min, IsBoolean, IsInt, IsNotEmpty } from 'class-validator';
 
 export class CreateProductDto {
   @IsString()
@@ -30,9 +30,9 @@ export class CreateProductDto {
   @Min(0)
   cost?: number;
 
-  @IsOptional()
-  @IsString()
-  categoryId?: string;
+  @IsNotEmpty({ message: 'La categoría es obligatoria' })
+  @IsString({ message: 'El ID de la categoría debe ser una cadena de texto' })
+  categoryId: string;
 
   @IsOptional()
   @IsString()

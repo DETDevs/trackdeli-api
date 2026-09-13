@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsNumber, Min, IsBoolean, IsInt } from 'class-validator';
+import { IsString, IsOptional, IsNumber, Min, IsBoolean, IsInt, IsNotEmpty } from 'class-validator';
 
 export class UpdateProductDto {
   @IsOptional()
@@ -32,7 +32,8 @@ export class UpdateProductDto {
   cost?: number;
 
   @IsOptional()
-  @IsString()
+  @IsNotEmpty({ message: 'La categoría no puede estar vacía' })
+  @IsString({ message: 'El ID de la categoría debe ser una cadena de texto' })
   categoryId?: string;
 
   @IsOptional()

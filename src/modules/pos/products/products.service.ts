@@ -106,6 +106,17 @@ export class ProductsService {
       if (existing) throw new ConflictException(`El SKU "${dto.sku}" ya está registrado`);
     }
 
+    if (!dto.categoryId) {
+      throw new BadRequestException("La categoría es obligatoria");
+    }
+
+    const category = await this.prisma.category.findFirst({
+      where: { id: dto.categoryId, businessId, isActive: true },
+    });
+    if (!category) {
+      throw new BadRequestException("La categoría especificada no existe o no pertenece a este negocio");
+    }
+
     let trackStock = dto.trackStock ?? dto.trackInventory;
     if (trackStock === undefined) {
       const subscription = await this.prisma.businessProductSubscription.findUnique({
@@ -139,6 +150,18 @@ export class ProductsService {
         where: { businessId, barcode: dto.barcode, NOT: { id } },
       });
       if (existing) throw new ConflictException(`El código de barras "${dto.barcode}" ya está registrado`);
+    }
+
+    if (dto.categoryId !== undefined) {
+      if (!dto.categoryId) {
+        throw new BadRequestException("La categoría no puede estar vacía");
+      }
+      const category = await this.prisma.category.findFirst({
+        where: { id: dto.categoryId, businessId, isActive: true },
+      });
+      if (!category) {
+        throw new BadRequestException("La categoría especificada no existe o no pertenece a este negocio");
+      }
     }
 
     const trackStock = dto.trackStock ?? dto.trackInventory;
