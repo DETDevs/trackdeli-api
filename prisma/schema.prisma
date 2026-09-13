@@ -11,6 +11,7 @@ enum UserRole {
   ENCARGADO
   REPARTIDOR
   SUPERADMIN
+  CAJERO
 }
 
 enum OrderStatus {
@@ -335,6 +336,10 @@ model User {
   cashRegisters  CashRegister[]  @relation("CashierRegisters")
   cashMovements  CashMovement[]  @relation("UserMovements")
   stockMovements StockMovement[] @relation("UserStockMovements")
+
+  // Password audit relations
+  passwordChangesReceived PasswordChangeLog[] @relation("PasswordChangesReceived")
+  passwordChangesGiven    PasswordChangeLog[] @relation("PasswordChangesGiven")
 
   @@map("users")
 }
@@ -984,5 +989,19 @@ model InventoryDiscrepancy {
 
   @@index([businessId, resolved])
   @@map("pos_inventory_discrepancies")
+}
+
+model PasswordChangeLog {
+  id              String   @id @default(uuid())
+  targetUserId    String
+  changedByUserId String
+  changedAt       DateTime @default(now())
+
+  targetUser    User @relation("PasswordChangesReceived", fields: [targetUserId], references: [id], onDelete: Cascade)
+  changedByUser User @relation("PasswordChangesGiven", fields: [changedByUserId], references: [id], onDelete: Cascade)
+
+  @@index([targetUserId])
+  @@index([changedByUserId])
+  @@map("password_change_logs")
 }
 

@@ -1,4 +1,4 @@
-node_modules/
+﻿node_modules/
 dist/
 .env
 .DS_Store
@@ -20,13 +20,25 @@ docs/interno/
 .env.*
 *.env
 *.env.*
+*.example
+*.example.*
+*.sample
+*.sample.*
+.env.example
+.env.sample
  
 # Credenciales y secrets
 *.pem
 *.p8
 *.p12
+*.pfx
 *.key
+*.crt
+*.cer
 firebase-credentials.json
 service-account.json
 google-credentials.json
- 
+*credential*.json
+*credentials*.json
+*service-account*.json
+*secret*.json

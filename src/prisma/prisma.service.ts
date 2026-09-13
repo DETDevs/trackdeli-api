@@ -514,6 +514,30 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Índice pos_inventory_discrepancies.businessId_resolved',
           sql: `CREATE INDEX IF NOT EXISTS "pos_inventory_discrepancies_businessId_resolved_idx" ON "pos_inventory_discrepancies"("businessId", "resolved");`,
         },
+        {
+          name: 'Enum UserRole valor CAJERO',
+          sql: `ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'CAJERO';`,
+        },
+        {
+          name: 'Tabla password_change_logs',
+          sql: `CREATE TABLE IF NOT EXISTS "password_change_logs" (
+            "id" TEXT NOT NULL,
+            "targetUserId" TEXT NOT NULL,
+            "changedByUserId" TEXT NOT NULL,
+            "changedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "password_change_logs_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "password_change_logs_targetUserId_fkey" FOREIGN KEY ("targetUserId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "password_change_logs_changedByUserId_fkey" FOREIGN KEY ("changedByUserId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice password_change_logs.targetUserId',
+          sql: `CREATE INDEX IF NOT EXISTS "password_change_logs_targetUserId_idx" ON "password_change_logs"("targetUserId");`,
+        },
+        {
+          name: 'Índice password_change_logs.changedByUserId',
+          sql: `CREATE INDEX IF NOT EXISTS "password_change_logs_changedByUserId_idx" ON "password_change_logs"("changedByUserId");`,
+        },
       ];
 
       for (const step of ddlStatements) {
