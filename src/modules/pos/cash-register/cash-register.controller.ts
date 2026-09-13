@@ -31,6 +31,18 @@ export class CashRegisterController {
     return this.service.getCurrent(resolveBusinessId(user, qBid), user.sub);
   }
 
+  @Get("status")
+  async getStatus(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
+    const current = await this.service.getCurrent(resolveBusinessId(user, qBid), user.sub);
+    return {
+      isOpen: !!current,
+      shiftId: current?.id ?? null,
+      openedAt: current?.openedAt ?? null,
+      cashierName: current?.cashier?.name ?? current?.openedBy?.name ?? null,
+      shift: current,
+    };
+  }
+
   @Post("open")
   open(
     @Body() dto: OpenCashRegisterDto,

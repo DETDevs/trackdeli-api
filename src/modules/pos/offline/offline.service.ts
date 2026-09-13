@@ -278,18 +278,54 @@ export class OfflineService {
           const total = taxableAmount + taxAmount;
           const change = Math.max(0, saleDto.amountPaid - total);
 
-          let cashRegisterId = saleDto.cashRegisterId || null;
+          const occurredDate = new Date(saleDto.occurredAt);
+          const validOccurredAt = isNaN(occurredDate.getTime()) ? new Date() : occurredDate;
+
+          let cashRegisterId: string | null = null;
+          let soldWithoutOpenShift = false;
+
+          if (saleDto.cashRegisterId) {
+            const explicitReg = await tx.cashRegister.findFirst({
+              where: {
+                id: saleDto.cashRegisterId,
+                businessId,
+                openedAt: { lte: validOccurredAt },
+                OR: [
+                  { closedAt: null },
+                  { closedAt: { gte: validOccurredAt } },
+                ],
+              },
+              select: { id: true },
+            });
+            if (explicitReg) {
+              cashRegisterId = explicitReg.id;
+            }
+          }
+
           if (!cashRegisterId) {
-            const openReg = await tx.cashRegister.findFirst({
-              where: { businessId, status: "OPEN" },
+            const coveringReg = await tx.cashRegister.findFirst({
+              where: {
+                businessId,
+                openedAt: { lte: validOccurredAt },
+                OR: [
+                  { closedAt: null },
+                  { closedAt: { gte: validOccurredAt } },
+                ],
+              },
               orderBy: { openedAt: "desc" },
               select: { id: true },
             });
-            if (openReg) cashRegisterId = openReg.id;
+
+            if (coveringReg) {
+              cashRegisterId = coveringReg.id;
+            } else {
+              soldWithoutOpenShift = true;
+              cashRegisterId = null;
+            }
           }
 
-          const occurredDate = new Date(saleDto.occurredAt);
-          const validOccurredAt = isNaN(occurredDate.getTime()) ? new Date() : occurredDate;
+          const notesPrefix = soldWithoutOpenShift ? "[Offline][Sin Turno Abierto]" : "[Offline]";
+          const finalNotes = saleDto.notes ? `${notesPrefix} ${saleDto.notes}` : notesPrefix;
 
           const createdSale = await tx.sale.create({
             data: {
@@ -301,6 +337,7 @@ export class OfflineService {
               occurredAt: validOccurredAt,
               syncedAt: new Date(),
               isOffline: true,
+              soldWithoutOpenShift,
               clientGeneratedId: saleDto.clientGeneratedId,
               posTerminalId: terminal?.id || null,
               customerName: saleDto.customerName || null,
@@ -315,7 +352,7 @@ export class OfflineService {
               amountPaid: saleDto.amountPaid,
               change,
               reference: saleDto.reference || null,
-              notes: saleDto.notes ? `[Offline] ${saleDto.notes}` : "[Offline]",
+              notes: finalNotes,
               status: "COMPLETED",
             },
           });
@@ -353,6 +390,7 @@ export class OfflineService {
           saleId: syncResult.sale.id,
           invoiceNumber: syncResult.sale.invoiceNumber,
           total: syncResult.sale.total,
+          soldWithoutOpenShift: syncResult.sale.soldWithoutOpenShift,
           discrepancies: syncResult.discrepancies,
         });
       } catch (err: any) {

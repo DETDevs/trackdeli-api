@@ -697,6 +697,7 @@ model Sale {
   occurredAt        DateTime?
   syncedAt          DateTime?
   isOffline         Boolean        @default(false)
+  soldWithoutOpenShift Boolean     @default(false)
   posTerminalId     String?
   posTerminal       PosTerminal?   @relation(fields: [posTerminalId], references: [id])
 

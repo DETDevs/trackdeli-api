@@ -1,5 +1,5 @@
 import {
-  Injectable, NotFoundException, BadRequestException, Logger,
+  Injectable, NotFoundException, BadRequestException, ConflictException, Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { CreateSaleDto } from "./dto/create-sale.dto";
@@ -13,6 +13,44 @@ export class SalesService {
 
   async create(dto: CreateSaleDto, businessId: string, cashierId: string) {
     return this.prisma.$transaction(async (tx) => {
+      let cashRegisterId: string;
+      if (dto.cashRegisterId) {
+        const explicitRegister = await tx.cashRegister.findFirst({
+          where: { id: dto.cashRegisterId, businessId, status: "OPEN" },
+          select: { id: true },
+        });
+        if (!explicitRegister) {
+          throw new ConflictException({
+            statusCode: 409,
+            code: 'NO_OPEN_SHIFT',
+            message: 'La caja especificada no está abierta. Debes abrir un turno para registrar ventas.',
+            error: 'Conflict',
+          });
+        }
+        cashRegisterId = explicitRegister.id;
+      } else {
+        let activeRegister = await tx.cashRegister.findFirst({
+          where: { businessId, cashierId, status: "OPEN" },
+          select: { id: true },
+        });
+        if (!activeRegister) {
+          activeRegister = await tx.cashRegister.findFirst({
+            where: { businessId, status: "OPEN" },
+            orderBy: { openedAt: "desc" },
+            select: { id: true },
+          });
+        }
+        if (!activeRegister) {
+          throw new ConflictException({
+            statusCode: 409,
+            code: 'NO_OPEN_SHIFT',
+            message: 'La caja está cerrada. Debes abrir un turno para registrar ventas.',
+            error: 'Conflict',
+          });
+        }
+        cashRegisterId = activeRegister.id;
+      }
+
       const business = await tx.business.findUnique({
         where: { id: businessId },
         select: { invoicePrefix: true, invoiceCounter: true, taxRate: true, currency: true, name: true },
@@ -65,24 +103,6 @@ export class SalesService {
         throw new BadRequestException(
           `Monto insuficiente. Total: ${total.toFixed(2)}, Pagado: ${dto.amountPaid}`
         );
-      }
-
-      let cashRegisterId = dto.cashRegisterId || null;
-      if (!cashRegisterId) {
-        let activeRegister = await tx.cashRegister.findFirst({
-          where: { businessId, cashierId, status: "OPEN" },
-          select: { id: true },
-        });
-        if (!activeRegister) {
-          activeRegister = await tx.cashRegister.findFirst({
-            where: { businessId, status: "OPEN" },
-            orderBy: { openedAt: "desc" },
-            select: { id: true },
-          });
-        }
-        if (activeRegister) {
-          cashRegisterId = activeRegister.id;
-        }
       }
 
       const sale = await tx.sale.create({

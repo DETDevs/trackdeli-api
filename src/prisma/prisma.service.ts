@@ -538,6 +538,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Índice password_change_logs.changedByUserId',
           sql: `CREATE INDEX IF NOT EXISTS "password_change_logs_changedByUserId_idx" ON "password_change_logs"("changedByUserId");`,
         },
+        {
+          name: 'Columna pos_sales.soldWithoutOpenShift',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "soldWithoutOpenShift" BOOLEAN NOT NULL DEFAULT false;`,
+        },
       ];
 
       for (const step of ddlStatements) {

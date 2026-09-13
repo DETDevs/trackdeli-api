@@ -44,6 +44,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     response.status(status).json({
       statusCode: status,
+      code:
+        typeof message === 'object' && 'code' in (message as object)
+          ? (message as any).code
+          : undefined,
       message:
         typeof message === 'object' && 'message' in (message as object)
           ? (message as any).message
