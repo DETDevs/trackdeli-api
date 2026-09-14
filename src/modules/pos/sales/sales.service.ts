@@ -1,6 +1,7 @@
 import {
   Injectable, NotFoundException, BadRequestException, ConflictException, Logger,
 } from "@nestjs/common";
+import { CreditAccountStatus, PosPaymentMethod } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { CreateSaleDto } from "./dto/create-sale.dto";
 import { CancelSaleDto } from "./dto/cancel-sale.dto";
@@ -97,12 +98,78 @@ export class SalesService {
       const taxableAmount = subtotal - discountAmount;
       const taxAmount = taxableAmount * (business.taxRate / 100);
       const total = taxableAmount + taxAmount;
-      const change = dto.amountPaid - total;
 
-      if (change < 0) {
-        throw new BadRequestException(
-          `Monto insuficiente. Total: ${total.toFixed(2)}, Pagado: ${dto.amountPaid}`
-        );
+      const isCredit = (dto.paymentMethod as any) === PosPaymentMethod.CREDITO || (dto as any).paymentType === PosPaymentMethod.CREDITO;
+      const paymentMethod = isCredit ? PosPaymentMethod.CREDITO : dto.paymentMethod;
+
+      let customerId: string | null = null;
+      let customerName = dto.customerName || null;
+      let customerPhone = dto.customerPhone || null;
+      let dueDate: Date | null = null;
+
+      if (isCredit) {
+        if (!dto.customerId) {
+          throw new BadRequestException("El cliente es obligatorio para ventas al crédito");
+        }
+        const customer = await tx.customer.findFirst({
+          where: { id: dto.customerId, businessId },
+        });
+        if (!customer) {
+          throw new BadRequestException("Cliente no encontrado o no pertenece a este negocio");
+        }
+        customerId = customer.id;
+        if (!customerName) customerName = customer.name;
+        if (!customerPhone) customerPhone = customer.phone;
+
+        if (customer.creditLimit !== null && customer.creditLimit !== undefined) {
+          const activeDebtAgg = await tx.creditAccount.aggregate({
+            where: {
+              customerId: customer.id,
+              status: { in: [CreditAccountStatus.PENDING, CreditAccountStatus.PARTIALLY_PAID, CreditAccountStatus.OVERDUE] },
+            },
+            _sum: { balance: true },
+          });
+          const currentDebt = activeDebtAgg._sum.balance || 0;
+          if (currentDebt + total > customer.creditLimit) {
+            throw new BadRequestException(
+              `Límite de crédito excedido. Límite: ${customer.creditLimit.toFixed(2)}, Deuda actual: ${currentDebt.toFixed(2)}, Intentando cargar: ${total.toFixed(2)}`
+            );
+          }
+        }
+
+        if (dto.creditDueDate) {
+          const parsedDueDate = new Date(dto.creditDueDate);
+          if (isNaN(parsedDueDate.getTime())) {
+            throw new BadRequestException("Fecha de vencimiento de crédito inválida");
+          }
+          dueDate = parsedDueDate;
+        } else {
+          dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        }
+      } else if (dto.customerId) {
+        const customer = await tx.customer.findFirst({
+          where: { id: dto.customerId, businessId },
+        });
+        if (customer) {
+          customerId = customer.id;
+          if (!customerName) customerName = customer.name;
+          if (!customerPhone) customerPhone = customer.phone;
+        }
+      }
+
+      let amountPaid = dto.amountPaid ?? 0;
+      let change = 0;
+
+      if (isCredit) {
+        amountPaid = dto.amountPaid ?? 0;
+        change = 0;
+      } else {
+        change = amountPaid - total;
+        if (change < 0) {
+          throw new BadRequestException(
+            `Monto insuficiente. Total: ${total.toFixed(2)}, Pagado: ${amountPaid}`
+          );
+        }
       }
 
       const sale = await tx.sale.create({
@@ -111,23 +178,38 @@ export class SalesService {
           cashRegisterId,
           cashierId,
           invoiceNumber,
-          customerName: dto.customerName || null,
-          customerPhone: dto.customerPhone || null,
+          customerId,
+          customerName,
+          customerPhone,
           customerRuc: dto.customerRuc || null,
           items: { create: processedItems },
           subtotal,
           discountAmount,
           taxAmount,
           total,
-          paymentMethod: dto.paymentMethod,
-          amountPaid: dto.amountPaid,
+          paymentMethod,
+          amountPaid,
           change,
           reference: dto.reference || null,
           notes: dto.notes || null,
           status: "COMPLETED",
         },
-        include: { items: true, cashier: { select: { name: true } } },
+        include: { items: true, cashier: { select: { name: true } }, customer: true },
       });
+
+      if (isCredit && customerId && dueDate) {
+        await tx.creditAccount.create({
+          data: {
+            saleId: sale.id,
+            customerId,
+            businessId,
+            originalAmount: total,
+            balance: total,
+            status: CreditAccountStatus.PENDING,
+            dueDate,
+          },
+        });
+      }
 
       for (const item of dto.items) {
         if (item.productId) {

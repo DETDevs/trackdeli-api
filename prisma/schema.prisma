@@ -124,6 +124,13 @@ enum CashStatus {
   CLOSED
 }
 
+enum CreditAccountStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+}
+
 enum MovementType {
   ENTRADA
   SALIDA
@@ -245,6 +252,7 @@ model Business {
   tableOrders      TableOrder[]
   terminals        PosTerminal[]
   inventoryDiscrepancies InventoryDiscrepancy[]
+  creditAccounts   CreditAccount[]
 
   // Subscripciones de Productos y Auditoría
   productSubscriptions BusinessProductSubscription[]
@@ -336,6 +344,7 @@ model User {
   cashRegisters  CashRegister[]  @relation("CashierRegisters")
   cashMovements  CashMovement[]  @relation("UserMovements")
   stockMovements StockMovement[] @relation("UserStockMovements")
+  receivedCreditPayments CreditPayment[] @relation("CreditPaymentsReceived")
 
   // Password audit relations
   passwordChangesReceived PasswordChangeLog[] @relation("PasswordChangesReceived")
@@ -528,8 +537,12 @@ model Customer {
   lastConfirmedAt DateTime?
   createdAt       DateTime                  @default(now())
   updatedAt       DateTime                  @updatedAt
+  creditLimit     Float?
+  ruc             String?                   @db.VarChar(30)
 
   locationSessions CustomerLocationSession[]
+  sales            Sale[]
+  creditAccounts   CreditAccount[]
 
   @@unique([businessId, phone])
   @@index([businessId, phone])
@@ -704,10 +717,13 @@ model Sale {
   invoiceNumber  String           @db.VarChar(30)
   invoiceDate    DateTime         @default(now())
 
+  customerId     String?
+  customer       Customer?        @relation(fields: [customerId], references: [id])
   customerName   String?          @db.VarChar(100)
   customerPhone  String?          @db.VarChar(30)
   customerRuc    String?          @db.VarChar(30)
 
+  creditAccount  CreditAccount?
   items          SaleItem[]
   inventoryDiscrepancies InventoryDiscrepancy[]
 
@@ -746,6 +762,44 @@ model SaleItem {
   subtotal    Float
 
   @@map("pos_sale_items")
+}
+
+model CreditAccount {
+  id             String              @id @default(uuid())
+  saleId         String              @unique
+  sale           Sale                @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       Customer            @relation(fields: [customerId], references: [id])
+  businessId     String
+  business       Business            @relation(fields: [businessId], references: [id])
+  originalAmount Float
+  balance        Float
+  status         CreditAccountStatus @default(PENDING)
+  dueDate        DateTime
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  payments       CreditPayment[]
+
+  @@index([businessId, status, dueDate])
+  @@index([businessId, customerId])
+  @@map("pos_credit_accounts")
+}
+
+model CreditPayment {
+  id               String           @id @default(uuid())
+  creditAccountId  String
+  creditAccount    CreditAccount    @relation(fields: [creditAccountId], references: [id], onDelete: Restrict)
+  amount           Float
+  paymentMethod    PosPaymentMethod @default(EFECTIVO)
+  receivedByUserId String
+  receivedByUser   User             @relation("CreditPaymentsReceived", fields: [receivedByUserId], references: [id])
+  receivedAt       DateTime         @default(now())
+  notes            String?
+  createdAt        DateTime         @default(now())
+
+  @@index([creditAccountId])
+  @@map("pos_credit_payments")
 }
 
 model CashRegister {

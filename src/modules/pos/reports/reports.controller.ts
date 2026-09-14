@@ -12,7 +12,7 @@ import { ReportsService } from "./reports.service";
 @SkipMembershipCheck()
 @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
 @UseGuards(JwtAuthGuard, PosGuard)
-@Controller("pos/reports")
+@Controller(["pos/reports", "reports"])
 export class ReportsController {
   constructor(private readonly service: ReportsService) {}
 
@@ -76,5 +76,35 @@ export class ReportsController {
     @Query("businessId") qBid?: string,
   ) {
     return this.service.getCashMovements(resolveBusinessId(user, qBid), from, to);
+  }
+
+  @Get("credit-overdue")
+  creditOverdue(
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getCreditOverdue(resolveBusinessId(user, qBid));
+  }
+
+  @Get("credit-summary")
+  creditSummary(
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getCreditSummary(resolveBusinessId(user, qBid));
+  }
+
+  @Get("credit-sales-by-product")
+  creditSalesByProduct(
+    @CurrentUser() user: JwtPayload,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getCreditSalesByProduct(
+      resolveBusinessId(user, qBid),
+      from,
+      to,
+    );
   }
 }

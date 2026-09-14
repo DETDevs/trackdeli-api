@@ -45,6 +45,14 @@ export class CreateSaleDto {
 
   @IsOptional()
   @IsString()
+  customerId?: string;
+
+  @IsOptional()
+  @IsString()
+  creditDueDate?: string;
+
+  @IsOptional()
+  @IsString()
   customerName?: string;
 
   @IsOptional()
@@ -58,10 +66,11 @@ export class CreateSaleDto {
   @IsEnum(PosPaymentMethod)
   paymentMethod: PosPaymentMethod;
 
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
-  amountPaid: number;
+  amountPaid?: number;
 
   @IsOptional()
   @Type(() => Number)

@@ -542,6 +542,70 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Columna pos_sales.soldWithoutOpenShift',
           sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "soldWithoutOpenShift" BOOLEAN NOT NULL DEFAULT false;`,
         },
+        {
+          name: 'Enum CreditAccountStatus',
+          sql: `DO $$ BEGIN CREATE TYPE "CreditAccountStatus" AS ENUM ('PENDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
+        },
+        {
+          name: 'Columnas customers.creditLimit y ruc',
+          sql: `ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "creditLimit" DOUBLE PRECISION, ADD COLUMN IF NOT EXISTS "ruc" VARCHAR(30);`,
+        },
+        {
+          name: 'Columna pos_sales.customerId',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "customerId" TEXT REFERENCES "customers"("id") ON DELETE SET NULL ON UPDATE CASCADE;`,
+        },
+        {
+          name: 'Índice pos_sales.customerId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_sales_customerId_idx" ON "pos_sales"("customerId");`,
+        },
+        {
+          name: 'Tabla pos_credit_accounts',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_credit_accounts" (
+            "id" TEXT NOT NULL,
+            "saleId" TEXT NOT NULL,
+            "customerId" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "originalAmount" DOUBLE PRECISION NOT NULL,
+            "balance" DOUBLE PRECISION NOT NULL,
+            "status" "CreditAccountStatus" NOT NULL DEFAULT 'PENDING',
+            "dueDate" TIMESTAMP(3) NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_credit_accounts_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_credit_accounts_saleId_key" UNIQUE ("saleId"),
+            CONSTRAINT "pos_credit_accounts_saleId_fkey" FOREIGN KEY ("saleId") REFERENCES "pos_sales"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_credit_accounts_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+            CONSTRAINT "pos_credit_accounts_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice pos_credit_accounts.businessId_status_dueDate',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_credit_accounts_businessId_status_dueDate_idx" ON "pos_credit_accounts"("businessId", "status", "dueDate");`,
+        },
+        {
+          name: 'Índice pos_credit_accounts.businessId_customerId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_credit_accounts_businessId_customerId_idx" ON "pos_credit_accounts"("businessId", "customerId");`,
+        },
+        {
+          name: 'Tabla pos_credit_payments',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_credit_payments" (
+            "id" TEXT NOT NULL,
+            "creditAccountId" TEXT NOT NULL,
+            "amount" DOUBLE PRECISION NOT NULL,
+            "paymentMethod" "PosPaymentMethod" NOT NULL DEFAULT 'EFECTIVO',
+            "receivedByUserId" TEXT NOT NULL,
+            "receivedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "notes" TEXT,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_credit_payments_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_credit_payments_creditAccountId_fkey" FOREIGN KEY ("creditAccountId") REFERENCES "pos_credit_accounts"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+            CONSTRAINT "pos_credit_payments_receivedByUserId_fkey" FOREIGN KEY ("receivedByUserId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice pos_credit_payments.creditAccountId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_credit_payments_creditAccountId_idx" ON "pos_credit_payments"("creditAccountId");`,
+        },
       ];
 
       for (const step of ddlStatements) {

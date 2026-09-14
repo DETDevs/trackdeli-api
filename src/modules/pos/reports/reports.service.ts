@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { CreditAccountStatus, PosPaymentMethod } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 
 @Injectable()
@@ -198,6 +199,203 @@ export class ReportsService {
       })),
       lowStockProducts,
       summary,
+    };
+  }
+
+  async getCreditOverdue(businessId: string) {
+    const now = new Date();
+    const accounts = await this.prisma.creditAccount.findMany({
+      where: {
+        businessId,
+        status: { not: CreditAccountStatus.PAID },
+        dueDate: { lt: now },
+      },
+      include: {
+        customer: true,
+        sale: { select: { id: true, invoiceNumber: true, total: true, createdAt: true } },
+      },
+      orderBy: { dueDate: 'asc' },
+    });
+
+    const customerMap = new Map<string, any>();
+    let totalOverdue = 0;
+
+    for (const acc of accounts) {
+      totalOverdue += acc.balance;
+      const daysOverdue = Math.max(
+        0,
+        Math.floor((now.getTime() - new Date(acc.dueDate).getTime()) / (1000 * 60 * 60 * 24)),
+      );
+
+      if (!customerMap.has(acc.customerId)) {
+        customerMap.set(acc.customerId, {
+          customer: {
+            id: acc.customer.id,
+            name: acc.customer.name,
+            phone: acc.customer.phone,
+            ruc: acc.customer.ruc,
+          },
+          totalOverdue: 0,
+          accountsCount: 0,
+          accounts: [],
+        });
+      }
+
+      const custEntry = customerMap.get(acc.customerId);
+      custEntry.totalOverdue = Math.round((custEntry.totalOverdue + acc.balance) * 100) / 100;
+      custEntry.accountsCount++;
+      custEntry.accounts.push({
+        id: acc.id,
+        invoiceNumber: acc.sale.invoiceNumber,
+        originalAmount: acc.originalAmount,
+        balance: acc.balance,
+        dueDate: acc.dueDate,
+        daysOverdue,
+        status: acc.status,
+      });
+    }
+
+    return {
+      totalOverdue: Math.round(totalOverdue * 100) / 100,
+      overdueAccountsCount: accounts.length,
+      customersCount: customerMap.size,
+      customers: Array.from(customerMap.values()),
+    };
+  }
+
+  async getCreditSummary(businessId: string) {
+    const now = new Date();
+    const accounts = await this.prisma.creditAccount.findMany({
+      where: {
+        businessId,
+        status: { not: CreditAccountStatus.PAID },
+      },
+      include: {
+        customer: true,
+        sale: { select: { id: true, invoiceNumber: true, total: true, createdAt: true } },
+      },
+      orderBy: { dueDate: 'asc' },
+    });
+
+    let totalPortfolio = 0;
+    let overduePortfolio = 0;
+    let currentPortfolio = 0;
+    const customerMap = new Map<string, any>();
+
+    for (const acc of accounts) {
+      totalPortfolio += acc.balance;
+      const isOverdue = acc.status === CreditAccountStatus.OVERDUE || acc.dueDate < now;
+      if (isOverdue) {
+        overduePortfolio += acc.balance;
+      } else {
+        currentPortfolio += acc.balance;
+      }
+
+      if (!customerMap.has(acc.customerId)) {
+        customerMap.set(acc.customerId, {
+          customer: {
+            id: acc.customer.id,
+            name: acc.customer.name,
+            phone: acc.customer.phone,
+            ruc: acc.customer.ruc,
+            creditLimit: acc.customer.creditLimit,
+          },
+          totalDebt: 0,
+          overdueDebt: 0,
+          currentDebt: 0,
+          accountsCount: 0,
+          accounts: [],
+        });
+      }
+
+      const custEntry = customerMap.get(acc.customerId);
+      custEntry.totalDebt = Math.round((custEntry.totalDebt + acc.balance) * 100) / 100;
+      if (isOverdue) {
+        custEntry.overdueDebt = Math.round((custEntry.overdueDebt + acc.balance) * 100) / 100;
+      } else {
+        custEntry.currentDebt = Math.round((custEntry.currentDebt + acc.balance) * 100) / 100;
+      }
+      custEntry.accountsCount++;
+      custEntry.accounts.push({
+        id: acc.id,
+        invoiceNumber: acc.sale.invoiceNumber,
+        originalAmount: acc.originalAmount,
+        balance: acc.balance,
+        dueDate: acc.dueDate,
+        isOverdue,
+        status: acc.status,
+      });
+    }
+
+    return {
+      totalPortfolio: Math.round(totalPortfolio * 100) / 100,
+      overduePortfolio: Math.round(overduePortfolio * 100) / 100,
+      currentPortfolio: Math.round(currentPortfolio * 100) / 100,
+      unpaidAccountsCount: accounts.length,
+      customersCount: customerMap.size,
+      breakdownByCustomer: Array.from(customerMap.values()),
+    };
+  }
+
+  async getCreditSalesByProduct(businessId: string, from?: string, to?: string) {
+    const dateRange = this.buildDateRange(from, to);
+    const where: any = {
+      businessId,
+      paymentMethod: PosPaymentMethod.CREDITO,
+      status: 'COMPLETED',
+    };
+    if (Object.keys(dateRange).length > 0) {
+      where.createdAt = dateRange;
+    }
+
+    const sales = await this.prisma.sale.findMany({
+      where,
+      include: {
+        items: true,
+        customer: { select: { id: true, name: true, phone: true } },
+        creditAccount: { select: { id: true, balance: true, status: true, dueDate: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const productMap = new Map<string, { productId: string | null; productName: string; barcode: string | null; quantity: number; revenue: number; salesCount: number }>();
+    let totalRevenue = 0;
+    let totalQuantity = 0;
+
+    for (const sale of sales) {
+      for (const item of sale.items) {
+        const key = item.productId || item.productName;
+        const itemRevenue = item.subtotal;
+        totalRevenue += itemRevenue;
+        totalQuantity += item.quantity;
+
+        if (!productMap.has(key)) {
+          productMap.set(key, {
+            productId: item.productId,
+            productName: item.productName,
+            barcode: item.barcode,
+            quantity: 0,
+            revenue: 0,
+            salesCount: 0,
+          });
+        }
+
+        const prodEntry = productMap.get(key)!;
+        prodEntry.quantity = Math.round((prodEntry.quantity + item.quantity) * 100) / 100;
+        prodEntry.revenue = Math.round((prodEntry.revenue + itemRevenue) * 100) / 100;
+        prodEntry.salesCount++;
+      }
+    }
+
+    const sortedProducts = Array.from(productMap.values()).sort((a, b) => b.revenue - a.revenue);
+
+    return {
+      from: from || null,
+      to: to || null,
+      totalSalesCount: sales.length,
+      totalRevenue: Math.round(totalRevenue * 100) / 100,
+      totalQuantity: Math.round(totalQuantity * 100) / 100,
+      products: sortedProducts,
     };
   }
 }
