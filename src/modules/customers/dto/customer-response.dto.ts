@@ -3,6 +3,8 @@ export class CustomerResponseDto {
   businessId: string;
   name: string;
   phone: string;
+  ruc?: string | null;
+  creditLimit?: number | null;
   lastLatitude: number | null;
   lastLongitude: number | null;
   lastAddressText: string | null;
@@ -16,6 +18,8 @@ export class CustomerSearchResultDto {
   id: string;
   name: string;
   phone: string;
+  ruc?: string | null;
+  creditLimit?: number | null;
   lastLatitude: number | null;
   lastLongitude: number | null;
   lastAddressText: string | null;

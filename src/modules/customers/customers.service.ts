@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -9,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { UpdateCustomerLocationDto } from './dto/update-customer-location.dto';
+import { CreateCustomerDto } from './dto/create-customer.dto';
 import {
   CustomerLocationConfirmationLinkDto,
   CustomerLocationSessionPublicDto,
@@ -69,6 +71,8 @@ export class CustomersService {
       id: c.id,
       name: c.name,
       phone: c.phone,
+      ruc: c.ruc ?? null,
+      creditLimit: c.creditLimit ?? null,
       lastLatitude: c.lastLatitude,
       lastLongitude: c.lastLongitude,
       lastAddressText: c.lastAddressText,
@@ -111,6 +115,8 @@ export class CustomersService {
       businessId: customer.businessId,
       name: customer.name,
       phone: customer.phone,
+      ruc: customer.ruc ?? null,
+      creditLimit: customer.creditLimit ?? null,
       lastLatitude: customer.lastLatitude,
       lastLongitude: customer.lastLongitude,
       lastAddressText: customer.lastAddressText,
@@ -120,6 +126,63 @@ export class CustomersService {
         maxDays,
         customer.lastLatitude != null && customer.lastLongitude != null,
       ),
+      createdAt: customer.createdAt,
+      updatedAt: customer.updatedAt,
+    };
+  }
+
+  async create(
+    businessId: string,
+    dto: CreateCustomerDto,
+  ): Promise<CustomerResponseDto> {
+    const name = (dto.name || '').trim();
+    const phone = (dto.phone || '').trim();
+
+    if (!name) {
+      throw new BadRequestException('El nombre del cliente es requerido');
+    }
+    if (!phone) {
+      throw new BadRequestException('El número de teléfono es requerido');
+    }
+
+    const existing = await this.prisma.customer.findUnique({
+      where: {
+        businessId_phone: {
+          businessId,
+          phone,
+        },
+      },
+    });
+
+    if (existing) {
+      throw new ConflictException(
+        `Ya existe un cliente registrado con el teléfono ${phone} (${existing.name})`,
+      );
+    }
+
+    const customer = await this.prisma.customer.create({
+      data: {
+        businessId,
+        name,
+        phone,
+        ruc: dto.ruc?.trim() || null,
+        creditLimit: dto.creditLimit !== undefined ? dto.creditLimit : null,
+        lastAddressText: dto.address?.trim() || null,
+      },
+    });
+
+    return {
+      id: customer.id,
+      businessId: customer.businessId,
+      name: customer.name,
+      phone: customer.phone,
+      ruc: customer.ruc ?? null,
+      creditLimit: customer.creditLimit ?? null,
+      lastLatitude: customer.lastLatitude,
+      lastLongitude: customer.lastLongitude,
+      lastAddressText: customer.lastAddressText,
+      lastConfirmedAt: customer.lastConfirmedAt,
+      isLocationRecent: false,
       createdAt: customer.createdAt,
       updatedAt: customer.updatedAt,
     };

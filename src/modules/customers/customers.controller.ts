@@ -13,12 +13,14 @@ import { CustomersService } from './customers.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
+import { SkipMembershipCheck } from '../../common/decorators/skip-membership.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { UserRole } from '@prisma/client';
 import { UpdateCustomerLocationDto } from './dto/update-customer-location.dto';
-
+import { CreateCustomerDto } from './dto/create-customer.dto';
 import { CreateLocationConfirmationLinkDto } from './dto/create-location-link.dto';
 
+@SkipMembershipCheck()
 @Controller()
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
@@ -29,14 +31,22 @@ export class CustomersController {
     }
   }
 
-  @Get(['businesses/:businessId/customers/search', 'businesses/me/customers/search'])
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Get([
+    'businesses/:businessId/customers/search',
+    'businesses/me/customers/search',
+    'pos/customers/search',
+    'customers/search',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async search(
-    @Param('businessId') paramBusinessId: string,
     @Query('q') query: string,
     @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
   ) {
-    const businessId = paramBusinessId || user.businessId;
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
     if (!businessId) {
       throw new ForbiddenException('Negocio no especificado');
     }
@@ -44,19 +54,49 @@ export class CustomersController {
     return this.customersService.search(businessId, query);
   }
 
-  @Get(['businesses/:businessId/customers/lookup', 'businesses/me/customers/lookup'])
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Get([
+    'businesses/:businessId/customers/lookup',
+    'businesses/me/customers/lookup',
+    'pos/customers/lookup',
+    'customers/lookup',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async lookup(
-    @Param('businessId') paramBusinessId: string,
     @Query('phone') phone: string,
     @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
   ) {
-    const businessId = paramBusinessId || user.businessId;
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
     if (!businessId) {
       throw new ForbiddenException('Negocio no especificado');
     }
     this.checkBusinessAccess(user, businessId);
     return this.customersService.lookup(businessId, phone);
+  }
+
+  @Post([
+    'businesses/:businessId/customers',
+    'pos/customers',
+    'customers',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async create(
+    @Body() dto: CreateCustomerDto,
+    @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : dto.businessId || user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.create(businessId, dto);
   }
 
   @Post('customers/location-confirmation-link')
