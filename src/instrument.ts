@@ -5,6 +5,7 @@ Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.NODE_ENV || 'development',
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.2 : 1.0,
+  enableLogs: true,
   // Filtra eventos antes de enviarlos: no reportar como "error" los rechazos
   // esperados del negocio (400/403/404 lanzados a propósito por validaciones,
   // ej. caja cerrada, stock insuficiente, rol sin permiso). Sentry debe capturar

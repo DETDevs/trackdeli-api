@@ -1,4 +1,5 @@
 import './instrument';
+import * as Sentry from '@sentry/nestjs';
 
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
@@ -46,6 +47,10 @@ async function bootstrap() {
   const port = configService.get<number>('PORT') || 3000;
   await app.listen(port);
   Logger.log(`Application is running on: await app.getUrl()`, 'Bootstrap');
+  Sentry.logger.info('TrackDeli API iniciada exitosamente', {
+    port,
+    environment: process.env.NODE_ENV || 'development',
+  });
 }
 bootstrap();
 

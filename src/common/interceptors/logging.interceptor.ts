@@ -8,6 +8,7 @@ import {
 import { Observable } from 'rxjs';
 import { tap, catchError } from 'rxjs/operators';
 import { throwError } from 'rxjs';
+import * as Sentry from '@sentry/nestjs';
 
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
@@ -34,9 +35,17 @@ export class LoggingInterceptor implements NestInterceptor {
       tap(() => {
         const ms = Date.now() - start;
         const res = context.switchToHttp().getResponse();
+        const statusCode = res.statusCode;
         this.logger.log(
-          `← ${method} ${url} | ${res.statusCode} | ${ms}ms | userId=${userId}`
+          `← ${method} ${url} | ${statusCode} | ${ms}ms | userId=${userId}`
         );
+        Sentry.logger.info(`← ${method} ${url} [${statusCode}] ${ms}ms`, {
+          method,
+          url,
+          statusCode,
+          durationMs: ms,
+          userId,
+        });
       }),
       catchError((error) => {
         const ms = Date.now() - start;
@@ -45,6 +54,24 @@ export class LoggingInterceptor implements NestInterceptor {
           `← ${method} ${url} | ${status} | ${ms}ms | userId=${userId} | ${error.message}`,
           status >= 500 ? error.stack : undefined
         );
+        if (status >= 500) {
+          Sentry.logger.error(`← ${method} ${url} [${status}] ${ms}ms | ${error.message}`, {
+            method,
+            url,
+            statusCode: status,
+            durationMs: ms,
+            userId,
+            error: error.message,
+          });
+        } else {
+          Sentry.logger.warn(`← ${method} ${url} [${status}] ${ms}ms | ${error.message}`, {
+            method,
+            url,
+            statusCode: status,
+            durationMs: ms,
+            userId,
+          });
+        }
         return throwError(() => error);
       }),
     );
