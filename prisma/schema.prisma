@@ -706,7 +706,7 @@ model Sale {
   cashierId      String
   cashier        User             @relation("CashierSales", fields: [cashierId], references: [id])
 
-  clientGeneratedId String?        @unique
+  clientGeneratedId String?
   occurredAt        DateTime?
   syncedAt          DateTime?
   isOffline         Boolean        @default(false)
