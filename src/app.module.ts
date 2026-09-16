@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { SentryModule } from '@sentry/nestjs/setup';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD } from '@nestjs/core';
@@ -27,6 +28,7 @@ import { MembershipGuard } from './common/guards/membership.guard';
 
 @Module({
   imports: [
+    SentryModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
       validationSchema: envValidationSchema,

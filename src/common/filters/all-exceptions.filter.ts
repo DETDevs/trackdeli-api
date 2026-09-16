@@ -6,11 +6,13 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
+import { SentryExceptionCaptured } from '@sentry/nestjs';
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionFilter');
 
+  @SentryExceptionCaptured()
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse();
