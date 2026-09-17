@@ -12,6 +12,7 @@ export interface JwtPayload {
   vehiclePhotoUrl?: string | null;
   profilePhotoUrl?: string | null;
   isAvailable?: boolean;
+  profileComplete: boolean;
   iat?: number;
   exp?: number;
 }

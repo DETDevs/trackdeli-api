@@ -2,6 +2,7 @@ import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterRiderDto } from './dto/register-rider.dto';
+import { SocialLoginDto } from './dto/social-login.dto';
 import { TokenResponseDto } from './dto/token-response.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -22,6 +23,12 @@ export class AuthController {
   @Public()
   async login(@Body() dto: LoginDto): Promise<TokenResponseDto> {
     return this.authService.login(dto);
+  }
+
+  @Post('social-login')
+  @Public()
+  async socialLogin(@Body() dto: SocialLoginDto): Promise<TokenResponseDto> {
+    return this.authService.socialLogin(dto);
   }
 
   @Post('register/rider')

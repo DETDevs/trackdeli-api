@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateRiderProfileDto } from './dto/update-rider-profile.dto';
+import { CompleteVehicleProfileDto } from './dto/complete-vehicle-profile.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import * as bcrypt from 'bcrypt';
 import { User, UserRole } from '@prisma/client';
@@ -144,6 +145,35 @@ export class UsersService {
     });
 
     this.logger.log(`[updateProfile] OK userId=${userId}`);
+    return this.toResponseDto(updatedUser);
+  }
+
+  async completeVehicleProfile(userId: string, dto: CompleteVehicleProfileDto): Promise<UserResponseDto> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    if (user.role !== 'REPARTIDOR') {
+      throw new BadRequestException('Solo los repartidores pueden actualizar este perfil');
+    }
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        vehicleType: dto.vehicleType,
+        vehiclePlate: dto.vehiclePlate,
+        vehicleColor: dto.vehicleColor,
+        ...(dto.name !== undefined && { name: dto.name }),
+        ...(dto.phone !== undefined && { phone: dto.phone }),
+        profileComplete: true,
+      },
+    });
+
+    this.logger.log(`[completeVehicleProfile] OK userId=${userId}, profileComplete=true`);
     return this.toResponseDto(updatedUser);
   }
 

@@ -66,9 +66,21 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'StatementStatus') THEN
               CREATE TYPE "StatementStatus" AS ENUM ('PENDING', 'PARTIAL', 'PAID', 'OVERDUE');
             END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'AuthProvider') THEN
+              CREATE TYPE "AuthProvider" AS ENUM ('EMAIL', 'GOOGLE', 'APPLE');
+            END IF;
             IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'OFERTADO' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'OrderStatus')) THEN
               ALTER TYPE "OrderStatus" ADD VALUE 'OFERTADO';
             END IF;
+          END $$;`,
+        },
+        
+        {
+          name: 'Modificaciones en users para Social Login',
+          sql: `DO $$ BEGIN
+            ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "authProvider" "AuthProvider" NOT NULL DEFAULT 'EMAIL';
+            ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "profileComplete" BOOLEAN NOT NULL DEFAULT false;
+            ALTER TABLE "users" ALTER COLUMN "passwordHash" DROP NOT NULL;
           END $$;`,
         },
 

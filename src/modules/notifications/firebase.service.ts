@@ -144,6 +144,17 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
+  async verifyIdToken(idToken: string): Promise<admin.auth.DecodedIdToken> {
+    try {
+      const app = this.getApp();
+      const decodedToken = await app.auth().verifyIdToken(idToken);
+      return decodedToken;
+    } catch (error: any) {
+      this.logger.error(`[Firebase Auth] Error verificando token: ${error.message}`);
+      throw error;
+    }
+  }
+
   async sendToMultiple(
     tokens: string[],
     title: string,

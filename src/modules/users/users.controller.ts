@@ -9,6 +9,7 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateRiderProfileDto } from './dto/update-rider-profile.dto';
+import { CompleteVehicleProfileDto } from './dto/complete-vehicle-profile.dto';
 import { JoinBusinessDto } from './dto/join-business.dto';
 
 @Controller('users')
@@ -31,6 +32,15 @@ export class UsersController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.service.updateProfile(user.sub, dto);
+  }
+
+  @Patch('me/vehicle')
+  @Roles(UserRole.REPARTIDOR)
+  completeVehicleProfile(
+    @Body() dto: CompleteVehicleProfileDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.completeVehicleProfile(user.sub, dto);
   }
 
   @Post('me/vehicle-photo')

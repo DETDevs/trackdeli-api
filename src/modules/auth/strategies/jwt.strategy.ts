@@ -36,6 +36,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         vehiclePhotoUrl: true,
         profilePhotoUrl: true,
         isAvailable: true,
+        profileComplete: true,
       },
     });
 
@@ -61,6 +62,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       vehiclePhotoUrl: user.vehiclePhotoUrl,
       profilePhotoUrl: user.profilePhotoUrl,
       isAvailable: user.isAvailable,
+      profileComplete: user.profileComplete,
     };
   }
 }

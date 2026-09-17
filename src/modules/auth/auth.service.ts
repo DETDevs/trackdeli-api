@@ -6,8 +6,10 @@ import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
 import { TokenResponseDto } from './dto/token-response.dto';
 import { RegisterRiderDto } from './dto/register-rider.dto';
+import { SocialLoginDto } from './dto/social-login.dto';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
-import { User } from '@prisma/client';
+import { User, AuthProvider } from '@prisma/client';
+import { FirebaseService } from '../notifications/firebase.service';
 
 @Injectable()
 export class AuthService {
@@ -17,6 +19,7 @@ export class AuthService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private configService: ConfigService,
+    private firebaseService: FirebaseService,
   ) {}
 
   async validateUser(email: string, password: string): Promise<User | null> {
@@ -29,7 +32,12 @@ export class AuthService {
       return null;
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+    if (user.authProvider !== AuthProvider.EMAIL && !user.passwordHash) {
+      this.logger.warn(`[validateUser] WARN intento de login con contraseña en cuenta social: ${email}`);
+      throw new UnauthorizedException('Esta cuenta fue creada con redes sociales. Por favor, inicia sesión con Google o Apple.');
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.passwordHash || '');
     if (!isPasswordValid) {
       this.logger.warn(`[validateUser] WARN password incorrecta: ${email}`);
       return null;
@@ -63,6 +71,7 @@ export class AuthService {
           vehiclePhotoUrl: user.vehiclePhotoUrl,
           profilePhotoUrl: user.profilePhotoUrl,
           isAvailable: user.isAvailable,
+          profileComplete: user.profileComplete,
     };
 
     const tokens = this.generateTokens(payload);
@@ -83,8 +92,84 @@ export class AuthService {
           vehiclePhotoUrl: user.vehiclePhotoUrl,
           profilePhotoUrl: user.profilePhotoUrl,
           isAvailable: user.isAvailable,
+          profileComplete: user.profileComplete,
       },
     };
+  }
+
+  async socialLogin(dto: SocialLoginDto): Promise<TokenResponseDto> {
+    try {
+      const decodedToken = await this.firebaseService.verifyIdToken(dto.idToken);
+      const email = decodedToken.email;
+      const name = decodedToken.name || 'Usuario';
+
+      if (!email) {
+        throw new BadRequestException('El token de autenticación no contiene un correo electrónico');
+      }
+
+      let user = await this.prisma.user.findUnique({
+        where: { email },
+      });
+
+      if (!user) {
+        // Create new user
+        user = await this.prisma.user.create({
+          data: {
+            email,
+            name,
+            authProvider: AuthProvider[dto.provider],
+            role: 'REPARTIDOR',
+            profileComplete: false,
+            isAvailable: true,
+          },
+        });
+        this.logger.log(`[socialLogin] OK nuevo usuario: ${email} via ${dto.provider}`);
+      } else {
+        // Update provider if it was email (implicit link) or just allow login
+        this.logger.log(`[socialLogin] OK usuario existente: ${email} via ${dto.provider}`);
+      }
+
+      const payload: JwtPayload = {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        businessId: user.businessId,
+        phone: user.phone,
+        vehicleType: user.vehicleType,
+        vehiclePlate: user.vehiclePlate,
+        vehicleColor: user.vehicleColor,
+        vehiclePhotoUrl: user.vehiclePhotoUrl,
+        profilePhotoUrl: user.profilePhotoUrl,
+        isAvailable: user.isAvailable,
+        profileComplete: user.profileComplete,
+      };
+
+      const tokens = this.generateTokens(payload);
+
+      return {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          businessId: user.businessId,
+          phone: user.phone,
+          vehicleType: user.vehicleType,
+          vehiclePlate: user.vehiclePlate,
+          vehicleColor: user.vehicleColor,
+          vehiclePhotoUrl: user.vehiclePhotoUrl,
+          profilePhotoUrl: user.profilePhotoUrl,
+          isAvailable: user.isAvailable,
+          profileComplete: user.profileComplete,
+        },
+      };
+
+    } catch (error: any) {
+      this.logger.error(`[socialLogin] ERROR verificando token: ${error.message}`);
+      throw new UnauthorizedException('Token de autenticación inválido');
+    }
   }
 
   async registerRider(dto: RegisterRiderDto): Promise<TokenResponseDto> {
@@ -166,6 +251,7 @@ export class AuthService {
         vehiclePhotoUrl: user.vehiclePhotoUrl,
         profilePhotoUrl: user.profilePhotoUrl,
         isAvailable: user.isAvailable,
+        profileComplete: user.profileComplete,
       };
 
       const tokens = this.generateTokens(payload);
@@ -186,6 +272,7 @@ export class AuthService {
           vehiclePhotoUrl: user.vehiclePhotoUrl,
           profilePhotoUrl: user.profilePhotoUrl,
           isAvailable: user.isAvailable,
+          profileComplete: user.profileComplete,
         },
       };
     } catch (error: any) {
@@ -229,6 +316,7 @@ export class AuthService {
         vehiclePhotoUrl: user.vehiclePhotoUrl,
         profilePhotoUrl: user.profilePhotoUrl,
         isAvailable: user.isAvailable,
+        profileComplete: user.profileComplete,
       };
 
       const tokens = this.generateTokens(payload);
@@ -251,6 +339,7 @@ export class AuthService {
           vehiclePhotoUrl: user.vehiclePhotoUrl,
           profilePhotoUrl: user.profilePhotoUrl,
           isAvailable: user.isAvailable,
+          profileComplete: user.profileComplete,
         },
       };
     } catch (error) {
@@ -275,6 +364,7 @@ export class AuthService {
         vehiclePhotoUrl: true,
         profilePhotoUrl: true,
         isAvailable: true,
+        profileComplete: true,
         currentLatitude: true,
         currentLongitude: true,
         business: {

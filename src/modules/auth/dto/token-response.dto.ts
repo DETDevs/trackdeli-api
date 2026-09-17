@@ -16,5 +16,6 @@ export class TokenResponseDto {
     vehiclePhotoUrl?: string | null;
     profilePhotoUrl?: string | null;
     isAvailable?: boolean;
+    profileComplete: boolean;
   };
 }

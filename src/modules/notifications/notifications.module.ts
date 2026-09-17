@@ -9,6 +9,6 @@ import { ConfigModule } from '@nestjs/config';
   imports: [PrismaModule, ConfigModule],
   controllers: [NotificationsController],
   providers: [NotificationsService, FirebaseService],
-  exports: [NotificationsService],
+  exports: [NotificationsService, FirebaseService],
 })
 export class NotificationsModule {}
