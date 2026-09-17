@@ -13,7 +13,7 @@ import { CreateMembershipDto } from './dto/create-membership.dto';
 import { UpdateMembershipDto } from './dto/update-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
 import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
-import { BusinessType, MembershipStatus, OrderStatus, UserRole } from '@prisma/client';
+import { BusinessType, MembershipStatus, OrderStatus, Prisma, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 function generateBusinessCredentials(businessName: string): {
@@ -1051,6 +1051,38 @@ export class SuperAdminService {
     return logs.slice(0, 100);
   }
 
+  private formatMembershipWithProducts(membership: any) {
+    const paymentProducts = membership.paymentProducts || [];
+    const products = paymentProducts.map((pp: any) => {
+      const type = pp.businessProductSubscription?.productType;
+      const name =
+        type === 'DELIVERY'
+          ? 'Delivery'
+          : type === 'POS'
+          ? 'POS'
+          : type === 'CARTERA_COBRO'
+          ? 'Cartera de Cobro'
+          : type || 'Desconocido';
+
+      return {
+        id: pp.id,
+        businessProductSubscriptionId: pp.businessProductSubscriptionId,
+        productType: type,
+        name,
+        amountAttributed:
+          pp.amountAttributed !== null && pp.amountAttributed !== undefined
+            ? Number(pp.amountAttributed)
+            : null,
+      };
+    });
+
+    return {
+      ...membership,
+      isUnitemized: products.length === 0,
+      products,
+    };
+  }
+
   async createMembership(dto: CreateMembershipDto, createdBy: string) {
     this.logger.log(
       `[createMembership] Registrando membresía para negocio=${dto.businessId}, monto=${dto.amount} ${dto.currency || 'USD'}`,
@@ -1062,6 +1094,44 @@ export class SuperAdminService {
 
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
+    }
+
+    // Normalizar lista de productos
+    const productItems: Array<{ businessProductSubscriptionId: string; amountAttributed?: number }> = [];
+
+    if (Array.isArray(dto.products) && dto.products.length > 0) {
+      for (const p of dto.products) {
+        if (p.businessProductSubscriptionId) {
+          productItems.push({
+            businessProductSubscriptionId: p.businessProductSubscriptionId,
+            amountAttributed: p.amountAttributed !== undefined ? p.amountAttributed : undefined,
+          });
+        }
+      }
+    } else {
+      const rawIds = dto.businessProductSubscriptionIds || dto.businessProductSubscriptionId || [];
+      for (const id of rawIds) {
+        if (id && !productItems.some((item) => item.businessProductSubscriptionId === id)) {
+          productItems.push({ businessProductSubscriptionId: id });
+        }
+      }
+    }
+
+    // Validar que todas las suscripciones pertenezcan al negocio
+    if (productItems.length > 0) {
+      const subIds = productItems.map((p) => p.businessProductSubscriptionId);
+      const validSubs = await this.prisma.businessProductSubscription.findMany({
+        where: {
+          id: { in: subIds },
+          businessId: dto.businessId,
+        },
+      });
+
+      if (validSubs.length !== subIds.length) {
+        throw new BadRequestException(
+          'Una o más suscripciones de producto no existen o no pertenecen a este negocio.',
+        );
+      }
     }
 
     const membership = await this.prisma.membership.create({
@@ -1076,16 +1146,34 @@ export class SuperAdminService {
         notes: dto.notes,
         status: dto.status || MembershipStatus.ACTIVE,
         createdBy,
+        paymentProducts: productItems.length > 0
+          ? {
+              create: productItems.map((item) => ({
+                businessProductSubscriptionId: item.businessProductSubscriptionId,
+                amountAttributed:
+                  item.amountAttributed !== undefined && item.amountAttributed !== null
+                    ? new Prisma.Decimal(item.amountAttributed)
+                    : null,
+              })),
+            }
+          : undefined,
       },
       include: {
         business: {
           select: { id: true, name: true, logoUrl: true },
         },
+        paymentProducts: {
+          include: {
+            businessProductSubscription: {
+              select: { id: true, productType: true, status: true },
+            },
+          },
+        },
       },
     });
 
-    this.logger.log(`[createMembership] OK membresía creada id=${membership.id}`);
-    return membership;
+    this.logger.log(`[createMembership] OK membresía creada id=${membership.id} (productos: ${productItems.length})`);
+    return this.formatMembershipWithProducts(membership);
   }
 
   async uploadPaymentProof(id: string, file: Express.Multer.File) {
@@ -1112,6 +1200,13 @@ export class SuperAdminService {
         business: {
           select: { id: true, name: true, logoUrl: true },
         },
+        paymentProducts: {
+          include: {
+            businessProductSubscription: {
+              select: { id: true, productType: true, status: true },
+            },
+          },
+        },
       },
     });
 
@@ -1119,7 +1214,7 @@ export class SuperAdminService {
 
     return {
       url: proofUrl,
-      membership: updated,
+      membership: this.formatMembershipWithProducts(updated),
     };
   }
 
@@ -1152,11 +1247,18 @@ export class SuperAdminService {
         business: {
           select: { id: true, name: true, logoUrl: true },
         },
+        paymentProducts: {
+          include: {
+            businessProductSubscription: {
+              select: { id: true, productType: true, status: true },
+            },
+          },
+        },
       },
       orderBy: { endDate: 'desc' },
     });
 
-    return memberships;
+    return memberships.map((m) => this.formatMembershipWithProducts(m));
   }
 
   async getExpiringMemberships() {
@@ -1177,6 +1279,13 @@ export class SuperAdminService {
         business: {
           select: { id: true, name: true, logoUrl: true },
         },
+        paymentProducts: {
+          include: {
+            businessProductSubscription: {
+              select: { id: true, productType: true, status: true },
+            },
+          },
+        },
       },
       orderBy: { endDate: 'asc' },
     });
@@ -1186,8 +1295,9 @@ export class SuperAdminService {
         0,
         Math.ceil((m.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)),
       );
+      const formatted = this.formatMembershipWithProducts(m);
       return {
-        ...m,
+        ...formatted,
         daysLeft,
       };
     });
@@ -1220,11 +1330,18 @@ export class SuperAdminService {
         business: {
           select: { id: true, name: true, logoUrl: true },
         },
+        paymentProducts: {
+          include: {
+            businessProductSubscription: {
+              select: { id: true, productType: true, status: true },
+            },
+          },
+        },
       },
     });
 
     this.logger.log(`[updateMembership] OK membresía actualizada id=${id}`);
-    return updated;
+    return this.formatMembershipWithProducts(updated);
   }
 
   async getBusinessMemberships(businessId: string) {
@@ -1240,10 +1357,22 @@ export class SuperAdminService {
 
     const memberships = await this.prisma.membership.findMany({
       where: { businessId },
+      include: {
+        business: {
+          select: { id: true, name: true, logoUrl: true },
+        },
+        paymentProducts: {
+          include: {
+            businessProductSubscription: {
+              select: { id: true, productType: true, status: true },
+            },
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
 
-    return memberships;
+    return memberships.map((m) => this.formatMembershipWithProducts(m));
   }
 }
 

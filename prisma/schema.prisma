@@ -309,6 +309,8 @@ model Membership {
   updatedAt       DateTime         @updatedAt
   createdBy       String
 
+  paymentProducts MembershipPaymentProduct[]
+
   @@map("memberships")
 }
 
@@ -999,6 +1001,8 @@ model BusinessProductSubscription {
   createdAt               DateTime               @default(now())
   updatedAt               DateTime               @updatedAt
 
+  membershipPayments      MembershipPaymentProduct[]
+
   @@unique([businessId, productType])
   @@index([businessId])
   @@map("business_product_subscriptions")
@@ -1017,6 +1021,21 @@ model BusinessProductAuditLog {
 
   @@index([businessId, productType])
   @@map("business_product_audit_logs")
+}
+
+model MembershipPaymentProduct {
+  id                            String                      @id @default(uuid())
+  membershipPaymentId           String
+  membershipPayment             Membership                  @relation(fields: [membershipPaymentId], references: [id], onDelete: Cascade)
+  businessProductSubscriptionId String
+  businessProductSubscription   BusinessProductSubscription @relation(fields: [businessProductSubscriptionId], references: [id], onDelete: Cascade)
+  amountAttributed              Decimal?                    @db.Decimal(10, 2)
+  createdAt                     DateTime                    @default(now())
+
+  @@unique([membershipPaymentId, businessProductSubscriptionId])
+  @@index([membershipPaymentId])
+  @@index([businessProductSubscriptionId])
+  @@map("membership_payment_products")
 }
 
 model PosTerminal {

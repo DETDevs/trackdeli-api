@@ -630,6 +630,28 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Columna business_product_subscriptions.carteraMonthlyFee',
           sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "carteraMonthlyFee" DECIMAL(10, 2);`,
         },
+        {
+          name: 'Tabla membership_payment_products',
+          sql: `CREATE TABLE IF NOT EXISTS "membership_payment_products" (
+            "id" TEXT NOT NULL,
+            "membershipPaymentId" TEXT NOT NULL,
+            "businessProductSubscriptionId" TEXT NOT NULL,
+            "amountAttributed" DECIMAL(10, 2),
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "membership_payment_products_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "membership_payment_products_membershipPaymentId_businessProductSubscriptionId_key" UNIQUE ("membershipPaymentId", "businessProductSubscriptionId"),
+            CONSTRAINT "membership_payment_products_membershipPaymentId_fkey" FOREIGN KEY ("membershipPaymentId") REFERENCES "memberships"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "membership_payment_products_businessProductSubscriptionId_fkey" FOREIGN KEY ("businessProductSubscriptionId") REFERENCES "business_product_subscriptions"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice membership_payment_products.membershipPaymentId',
+          sql: `CREATE INDEX IF NOT EXISTS "membership_payment_products_membershipPaymentId_idx" ON "membership_payment_products"("membershipPaymentId");`,
+        },
+        {
+          name: 'Índice membership_payment_products.businessProductSubscriptionId',
+          sql: `CREATE INDEX IF NOT EXISTS "membership_payment_products_businessProductSubscriptionId_idx" ON "membership_payment_products"("businessProductSubscriptionId");`,
+        },
       ];
 
       for (const step of ddlStatements) {
