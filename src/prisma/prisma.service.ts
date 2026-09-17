@@ -652,6 +652,123 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Índice membership_payment_products.businessProductSubscriptionId',
           sql: `CREATE INDEX IF NOT EXISTS "membership_payment_products_businessProductSubscriptionId_idx" ON "membership_payment_products"("businessProductSubscriptionId");`,
         },
+        {
+          name: 'Enum BusinessProductType - Agregar CITAS',
+          sql: `ALTER TYPE "BusinessProductType" ADD VALUE IF NOT EXISTS 'CITAS';`,
+        },
+        {
+          name: 'Enum AppointmentStatus',
+          sql: `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'AppointmentStatus') THEN CREATE TYPE "AppointmentStatus" AS ENUM ('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED', 'NO_SHOW'); END IF; END $$;`,
+        },
+        {
+          name: 'Columna businesses.hasCitas',
+          sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "hasCitas" BOOLEAN NOT NULL DEFAULT false;`,
+        },
+        {
+          name: 'Columna business_product_subscriptions.citasMonthlyFee',
+          sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "citasMonthlyFee" DECIMAL(10, 2);`,
+        },
+        {
+          name: 'Columna customers.isBlocked',
+          sql: `ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "isBlocked" BOOLEAN NOT NULL DEFAULT false;`,
+        },
+        {
+          name: 'Columna customers.consecutiveNoShows',
+          sql: `ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "consecutiveNoShows" INTEGER NOT NULL DEFAULT 0;`,
+        },
+        {
+          name: 'Tabla booking_services',
+          sql: `CREATE TABLE IF NOT EXISTS "booking_services" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "name" VARCHAR(100) NOT NULL,
+            "description" VARCHAR(500),
+            "durationMinutes" INTEGER NOT NULL,
+            "price" DOUBLE PRECISION NOT NULL,
+            "isActive" BOOLEAN NOT NULL DEFAULT true,
+            "hasCustomSchedule" BOOLEAN NOT NULL DEFAULT false,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "booking_services_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "booking_services_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice booking_services.businessId_isActive',
+          sql: `CREATE INDEX IF NOT EXISTS "booking_services_businessId_isActive_idx" ON "booking_services"("businessId", "isActive");`,
+        },
+        {
+          name: 'Tabla availability_schedules',
+          sql: `CREATE TABLE IF NOT EXISTS "availability_schedules" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "serviceId" TEXT,
+            "dayOfWeek" INTEGER NOT NULL,
+            "startTime" VARCHAR(10) NOT NULL,
+            "endTime" VARCHAR(10) NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "availability_schedules_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "availability_schedules_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "availability_schedules_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "booking_services"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice availability_schedules.businessId_serviceId_dayOfWeek',
+          sql: `CREATE INDEX IF NOT EXISTS "availability_schedules_businessId_serviceId_dayOfWeek_idx" ON "availability_schedules"("businessId", "serviceId", "dayOfWeek");`,
+        },
+        {
+          name: 'Tabla business_booking_settings',
+          sql: `CREATE TABLE IF NOT EXISTS "business_booking_settings" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "minCancellationHours" INTEGER NOT NULL DEFAULT 2,
+            "trackNoShows" BOOLEAN NOT NULL DEFAULT false,
+            "autoBlockAfterNoShows" BOOLEAN NOT NULL DEFAULT false,
+            "noShowThreshold" INTEGER NOT NULL DEFAULT 3,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "business_booking_settings_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "business_booking_settings_businessId_key" UNIQUE ("businessId"),
+            CONSTRAINT "business_booking_settings_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Tabla appointments',
+          sql: `CREATE TABLE IF NOT EXISTS "appointments" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "serviceId" TEXT NOT NULL,
+            "customerId" TEXT NOT NULL,
+            "scheduledAt" TIMESTAMP(3) NOT NULL,
+            "durationMinutes" INTEGER NOT NULL,
+            "capacity" INTEGER NOT NULL DEFAULT 1,
+            "status" "AppointmentStatus" NOT NULL DEFAULT 'PENDING',
+            "price" DOUBLE PRECISION NOT NULL,
+            "customerEmail" VARCHAR(255),
+            "manageToken" VARCHAR(100) NOT NULL,
+            "rescheduleCount" INTEGER NOT NULL DEFAULT 0,
+            "cancellationReason" VARCHAR(500),
+            "confirmedAt" TIMESTAMP(3),
+            "cancelledAt" TIMESTAMP(3),
+            "completedAt" TIMESTAMP(3),
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "appointments_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "appointments_manageToken_key" UNIQUE ("manageToken"),
+            CONSTRAINT "appointments_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "appointments_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "booking_services"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+            CONSTRAINT "appointments_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice appointments.businessId_status_scheduledAt',
+          sql: `CREATE INDEX IF NOT EXISTS "appointments_businessId_status_scheduledAt_idx" ON "appointments"("businessId", "status", "scheduledAt");`,
+        },
+        {
+          name: 'Índice appointments.manageToken',
+          sql: `CREATE INDEX IF NOT EXISTS "appointments_manageToken_idx" ON "appointments"("manageToken");`,
+        },
       ];
 
       for (const step of ddlStatements) {
@@ -685,6 +802,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       let deliveryCreated = 0;
       let posCreated = 0;
       let carteraCreated = 0;
+      let citasCreated = 0;
       let skipped = 0;
 
       for (const b of businesses) {
@@ -791,14 +909,46 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             });
           }
           carteraCreated++;
+        }
+
+        const existingCitas = b.productSubscriptions.find(
+          (s) => s.productType === BusinessProductType.CITAS,
+        );
+
+        if (!existingCitas) {
+          const isCitasActive = (b as any).hasCitas === true;
+          await this.businessProductSubscription.create({
+            data: {
+              businessId: b.id,
+              productType: BusinessProductType.CITAS,
+              status: isCitasActive ? BusinessProductStatus.ACTIVE : BusinessProductStatus.INACTIVE,
+              citasMonthlyFee: null,
+              activatedAt: isCitasActive ? b.createdAt : null,
+              activatedBy: isCitasActive ? 'system-migration' : null,
+            },
+          });
+
+          if (isCitasActive) {
+            await this.businessProductAuditLog.create({
+              data: {
+                businessId: b.id,
+                productType: BusinessProductType.CITAS,
+                action: BusinessProductAction.ACTIVATED,
+                performedBy: 'system-migration',
+                reason: 'Backfill inicial automático por migración a productos independientes (hasCitas activo)',
+                metadata: {},
+              },
+            });
+          }
+          citasCreated++;
         } else {
           skipped++;
         }
       }
 
-      if (deliveryCreated > 0 || posCreated > 0 || carteraCreated > 0) {
+      if (deliveryCreated > 0 || posCreated > 0 || carteraCreated > 0 || citasCreated > 0) {
         this.logger.log(
-          `[PrismaService] ✓ Backfill completado: ${deliveryCreated} DELIVERY, ${posCreated} POS, ${carteraCreated} CARTERA_COBRO (${skipped} ya existían).`,
+          `[PrismaService] ✓ Backfill completado: ${deliveryCreated} DELIVERY, ${posCreated} POS, ${carteraCreated} CARTERA_COBRO, ${citasCreated} CITAS (${skipped} ya existían).`,
         );
       } else {
         this.logger.log('[PrismaService] ✓ Suscripciones de productos ya estaban sincronizadas para todos los negocios.');

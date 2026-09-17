@@ -46,6 +46,11 @@ export class ActivateProductDto {
   carteraCobroMonthlyFee?: number;
 
   @IsOptional()
+  @IsNumber()
+  @Min(0)
+  citasMonthlyFee?: number;
+
+  @IsOptional()
   @IsString()
   reason?: string;
 }

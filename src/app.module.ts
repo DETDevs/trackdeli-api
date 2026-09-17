@@ -22,6 +22,7 @@ import { CommissionsModule } from './modules/commissions/commissions.module';
 import { InviteCodesModule } from './modules/invite-codes/invite-codes.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { BusinessProductsModule } from './modules/business-products/business-products.module';
+import { BookingModule } from './modules/booking/booking.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MembershipGuard } from './common/guards/membership.guard';
@@ -52,6 +53,7 @@ import { MembershipGuard } from './common/guards/membership.guard';
     InviteCodesModule,
     CustomersModule,
     BusinessProductsModule,
+    BookingModule,
   ],
   providers: [
     {

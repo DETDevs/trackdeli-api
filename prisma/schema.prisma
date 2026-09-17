@@ -170,6 +170,7 @@ enum BusinessProductType {
   DELIVERY
   POS
   CARTERA_COBRO
+  CITAS
 }
 
 enum BusinessProductStatus {
@@ -206,6 +207,7 @@ model Business {
   hasTrackDeli           Boolean      @default(true)
   hasPOS                 Boolean      @default(false)
   hasCarteraCobro        Boolean      @default(false)
+  hasCitas               Boolean      @default(false)
 
   // Modelo de precios (TrackDeli)
   pricingModel           PricingModel @default(FIXED)
@@ -265,6 +267,12 @@ model Business {
   // Subscripciones de Productos y Auditoría
   productSubscriptions BusinessProductSubscription[]
   productAuditLogs     BusinessProductAuditLog[]
+
+  // Citas / Booking
+  bookingServices       BookingService[]
+  availabilitySchedules AvailabilitySchedule[]
+  bookingSettings       BusinessBookingSettings?
+  appointments          Appointment[]
 
   @@map("businesses")
 }
@@ -551,10 +559,13 @@ model Customer {
   updatedAt       DateTime                  @updatedAt
   creditLimit     Float?
   ruc             String?                   @db.VarChar(30)
+  isBlocked       Boolean                   @default(false)
+  consecutiveNoShows Int                    @default(0)
 
   locationSessions CustomerLocationSession[]
   sales            Sale[]
   creditAccounts   CreditAccount[]
+  appointments     Appointment[]
 
   @@unique([businessId, phone])
   @@index([businessId, phone])
@@ -992,6 +1003,8 @@ model BusinessProductSubscription {
   posMonthlyFee           Decimal?               @db.Decimal(10, 2)
   // CARTERA_COBRO:
   carteraMonthlyFee       Decimal?               @db.Decimal(10, 2)
+  // CITAS:
+  citasMonthlyFee         Decimal?               @db.Decimal(10, 2)
 
   activatedAt             DateTime?
   activatedBy             String?                // userId del SuperAdmin que activó
@@ -1090,4 +1103,91 @@ model PasswordChangeLog {
   @@index([changedByUserId])
   @@map("password_change_logs")
 }
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+model BookingService {
+  id                 String                 @id @default(uuid())
+  businessId         String
+  business           Business               @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name               String                 @db.VarChar(100)
+  description        String?                @db.VarChar(500)
+  durationMinutes    Int
+  price              Float
+  isActive           Boolean                @default(true)
+  hasCustomSchedule  Boolean                @default(false)
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+
+  appointments       Appointment[]
+  schedules          AvailabilitySchedule[]
+
+  @@index([businessId, isActive])
+  @@map("booking_services")
+}
+
+model AvailabilitySchedule {
+  id          String          @id @default(uuid())
+  businessId  String
+  business    Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  serviceId   String?
+  service     BookingService? @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  dayOfWeek   Int             // 0=Domingo, 1=Lunes, ..., 6=Sábado
+  startTime   String          @db.VarChar(10) // "09:00"
+  endTime     String          @db.VarChar(10) // "18:00"
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([businessId, serviceId, dayOfWeek])
+  @@map("availability_schedules")
+}
+
+model BusinessBookingSettings {
+  id                    String   @id @default(uuid())
+  businessId            String   @unique
+  business              Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  minCancellationHours  Int      @default(2)
+  trackNoShows          Boolean  @default(false)
+  autoBlockAfterNoShows Boolean  @default(false)
+  noShowThreshold       Int      @default(3)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("business_booking_settings")
+}
+
+model Appointment {
+  id                 String            @id @default(uuid())
+  businessId         String
+  business           Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  serviceId          String
+  service            BookingService    @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  customerId         String
+  customer           Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  scheduledAt        DateTime
+  durationMinutes    Int
+  capacity           Int               @default(1)
+  status             AppointmentStatus @default(PENDING)
+  price              Float
+  customerEmail      String?           @db.VarChar(255)
+  manageToken        String            @unique @db.VarChar(100)
+  rescheduleCount    Int               @default(0)
+  cancellationReason String?           @db.VarChar(500)
+  confirmedAt        DateTime?
+  cancelledAt        DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@index([businessId, status, scheduledAt])
+  @@index([manageToken])
+  @@map("appointments")
+}
+
 

@@ -59,6 +59,9 @@ export class BusinessProductsService {
     const carteraSub = business.productSubscriptions.find(
       (s) => s.productType === BusinessProductType.CARTERA_COBRO,
     );
+    const citasSub = business.productSubscriptions.find(
+      (s) => s.productType === BusinessProductType.CITAS,
+    );
 
     return {
       businessId: business.id,
@@ -146,6 +149,32 @@ export class BusinessProductsService {
                 ? BusinessProductStatus.ACTIVE
                 : BusinessProductStatus.INACTIVE,
               carteraMonthlyFee: null,
+              activatedAt: null,
+              activatedBy: null,
+              deactivatedAt: null,
+              deactivatedBy: null,
+            },
+        CITAS: citasSub
+          ? {
+              id: citasSub.id,
+              productType: citasSub.productType,
+              status: citasSub.status,
+              citasMonthlyFee: (citasSub as any).citasMonthlyFee
+                ? Number((citasSub as any).citasMonthlyFee)
+                : null,
+              activatedAt: citasSub.activatedAt,
+              activatedBy: citasSub.activatedBy,
+              deactivatedAt: citasSub.deactivatedAt,
+              deactivatedBy: citasSub.deactivatedBy,
+              createdAt: citasSub.createdAt,
+              updatedAt: citasSub.updatedAt,
+            }
+          : {
+              productType: BusinessProductType.CITAS,
+              status: (business as any).hasCitas
+                ? BusinessProductStatus.ACTIVE
+                : BusinessProductStatus.INACTIVE,
+              citasMonthlyFee: null,
               activatedAt: null,
               activatedBy: null,
               deactivatedAt: null,
@@ -249,6 +278,16 @@ export class BusinessProductsService {
               }
             : {};
 
+        const citasConfig =
+          productType === BusinessProductType.CITAS
+            ? {
+                citasMonthlyFee:
+                  dto.citasMonthlyFee !== undefined
+                    ? new Prisma.Decimal(dto.citasMonthlyFee)
+                    : ((existingSub as any)?.citasMonthlyFee ?? null),
+              }
+            : {};
+
         if (isAlreadyActive) {
 
           const updatedSub = await tx.businessProductSubscription.update({
@@ -257,6 +296,7 @@ export class BusinessProductsService {
               ...deliveryConfig,
               ...posConfig,
               ...carteraConfig,
+              ...citasConfig,
             },
           });
 
@@ -278,6 +318,9 @@ export class BusinessProductsService {
                     : null,
                   carteraMonthlyFee: existingSub.carteraMonthlyFee
                     ? Number(existingSub.carteraMonthlyFee)
+                    : null,
+                  citasMonthlyFee: (existingSub as any).citasMonthlyFee
+                    ? Number((existingSub as any).citasMonthlyFee)
                     : null,
                 },
                 newConfig: {
@@ -314,6 +357,7 @@ export class BusinessProductsService {
             ...deliveryConfig,
             ...posConfig,
             ...carteraConfig,
+            ...citasConfig,
           },
           create: {
             businessId,
@@ -326,6 +370,7 @@ export class BusinessProductsService {
             ...deliveryConfig,
             ...posConfig,
             ...carteraConfig,
+            ...citasConfig,
           },
         });
 
@@ -445,6 +490,20 @@ export class BusinessProductsService {
           if (pendingCreditAccountsCount > 0) {
             hasPendingOperations = true;
           }
+        } else if (productType === BusinessProductType.CITAS) {
+          const pendingAppointmentsCount = await (tx as any).appointment.count({
+            where: {
+              businessId,
+              status: { in: ['PENDING', 'CONFIRMED'] },
+              scheduledAt: { gte: new Date() },
+            },
+          });
+
+          details.pendingAppointments = pendingAppointmentsCount;
+
+          if (pendingAppointmentsCount > 0) {
+            hasPendingOperations = true;
+          }
         }
 
         if (hasPendingOperations && !force) {
@@ -453,7 +512,9 @@ export class BusinessProductsService {
               ? `${details.activeOrders} pedidos activos, ${details.activeDispatches} despachos en curso`
               : productType === BusinessProductType.POS
               ? `${details.openCashRegisters} caja(s) registradora(s) abierta(s)`
-              : `${details.pendingCreditAccounts} cuenta(s) por cobrar pendiente(s)`;
+              : productType === BusinessProductType.CARTERA_COBRO
+              ? `${details.pendingCreditAccounts} cuenta(s) por cobrar pendiente(s)`
+              : `${details.pendingAppointments} cita(s) pendiente(s) o confirmada(s) futuras`;
 
           await this.prisma.businessProductAuditLog.create({
             data: {
@@ -631,6 +692,13 @@ export class BusinessProductsService {
         where: { id: businessId },
         data: {
           hasCarteraCobro: isActive,
+        },
+      });
+    } else if (productType === BusinessProductType.CITAS) {
+      await tx.business.update({
+        where: { id: businessId },
+        data: {
+          hasCitas: isActive,
         },
       });
     }
