@@ -10,6 +10,7 @@ import {
   BusinessProductStatus,
   BusinessProductType,
   CashStatus,
+  CreditAccountStatus,
   DispatchStatus,
   Prisma,
 } from '@prisma/client';
@@ -54,6 +55,9 @@ export class BusinessProductsService {
     );
     const posSub = business.productSubscriptions.find(
       (s) => s.productType === BusinessProductType.POS,
+    );
+    const carteraSub = business.productSubscriptions.find(
+      (s) => s.productType === BusinessProductType.CARTERA_COBRO,
     );
 
     return {
@@ -116,6 +120,32 @@ export class BusinessProductsService {
                 : BusinessProductStatus.INACTIVE,
               posVertical: business.posVertical,
               posMonthlyFee: null,
+              activatedAt: null,
+              activatedBy: null,
+              deactivatedAt: null,
+              deactivatedBy: null,
+            },
+        CARTERA_COBRO: carteraSub
+          ? {
+              id: carteraSub.id,
+              productType: carteraSub.productType,
+              status: carteraSub.status,
+              carteraMonthlyFee: carteraSub.carteraMonthlyFee
+                ? Number(carteraSub.carteraMonthlyFee)
+                : null,
+              activatedAt: carteraSub.activatedAt,
+              activatedBy: carteraSub.activatedBy,
+              deactivatedAt: carteraSub.deactivatedAt,
+              deactivatedBy: carteraSub.deactivatedBy,
+              createdAt: carteraSub.createdAt,
+              updatedAt: carteraSub.updatedAt,
+            }
+          : {
+              productType: BusinessProductType.CARTERA_COBRO,
+              status: (business as any).hasCarteraCobro
+                ? BusinessProductStatus.ACTIVE
+                : BusinessProductStatus.INACTIVE,
+              carteraMonthlyFee: null,
               activatedAt: null,
               activatedBy: null,
               deactivatedAt: null,
@@ -205,6 +235,20 @@ export class BusinessProductsService {
               }
             : {};
 
+        const carteraFee =
+          dto.carteraMonthlyFee !== undefined
+            ? dto.carteraMonthlyFee
+            : dto.carteraCobroMonthlyFee;
+        const carteraConfig =
+          productType === BusinessProductType.CARTERA_COBRO
+            ? {
+                carteraMonthlyFee:
+                  carteraFee !== undefined
+                    ? new Prisma.Decimal(carteraFee)
+                    : (existingSub?.carteraMonthlyFee ?? null),
+              }
+            : {};
+
         if (isAlreadyActive) {
 
           const updatedSub = await tx.businessProductSubscription.update({
@@ -212,6 +256,7 @@ export class BusinessProductsService {
             data: {
               ...deliveryConfig,
               ...posConfig,
+              ...carteraConfig,
             },
           });
 
@@ -230,6 +275,9 @@ export class BusinessProductsService {
                   posVertical: existingSub.posVertical,
                   posMonthlyFee: existingSub.posMonthlyFee
                     ? Number(existingSub.posMonthlyFee)
+                    : null,
+                  carteraMonthlyFee: existingSub.carteraMonthlyFee
+                    ? Number(existingSub.carteraMonthlyFee)
                     : null,
                 },
                 newConfig: {
@@ -265,6 +313,7 @@ export class BusinessProductsService {
             deactivatedBy: null,
             ...deliveryConfig,
             ...posConfig,
+            ...carteraConfig,
           },
           create: {
             businessId,
@@ -276,6 +325,7 @@ export class BusinessProductsService {
             deactivatedBy: null,
             ...deliveryConfig,
             ...posConfig,
+            ...carteraConfig,
           },
         });
 
@@ -382,13 +432,28 @@ export class BusinessProductsService {
           if (openCashRegistersCount > 0) {
             hasPendingOperations = true;
           }
+        } else if (productType === BusinessProductType.CARTERA_COBRO) {
+          const pendingCreditAccountsCount = await tx.creditAccount.count({
+            where: {
+              businessId,
+              status: { not: CreditAccountStatus.PAID },
+            },
+          });
+
+          details.pendingCreditAccounts = pendingCreditAccountsCount;
+
+          if (pendingCreditAccountsCount > 0) {
+            hasPendingOperations = true;
+          }
         }
 
         if (hasPendingOperations && !force) {
           const reasonMsg =
             productType === BusinessProductType.DELIVERY
               ? `${details.activeOrders} pedidos activos, ${details.activeDispatches} despachos en curso`
-              : `${details.openCashRegisters} caja(s) registradora(s) abierta(s)`;
+              : productType === BusinessProductType.POS
+              ? `${details.openCashRegisters} caja(s) registradora(s) abierta(s)`
+              : `${details.pendingCreditAccounts} cuenta(s) por cobrar pendiente(s)`;
 
           await this.prisma.businessProductAuditLog.create({
             data: {
@@ -450,7 +515,9 @@ export class BusinessProductsService {
             warning:
               productType === BusinessProductType.DELIVERY
                 ? 'Los pedidos en curso continuarán normalmente su entrega, pero no se podrán crear nuevos pedidos.'
-                : 'Las cajas registradoras abiertas no fueron cerradas automáticamente y deberán cerrarse de forma manual.',
+                : productType === BusinessProductType.POS
+                ? 'Las cajas registradoras abiertas no fueron cerradas automáticamente y deberán cerrarse de forma manual.'
+                : 'Existen cuentas por cobrar pendientes que no han sido liquidadas.',
             details,
             subscription: deactivatedSub,
           };
@@ -557,6 +624,13 @@ export class BusinessProductsService {
             dto?.dispatchTimeoutMin !== undefined && {
               dispatchTimeoutMin: dto.dispatchTimeoutMin,
             }),
+        },
+      });
+    } else if (productType === BusinessProductType.CARTERA_COBRO) {
+      await tx.business.update({
+        where: { id: businessId },
+        data: {
+          hasCarteraCobro: isActive,
         },
       });
     }

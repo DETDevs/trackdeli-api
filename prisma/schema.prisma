@@ -169,6 +169,7 @@ enum TableOrderStatus {
 enum BusinessProductType {
   DELIVERY
   POS
+  CARTERA_COBRO
 }
 
 enum BusinessProductStatus {
@@ -201,9 +202,10 @@ model Business {
   altCommissionDistanceKm Float         @default(40)   // umbral en km [DEPRECATED]
   dispatchTimeoutMin      Int           @default(3)    // minutos antes de pasar al siguiente [DEPRECATED]
 
-  // Módulos activos [DEPRECATED: Usar BusinessProductSubscription con productType=POS / DELIVERY]
+  // Módulos activos [DEPRECATED: Usar BusinessProductSubscription con productType=POS / DELIVERY / CARTERA_COBRO]
   hasTrackDeli           Boolean      @default(true)
   hasPOS                 Boolean      @default(false)
+  hasCarteraCobro        Boolean      @default(false)
 
   // Modelo de precios (TrackDeli)
   pricingModel           PricingModel @default(FIXED)
@@ -986,6 +988,8 @@ model BusinessProductSubscription {
   // POS:
   posVertical             PosVertical?
   posMonthlyFee           Decimal?               @db.Decimal(10, 2)
+  // CARTERA_COBRO:
+  carteraMonthlyFee       Decimal?               @db.Decimal(10, 2)
 
   activatedAt             DateTime?
   activatedBy             String?                // userId del SuperAdmin que activó

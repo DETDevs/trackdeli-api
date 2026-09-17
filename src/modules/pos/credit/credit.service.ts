@@ -2,12 +2,14 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { CreditAccountStatus, PosPaymentMethod } from '@prisma/client';
+import { BusinessProductType, CreditAccountStatus, PosPaymentMethod } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TrackingGateway } from '../../tracking/tracking.gateway';
+import { BusinessProductsService } from '../../business-products/business-products.service';
 import { RegisterCreditPaymentDto } from './dto/register-payment.dto';
 
 @Injectable()
@@ -17,7 +19,18 @@ export class CreditService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly trackingGateway: TrackingGateway,
+    private readonly businessProductsService: BusinessProductsService,
   ) {}
+
+  private async ensureCarteraActive(businessId: string) {
+    const isCarteraActive = await this.businessProductsService.isActive(
+      businessId,
+      BusinessProductType.CARTERA_COBRO,
+    );
+    if (!isCarteraActive) {
+      throw new ForbiddenException('Este negocio no tiene Cartera de Cobro contratada');
+    }
+  }
 
   async registerPayment(
     creditAccountId: string,
@@ -25,6 +38,7 @@ export class CreditService {
     userId: string,
     businessId: string,
   ) {
+    await this.ensureCarteraActive(businessId);
     return this.prisma.$transaction(async (tx) => {
       const account = await tx.creditAccount.findFirst({
         where: { id: creditAccountId, businessId },
@@ -122,6 +136,7 @@ export class CreditService {
   }
 
   async getCustomerCreditAccounts(customerId: string, businessId: string) {
+    await this.ensureCarteraActive(businessId);
     const customer = await this.prisma.customer.findFirst({
       where: { id: customerId, businessId },
     });
@@ -188,6 +203,7 @@ export class CreditService {
   }
 
   async getCreditAccount(id: string, businessId: string) {
+    await this.ensureCarteraActive(businessId);
     const account = await this.prisma.creditAccount.findFirst({
       where: { id, businessId },
       include: {

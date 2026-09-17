@@ -1,6 +1,7 @@
 import { Controller, Get, Query, UseGuards } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
+import { CarteraCobroGuard } from "../../../common/guards/cartera-cobro.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from "../../../common/types/jwt-payload.interface";
@@ -78,6 +79,7 @@ export class ReportsController {
     return this.service.getCashMovements(resolveBusinessId(user, qBid), from, to);
   }
 
+  @UseGuards(CarteraCobroGuard)
   @Get("credit-overdue")
   creditOverdue(
     @CurrentUser() user: JwtPayload,
@@ -86,6 +88,7 @@ export class ReportsController {
     return this.service.getCreditOverdue(resolveBusinessId(user, qBid));
   }
 
+  @UseGuards(CarteraCobroGuard)
   @Get("credit-summary")
   creditSummary(
     @CurrentUser() user: JwtPayload,
@@ -94,6 +97,7 @@ export class ReportsController {
     return this.service.getCreditSummary(resolveBusinessId(user, qBid));
   }
 
+  @UseGuards(CarteraCobroGuard)
   @Get("credit-sales-by-product")
   creditSalesByProduct(
     @CurrentUser() user: JwtPayload,

@@ -1,8 +1,9 @@
 import {
-  Injectable, NotFoundException, BadRequestException, ConflictException, Logger,
+  Injectable, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Logger,
 } from "@nestjs/common";
-import { CreditAccountStatus, PosPaymentMethod } from "@prisma/client";
+import { BusinessProductType, CreditAccountStatus, PosPaymentMethod } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
+import { BusinessProductsService } from "../../business-products/business-products.service";
 import { CreateSaleDto } from "./dto/create-sale.dto";
 import { CancelSaleDto } from "./dto/cancel-sale.dto";
 
@@ -10,7 +11,10 @@ import { CancelSaleDto } from "./dto/cancel-sale.dto";
 export class SalesService {
   private readonly logger = new Logger(SalesService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly businessProductsService: BusinessProductsService,
+  ) {}
 
   async create(dto: CreateSaleDto, businessId: string, cashierId: string) {
     return this.prisma.$transaction(async (tx) => {
@@ -108,6 +112,14 @@ export class SalesService {
       let dueDate: Date | null = null;
 
       if (isCredit) {
+        const isCarteraActive = await this.businessProductsService.isActive(
+          businessId,
+          BusinessProductType.CARTERA_COBRO,
+        );
+        if (!isCarteraActive) {
+          throw new ForbiddenException('Este negocio no tiene Cartera de Cobro contratada');
+        }
+
         if (!dto.customerId) {
           throw new BadRequestException("El cliente es obligatorio para ventas al crédito");
         }

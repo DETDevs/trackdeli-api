@@ -12,25 +12,27 @@ export class SettingsService {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
       select: {
-        id: true, name: true, hasPOS: true, hasTrackDeli: true,
+        id: true, name: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true,
         posVertical: true, gridColumns: true, gridRows: true,
         taxRate: true, currency: true, invoicePrefix: true, invoiceCounter: true,
         posAddress: true, posPhone: true, posFooter: true,
         productSubscriptions: {
-          where: { productType: 'POS' },
-          select: { posVertical: true },
-          take: 1,
+          where: { productType: { in: ['POS', 'CARTERA_COBRO'] } },
+          select: { productType: true, posVertical: true, status: true },
         },
       },
     });
     if (!business) throw new NotFoundException("Negocio no encontrado");
 
-    const posSub = business.productSubscriptions?.[0];
+    const posSub = business.productSubscriptions?.find((s) => s.productType === 'POS');
+    const carteraSub = business.productSubscriptions?.find((s) => s.productType === 'CARTERA_COBRO');
     const resolvedPosVertical = posSub?.posVertical ?? business.posVertical;
+    const isCarteraCobroActive = business.hasCarteraCobro || carteraSub?.status === 'ACTIVE';
 
     const { productSubscriptions, ...businessData } = business;
     return {
       ...businessData,
+      hasCarteraCobro: isCarteraCobroActive,
       posVertical: resolvedPosVertical,
     };
   }

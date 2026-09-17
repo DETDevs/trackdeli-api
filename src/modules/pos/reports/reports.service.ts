@@ -1,12 +1,26 @@
-import { Injectable, Logger } from "@nestjs/common";
-import { CreditAccountStatus, PosPaymentMethod } from "@prisma/client";
+import { ForbiddenException, Injectable, Logger } from "@nestjs/common";
+import { BusinessProductType, CreditAccountStatus, PosPaymentMethod } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
+import { BusinessProductsService } from "../../business-products/business-products.service";
 
 @Injectable()
 export class ReportsService {
   private readonly logger = new Logger(ReportsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly businessProductsService: BusinessProductsService,
+  ) {}
+
+  private async ensureCarteraActive(businessId: string) {
+    const isCarteraActive = await this.businessProductsService.isActive(
+      businessId,
+      BusinessProductType.CARTERA_COBRO,
+    );
+    if (!isCarteraActive) {
+      throw new ForbiddenException('Este negocio no tiene Cartera de Cobro contratada');
+    }
+  }
 
   private buildDateRange(from?: string, to?: string) {
     const range: any = {};
@@ -203,6 +217,7 @@ export class ReportsService {
   }
 
   async getCreditOverdue(businessId: string) {
+    await this.ensureCarteraActive(businessId);
     const now = new Date();
     const accounts = await this.prisma.creditAccount.findMany({
       where: {
@@ -264,6 +279,7 @@ export class ReportsService {
   }
 
   async getCreditSummary(businessId: string) {
+    await this.ensureCarteraActive(businessId);
     const now = new Date();
     const accounts = await this.prisma.creditAccount.findMany({
       where: {
@@ -338,6 +354,7 @@ export class ReportsService {
   }
 
   async getCreditSalesByProduct(businessId: string, from?: string, to?: string) {
+    await this.ensureCarteraActive(businessId);
     const dateRange = this.buildDateRange(from, to);
     const where: any = {
       businessId,

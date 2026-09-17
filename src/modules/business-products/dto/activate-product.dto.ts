@@ -36,6 +36,16 @@ export class ActivateProductDto {
   posMonthlyFee?: number;
 
   @IsOptional()
+  @IsNumber()
+  @Min(0)
+  carteraMonthlyFee?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  carteraCobroMonthlyFee?: number;
+
+  @IsOptional()
   @IsString()
   reason?: string;
 }

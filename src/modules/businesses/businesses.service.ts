@@ -27,6 +27,7 @@ export class BusinessesService {
       dispatchTimeoutMin: business.dispatchTimeoutMin,
       hasTrackDeli: business.hasTrackDeli,
       hasPOS: business.hasPOS,
+      hasCarteraCobro: business.hasCarteraCobro,
       posVertical: business.posVertical,
       gridColumns: business.gridColumns,
       gridRows: business.gridRows,

@@ -300,7 +300,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
               CREATE TYPE "TableOrderStatus" AS ENUM ('OPEN', 'CLOSED');
             END IF;
             IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'BusinessProductType') THEN
-              CREATE TYPE "BusinessProductType" AS ENUM ('DELIVERY', 'POS');
+              CREATE TYPE "BusinessProductType" AS ENUM ('DELIVERY', 'POS', 'CARTERA_COBRO');
             END IF;
             IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'BusinessProductStatus') THEN
               CREATE TYPE "BusinessProductStatus" AS ENUM ('ACTIVE', 'INACTIVE');
@@ -618,6 +618,18 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Índice pos_credit_payments.creditAccountId',
           sql: `CREATE INDEX IF NOT EXISTS "pos_credit_payments_creditAccountId_idx" ON "pos_credit_payments"("creditAccountId");`,
         },
+        {
+          name: 'Enum BusinessProductType - Agregar CARTERA_COBRO',
+          sql: `ALTER TYPE "BusinessProductType" ADD VALUE IF NOT EXISTS 'CARTERA_COBRO';`,
+        },
+        {
+          name: 'Columna businesses.hasCarteraCobro',
+          sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "hasCarteraCobro" BOOLEAN NOT NULL DEFAULT false;`,
+        },
+        {
+          name: 'Columna business_product_subscriptions.carteraMonthlyFee',
+          sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "carteraMonthlyFee" DECIMAL(10, 2);`,
+        },
       ];
 
       for (const step of ddlStatements) {
@@ -650,6 +662,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
 
       let deliveryCreated = 0;
       let posCreated = 0;
+      let carteraCreated = 0;
       let skipped = 0;
 
       for (const b of businesses) {
@@ -724,14 +737,46 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             });
           }
           posCreated++;
+        }
+
+        const existingCartera = b.productSubscriptions.find(
+          (s) => s.productType === BusinessProductType.CARTERA_COBRO,
+        );
+
+        if (!existingCartera) {
+          const isCarteraActive = (b as any).hasCarteraCobro === true;
+          await this.businessProductSubscription.create({
+            data: {
+              businessId: b.id,
+              productType: BusinessProductType.CARTERA_COBRO,
+              status: isCarteraActive ? BusinessProductStatus.ACTIVE : BusinessProductStatus.INACTIVE,
+              carteraMonthlyFee: null,
+              activatedAt: isCarteraActive ? b.createdAt : null,
+              activatedBy: isCarteraActive ? 'system-migration' : null,
+            },
+          });
+
+          if (isCarteraActive) {
+            await this.businessProductAuditLog.create({
+              data: {
+                businessId: b.id,
+                productType: BusinessProductType.CARTERA_COBRO,
+                action: BusinessProductAction.ACTIVATED,
+                performedBy: 'system-migration',
+                reason: 'Backfill inicial automático por migración a productos independientes (hasCarteraCobro activo)',
+                metadata: {},
+              },
+            });
+          }
+          carteraCreated++;
         } else {
           skipped++;
         }
       }
 
-      if (deliveryCreated > 0 || posCreated > 0) {
+      if (deliveryCreated > 0 || posCreated > 0 || carteraCreated > 0) {
         this.logger.log(
-          `[PrismaService] ✓ Backfill completado: ${deliveryCreated} suscripciones DELIVERY creadas, ${posCreated} POS creadas (${skipped} ya existían).`,
+          `[PrismaService] ✓ Backfill completado: ${deliveryCreated} DELIVERY, ${posCreated} POS, ${carteraCreated} CARTERA_COBRO (${skipped} ya existían).`,
         );
       } else {
         this.logger.log('[PrismaService] ✓ Suscripciones de productos ya estaban sincronizadas para todos los negocios.');

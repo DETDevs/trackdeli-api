@@ -18,6 +18,7 @@ export class BusinessResponseDto {
 
   hasTrackDeli: boolean;
   hasPOS: boolean;
+  hasCarteraCobro: boolean;
 
   posVertical: PosVertical;
   gridColumns: number;
