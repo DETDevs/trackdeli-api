@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
+import * as Sentry from '@sentry/nestjs';
 
 export interface BookingReceiptData {
   to: string;
@@ -141,6 +142,13 @@ export class BookingEmailService {
       this.logger.log(
         `[BookingEmailService] (Simulación) Email enviado a "${to}". Asunto: "${subject}". ManageUrl: ${manageUrl}`,
       );
+      Sentry.logger.info(`[BookingEmailService] (Simulación) Email enviado a "${to}"`, {
+        to,
+        businessName,
+        serviceName,
+        status,
+        manageToken,
+      });
       return true;
     }
 
@@ -155,12 +163,29 @@ export class BookingEmailService {
       this.logger.log(
         `[BookingEmailService] ✓ Correo enviado exitosamente a "${to}". ID: ${response.data?.id}`,
       );
+      Sentry.logger.info(`[BookingEmailService] ✓ Correo enviado a "${to}"`, {
+        to,
+        emailId: response.data?.id,
+        businessName,
+        serviceName,
+        status,
+        manageToken,
+      });
       return true;
     } catch (err: any) {
       this.logger.error(
         `[BookingEmailService] ⚠ Error enviando correo a "${to}": ${err.message}`,
         err.stack,
       );
+      Sentry.captureException(err, {
+        extra: {
+          to,
+          businessName,
+          serviceName,
+          status,
+          manageToken,
+        },
+      });
       return false;
     }
   }

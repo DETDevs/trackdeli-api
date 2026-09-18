@@ -387,25 +387,6 @@ export class BookingService implements OnModuleInit {
       return newApp;
     });
 
-    // Envío de correo transaccional asíncrono si proporcionó email
-    if (dto.customerEmail) {
-      this.emailService
-        .sendBookingReceipt({
-          to: dto.customerEmail.trim(),
-          businessName: appointment.business.name,
-          serviceName: appointment.service.name,
-          scheduledAt: appointment.scheduledAt,
-          durationMinutes: appointment.durationMinutes,
-          price: appointment.price,
-          address: appointment.business.posAddress,
-          manageToken: appointment.manageToken,
-          status: appointment.status,
-        })
-        .catch((err) =>
-          this.logger.warn(`Error enviando recibo de cita: ${err.message}`),
-        );
-    }
-
     return appointment;
   }
 
@@ -677,21 +658,38 @@ export class BookingService implements OnModuleInit {
     const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
 
     if (updated.customerEmail) {
-      this.emailService
-        .sendBookingReceipt({
-          to: updated.customerEmail,
-          businessName: updated.business.name,
-          serviceName: updated.service.name,
-          scheduledAt: updated.scheduledAt,
-          durationMinutes: updated.durationMinutes,
-          price: updated.price,
-          address: updated.business.posAddress,
-          manageToken: updated.manageToken,
-          status: AppointmentStatus.CONFIRMED,
-        })
-        .catch((err) =>
-          this.logger.warn(`Error enviando correo de confirmación: ${err.message}`),
+      if (!updated.confirmationEmailSentAt) {
+        this.emailService
+          .sendBookingReceipt({
+            to: updated.customerEmail,
+            businessName: updated.business.name,
+            serviceName: updated.service.name,
+            scheduledAt: updated.scheduledAt,
+            durationMinutes: updated.durationMinutes,
+            price: updated.price,
+            address: updated.business.posAddress,
+            manageToken: updated.manageToken,
+            status: AppointmentStatus.CONFIRMED,
+          })
+          .then(async (success) => {
+            if (success) {
+              await this.prisma.appointment.update({
+                where: { id: appointmentId },
+                data: { confirmationEmailSentAt: new Date() },
+              });
+              this.logger.log(
+                `[BookingService] ✓ Correo de confirmación enviado y registrado para cita ${appointmentId} a ${updated.customerEmail}`,
+              );
+            }
+          })
+          .catch((err) =>
+            this.logger.warn(`Error enviando correo de confirmación: ${err.message}`),
+          );
+      } else {
+        this.logger.log(
+          `[BookingService] Correo de confirmación omitido por idempotencia (ya enviado en ${updated.confirmationEmailSentAt}) para cita ${appointmentId}`,
         );
+      }
     }
 
     return {

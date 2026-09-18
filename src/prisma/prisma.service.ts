@@ -750,6 +750,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "rescheduleCount" INTEGER NOT NULL DEFAULT 0,
             "cancellationReason" VARCHAR(500),
             "confirmedAt" TIMESTAMP(3),
+            "confirmationEmailSentAt" TIMESTAMP(3),
             "cancelledAt" TIMESTAMP(3),
             "completedAt" TIMESTAMP(3),
             "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -760,6 +761,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             CONSTRAINT "appointments_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "booking_services"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
             CONSTRAINT "appointments_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE RESTRICT ON UPDATE CASCADE
           );`,
+        },
+        {
+          name: 'Columna appointments.confirmationEmailSentAt',
+          sql: `ALTER TABLE "appointments" ADD COLUMN IF NOT EXISTS "confirmationEmailSentAt" TIMESTAMP(3);`,
         },
         {
           name: 'Índice appointments.businessId_status_scheduledAt',

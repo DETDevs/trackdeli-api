@@ -1180,6 +1180,7 @@ model Appointment {
   rescheduleCount    Int               @default(0)
   cancellationReason String?           @db.VarChar(500)
   confirmedAt        DateTime?
+  confirmationEmailSentAt DateTime?
   cancelledAt        DateTime?
   completedAt        DateTime?
   createdAt          DateTime          @default(now())
