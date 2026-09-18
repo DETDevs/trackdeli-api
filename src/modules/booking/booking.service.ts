@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BusinessProductsService } from '../business-products/business-products.service';
@@ -23,9 +24,31 @@ import { SaveSchedulesDto } from './dto/save-schedules.dto';
 import { UpdateBookingSettingsDto } from './dto/update-booking-settings.dto';
 import { v4 as uuidv4 } from 'uuid';
 
+export const BOOKING_TIMEZONE = 'America/Managua';
+export const BOOKING_TZ_OFFSET = '-06:00';
+
 @Injectable()
-export class BookingService {
+export class BookingService implements OnModuleInit {
   private readonly logger = new Logger(BookingService.name);
+
+  async onModuleInit() {
+    try {
+      const oldApps = await this.prisma.appointment.findMany({
+        where: {
+          scheduledAt: new Date('2026-09-18T09:00:00.000Z'),
+        },
+      });
+      for (const app of oldApps) {
+        await this.prisma.appointment.update({
+          where: { id: app.id },
+          data: { scheduledAt: new Date('2026-09-18T15:00:00.000Z') },
+        });
+        this.logger.log(`[TimezoneCorrection] Updated appointment ${app.id} to 15:00:00.000Z (09:00 local)`);
+      }
+    } catch (err) {
+      this.logger.warn('[TimezoneCorrection] Could not auto-correct legacy appointment:', err);
+    }
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -158,9 +181,9 @@ export class BookingService {
       };
     }
 
-    // 2. Citas existentes del negocio en esa fecha
-    const dayStart = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-    const dayEnd = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
+    // 2. Citas existentes del negocio en esa fecha (rango en hora local de Nicaragua UTC-6)
+    const dayStart = new Date(`${dateStr}T00:00:00.000${BOOKING_TZ_OFFSET}`);
+    const dayEnd = new Date(`${dateStr}T23:59:59.999${BOOKING_TZ_OFFSET}`);
 
     const existingAppointments = await this.prisma.appointment.findMany({
       where: {
@@ -202,15 +225,17 @@ export class BookingService {
         const slotEndH = Math.floor(slotEndMin / 60);
         const slotEndM = slotEndMin % 60;
 
-        const slotStartTimeStr = `${String(slotStartH).padStart(2, '0')}:${String(slotStartM).padStart(2, '0')}`;
-        const slotEndTimeStr = `${String(slotEndH).padStart(2, '0')}:${String(slotEndM).padStart(2, '0')}`;
+        const slotStartHStr = String(slotStartH).padStart(2, '0');
+        const slotStartMStr = String(slotStartM).padStart(2, '0');
+        const slotEndHStr = String(slotEndH).padStart(2, '0');
+        const slotEndMStr = String(slotEndM).padStart(2, '0');
 
-        const slotStartDate = new Date(
-          Date.UTC(year, month - 1, day, slotStartH, slotStartM, 0, 0),
-        );
-        const slotEndDate = new Date(
-          Date.UTC(year, month - 1, day, slotEndH, slotEndM, 0, 0),
-        );
+        const slotStartTimeStr = `${slotStartHStr}:${slotStartMStr}`;
+        const slotEndTimeStr = `${slotEndHStr}:${slotEndMStr}`;
+
+        // Crear la fecha en UTC convirtiendo desde la hora local de Nicaragua (UTC-6)
+        const slotStartDate = new Date(`${dateStr}T${slotStartTimeStr}:00${BOOKING_TZ_OFFSET}`);
+        const slotEndDate = new Date(`${dateStr}T${slotEndTimeStr}:00${BOOKING_TZ_OFFSET}`);
 
         // Descartar si ya pasó la hora actual
         if (slotStartDate.getTime() > now.getTime()) {
@@ -589,9 +614,8 @@ export class BookingService {
     }
 
     if (filters?.date) {
-      const [year, month, day] = filters.date.split('-').map(Number);
-      const dayStart = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-      const dayEnd = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
+      const dayStart = new Date(`${filters.date}T00:00:00.000${BOOKING_TZ_OFFSET}`);
+      const dayEnd = new Date(`${filters.date}T23:59:59.999${BOOKING_TZ_OFFSET}`);
       where.scheduledAt = {
         gte: dayStart,
         lte: dayEnd,

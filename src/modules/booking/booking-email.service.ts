@@ -57,6 +57,7 @@ export class BookingEmailService {
 
     const manageUrl = `${this.appUrl.replace(/\/$/, '')}/manage/${manageToken}`;
     const dateFormatted = new Intl.DateTimeFormat('es-NI', {
+      timeZone: 'America/Managua',
       dateStyle: 'full',
       timeStyle: 'short',
     }).format(new Date(scheduledAt));
