@@ -12,12 +12,12 @@ export class SettingsService {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
       select: {
-        id: true, name: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true,
+        id: true, name: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true, hasCitas: true,
         posVertical: true, gridColumns: true, gridRows: true,
         taxRate: true, currency: true, invoicePrefix: true, invoiceCounter: true,
         posAddress: true, posPhone: true, posFooter: true,
         productSubscriptions: {
-          where: { productType: { in: ['POS', 'CARTERA_COBRO'] } },
+          where: { productType: { in: ['POS', 'CARTERA_COBRO', 'CITAS'] } },
           select: { productType: true, posVertical: true, status: true },
         },
       },
@@ -28,11 +28,14 @@ export class SettingsService {
     const carteraSub = business.productSubscriptions?.find((s) => s.productType === 'CARTERA_COBRO');
     const resolvedPosVertical = posSub?.posVertical ?? business.posVertical;
     const isCarteraCobroActive = business.hasCarteraCobro || carteraSub?.status === 'ACTIVE';
+    const citasSub = business.productSubscriptions?.find((s) => s.productType === 'CITAS');
+    const isCitasActive = Boolean((business as any).hasCitas || citasSub?.status === 'ACTIVE');
 
     const { productSubscriptions, ...businessData } = business;
     return {
       ...businessData,
       hasCarteraCobro: isCarteraCobroActive,
+      hasCitas: isCitasActive,
       posVertical: resolvedPosVertical,
     };
   }

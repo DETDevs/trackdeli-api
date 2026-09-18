@@ -51,6 +51,31 @@ export class BookingService {
   /**
    * Catálogo público de servicios activos del negocio.
    */
+    /**
+   * Información pública del negocio.
+   */
+  async getPublicBusinessInfo(businessId: string) {
+    await this.assertCitasActive(businessId);
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: {
+        id: true,
+        name: true,
+        logoUrl: true,
+        posAddress: true,
+        whatsappNumber: true,
+        posPhone: true,
+      },
+    });
+
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    return business;
+  }
+
   async getPublicServices(businessId: string) {
     await this.assertCitasActive(businessId);
 

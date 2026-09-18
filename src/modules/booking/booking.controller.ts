@@ -22,6 +22,15 @@ export class BookingController {
    * Catálogo público de servicios del negocio.
    * GET /booking/:businessId/services
    */
+  /**
+   * Información pública del negocio para la página de reservas.
+   * GET /booking/:businessId/info
+   */
+  @Get(':businessId/info')
+  async getBusinessInfo(@Param('businessId') businessId: string) {
+    return this.bookingService.getPublicBusinessInfo(businessId);
+  }
+
   @Get(':businessId/services')
   async getServices(@Param('businessId') businessId: string) {
     return this.bookingService.getPublicServices(businessId);
