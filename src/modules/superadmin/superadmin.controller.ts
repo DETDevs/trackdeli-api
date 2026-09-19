@@ -71,8 +71,12 @@ export class SuperAdminController {
   }
 
   @Post('businesses')
-  async createBusiness(@Body() dto: CreateBusinessSuperAdminDto) {
-    return this.superAdminService.createBusiness(dto);
+  async createBusiness(
+    @Body() dto: CreateBusinessSuperAdminDto,
+    @CurrentUser() user?: JwtPayload,
+  ) {
+    const creatorId = user?.sub || 'system-superadmin';
+    return this.superAdminService.createBusiness(dto, creatorId);
   }
 
   @Get('riders/active')

@@ -1,3 +1,4 @@
+import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   BadRequestException,
   ConflictException,
@@ -13,7 +14,7 @@ import { CreateMembershipDto } from './dto/create-membership.dto';
 import { UpdateMembershipDto } from './dto/update-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
 import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
-import { BusinessType, MembershipStatus, OrderStatus, Prisma, UserRole } from '@prisma/client';
+import { BusinessType, MembershipStatus, OrderStatus, Prisma, UserRole, BusinessProductType, BusinessProductStatus, BusinessProductAction, PosVertical, PaymentMethod } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 function generateBusinessCredentials(businessName: string): {
@@ -273,6 +274,44 @@ export class SuperAdminService {
         ? Number(((ordersDeliveredMonth / ordersCreatedMonth) * 100).toFixed(1))
         : 0;
 
+    const activeCoverages = await this.prisma.membershipPaymentProduct.findMany({
+      where: {
+        membershipPayment: {
+          businessId: id,
+          status: MembershipStatus.ACTIVE,
+          startDate: { lte: now },
+          endDate: { gte: now },
+        },
+      },
+      select: { businessProductSubscriptionId: true },
+    });
+    const activeCoveredSubIds = new Set(activeCoverages.map((c) => c.businessProductSubscriptionId));
+
+    const resolvedProductSubscriptions = business.productSubscriptions.map((sub) => {
+      const isRiders = business.businessType === BusinessType.EMPRESA_RIDERS;
+      const isMembership = sub.productType !== BusinessProductType.DELIVERY || !isRiders;
+      if (isMembership && sub.status === BusinessProductStatus.ACTIVE && !activeCoveredSubIds.has(sub.id)) {
+        return {
+          ...sub,
+          status: BusinessProductStatus.INACTIVE,
+        };
+      }
+      return sub;
+    });
+
+    const hasPOSActive = resolvedProductSubscriptions.some(
+      (s) => s.productType === BusinessProductType.POS && s.status === BusinessProductStatus.ACTIVE,
+    );
+    const hasTrackDeliActive = resolvedProductSubscriptions.some(
+      (s) => s.productType === BusinessProductType.DELIVERY && s.status === BusinessProductStatus.ACTIVE,
+    );
+    const hasCarteraActive = resolvedProductSubscriptions.some(
+      (s) => s.productType === BusinessProductType.CARTERA_COBRO && s.status === BusinessProductStatus.ACTIVE,
+    );
+    const hasCitasActive = resolvedProductSubscriptions.some(
+      (s) => s.productType === BusinessProductType.CITAS && s.status === BusinessProductStatus.ACTIVE,
+    );
+
     return {
       id: business.id,
       name: business.name,
@@ -306,10 +345,11 @@ export class SuperAdminService {
         ordersCancelled: ordersCancelledMonth,
         deliveryRate: deliveryRateMonth,
       },
-      productSubscriptions: business.productSubscriptions,
-      hasPOS: business.hasPOS,
-      hasTrackDeli: business.hasTrackDeli,
-      hasCarteraCobro: business.hasCarteraCobro,
+      productSubscriptions: resolvedProductSubscriptions,
+      hasPOS: hasPOSActive,
+      hasTrackDeli: hasTrackDeliActive,
+      hasCarteraCobro: hasCarteraActive,
+      hasCitas: hasCitasActive,
     };
   }
 
@@ -359,7 +399,7 @@ export class SuperAdminService {
     };
   }
 
-  async createBusiness(dto: CreateBusinessSuperAdminDto) {
+  async createBusiness(dto: CreateBusinessSuperAdminDto, createdBy: string = 'system-superadmin') {
     this.logger.log(`[createBusiness] Creando negocio '${dto.name}'`);
 
     let email = dto.encargado?.email;
@@ -381,6 +421,12 @@ export class SuperAdminService {
     }
 
     const passwordHash = await bcrypt.hash(plainPassword, 10);
+    const now = new Date();
+    const isRiders = dto.businessType === BusinessType.EMPRESA_RIDERS;
+    const hasDelivery = dto.hasDelivery ?? false;
+    const hasPOS = dto.hasPOS ?? false;
+    const hasCarteraCobro = dto.hasCarteraCobro ?? false;
+    const hasCitas = dto.hasCitas ?? false;
 
     const result = await this.prisma.$transaction(async (tx) => {
       const business = await tx.business.create({
@@ -395,6 +441,11 @@ export class SuperAdminService {
           whatsappNumber: dto.whatsappNumber || null,
           whatsappDisplay: dto.whatsappDisplay || null,
           isActive: true,
+          hasTrackDeli: hasDelivery,
+          hasPOS: hasPOS,
+          hasCarteraCobro: hasCarteraCobro,
+          hasCitas: hasCitas,
+          posVertical: dto.posVertical || PosVertical.RESTAURANTE,
         },
       });
 
@@ -409,7 +460,240 @@ export class SuperAdminService {
         },
       });
 
-      return { business, encargado };
+      // 1. Activar subscripciones seleccionadas y registrar items para Membresía
+      const membershipPaymentProducts: Array<{
+        businessProductSubscriptionId: string;
+        amountAttributed: number | null;
+        productType: BusinessProductType;
+      }> = [];
+
+      // A) DELIVERY
+      if (hasDelivery) {
+        const deliveryFee = !isRiders
+          ? (dto.deliveryMonthlyFee !== undefined && dto.deliveryMonthlyFee !== null
+              ? Number(dto.deliveryMonthlyFee)
+              : 35.00)
+          : null;
+
+        const deliverySub = await tx.businessProductSubscription.create({
+          data: {
+            businessId: business.id,
+            productType: BusinessProductType.DELIVERY,
+            status: BusinessProductStatus.ACTIVE,
+            commissionRate: isRiders ? new Prisma.Decimal(dto.commissionRate ?? 0.15) : null,
+            altCommissionRate: isRiders ? new Prisma.Decimal(dto.altCommissionRate ?? 0.12) : null,
+            altCommissionDistanceKm: isRiders ? new Prisma.Decimal(dto.altCommissionDistanceKm ?? 40) : null,
+            dispatchTimeoutMin: isRiders ? (dto.dispatchTimeoutMin ?? 3) : null,
+            deliveryMonthlyFee: deliveryFee !== null ? new Prisma.Decimal(deliveryFee) : null,
+            activatedAt: now,
+            activatedBy: createdBy,
+          },
+        });
+
+        await tx.businessProductAuditLog.create({
+          data: {
+            businessId: business.id,
+            productType: BusinessProductType.DELIVERY,
+            action: BusinessProductAction.ACTIVATED,
+            performedBy: createdBy,
+            reason: 'Activación inicial al crear negocio',
+            metadata: {
+              deliveryMonthlyFee: deliveryFee,
+              businessType: business.businessType,
+            },
+          },
+        });
+
+        if (!isRiders) {
+          membershipPaymentProducts.push({
+            businessProductSubscriptionId: deliverySub.id,
+            amountAttributed: deliveryFee,
+            productType: BusinessProductType.DELIVERY,
+          });
+        }
+      }
+
+      // B) POS
+      if (hasPOS) {
+        const posFee = dto.posMonthlyFee !== undefined && dto.posMonthlyFee !== null
+          ? Number(dto.posMonthlyFee)
+          : 25.00;
+        const posVertical = dto.posVertical || PosVertical.RESTAURANTE;
+
+        const posSub = await tx.businessProductSubscription.create({
+          data: {
+            businessId: business.id,
+            productType: BusinessProductType.POS,
+            status: BusinessProductStatus.ACTIVE,
+            posVertical,
+            posMonthlyFee: new Prisma.Decimal(posFee),
+            activatedAt: now,
+            activatedBy: createdBy,
+          },
+        });
+
+        await tx.businessProductAuditLog.create({
+          data: {
+            businessId: business.id,
+            productType: BusinessProductType.POS,
+            action: BusinessProductAction.ACTIVATED,
+            performedBy: createdBy,
+            reason: 'Activación inicial al crear negocio',
+            metadata: {
+              posVertical,
+              posMonthlyFee: posFee,
+            },
+          },
+        });
+
+        membershipPaymentProducts.push({
+          businessProductSubscriptionId: posSub.id,
+          amountAttributed: posFee,
+          productType: BusinessProductType.POS,
+        });
+      }
+
+      // C) CARTERA_COBRO
+      if (hasCarteraCobro) {
+        const carteraFee = dto.carteraMonthlyFee !== undefined && dto.carteraMonthlyFee !== null
+          ? Number(dto.carteraMonthlyFee)
+          : 29.99;
+
+        const carteraSub = await tx.businessProductSubscription.create({
+          data: {
+            businessId: business.id,
+            productType: BusinessProductType.CARTERA_COBRO,
+            status: BusinessProductStatus.ACTIVE,
+            carteraMonthlyFee: new Prisma.Decimal(carteraFee),
+            activatedAt: now,
+            activatedBy: createdBy,
+          },
+        });
+
+        await tx.businessProductAuditLog.create({
+          data: {
+            businessId: business.id,
+            productType: BusinessProductType.CARTERA_COBRO,
+            action: BusinessProductAction.ACTIVATED,
+            performedBy: createdBy,
+            reason: 'Activación inicial al crear negocio',
+            metadata: {
+              carteraMonthlyFee: carteraFee,
+            },
+          },
+        });
+
+        membershipPaymentProducts.push({
+          businessProductSubscriptionId: carteraSub.id,
+          amountAttributed: carteraFee,
+          productType: BusinessProductType.CARTERA_COBRO,
+        });
+      }
+
+      // D) CITAS
+      if (hasCitas) {
+        const citasFee = dto.citasMonthlyFee !== undefined && dto.citasMonthlyFee !== null
+          ? Number(dto.citasMonthlyFee)
+          : 25.00;
+
+        const citasSub = await tx.businessProductSubscription.create({
+          data: {
+            businessId: business.id,
+            productType: BusinessProductType.CITAS,
+            status: BusinessProductStatus.ACTIVE,
+            citasMonthlyFee: new Prisma.Decimal(citasFee),
+            activatedAt: now,
+            activatedBy: createdBy,
+          },
+        });
+
+        await tx.businessProductAuditLog.create({
+          data: {
+            businessId: business.id,
+            productType: BusinessProductType.CITAS,
+            action: BusinessProductAction.ACTIVATED,
+            performedBy: createdBy,
+            reason: 'Activación inicial al crear negocio',
+            metadata: {
+              citasMonthlyFee: citasFee,
+            },
+          },
+        });
+
+        membershipPaymentProducts.push({
+          businessProductSubscriptionId: citasSub.id,
+          amountAttributed: citasFee,
+          productType: BusinessProductType.CITAS,
+        });
+      }
+
+      // Asegurar que existan los 4 registros de suscripción para el negocio (INACTIVE si no se seleccionaron)
+      for (const prodType of [BusinessProductType.DELIVERY, BusinessProductType.POS, BusinessProductType.CARTERA_COBRO, BusinessProductType.CITAS]) {
+        const exists = await tx.businessProductSubscription.findUnique({
+          where: { businessId_productType: { businessId: business.id, productType: prodType } },
+        });
+        if (!exists) {
+          await tx.businessProductSubscription.create({
+            data: {
+              businessId: business.id,
+              productType: prodType,
+              status: BusinessProductStatus.INACTIVE,
+              posVertical: prodType === BusinessProductType.POS ? PosVertical.RESTAURANTE : null,
+            },
+          });
+        }
+      }
+
+      // 2. Registro automático de Membresía si hay al menos un producto de membresía
+      let membership = null;
+      if (membershipPaymentProducts.length > 0) {
+        const totalAmount = membershipPaymentProducts.reduce(
+          (acc, p) => acc + (p.amountAttributed || 0),
+          0,
+        );
+
+        const startDate = now;
+        const endDate = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+        membership = await tx.membership.create({
+          data: {
+            businessId: business.id,
+            startDate,
+            endDate,
+            amount: totalAmount,
+            currency: 'USD',
+            paymentMethod: PaymentMethod.OTRO,
+            paidAt: now,
+            notes: 'Alta inicial del negocio y activación de productos',
+            status: MembershipStatus.ACTIVE,
+            createdBy,
+            paymentProducts: {
+              create: membershipPaymentProducts.map((item) => ({
+                businessProductSubscriptionId: item.businessProductSubscriptionId,
+                amountAttributed:
+                  item.amountAttributed !== null
+                    ? new Prisma.Decimal(item.amountAttributed)
+                    : null,
+              })),
+            },
+          },
+          include: {
+            paymentProducts: {
+              include: {
+                businessProductSubscription: {
+                  select: { id: true, productType: true, status: true },
+                },
+              },
+            },
+          },
+        });
+
+        this.logger.log(
+          `[createBusiness] Membresía inicial creada id=${membership.id}, monto=$${totalAmount}, productos=${membershipPaymentProducts.length}`,
+        );
+      }
+
+      return { business, encargado, membership };
     });
 
     this.logger.log(
@@ -437,6 +721,7 @@ export class SuperAdminService {
         role: result.encargado.role,
         isActive: result.encargado.isActive,
       },
+      membership: result.membership ? this.formatMembershipWithProducts(result.membership) : null,
     };
   }
 
@@ -1137,46 +1422,96 @@ export class SuperAdminService {
       }
     }
 
-    const membership = await this.prisma.membership.create({
-      data: {
-        businessId: dto.businessId,
-        startDate: new Date(dto.startDate),
-        endDate: new Date(dto.endDate),
-        amount: dto.amount,
-        currency: dto.currency || 'USD',
-        paymentMethod: dto.paymentMethod || 'TRANSFERENCIA',
-        paidAt: dto.paidAt ? new Date(dto.paidAt) : new Date(),
-        notes: dto.notes,
-        status: dto.status || MembershipStatus.ACTIVE,
-        createdBy,
-        paymentProducts: productItems.length > 0
-          ? {
-              create: productItems.map((item) => ({
-                businessProductSubscriptionId: item.businessProductSubscriptionId,
-                amountAttributed:
-                  item.amountAttributed !== undefined && item.amountAttributed !== null
-                    ? new Prisma.Decimal(item.amountAttributed)
-                    : null,
-              })),
-            }
-          : undefined,
-      },
-      include: {
-        business: {
-          select: { id: true, name: true, logoUrl: true },
+    const result = await this.prisma.$transaction(async (tx) => {
+      const membership = await tx.membership.create({
+        data: {
+          businessId: dto.businessId,
+          startDate: new Date(dto.startDate),
+          endDate: new Date(dto.endDate),
+          amount: dto.amount,
+          currency: dto.currency || 'USD',
+          paymentMethod: dto.paymentMethod || 'TRANSFERENCIA',
+          paidAt: dto.paidAt ? new Date(dto.paidAt) : new Date(),
+          notes: dto.notes,
+          status: dto.status || MembershipStatus.ACTIVE,
+          createdBy,
+          paymentProducts: productItems.length > 0
+            ? {
+                create: productItems.map((item) => ({
+                  businessProductSubscriptionId: item.businessProductSubscriptionId,
+                  amountAttributed:
+                    item.amountAttributed !== undefined && item.amountAttributed !== null
+                      ? new Prisma.Decimal(item.amountAttributed)
+                      : null,
+                })),
+              }
+            : undefined,
         },
-        paymentProducts: {
-          include: {
-            businessProductSubscription: {
-              select: { id: true, productType: true, status: true },
+        include: {
+          business: {
+            select: { id: true, name: true, logoUrl: true },
+          },
+          paymentProducts: {
+            include: {
+              businessProductSubscription: {
+                select: { id: true, productType: true, status: true },
+              },
             },
           },
         },
-      },
+      });
+
+      // Si la membresía está ACTIVE y endDate >= now, activar cada suscripción de producto cubierta
+      const now = new Date();
+      if (membership.status === MembershipStatus.ACTIVE && membership.endDate >= now) {
+        for (const item of productItems) {
+          const sub = await tx.businessProductSubscription.findUnique({
+            where: { id: item.businessProductSubscriptionId },
+          });
+
+          if (sub) {
+            await tx.businessProductSubscription.update({
+              where: { id: sub.id },
+              data: {
+                status: BusinessProductStatus.ACTIVE,
+                activatedAt: now,
+                deactivatedAt: null,
+                deactivatedBy: null,
+              },
+            });
+
+            await tx.businessProductAuditLog.create({
+              data: {
+                businessId: dto.businessId,
+                productType: sub.productType,
+                action: BusinessProductAction.ACTIVATED,
+                performedBy: createdBy,
+                reason: 'Activación automática por registro de pago de membresía',
+                metadata: {
+                  membershipId: membership.id,
+                  amountAttributed: item.amountAttributed,
+                },
+              },
+            });
+
+            if (sub.productType === BusinessProductType.POS) {
+              await tx.business.update({ where: { id: dto.businessId }, data: { hasPOS: true } });
+            } else if (sub.productType === BusinessProductType.CARTERA_COBRO) {
+              await tx.business.update({ where: { id: dto.businessId }, data: { hasCarteraCobro: true } });
+            } else if (sub.productType === BusinessProductType.CITAS) {
+              await tx.business.update({ where: { id: dto.businessId }, data: { hasCitas: true } });
+            } else if (sub.productType === BusinessProductType.DELIVERY) {
+              await tx.business.update({ where: { id: dto.businessId }, data: { hasTrackDeli: true } });
+            }
+          }
+        }
+      }
+
+      return membership;
     });
 
-    this.logger.log(`[createMembership] OK membresía creada id=${membership.id} (productos: ${productItems.length})`);
-    return this.formatMembershipWithProducts(membership);
+    this.logger.log(`[createMembership] OK membresía creada id=${result.id} (productos: ${productItems.length})`);
+    return this.formatMembershipWithProducts(result);
   }
 
   async uploadPaymentProof(id: string, file: Express.Multer.File) {
@@ -1377,5 +1712,108 @@ export class SuperAdminService {
 
     return memberships.map((m) => this.formatMembershipWithProducts(m));
   }
-}
 
+  @Cron(CronExpression.EVERY_HOUR)
+  async handleExpiredMembershipsCron() {
+    await this.reconcileExpiredMemberships();
+  }
+
+  async reconcileExpiredMemberships(targetDate: Date = new Date()): Promise<{ expiredMembershipsCount: number; deactivatedProductsCount: number }> {
+    this.logger.log(`[reconcileExpiredMemberships] Verificando membresías vencidas a las ${targetDate.toISOString()}`);
+
+    const expiredMemberships = await this.prisma.membership.findMany({
+      where: {
+        status: MembershipStatus.ACTIVE,
+        endDate: { lt: targetDate },
+      },
+      include: {
+        paymentProducts: true,
+      },
+    });
+
+    if (expiredMemberships.length === 0) {
+      return { expiredMembershipsCount: 0, deactivatedProductsCount: 0 };
+    }
+
+    const expiredIds = expiredMemberships.map((m) => m.id);
+    await this.prisma.membership.updateMany({
+      where: { id: { in: expiredIds } },
+      data: { status: MembershipStatus.EXPIRED },
+    });
+
+    let deactivatedProductsCount = 0;
+    const affectedSubscriptionIds = new Set<string>();
+    for (const m of expiredMemberships) {
+      for (const p of m.paymentProducts) {
+        affectedSubscriptionIds.add(p.businessProductSubscriptionId);
+      }
+    }
+
+    for (const subId of affectedSubscriptionIds) {
+      const sub = await this.prisma.businessProductSubscription.findUnique({
+        where: { id: subId },
+        include: { business: { select: { id: true, businessType: true } } },
+      });
+
+      if (!sub || sub.status !== BusinessProductStatus.ACTIVE) continue;
+
+      if (sub.productType === BusinessProductType.DELIVERY && sub.business.businessType === BusinessType.EMPRESA_RIDERS) {
+        continue;
+      }
+
+      const hasOtherCoverage = await this.prisma.membershipPaymentProduct.findFirst({
+        where: {
+          businessProductSubscriptionId: subId,
+          membershipPayment: {
+            status: MembershipStatus.ACTIVE,
+            startDate: { lte: targetDate },
+            endDate: { gte: targetDate },
+          },
+        },
+      });
+
+      if (!hasOtherCoverage) {
+        await this.prisma.businessProductSubscription.update({
+          where: { id: subId },
+          data: {
+            status: BusinessProductStatus.INACTIVE,
+            deactivatedAt: targetDate,
+          },
+        });
+
+        await this.prisma.businessProductAuditLog.create({
+          data: {
+            businessId: sub.businessId,
+            productType: sub.productType,
+            action: BusinessProductAction.DEACTIVATED,
+            performedBy: 'system-auto-expiration',
+            reason: 'Expiración automática por membresía vencida',
+            metadata: {
+              expiredAt: targetDate,
+              subId,
+            },
+          },
+        });
+
+        if (sub.productType === BusinessProductType.POS) {
+          await this.prisma.business.update({ where: { id: sub.businessId }, data: { hasPOS: false } });
+        } else if (sub.productType === BusinessProductType.CARTERA_COBRO) {
+          await this.prisma.business.update({ where: { id: sub.businessId }, data: { hasCarteraCobro: false } });
+        } else if (sub.productType === BusinessProductType.CITAS) {
+          await this.prisma.business.update({ where: { id: sub.businessId }, data: { hasCitas: false } });
+        } else if (sub.productType === BusinessProductType.DELIVERY) {
+          await this.prisma.business.update({ where: { id: sub.businessId }, data: { hasTrackDeli: false } });
+        }
+
+        deactivatedProductsCount++;
+      }
+    }
+
+    this.logger.log(`[reconcileExpiredMemberships] Completado: ${expiredMemberships.length} membresías expiradas, ${deactivatedProductsCount} productos desactivados.`);
+    return {
+      expiredMembershipsCount: expiredMemberships.length,
+      deactivatedProductsCount,
+    };
+  }
+
+}

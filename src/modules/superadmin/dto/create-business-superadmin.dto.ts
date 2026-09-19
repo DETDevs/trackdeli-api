@@ -1,6 +1,6 @@
-import { IsEmail, IsEnum, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Min, MinLength, ValidateNested } from 'class-validator';
+import { IsBoolean, IsEmail, IsEnum, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Min, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { BusinessType } from '@prisma/client';
+import { BusinessType, PosVertical } from '@prisma/client';
 
 export class EncargadoDto {
   @IsString()
@@ -56,6 +56,46 @@ export class CreateBusinessSuperAdminDto {
   @IsInt()
   @Min(1)
   dispatchTimeoutMin?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  hasDelivery?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  deliveryMonthlyFee?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  hasPOS?: boolean;
+
+  @IsOptional()
+  @IsEnum(PosVertical)
+  posVertical?: PosVertical;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  posMonthlyFee?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  hasCarteraCobro?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  carteraMonthlyFee?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  hasCitas?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  citasMonthlyFee?: number;
 
   @IsObject()
   @IsOptional()

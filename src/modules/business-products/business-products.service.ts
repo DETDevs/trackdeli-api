@@ -9,9 +9,11 @@ import {
   BusinessProductAction,
   BusinessProductStatus,
   BusinessProductType,
+  BusinessType,
   CashStatus,
   CreditAccountStatus,
   DispatchStatus,
+  MembershipStatus,
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -25,6 +27,37 @@ export class BusinessProductsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  isMembershipProduct(productType: BusinessProductType, businessType?: BusinessType): boolean {
+    if (productType === BusinessProductType.DELIVERY) {
+      return businessType === BusinessType.NEGOCIO;
+    }
+    return true;
+  }
+
+  async hasActiveMembershipCoverage(
+    businessId: string,
+    productType: BusinessProductType,
+    now: Date = new Date(),
+  ): Promise<boolean> {
+    const coverage = await this.prisma.membershipPaymentProduct.findFirst({
+      where: {
+        membershipPayment: {
+          businessId,
+          status: MembershipStatus.ACTIVE,
+          startDate: { lte: now },
+          endDate: { gte: now },
+        },
+        businessProductSubscription: {
+          businessId,
+          productType,
+        },
+      },
+      select: { id: true },
+    });
+
+    return !!coverage;
+  }
+
   async isActive(businessId: string, productType: BusinessProductType): Promise<boolean> {
     if (!businessId) return false;
 
@@ -32,10 +65,24 @@ export class BusinessProductsService {
       where: {
         businessId_productType: { businessId, productType },
       },
-      select: { status: true },
+      select: {
+        status: true,
+        business: {
+          select: { businessType: true },
+        },
+      },
     });
 
-    return subscription?.status === BusinessProductStatus.ACTIVE;
+    if (subscription?.status !== BusinessProductStatus.ACTIVE) {
+      return false;
+    }
+
+    const isMembership = this.isMembershipProduct(productType, subscription.business?.businessType);
+    if (!isMembership) {
+      return true;
+    }
+
+    return this.hasActiveMembershipCoverage(businessId, productType);
   }
 
   async getProducts(businessId: string) {
@@ -63,6 +110,42 @@ export class BusinessProductsService {
       (s) => s.productType === BusinessProductType.CITAS,
     );
 
+    const now = new Date();
+    const activeCoverages = await this.prisma.membershipPaymentProduct.findMany({
+      where: {
+        membershipPayment: {
+          businessId,
+          status: MembershipStatus.ACTIVE,
+          startDate: { lte: now },
+          endDate: { gte: now },
+        },
+        businessProductSubscription: {
+          businessId,
+        },
+      },
+      select: {
+        businessProductSubscription: {
+          select: { productType: true },
+        },
+      },
+    });
+
+    const coveredProductTypes = new Set(
+      activeCoverages
+        .map((c) => c.businessProductSubscription?.productType)
+        .filter(Boolean),
+    );
+
+    const isDeliveryMembership = business.businessType === BusinessType.NEGOCIO;
+    const isDeliveryActive = deliverySub?.status === BusinessProductStatus.ACTIVE &&
+      (!isDeliveryMembership || coveredProductTypes.has(BusinessProductType.DELIVERY));
+    const isPosActive = posSub?.status === BusinessProductStatus.ACTIVE &&
+      coveredProductTypes.has(BusinessProductType.POS);
+    const isCarteraActive = carteraSub?.status === BusinessProductStatus.ACTIVE &&
+      coveredProductTypes.has(BusinessProductType.CARTERA_COBRO);
+    const isCitasActive = citasSub?.status === BusinessProductStatus.ACTIVE &&
+      coveredProductTypes.has(BusinessProductType.CITAS);
+
     return {
       businessId: business.id,
       businessName: business.name,
@@ -71,7 +154,7 @@ export class BusinessProductsService {
           ? {
               id: deliverySub.id,
               productType: deliverySub.productType,
-              status: deliverySub.status,
+              status: isDeliveryActive ? BusinessProductStatus.ACTIVE : BusinessProductStatus.INACTIVE,
               commissionRate: deliverySub.commissionRate
                 ? Number(deliverySub.commissionRate)
                 : business.commissionRate,
@@ -110,7 +193,7 @@ export class BusinessProductsService {
           ? {
               id: posSub.id,
               productType: posSub.productType,
-              status: posSub.status,
+              status: isPosActive ? BusinessProductStatus.ACTIVE : BusinessProductStatus.INACTIVE,
               posVertical: posSub.posVertical ?? business.posVertical,
               posMonthlyFee: posSub.posMonthlyFee ? Number(posSub.posMonthlyFee) : null,
               activatedAt: posSub.activatedAt,
@@ -136,7 +219,7 @@ export class BusinessProductsService {
           ? {
               id: carteraSub.id,
               productType: carteraSub.productType,
-              status: carteraSub.status,
+              status: isCarteraActive ? BusinessProductStatus.ACTIVE : BusinessProductStatus.INACTIVE,
               carteraMonthlyFee: carteraSub.carteraMonthlyFee
                 ? Number(carteraSub.carteraMonthlyFee)
                 : null,
@@ -162,7 +245,7 @@ export class BusinessProductsService {
           ? {
               id: citasSub.id,
               productType: citasSub.productType,
-              status: citasSub.status,
+              status: isCitasActive ? BusinessProductStatus.ACTIVE : BusinessProductStatus.INACTIVE,
               citasMonthlyFee: (citasSub as any).citasMonthlyFee
                 ? Number((citasSub as any).citasMonthlyFee)
                 : null,
@@ -227,6 +310,34 @@ export class BusinessProductsService {
             businessId_productType: { businessId, productType },
           },
         });
+
+        const isRiders = business.businessType === BusinessType.EMPRESA_RIDERS;
+        const isMembershipProduct = productType !== BusinessProductType.DELIVERY || !isRiders;
+
+        if (isMembershipProduct) {
+          const now = new Date();
+          const hasCoverage = await tx.membershipPaymentProduct.findFirst({
+            where: {
+              membershipPayment: {
+                businessId,
+                status: MembershipStatus.ACTIVE,
+                startDate: { lte: now },
+                endDate: { gte: now },
+              },
+              businessProductSubscription: {
+                businessId,
+                productType,
+              },
+            },
+            select: { id: true },
+          });
+
+          if (!hasCoverage) {
+            throw new BadRequestException(
+              `El producto ${productType} requiere un pago de membresía vigente para activarse. Por favor registre un nuevo pago en el módulo de Membresías.`,
+            );
+          }
+        }
 
         const isAlreadyActive = existingSub?.status === BusinessProductStatus.ACTIVE;
 
