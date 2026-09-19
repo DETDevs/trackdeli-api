@@ -27,6 +27,11 @@ export class ActivateProductDto {
   dispatchTimeoutMin?: number;
 
   @IsOptional()
+  @IsNumber()
+  @Min(0)
+  deliveryMonthlyFee?: number;
+
+  @IsOptional()
   @IsEnum(PosVertical)
   posVertical?: PosVertical;
 

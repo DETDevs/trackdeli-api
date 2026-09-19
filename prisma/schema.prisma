@@ -998,6 +998,7 @@ model BusinessProductSubscription {
   altCommissionRate       Decimal?               @db.Decimal(10, 4)
   altCommissionDistanceKm Decimal?               @db.Decimal(10, 2)
   dispatchTimeoutMin      Int?
+  deliveryMonthlyFee      Decimal?               @db.Decimal(10, 2)
   // POS:
   posVertical             PosVertical?
   posMonthlyFee           Decimal?               @db.Decimal(10, 2)

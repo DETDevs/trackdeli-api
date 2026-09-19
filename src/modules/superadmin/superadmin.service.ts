@@ -91,6 +91,7 @@ export class SuperAdminService {
             posMonthlyFee: true,
             carteraMonthlyFee: true,
             citasMonthlyFee: true,
+            deliveryMonthlyFee: true,
           },
         },
       },

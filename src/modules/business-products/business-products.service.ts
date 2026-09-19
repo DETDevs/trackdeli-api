@@ -83,6 +83,9 @@ export class BusinessProductsService {
                 : business.altCommissionDistanceKm,
               dispatchTimeoutMin:
                 deliverySub.dispatchTimeoutMin ?? business.dispatchTimeoutMin,
+              deliveryMonthlyFee: deliverySub.deliveryMonthlyFee
+                ? Number(deliverySub.deliveryMonthlyFee)
+                : null,
               activatedAt: deliverySub.activatedAt,
               activatedBy: deliverySub.activatedBy,
               deactivatedAt: deliverySub.deactivatedAt,
@@ -97,6 +100,7 @@ export class BusinessProductsService {
               altCommissionRate: business.altCommissionRate,
               altCommissionDistanceKm: business.altCommissionDistanceKm,
               dispatchTimeoutMin: business.dispatchTimeoutMin,
+              deliveryMonthlyFee: null,
               activatedAt: null,
               activatedBy: null,
               deactivatedAt: null,
@@ -247,6 +251,10 @@ export class BusinessProductsService {
                   dto.dispatchTimeoutMin !== undefined
                     ? dto.dispatchTimeoutMin
                     : (existingSub?.dispatchTimeoutMin ?? business.dispatchTimeoutMin),
+                deliveryMonthlyFee:
+                  dto.deliveryMonthlyFee !== undefined
+                    ? (dto.deliveryMonthlyFee !== null ? new Prisma.Decimal(dto.deliveryMonthlyFee) : null)
+                    : (existingSub?.deliveryMonthlyFee ?? null),
               }
             : {};
 
@@ -311,6 +319,9 @@ export class BusinessProductsService {
                 previousConfig: {
                   commissionRate: existingSub.commissionRate
                     ? Number(existingSub.commissionRate)
+                    : null,
+                  deliveryMonthlyFee: existingSub.deliveryMonthlyFee
+                    ? Number(existingSub.deliveryMonthlyFee)
                     : null,
                   posVertical: existingSub.posVertical,
                   posMonthlyFee: existingSub.posMonthlyFee

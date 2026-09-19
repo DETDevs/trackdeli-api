@@ -5,6 +5,8 @@ import {
   BusinessProductStatus,
   BusinessProductAction,
   PosVertical,
+  BusinessType,
+  Prisma,
 } from '@prisma/client';
 
 @Injectable()
@@ -412,6 +414,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "dispatchTimeoutMin" INTEGER,
             "posVertical" "PosVertical",
             "posMonthlyFee" DECIMAL(10, 2),
+            "deliveryMonthlyFee" DECIMAL(10, 2),
             "activatedAt" TIMESTAMP(3),
             "activatedBy" TEXT,
             "deactivatedAt" TIMESTAMP(3),
@@ -669,6 +672,21 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "citasMonthlyFee" DECIMAL(10, 2);`,
         },
         {
+          name: 'Columna business_product_subscriptions.deliveryMonthlyFee',
+          sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "deliveryMonthlyFee" DECIMAL(10, 2);`,
+        },
+        {
+          name: 'Backfill deliveryMonthlyFee para negocios Comercio Común con Delivery activo',
+          sql: `UPDATE "business_product_subscriptions" bps
+                SET "deliveryMonthlyFee" = 35.00
+                FROM "businesses" b
+                WHERE bps."businessId" = b."id"
+                  AND bps."productType" = 'DELIVERY'
+                  AND bps."status" = 'ACTIVE'
+                  AND b."businessType" = 'NEGOCIO'
+                  AND bps."deliveryMonthlyFee" IS NULL;`,
+        },
+        {
           name: 'Columna customers.isBlocked',
           sql: `ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "isBlocked" BOOLEAN NOT NULL DEFAULT false;`,
         },
@@ -826,6 +844,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
               altCommissionRate: b.altCommissionRate,
               altCommissionDistanceKm: b.altCommissionDistanceKm,
               dispatchTimeoutMin: b.dispatchTimeoutMin,
+              deliveryMonthlyFee: b.businessType === BusinessType.NEGOCIO ? new Prisma.Decimal(35.00) : null,
               activatedAt: b.createdAt,
               activatedBy: 'system-migration',
             },
