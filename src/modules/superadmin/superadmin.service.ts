@@ -90,6 +90,7 @@ export class SuperAdminService {
             posVertical: true,
             posMonthlyFee: true,
             carteraMonthlyFee: true,
+            citasMonthlyFee: true,
           },
         },
       },
@@ -174,8 +175,9 @@ export class SuperAdminService {
         },
         productSubscriptions: b.productSubscriptions,
         hasPOS: b.hasPOS,
-        hasTrackDeli: b.hasTrackDeli,
+        hasTrackDeli: hasDeliveryContracted,
         hasCarteraCobro: b.hasCarteraCobro,
+        hasCitas: b.hasCitas,
       };
     });
   }
