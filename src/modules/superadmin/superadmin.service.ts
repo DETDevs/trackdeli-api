@@ -93,6 +93,8 @@ export class SuperAdminService {
             carteraMonthlyFee: true,
             citasMonthlyFee: true,
             deliveryMonthlyFee: true,
+            autoRenew: true,
+            renewalCanceledAt: true,
           },
         },
       },
@@ -1477,6 +1479,8 @@ export class SuperAdminService {
                 activatedAt: now,
                 deactivatedAt: null,
                 deactivatedBy: null,
+                autoRenew: true,
+                renewalCanceledAt: null,
               },
             });
 

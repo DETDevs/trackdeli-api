@@ -415,6 +415,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "posVertical" "PosVertical",
             "posMonthlyFee" DECIMAL(10, 2),
             "deliveryMonthlyFee" DECIMAL(10, 2),
+            "autoRenew" BOOLEAN NOT NULL DEFAULT true,
+            "renewalCanceledAt" TIMESTAMP(3),
             "activatedAt" TIMESTAMP(3),
             "activatedBy" TEXT,
             "deactivatedAt" TIMESTAMP(3),
@@ -674,6 +676,18 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
         {
           name: 'Columna business_product_subscriptions.deliveryMonthlyFee',
           sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "deliveryMonthlyFee" DECIMAL(10, 2);`,
+        },
+        {
+          name: 'Enum BusinessProductAction: RENEWAL_CANCELED',
+          sql: `ALTER TYPE "BusinessProductAction" ADD VALUE IF NOT EXISTS 'RENEWAL_CANCELED';`,
+        },
+        {
+          name: 'Columna business_product_subscriptions.autoRenew',
+          sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "autoRenew" BOOLEAN NOT NULL DEFAULT true;`,
+        },
+        {
+          name: 'Columna business_product_subscriptions.renewalCanceledAt',
+          sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "renewalCanceledAt" TIMESTAMP(3);`,
         },
         {
           name: 'Backfill deliveryMonthlyFee para negocios Comercio Común con Delivery activo',

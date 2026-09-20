@@ -20,6 +20,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { ACTIVE_ORDER_STATUSES } from '../../common/constants/orders.constants';
 import { ActivateProductDto } from './dto/activate-product.dto';
 import { DeactivateProductDto } from './dto/deactivate-product.dto';
+import { CancelRenewalDto } from './dto/cancel-renewal.dto';
+import { DeactivateNowProductDto } from './dto/deactivate-now-product.dto';
 
 @Injectable()
 export class BusinessProductsService {
@@ -169,6 +171,8 @@ export class BusinessProductsService {
               deliveryMonthlyFee: deliverySub.deliveryMonthlyFee
                 ? Number(deliverySub.deliveryMonthlyFee)
                 : null,
+              autoRenew: deliverySub.autoRenew ?? true,
+              renewalCanceledAt: deliverySub.renewalCanceledAt ?? null,
               activatedAt: deliverySub.activatedAt,
               activatedBy: deliverySub.activatedBy,
               deactivatedAt: deliverySub.deactivatedAt,
@@ -184,6 +188,8 @@ export class BusinessProductsService {
               altCommissionDistanceKm: business.altCommissionDistanceKm,
               dispatchTimeoutMin: business.dispatchTimeoutMin,
               deliveryMonthlyFee: null,
+              autoRenew: true,
+              renewalCanceledAt: null,
               activatedAt: null,
               activatedBy: null,
               deactivatedAt: null,
@@ -196,6 +202,8 @@ export class BusinessProductsService {
               status: isPosActive ? BusinessProductStatus.ACTIVE : BusinessProductStatus.INACTIVE,
               posVertical: posSub.posVertical ?? business.posVertical,
               posMonthlyFee: posSub.posMonthlyFee ? Number(posSub.posMonthlyFee) : null,
+              autoRenew: posSub.autoRenew ?? true,
+              renewalCanceledAt: posSub.renewalCanceledAt ?? null,
               activatedAt: posSub.activatedAt,
               activatedBy: posSub.activatedBy,
               deactivatedAt: posSub.deactivatedAt,
@@ -210,6 +218,8 @@ export class BusinessProductsService {
                 : BusinessProductStatus.INACTIVE,
               posVertical: business.posVertical,
               posMonthlyFee: null,
+              autoRenew: true,
+              renewalCanceledAt: null,
               activatedAt: null,
               activatedBy: null,
               deactivatedAt: null,
@@ -223,6 +233,8 @@ export class BusinessProductsService {
               carteraMonthlyFee: carteraSub.carteraMonthlyFee
                 ? Number(carteraSub.carteraMonthlyFee)
                 : null,
+              autoRenew: carteraSub.autoRenew ?? true,
+              renewalCanceledAt: carteraSub.renewalCanceledAt ?? null,
               activatedAt: carteraSub.activatedAt,
               activatedBy: carteraSub.activatedBy,
               deactivatedAt: carteraSub.deactivatedAt,
@@ -236,6 +248,8 @@ export class BusinessProductsService {
                 ? BusinessProductStatus.ACTIVE
                 : BusinessProductStatus.INACTIVE,
               carteraMonthlyFee: null,
+              autoRenew: true,
+              renewalCanceledAt: null,
               activatedAt: null,
               activatedBy: null,
               deactivatedAt: null,
@@ -249,6 +263,8 @@ export class BusinessProductsService {
               citasMonthlyFee: (citasSub as any).citasMonthlyFee
                 ? Number((citasSub as any).citasMonthlyFee)
                 : null,
+              autoRenew: (citasSub as any).autoRenew ?? true,
+              renewalCanceledAt: (citasSub as any).renewalCanceledAt ?? null,
               activatedAt: citasSub.activatedAt,
               activatedBy: citasSub.activatedBy,
               deactivatedAt: citasSub.deactivatedAt,
@@ -262,6 +278,8 @@ export class BusinessProductsService {
                 ? BusinessProductStatus.ACTIVE
                 : BusinessProductStatus.INACTIVE,
               citasMonthlyFee: null,
+              autoRenew: true,
+              renewalCanceledAt: null,
               activatedAt: null,
               activatedBy: null,
               deactivatedAt: null,
@@ -525,6 +543,144 @@ export class BusinessProductsService {
         };
       },
     );
+  }
+
+
+  async cancelRenewal(
+    businessId: string,
+    productType: BusinessProductType,
+    dto: CancelRenewalDto,
+    superAdminId: string,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true, businessType: true },
+    });
+
+    if (!business) {
+      throw new NotFoundException(`Negocio con ID "${businessId}" no encontrado`);
+    }
+
+    if (!this.isMembershipProduct(productType, business.businessType)) {
+      throw new BadRequestException(
+        `La cancelación de renovación solo aplica a productos de membresía. ${productType} no requiere renovación periódica.`,
+      );
+    }
+
+    const sub = await this.prisma.businessProductSubscription.findUnique({
+      where: { businessId_productType: { businessId, productType } },
+    });
+
+    const now = new Date();
+    const hasCoverage = await this.hasActiveMembershipCoverage(businessId, productType, now);
+
+    if (!sub || sub.status !== BusinessProductStatus.ACTIVE || !hasCoverage) {
+      throw new BadRequestException(
+        `El producto ${productType} no se encuentra actualmente activo con membresía vigente para cancelar su renovación.`,
+      );
+    }
+
+    const updatedSub = await this.prisma.businessProductSubscription.update({
+      where: { id: sub.id },
+      data: {
+        autoRenew: false,
+        renewalCanceledAt: now,
+      },
+    });
+
+    await this.prisma.businessProductAuditLog.create({
+      data: {
+        businessId,
+        productType,
+        action: BusinessProductAction.RENEWAL_CANCELED,
+        performedBy: superAdminId,
+        reason: dto.reason || 'Cancelación de renovación programada al término del período actual',
+        metadata: {
+          autoRenew: false,
+          renewalCanceledAt: now,
+        },
+      },
+    });
+
+    this.logger.log(
+      `[BusinessProductsService] [cancelRenewal] OK businessId=${businessId} productType=${productType} by=${superAdminId}`,
+    );
+
+    return {
+      status: 'ACTIVE',
+      autoRenew: false,
+      renewalCanceledAt: now,
+      message: `Renovación cancelada para ${productType}. El producto permanecerá activo hasta el fin del período actual.`,
+      subscription: updatedSub,
+    };
+  }
+
+  async deactivateNow(
+    businessId: string,
+    productType: BusinessProductType,
+    dto: DeactivateNowProductDto,
+    superAdminId: string,
+  ) {
+    if (!dto.reason || !dto.reason.trim()) {
+      throw new BadRequestException('El motivo de la desactivación inmediata es obligatorio.');
+    }
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+    });
+
+    if (!business) {
+      throw new NotFoundException(`Negocio con ID "${businessId}" no encontrado`);
+    }
+
+    const sub = await this.prisma.businessProductSubscription.findUnique({
+      where: { businessId_productType: { businessId, productType } },
+    });
+
+    if (!sub || sub.status !== BusinessProductStatus.ACTIVE) {
+      throw new BadRequestException(`El producto ${productType} ya se encuentra inactivo.`);
+    }
+
+    const now = new Date();
+    const deactivatedSub = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.businessProductSubscription.update({
+        where: { id: sub.id },
+        data: {
+          status: BusinessProductStatus.INACTIVE,
+          deactivatedAt: now,
+          deactivatedBy: superAdminId,
+          autoRenew: false,
+        },
+      });
+
+      await tx.businessProductAuditLog.create({
+        data: {
+          businessId,
+          productType,
+          action: BusinessProductAction.DEACTIVATED,
+          performedBy: superAdminId,
+          reason: dto.reason.trim(),
+          metadata: {
+            immediateCut: true,
+            deactivatedAt: now,
+          },
+        },
+      });
+
+      await this.syncLegacyBusinessFields(tx, businessId, productType, false);
+
+      return updated;
+    });
+
+    this.logger.warn(
+      `[BusinessProductsService] [deactivateNow] CORTE INMEDIATO businessId=${businessId} productType=${productType} by=${superAdminId} reason="${dto.reason}"`,
+    );
+
+    return {
+      status: 'INACTIVE',
+      message: `Producto ${productType} desactivado de forma inmediata.`,
+      subscription: deactivatedSub,
+    };
   }
 
   async deactivateProduct(

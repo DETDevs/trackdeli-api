@@ -18,6 +18,8 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { BusinessProductsService } from './business-products.service';
 import { ActivateProductDto } from './dto/activate-product.dto';
 import { DeactivateProductDto } from './dto/deactivate-product.dto';
+import { CancelRenewalDto } from './dto/cancel-renewal.dto';
+import { DeactivateNowProductDto } from './dto/deactivate-now-product.dto';
 
 @Controller('businesses/:id/products')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -54,6 +56,30 @@ export class BusinessProductsController {
     const productType = productTypeStr.toUpperCase() as BusinessProductType;
     const force = forceQuery === 'true';
     return this.service.deactivateProduct(businessId, productType, dto, force, user.sub);
+  }
+
+  @Post(':productType/cancel-renewal')
+  @HttpCode(HttpStatus.OK)
+  cancelRenewal(
+    @Param('id') businessId: string,
+    @Param('productType') productTypeStr: string,
+    @Body() dto: CancelRenewalDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const productType = productTypeStr.toUpperCase() as BusinessProductType;
+    return this.service.cancelRenewal(businessId, productType, dto, user.sub);
+  }
+
+  @Post(':productType/deactivate-now')
+  @HttpCode(HttpStatus.OK)
+  deactivateNow(
+    @Param('id') businessId: string,
+    @Param('productType') productTypeStr: string,
+    @Body() dto: DeactivateNowProductDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const productType = productTypeStr.toUpperCase() as BusinessProductType;
+    return this.service.deactivateNow(businessId, productType, dto, user.sub);
   }
 
   @Get(':productType/audit-log')

@@ -184,6 +184,7 @@ enum BusinessProductAction {
   DEACTIVATION_BLOCKED
   DEACTIVATION_FORCED
   CONFIG_UPDATED
+  RENEWAL_CANCELED
 }
 
 model Business {
@@ -1011,6 +1012,9 @@ model BusinessProductSubscription {
   activatedBy             String?                // userId del SuperAdmin que activó
   deactivatedAt           DateTime?
   deactivatedBy           String?
+
+  autoRenew               Boolean                @default(true)
+  renewalCanceledAt       DateTime?
 
   createdAt               DateTime               @default(now())
   updatedAt               DateTime               @updatedAt
