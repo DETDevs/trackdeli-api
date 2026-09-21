@@ -50,12 +50,13 @@ export class BookingEmailService {
       scheduledAt,
       durationMinutes,
       price,
-      currency = 'USD',
+      currency = 'NIO',
       address,
       manageToken,
       status,
     } = data;
 
+    const currencySymbol = currency === 'USD' || currency === '$' ? '$' : 'C$';
     const manageUrl = `${this.appUrl.replace(/\/$/, '')}/manage/${manageToken}`;
     const dateFormatted = new Intl.DateTimeFormat('es-NI', {
       timeZone: 'America/Managua',
@@ -108,7 +109,7 @@ export class BookingEmailService {
           </tr>
           <tr>
             <td style="padding: 8px 0; color: #6b7280;">Precio:</td>
-            <td style="padding: 8px 0; font-weight: 700; text-align: right; color: #059669; font-size: 16px;">$${Number(price).toFixed(2)}</td>
+            <td style="padding: 8px 0; font-weight: 700; text-align: right; color: #059669; font-size: 16px;">${currencySymbol}${Number(price).toFixed(2)}</td>
           </tr>
           ${
             address
