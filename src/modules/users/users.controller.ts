@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UsersService } from './users.service';
 import { Public } from '../../common/decorators/public.decorator';
@@ -18,6 +19,7 @@ export class UsersController {
 
   @Post('me/join-business')
   @Roles(UserRole.REPARTIDOR)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   joinBusiness(
     @CurrentUser() user: JwtPayload,
     @Body() dto: JoinBusinessDto,
@@ -78,6 +80,7 @@ export class UsersController {
 
   @Post()
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   create(@Body() dto: CreateUserDto, @CurrentUser() user: JwtPayload) {
     return this.service.create(dto, user.businessId);
   }

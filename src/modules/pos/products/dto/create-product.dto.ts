@@ -1,11 +1,14 @@
 import { IsString, MinLength, IsOptional, IsNumber, Min, IsBoolean, IsInt, IsNotEmpty } from 'class-validator';
+import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
 
 export class CreateProductDto {
+  @SanitizeText()
   @IsString()
   @MinLength(2)
   name: string;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   description?: string;
 

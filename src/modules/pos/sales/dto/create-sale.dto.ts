@@ -3,6 +3,7 @@ import {
 } from "class-validator";
 import { Type } from "class-transformer";
 import { PosPaymentMethod } from "@prisma/client";
+import { SanitizeText } from "../../../../common/decorators/sanitize-text.decorator";
 
 export class CreateSaleItemDto {
   @IsOptional()
@@ -52,6 +53,7 @@ export class CreateSaleDto {
   creditDueDate?: string;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   customerName?: string;
 
@@ -83,6 +85,7 @@ export class CreateSaleDto {
   reference?: string;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   notes?: string;
 }

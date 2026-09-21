@@ -11,6 +11,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { MembershipStatus, PaymentMethod } from '@prisma/client';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class CreateMembershipDto {
   @IsString()
@@ -41,8 +42,9 @@ export class CreateMembershipDto {
   @IsOptional()
   paidAt?: string;
 
-  @IsString()
   @IsOptional()
+  @SanitizeText()
+  @IsString()
   notes?: string;
 
   @IsEnum(MembershipStatus)

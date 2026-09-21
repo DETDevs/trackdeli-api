@@ -9,6 +9,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CustomersService } from './customers.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -137,6 +138,7 @@ export class CustomersController {
 
   @Patch('customers/:id/location')
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async updateLocation(
     @Param('id') customerId: string,
     @Body() dto: UpdateCustomerLocationDto,

@@ -1,7 +1,9 @@
-﻿import { IsString, IsOptional, IsEmail, IsBoolean } from 'class-validator';
+import { IsString, IsOptional, IsEmail, IsBoolean } from 'class-validator';
+import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
 
 export class UpdateSupplierDto {
   @IsOptional()
+  @SanitizeText()
   @IsString()
   name?: string;
 
@@ -14,10 +16,12 @@ export class UpdateSupplierDto {
   email?: string;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   address?: string;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   notes?: string;
 

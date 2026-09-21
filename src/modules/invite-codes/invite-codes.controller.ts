@@ -7,6 +7,7 @@ import {
   Post,
   Put,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { InviteCodesService } from './invite-codes.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -21,6 +22,7 @@ export class InviteCodesController {
 
   @Get('validate/:code')
   @Public()
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
   validateCode(@Param('code') code: string) {
     return this.service.validateCode(code);
   }

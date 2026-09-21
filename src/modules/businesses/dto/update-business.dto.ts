@@ -1,14 +1,17 @@
 import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber, IsEnum, Matches } from 'class-validator';
 import { BusinessType, PosVertical, PricingModel } from '@prisma/client';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class UpdateBusinessDto {
-  @IsString()
   @IsOptional()
+  @SanitizeText()
+  @IsString()
   @MaxLength(100)
   name?: string;
 
-  @IsString()
   @IsOptional()
+  @SanitizeText()
+  @IsString()
   @MaxLength(50)
   type?: string;
 

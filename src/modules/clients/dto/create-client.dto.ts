@@ -1,6 +1,8 @@
 import { IsNotEmpty, IsNumber, IsOptional, IsString, MaxLength } from 'class-validator';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class CreateClientDto {
+  @SanitizeText()
   @IsString()
   @IsNotEmpty()
   @MaxLength(150)
@@ -12,6 +14,7 @@ export class CreateClientDto {
   phone?: string;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   @MaxLength(300)
   address?: string;

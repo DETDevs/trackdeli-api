@@ -1,7 +1,9 @@
 import { IsBoolean, IsNumber, IsOptional, IsString, MaxLength } from 'class-validator';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class UpdateClientDto {
   @IsOptional()
+  @SanitizeText()
   @IsString()
   @MaxLength(150)
   name?: string;
@@ -12,6 +14,7 @@ export class UpdateClientDto {
   phone?: string;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   @MaxLength(300)
   address?: string;

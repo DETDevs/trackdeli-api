@@ -1,5 +1,6 @@
 import { IsNumber, Min, IsOptional, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
+import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
 
 export class CloseCashRegisterDto {
   @IsOptional()
@@ -21,6 +22,7 @@ export class CloseCashRegisterDto {
   amount?: number;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   notes?: string;
 }

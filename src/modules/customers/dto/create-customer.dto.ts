@@ -1,11 +1,13 @@
 import { IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class CreateCustomerDto {
   @IsOptional()
   @IsString({ message: 'businessId debe ser una cadena de texto' })
   businessId?: string;
 
+  @SanitizeText()
   @IsNotEmpty({ message: 'El nombre del cliente es obligatorio' })
   @IsString({ message: 'El nombre debe ser una cadena de texto' })
   name: string;
@@ -25,6 +27,7 @@ export class CreateCustomerDto {
   creditLimit?: number;
 
   @IsOptional()
+  @SanitizeText()
   @IsString({ message: 'La dirección debe ser una cadena de texto' })
   address?: string;
 }

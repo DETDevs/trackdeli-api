@@ -1,4 +1,5 @@
 import { IsEmail, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class CreateAppointmentDto {
   @IsNotEmpty({ message: 'El serviceId es obligatorio' })
@@ -9,6 +10,7 @@ export class CreateAppointmentDto {
   @IsString()
   scheduledAt: string;
 
+  @SanitizeText()
   @IsNotEmpty({ message: 'El nombre del cliente es obligatorio' })
   @IsString()
   customerName: string;

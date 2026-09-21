@@ -1,8 +1,10 @@
 import { IsBoolean, IsEnum, IsOptional, IsString } from 'class-validator';
 import { VehicleType } from '@prisma/client';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class UpdateRiderProfileDto {
   @IsOptional()
+  @SanitizeText()
   @IsString()
   name?: string;
   

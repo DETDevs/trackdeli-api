@@ -8,14 +8,17 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class CreateBookingServiceDto {
+  @SanitizeText()
   @IsNotEmpty({ message: 'El nombre del servicio es obligatorio' })
   @IsString()
   @MaxLength(100)
   name: string;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   @MaxLength(500)
   description?: string;
@@ -37,11 +40,13 @@ export class CreateBookingServiceDto {
 
 export class UpdateBookingServiceDto {
   @IsOptional()
+  @SanitizeText()
   @IsString()
   @MaxLength(100)
   name?: string;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   @MaxLength(500)
   description?: string;

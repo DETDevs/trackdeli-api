@@ -1,6 +1,7 @@
 import { IsEnum, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PosPaymentMethod } from '@prisma/client';
+import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
 
 export class RegisterCreditPaymentDto {
   @Type(() => Number)
@@ -12,6 +13,7 @@ export class RegisterCreditPaymentDto {
   paymentMethod: PosPaymentMethod;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   notes?: string;
 }

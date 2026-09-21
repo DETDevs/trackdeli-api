@@ -23,6 +23,7 @@ import { InviteCodesModule } from './modules/invite-codes/invite-codes.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { BusinessProductsModule } from './modules/business-products/business-products.module';
 import { BookingModule } from './modules/booking/booking.module';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MembershipGuard } from './common/guards/membership.guard';
@@ -35,6 +36,13 @@ import { MembershipGuard } from './common/guards/membership.guard';
       validationSchema: envValidationSchema,
     }),
     ScheduleModule.forRoot(),
+    ThrottlerModule.forRoot([
+      {
+        name: 'default',
+        ttl: 60000,
+        limit: 100,
+      },
+    ]),
     PrismaModule,
     AuthModule,
     UsersModule,
@@ -56,6 +64,10 @@ import { MembershipGuard } from './common/guards/membership.guard';
     BookingModule,
   ],
   providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,

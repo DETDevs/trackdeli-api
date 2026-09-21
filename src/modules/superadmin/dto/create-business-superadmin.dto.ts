@@ -1,8 +1,10 @@
 import { IsBoolean, IsEmail, IsEnum, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Min, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { BusinessType, PosVertical } from '@prisma/client';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class EncargadoDto {
+  @SanitizeText()
   @IsString()
   @IsNotEmpty()
   name: string;
@@ -17,12 +19,14 @@ export class EncargadoDto {
 }
 
 export class CreateBusinessSuperAdminDto {
+  @SanitizeText()
   @IsString()
   @IsNotEmpty()
   name: string;
 
-  @IsString()
   @IsOptional()
+  @SanitizeText()
+  @IsString()
   type?: string;
 
   @IsString()

@@ -1,6 +1,8 @@
 import { IsEmail, IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class CreateUserDto {
+  @SanitizeText()
   @IsString()
   @IsNotEmpty()
   @MaxLength(100)

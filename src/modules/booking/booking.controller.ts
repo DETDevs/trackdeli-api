@@ -11,6 +11,7 @@ import { Public } from '../../common/decorators/public.decorator';
 import { SkipMembershipCheck } from '../../common/decorators/skip-membership.decorator';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
+import { Throttle } from '@nestjs/throttler';
 
 @Public()
 @SkipMembershipCheck()
@@ -54,6 +55,7 @@ export class BookingController {
    * POST /booking/:businessId/appointments
    */
   @Post(':businessId/appointments')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async createAppointment(
     @Param('businessId') businessId: string,
     @Body() dto: CreateAppointmentDto,
@@ -75,6 +77,7 @@ export class BookingController {
    * POST /booking/manage/:token/cancel
    */
   @Post('manage/:token/cancel')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async cancelAppointmentByToken(@Param('token') token: string) {
     return this.bookingService.cancelAppointmentByToken(token);
   }
@@ -84,6 +87,7 @@ export class BookingController {
    * POST /booking/manage/:token/reschedule
    */
   @Post('manage/:token/reschedule')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async rescheduleAppointmentByToken(
     @Param('token') token: string,
     @Body() dto: RescheduleAppointmentDto,

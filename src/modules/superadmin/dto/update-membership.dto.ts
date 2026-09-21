@@ -7,6 +7,7 @@ import {
   Min,
 } from 'class-validator';
 import { MembershipStatus, PaymentMethod } from '@prisma/client';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class UpdateMembershipDto {
   @IsDateString()
@@ -34,8 +35,9 @@ export class UpdateMembershipDto {
   @IsOptional()
   paidAt?: string;
 
-  @IsString()
   @IsOptional()
+  @SanitizeText()
+  @IsString()
   notes?: string;
 
   @IsEnum(MembershipStatus)

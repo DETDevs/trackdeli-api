@@ -1,5 +1,6 @@
 import { IsEnum, IsNumber, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import { PosPaymentMethod } from '@prisma/client';
+import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
 
 export class CheckoutTableOrderDto {
   @IsOptional()
@@ -17,6 +18,7 @@ export class CheckoutTableOrderDto {
   discountAmount?: number;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   @MaxLength(100)
   customerName?: string;
@@ -36,6 +38,7 @@ export class CheckoutTableOrderDto {
   cashRegisterId?: string;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   notes?: string;
 }

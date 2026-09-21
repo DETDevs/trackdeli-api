@@ -1,4 +1,5 @@
 import { IsBoolean, IsNumber, IsOptional, IsString } from 'class-validator';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class UpdateCustomerLocationDto {
   @IsOptional()
@@ -14,6 +15,7 @@ export class UpdateCustomerLocationDto {
   longitude?: number;
 
   @IsOptional()
+  @SanitizeText()
   @IsString()
   addressText?: string;
 

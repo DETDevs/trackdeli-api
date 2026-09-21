@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterRiderDto } from './dto/register-rider.dto';
@@ -21,18 +22,21 @@ export class AuthController {
 
   @Post('login')
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async login(@Body() dto: LoginDto): Promise<TokenResponseDto> {
     return this.authService.login(dto);
   }
 
   @Post('social-login')
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async socialLogin(@Body() dto: SocialLoginDto): Promise<TokenResponseDto> {
     return this.authService.socialLogin(dto);
   }
 
   @Post('register/rider')
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async registerRider(@Body() dto: RegisterRiderDto): Promise<TokenResponseDto> {
     return this.authService.registerRider(dto);
   }

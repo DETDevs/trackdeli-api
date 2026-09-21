@@ -12,6 +12,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { SuperAdminService } from './superadmin.service';
 import { SuperAdminGuard } from '../../common/guards/superadmin.guard';
 import { CreateBusinessSuperAdminDto } from './dto/create-business-superadmin.dto';
@@ -71,6 +72,7 @@ export class SuperAdminController {
   }
 
   @Post('businesses')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async createBusiness(
     @Body() dto: CreateBusinessSuperAdminDto,
     @CurrentUser() user?: JwtPayload,

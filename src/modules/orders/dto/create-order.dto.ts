@@ -1,7 +1,9 @@
 import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import { DeliveryPaymentStatus } from '@prisma/client';
+import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class CreateOrderDto {
+  @SanitizeText()
   @IsString()
   @IsNotEmpty()
   @MaxLength(100)
@@ -12,8 +14,9 @@ export class CreateOrderDto {
   @MaxLength(20)
   customerPhone: string;
 
-  @IsString()
   @IsOptional()
+  @SanitizeText()
+  @IsString()
   @MaxLength(300)
   destinationAddress?: string;
 
@@ -25,8 +28,9 @@ export class CreateOrderDto {
   @IsNotEmpty()
   destinationLng: number;
 
-  @IsString()
   @IsOptional()
+  @SanitizeText()
+  @IsString()
   description?: string;
 
   @IsEnum(DeliveryPaymentStatus)
@@ -37,8 +41,9 @@ export class CreateOrderDto {
   @Min(0)
   deliveryFee?: number;
 
-  @IsString()
   @IsOptional()
+  @SanitizeText()
+  @IsString()
   @MaxLength(150)
   originBusinessName?: string;
 
