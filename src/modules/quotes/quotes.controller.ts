@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Put,
+  UseGuards,
 } from '@nestjs/common';
 import { QuotesService } from './quotes.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
@@ -18,8 +19,10 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { UserRole } from '@prisma/client';
+import { DeliveryGuard } from '../../common/guards/delivery.guard';
 
 @Controller('quotes')
+@UseGuards(DeliveryGuard)
 export class QuotesController {
   constructor(private readonly quotesService: QuotesService) {}
 

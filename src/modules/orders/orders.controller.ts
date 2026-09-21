@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -8,8 +8,10 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { UpdateQuoteFeeDto } from '../quotes/dto/update-quote-fee.dto';
+import { DeliveryGuard } from '../../common/guards/delivery.guard';
 
 @Controller('orders')
+@UseGuards(DeliveryGuard)
 export class OrdersController {
   constructor(private readonly service: OrdersService) {}
 

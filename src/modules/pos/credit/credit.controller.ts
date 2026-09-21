@@ -8,7 +8,6 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
-import { PosGuard } from '../../../common/guards/pos.guard';
 import { CarteraCobroGuard } from '../../../common/guards/cartera-cobro.guard';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -18,7 +17,7 @@ import { CreditService } from './credit.service';
 import { RegisterCreditPaymentDto } from './dto/register-payment.dto';
 
 @SkipMembershipCheck()
-@UseGuards(JwtAuthGuard, PosGuard, CarteraCobroGuard)
+@UseGuards(JwtAuthGuard, CarteraCobroGuard)
 @Controller()
 export class CreditController {
   constructor(private readonly service: CreditService) {}

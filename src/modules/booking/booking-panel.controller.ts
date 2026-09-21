@@ -9,11 +9,14 @@ import {
   Post,
   Put,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { BookingService } from './booking.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { SkipMembershipCheck } from '../../common/decorators/skip-membership.decorator';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CitasGuard } from '../../common/guards/citas.guard';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { AppointmentStatus, UserRole } from '@prisma/client';
 import {
@@ -25,6 +28,7 @@ import { UpdateBookingSettingsDto } from './dto/update-booking-settings.dto';
 import { DeclineAppointmentDto } from './dto/decline-appointment.dto';
 
 @SkipMembershipCheck()
+@UseGuards(JwtAuthGuard, CitasGuard)
 @Controller()
 export class BookingPanelController {
   constructor(private readonly bookingService: BookingService) {}
