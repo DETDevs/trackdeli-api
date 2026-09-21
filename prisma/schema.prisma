@@ -274,6 +274,7 @@ model Business {
   availabilitySchedules AvailabilitySchedule[]
   bookingSettings       BusinessBookingSettings?
   appointments          Appointment[]
+  specialists           Specialist[]
 
   @@map("businesses")
 }
@@ -1132,8 +1133,11 @@ model BookingService {
 
   appointments       Appointment[]
   schedules          AvailabilitySchedule[]
+  specialistId       String?
+  specialist         Specialist?            @relation(fields: [specialistId], references: [id], onDelete: SetNull)
 
   @@index([businessId, isActive])
+  @@index([specialistId])
   @@map("booking_services")
 }
 
@@ -1195,5 +1199,21 @@ model Appointment {
   @@index([manageToken])
   @@map("appointments")
 }
+
+model Specialist {
+  id          String            @id @default(cuid())
+  businessId  String
+  business    Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name        String            @db.VarChar(150)
+  specialty   String            @db.VarChar(150)
+  active      Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  services    BookingService[]
+
+  @@index([businessId])
+  @@map("specialists")
+}
+
 
 

@@ -806,6 +806,44 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Índice appointments.manageToken',
           sql: `CREATE INDEX IF NOT EXISTS "appointments_manageToken_idx" ON "appointments"("manageToken");`,
         },
+        {
+          name: 'Tabla specialists',
+          sql: `CREATE TABLE IF NOT EXISTS "specialists" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "name" VARCHAR(150) NOT NULL,
+            "specialty" VARCHAR(150) NOT NULL,
+            "active" BOOLEAN NOT NULL DEFAULT true,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "specialists_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "specialists_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice specialists.businessId',
+          sql: `CREATE INDEX IF NOT EXISTS "specialists_businessId_idx" ON "specialists"("businessId");`,
+        },
+        {
+          name: 'Columna booking_services.specialistId',
+          sql: `ALTER TABLE "booking_services" ADD COLUMN IF NOT EXISTS "specialistId" TEXT;`,
+        },
+        {
+          name: 'Constraint booking_services.specialistId foreign key',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'booking_services_specialistId_fkey'
+            ) THEN
+              ALTER TABLE "booking_services"
+                ADD CONSTRAINT "booking_services_specialistId_fkey"
+                FOREIGN KEY ("specialistId") REFERENCES "specialists"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;`,
+        },
+        {
+          name: 'Índice booking_services.specialistId',
+          sql: `CREATE INDEX IF NOT EXISTS "booking_services_specialistId_idx" ON "booking_services"("specialistId");`,
+        },
       ];
 
       for (const step of ddlStatements) {

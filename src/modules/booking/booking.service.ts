@@ -20,6 +20,10 @@ import {
   CreateBookingServiceDto,
   UpdateBookingServiceDto,
 } from './dto/booking-service.dto';
+import {
+  CreateSpecialistDto,
+  UpdateSpecialistDto,
+} from './dto/specialist.dto';
 import { SaveSchedulesDto } from './dto/save-schedules.dto';
 import { UpdateBookingSettingsDto } from './dto/update-booking-settings.dto';
 import { v4 as uuidv4 } from 'uuid';
@@ -114,6 +118,14 @@ export class BookingService implements OnModuleInit {
         durationMinutes: true,
         price: true,
         hasCustomSchedule: true,
+        specialistId: true,
+        specialist: {
+          select: {
+            id: true,
+            name: true,
+            specialty: true,
+          },
+        },
       },
       orderBy: {
         name: 'asc',
@@ -872,12 +884,34 @@ export class BookingService implements OnModuleInit {
     await this.assertCitasActive(businessId);
     return this.prisma.bookingService.findMany({
       where: { businessId },
+      include: {
+        specialist: {
+          select: {
+            id: true,
+            name: true,
+            specialty: true,
+            active: true,
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
   }
 
   async createService(businessId: string, dto: CreateBookingServiceDto) {
     await this.assertCitasActive(businessId);
+
+    if (dto.specialistId) {
+      const specialist = await this.prisma.specialist.findFirst({
+        where: { id: dto.specialistId, businessId },
+      });
+      if (!specialist) {
+        throw new BadRequestException(
+          'El especialista no existe o no pertenece a este negocio',
+        );
+      }
+    }
+
     return this.prisma.bookingService.create({
       data: {
         businessId,
@@ -886,6 +920,17 @@ export class BookingService implements OnModuleInit {
         durationMinutes: dto.durationMinutes,
         price: dto.price,
         hasCustomSchedule: dto.hasCustomSchedule ?? false,
+        specialistId: dto.specialistId || null,
+      },
+      include: {
+        specialist: {
+          select: {
+            id: true,
+            name: true,
+            specialty: true,
+            active: true,
+          },
+        },
       },
     });
   }
@@ -898,6 +943,17 @@ export class BookingService implements OnModuleInit {
       throw new NotFoundException('Servicio no encontrado');
     }
     await this.assertCitasActive(service.businessId);
+
+    if (dto.specialistId) {
+      const specialist = await this.prisma.specialist.findFirst({
+        where: { id: dto.specialistId, businessId: service.businessId },
+      });
+      if (!specialist) {
+        throw new BadRequestException(
+          'El especialista no existe o no pertenece a este negocio',
+        );
+      }
+    }
 
     return this.prisma.bookingService.update({
       where: { id: serviceId },
@@ -914,6 +970,19 @@ export class BookingService implements OnModuleInit {
         ...(dto.hasCustomSchedule !== undefined && {
           hasCustomSchedule: dto.hasCustomSchedule,
         }),
+        ...(dto.specialistId !== undefined && {
+          specialistId: dto.specialistId || null,
+        }),
+      },
+      include: {
+        specialist: {
+          select: {
+            id: true,
+            name: true,
+            specialty: true,
+            active: true,
+          },
+        },
       },
     });
   }
@@ -1036,5 +1105,110 @@ export class BookingService implements OnModuleInit {
         }),
       },
     });
+  }
+
+  // =========================================================================
+  // Especialistas
+  // =========================================================================
+
+  async getSpecialists(businessId: string) {
+    await this.assertCitasActive(businessId);
+    return this.prisma.specialist.findMany({
+      where: { businessId },
+      include: {
+        _count: {
+          select: { services: true },
+        },
+      },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async createSpecialist(businessId: string, dto: CreateSpecialistDto) {
+    await this.assertCitasActive(businessId);
+    return this.prisma.specialist.create({
+      data: {
+        businessId,
+        name: dto.name.trim(),
+        specialty: dto.specialty.trim(),
+        active: dto.active ?? true,
+      },
+    });
+  }
+
+  async updateSpecialist(
+    id: string,
+    businessId: string,
+    dto: UpdateSpecialistDto,
+    isSuperAdmin: boolean = false,
+  ) {
+    const specialist = await this.prisma.specialist.findUnique({
+      where: { id },
+    });
+    if (!specialist) {
+      throw new NotFoundException('Especialista no encontrado');
+    }
+    if (!isSuperAdmin && specialist.businessId !== businessId) {
+      throw new ForbiddenException(
+        'No tienes permiso para modificar este especialista',
+      );
+    }
+    await this.assertCitasActive(specialist.businessId);
+
+    return this.prisma.specialist.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined && { name: dto.name.trim() }),
+        ...(dto.specialty !== undefined && {
+          specialty: dto.specialty.trim(),
+        }),
+        ...(dto.active !== undefined && { active: dto.active }),
+      },
+    });
+  }
+
+  async deleteSpecialist(
+    id: string,
+    businessId: string,
+    isSuperAdmin: boolean = false,
+  ) {
+    const specialist = await this.prisma.specialist.findUnique({
+      where: { id },
+      include: {
+        _count: {
+          select: { services: true },
+        },
+      },
+    });
+    if (!specialist) {
+      throw new NotFoundException('Especialista no encontrado');
+    }
+    if (!isSuperAdmin && specialist.businessId !== businessId) {
+      throw new ForbiddenException(
+        'No tienes permiso para eliminar este especialista',
+      );
+    }
+    await this.assertCitasActive(specialist.businessId);
+
+    if (specialist._count.services > 0) {
+      const updated = await this.prisma.specialist.update({
+        where: { id },
+        data: { active: false },
+      });
+      return {
+        message:
+          'El especialista tiene servicios asociados, por lo que fue desactivado en lugar de eliminado.',
+        deactivated: true,
+        specialist: updated,
+      };
+    }
+
+    await this.prisma.specialist.delete({
+      where: { id },
+    });
+    return {
+      message: 'Especialista eliminado exitosamente',
+      deleted: true,
+    };
   }
 }

@@ -36,6 +36,10 @@ export class CreateBookingServiceDto {
   @IsOptional()
   @IsBoolean()
   hasCustomSchedule?: boolean;
+
+  @IsOptional()
+  @IsString()
+  specialistId?: string;
 }
 
 export class UpdateBookingServiceDto {
@@ -68,4 +72,8 @@ export class UpdateBookingServiceDto {
   @IsOptional()
   @IsBoolean()
   hasCustomSchedule?: boolean;
+
+  @IsOptional()
+  @IsString()
+  specialistId?: string | null;
 }
