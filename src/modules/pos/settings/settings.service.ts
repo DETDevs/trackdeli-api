@@ -27,9 +27,9 @@ export class SettingsService {
     const posSub = business.productSubscriptions?.find((s) => s.productType === 'POS');
     const carteraSub = business.productSubscriptions?.find((s) => s.productType === 'CARTERA_COBRO');
     const resolvedPosVertical = posSub?.posVertical ?? business.posVertical;
-    const isCarteraCobroActive = business.hasCarteraCobro || carteraSub?.status === 'ACTIVE';
+    const isCarteraCobroActive = carteraSub ? carteraSub.status === 'ACTIVE' : Boolean(business.hasCarteraCobro);
     const citasSub = business.productSubscriptions?.find((s) => s.productType === 'CITAS');
-    const isCitasActive = Boolean((business as any).hasCitas || citasSub?.status === 'ACTIVE');
+    const isCitasActive = citasSub ? citasSub.status === 'ACTIVE' : Boolean((business as any).hasCitas);
 
     const { productSubscriptions, ...businessData } = business;
     return {
