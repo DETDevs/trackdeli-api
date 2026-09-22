@@ -17,7 +17,9 @@ import {
   CustomerResponseDto,
   CustomerSearchResultDto,
 } from './dto/customer-response.dto';
-import { UserRole } from '@prisma/client';
+import { UpdateCustomerDto } from './dto/update-customer.dto';
+import { BusinessProductType, Prisma, UserRole } from '@prisma/client';
+import { BusinessProductsService } from '../business-products/business-products.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -28,6 +30,7 @@ export class CustomersService {
     private readonly prisma: PrismaService,
     private readonly trackingGateway: TrackingGateway,
     private readonly configService: ConfigService,
+    private readonly businessProductsService: BusinessProductsService,
   ) {}
 
   private isRecent(
@@ -165,6 +168,8 @@ export class CustomersService {
         businessId,
         name,
         phone,
+        email: dto.email?.trim() || null,
+        notes: dto.notes?.trim() || null,
         ruc: dto.ruc?.trim() || null,
         creditLimit: dto.creditLimit !== undefined ? dto.creditLimit : null,
         lastAddressText: dto.address?.trim() || null,
@@ -528,6 +533,223 @@ export class CustomersService {
       );
       return null;
     }
+  }
+
+  async findAll(
+    businessId: string,
+    options: { q?: string; page?: number; limit?: number } = {},
+  ) {
+    const trimmed = (options.q || '').trim();
+    const page = Math.max(1, Number(options.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(options.limit) || 50));
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.CustomerWhereInput = {
+      businessId,
+      ...(trimmed
+        ? {
+            OR: [
+              { name: { contains: trimmed, mode: 'insensitive' } },
+              { phone: { contains: trimmed, mode: 'insensitive' } },
+              { email: { contains: trimmed, mode: 'insensitive' } },
+              { ruc: { contains: trimmed, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.customer.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { name: 'asc' },
+        include: {
+          _count: {
+            select: {
+              appointments: true,
+              creditAccounts: true,
+              sales: true,
+            },
+          },
+        },
+      }),
+      this.prisma.customer.count({ where }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async findById(businessId: string, id: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id, businessId },
+      include: {
+        _count: {
+          select: {
+            appointments: true,
+            creditAccounts: true,
+            sales: true,
+          },
+        },
+      },
+    });
+
+    if (!customer) {
+      throw new NotFoundException('Cliente no encontrado');
+    }
+
+    return customer;
+  }
+
+  async getHistory(businessId: string, id: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id, businessId },
+    });
+
+    if (!customer) {
+      throw new NotFoundException('Cliente no encontrado');
+    }
+
+    const [isCitasActive, isCarteraActive] = await Promise.all([
+      this.businessProductsService.isActive(
+        businessId,
+        BusinessProductType.CITAS,
+      ),
+      this.businessProductsService.isActive(
+        businessId,
+        BusinessProductType.CARTERA_COBRO,
+      ),
+    ]);
+
+    const [appointments, creditAccounts] = await Promise.all([
+      isCitasActive
+        ? this.prisma.appointment.findMany({
+            where: { customerId: id, businessId },
+            include: {
+              service: {
+                select: {
+                  id: true,
+                  name: true,
+                  price: true,
+                  durationMinutes: true,
+                  specialist: {
+                    select: {
+                      id: true,
+                      name: true,
+                      specialty: true,
+                    },
+                  },
+                },
+              },
+            },
+            orderBy: { scheduledAt: 'desc' },
+          })
+        : Promise.resolve(null),
+      isCarteraActive
+        ? this.prisma.creditAccount.findMany({
+            where: { customerId: id, businessId },
+            include: {
+              sale: {
+                select: {
+                  id: true,
+                  invoiceNumber: true,
+                  invoiceDate: true,
+                  total: true,
+                },
+              },
+              payments: {
+                orderBy: { receivedAt: 'desc' },
+                include: {
+                  receivedByUser: {
+                    select: {
+                      id: true,
+                      name: true,
+                    },
+                  },
+                },
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    return {
+      customer: {
+        id: customer.id,
+        businessId: customer.businessId,
+        name: customer.name,
+        phone: customer.phone,
+        email: customer.email,
+        notes: customer.notes,
+        creditLimit: customer.creditLimit,
+        ruc: customer.ruc,
+        isBlocked: customer.isBlocked,
+        consecutiveNoShows: customer.consecutiveNoShows,
+        lastAddressText: customer.lastAddressText,
+        createdAt: customer.createdAt,
+      },
+      products: {
+        citas: isCitasActive,
+        carteraCobro: isCarteraActive,
+      },
+      appointments,
+      creditAccounts,
+    };
+  }
+
+  async updateCustomer(
+    businessId: string,
+    id: string,
+    dto: UpdateCustomerDto,
+  ) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id, businessId },
+    });
+
+    if (!customer) {
+      throw new NotFoundException('Cliente no encontrado');
+    }
+
+    if (dto.phone && dto.phone.trim() !== customer.phone) {
+      const existing = await this.prisma.customer.findUnique({
+        where: {
+          businessId_phone: {
+            businessId,
+            phone: dto.phone.trim(),
+          },
+        },
+      });
+      if (existing && existing.id !== id) {
+        throw new ConflictException(
+          `Ya existe otro cliente con el teléfono ${dto.phone.trim()}`,
+        );
+      }
+    }
+
+    return this.prisma.customer.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined && { name: dto.name.trim() }),
+        ...(dto.phone !== undefined && { phone: dto.phone.trim() }),
+        ...(dto.email !== undefined && { email: dto.email?.trim() || null }),
+        ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
+        ...(dto.ruc !== undefined && { ruc: dto.ruc?.trim() || null }),
+        ...(dto.creditLimit !== undefined && {
+          creditLimit: dto.creditLimit,
+        }),
+        ...(dto.address !== undefined && {
+          lastAddressText: dto.address?.trim() || null,
+        }),
+        ...(dto.isBlocked !== undefined && { isBlocked: dto.isBlocked }),
+      },
+    });
   }
 }
 

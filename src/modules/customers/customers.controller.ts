@@ -19,6 +19,7 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { UserRole } from '@prisma/client';
 import { UpdateCustomerLocationDto } from './dto/update-customer-location.dto';
 import { CreateCustomerDto } from './dto/create-customer.dto';
+import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { CreateLocationConfirmationLinkDto } from './dto/create-location-link.dto';
 
 @SkipMembershipCheck()
@@ -30,6 +31,105 @@ export class CustomersController {
     if (user.role !== UserRole.SUPERADMIN && user.businessId !== businessId) {
       throw new ForbiddenException('No tienes permiso para acceder a los clientes de este negocio');
     }
+  }
+
+  @Get([
+    'businesses/:businessId/clients',
+    'businesses/me/clients',
+    'businesses/:businessId/customers',
+    'businesses/me/customers',
+    'clients',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async findAll(
+    @CurrentUser() user: JwtPayload,
+    @Query('q') query?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+    @Param('businessId') paramBusinessId?: string,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.findAll(businessId, { q: query, page, limit });
+  }
+
+  @Get([
+    'businesses/:businessId/clients/:id/history',
+    'businesses/me/clients/:id/history',
+    'businesses/:businessId/customers/:id/history',
+    'businesses/me/customers/:id/history',
+    'clients/:id/history',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async getHistory(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.getHistory(businessId, id);
+  }
+
+  @Get([
+    'businesses/:businessId/clients/:id',
+    'businesses/me/clients/:id',
+    'businesses/:businessId/customers/:id',
+    'businesses/me/customers/:id',
+    'clients/:id',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async findOne(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.findById(businessId, id);
+  }
+
+  @Patch([
+    'businesses/:businessId/clients/:id',
+    'businesses/me/clients/:id',
+    'businesses/:businessId/customers/:id',
+    'businesses/me/customers/:id',
+    'clients/:id',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async updateCustomer(
+    @Param('id') id: string,
+    @Body() dto: UpdateCustomerDto,
+    @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.updateCustomer(businessId, id, dto);
   }
 
   @Get([
@@ -79,7 +179,10 @@ export class CustomersController {
   }
 
   @Post([
+    'businesses/:businessId/clients',
+    'businesses/me/clients',
     'businesses/:businessId/customers',
+    'businesses/me/customers',
     'pos/customers',
     'customers',
   ])

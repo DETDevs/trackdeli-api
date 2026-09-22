@@ -330,14 +330,21 @@ export class BookingService implements OnModuleInit {
           businessId,
           phone: cleanPhone,
           name: dto.customerName.trim(),
+          email: dto.customerEmail?.trim() || null,
         },
       });
     } else {
-      // Actualizar nombre si cambió
+      const updateData: any = {};
       if (dto.customerName && dto.customerName.trim() !== customer.name) {
-        await this.prisma.customer.update({
+        updateData.name = dto.customerName.trim();
+      }
+      if (dto.customerEmail && dto.customerEmail.trim() !== customer.email) {
+        updateData.email = dto.customerEmail.trim();
+      }
+      if (Object.keys(updateData).length > 0) {
+        customer = await this.prisma.customer.update({
           where: { id: customer.id },
-          data: { name: dto.customerName.trim() },
+          data: updateData,
         });
       }
     }

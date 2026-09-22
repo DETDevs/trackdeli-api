@@ -553,6 +553,8 @@ model Customer {
   business        Business                  @relation(fields: [businessId], references: [id])
   phone           String                    @db.VarChar(30)
   name            String                    @db.VarChar(100)
+  email           String?                   @db.VarChar(255)
+  notes           String?
   lastLatitude    Float?
   lastLongitude   Float?
   lastAddressText String?                   @db.VarChar(300)

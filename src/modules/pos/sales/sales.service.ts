@@ -120,15 +120,44 @@ export class SalesService {
           throw new ForbiddenException('Este negocio no tiene Cartera de Cobro contratada');
         }
 
-        if (!dto.customerId) {
-          throw new BadRequestException("El cliente es obligatorio para ventas al crédito");
+        let customer: any = null;
+
+        if (dto.customerId) {
+          customer = await tx.customer.findFirst({
+            where: { id: dto.customerId, businessId },
+          });
+          if (!customer) {
+            throw new BadRequestException("Cliente no encontrado o no pertenece a este negocio");
+          }
+        } else if (dto.customerPhone || customerPhone) {
+          const cleanPhone = (dto.customerPhone || customerPhone || '').trim();
+          customer = await tx.customer.findUnique({
+            where: {
+              businessId_phone: {
+                businessId,
+                phone: cleanPhone,
+              },
+            },
+          });
+          if (!customer) {
+            customer = await tx.customer.create({
+              data: {
+                businessId,
+                phone: cleanPhone,
+                name: (customerName || dto.customerName || 'Cliente Crédito').trim(),
+                ruc: dto.customerRuc?.trim() || null,
+              },
+            });
+          } else if (customerName && customerName.trim() !== customer.name) {
+            customer = await tx.customer.update({
+              where: { id: customer.id },
+              data: { name: customerName.trim() },
+            });
+          }
+        } else {
+          throw new BadRequestException("El cliente o su número de teléfono es obligatorio para ventas al crédito");
         }
-        const customer = await tx.customer.findFirst({
-          where: { id: dto.customerId, businessId },
-        });
-        if (!customer) {
-          throw new BadRequestException("Cliente no encontrado o no pertenece a este negocio");
-        }
+
         customerId = customer.id;
         if (!customerName) customerName = customer.name;
         if (!customerPhone) customerPhone = customer.phone;
@@ -166,6 +195,25 @@ export class SalesService {
           customerId = customer.id;
           if (!customerName) customerName = customer.name;
           if (!customerPhone) customerPhone = customer.phone;
+        }
+      } else if (dto.customerPhone || customerPhone) {
+        const cleanPhone = (dto.customerPhone || customerPhone || '').trim();
+        let customer = await tx.customer.findUnique({
+          where: { businessId_phone: { businessId, phone: cleanPhone } },
+        });
+        if (!customer && (customerName || dto.customerName)) {
+          customer = await tx.customer.create({
+            data: {
+              businessId,
+              phone: cleanPhone,
+              name: (customerName || dto.customerName)!.trim(),
+              ruc: dto.customerRuc?.trim() || null,
+            },
+          });
+        }
+        if (customer) {
+          customerId = customer.id;
+          if (!customerName) customerName = customer.name;
         }
       }
 

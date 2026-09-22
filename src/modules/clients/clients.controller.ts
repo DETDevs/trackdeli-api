@@ -17,7 +17,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { UserRole } from '@prisma/client';
 
-@Controller(['businesses/me/clients', 'clients'])
+@Controller(['businesses/me/business-clients', 'business-clients'])
 export class ClientsController {
   constructor(private readonly clientsService: ClientsService) {}
 

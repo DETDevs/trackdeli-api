@@ -265,6 +265,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `CREATE INDEX IF NOT EXISTS "customers_businessId_name_idx" ON "customers"("businessId", "name");`,
         },
         {
+          name: 'Columna customers.email',
+          sql: `ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "email" VARCHAR(255);`,
+        },
+        {
+          name: 'Columna customers.notes',
+          sql: `ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "notes" TEXT;`,
+        },
+        {
           name: 'Tabla customer_location_sessions',
           sql: `CREATE TABLE IF NOT EXISTS "customer_location_sessions" (
             "id" TEXT NOT NULL,
