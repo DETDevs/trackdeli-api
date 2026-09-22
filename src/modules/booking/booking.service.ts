@@ -136,6 +136,80 @@ export class BookingService implements OnModuleInit {
   }
 
   /**
+   * Construye el criterio de filtrado de citas en conflicto para un servicio:
+   * - Si el servicio tiene especialista asignado: busca citas de cualquier servicio de ese especialista.
+   * - Si el servicio no tiene especialista (genérico): busca citas exclusivamente del mismo servicio.
+   */
+  private buildConflictWhereClause(
+    businessId: string,
+    service: { id: string; specialistId?: string | null },
+    extraWhere?: Prisma.AppointmentWhereInput,
+  ): Prisma.AppointmentWhereInput {
+    return {
+      businessId,
+      status: {
+        in: [
+          AppointmentStatus.PENDING,
+          AppointmentStatus.CONFIRMED,
+          AppointmentStatus.COMPLETED,
+          AppointmentStatus.NO_SHOW,
+        ],
+      },
+      ...(service.specialistId
+        ? { service: { specialistId: service.specialistId } }
+        : { serviceId: service.id }),
+      ...extraWhere,
+    };
+  }
+
+  /**
+   * Chequea si existe alguna cita en conflicto para un intervalo [scheduledAt, scheduledAt + durationMinutes).
+   */
+  async hasConflictingAppointment(
+    prismaOrTx: Prisma.TransactionClient | PrismaService,
+    params: {
+      businessId: string;
+      service: { id: string; specialistId?: string | null };
+      scheduledAt: Date;
+      durationMinutes: number;
+      excludeAppointmentId?: string;
+    },
+  ): Promise<boolean> {
+    const {
+      businessId,
+      service,
+      scheduledAt,
+      durationMinutes,
+      excludeAppointmentId,
+    } = params;
+    const scheduledEnd = new Date(
+      scheduledAt.getTime() + durationMinutes * 60 * 1000,
+    );
+
+    const where = this.buildConflictWhereClause(businessId, service, {
+      ...(excludeAppointmentId ? { id: { not: excludeAppointmentId } } : {}),
+      scheduledAt: { lt: scheduledEnd },
+    });
+
+    const candidates = await prismaOrTx.appointment.findMany({
+      where,
+      select: {
+        id: true,
+        scheduledAt: true,
+        durationMinutes: true,
+      },
+    });
+
+    return candidates.some((app) => {
+      const appStart = new Date(app.scheduledAt).getTime();
+      const appEnd = appStart + app.durationMinutes * 60 * 1000;
+      return (
+        scheduledAt.getTime() < appEnd && scheduledEnd.getTime() > appStart
+      );
+    });
+  }
+
+  /**
    * Motor de cálculo de disponibilidad de slots.
    */
   async getAvailability(businessId: string, serviceId: string, dateStr: string) {
@@ -193,19 +267,17 @@ export class BookingService implements OnModuleInit {
       };
     }
 
-    // 2. Citas existentes del negocio en esa fecha (rango en hora local de Nicaragua UTC-6)
+    // 2. Citas existentes del especialista (o del servicio si es genérico) en esa fecha (rango en hora local de Nicaragua UTC-6)
     const dayStart = new Date(`${dateStr}T00:00:00.000${BOOKING_TZ_OFFSET}`);
     const dayEnd = new Date(`${dateStr}T23:59:59.999${BOOKING_TZ_OFFSET}`);
 
     const existingAppointments = await this.prisma.appointment.findMany({
-      where: {
-        businessId,
-        status: { in: [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED] },
+      where: this.buildConflictWhereClause(businessId, service, {
         scheduledAt: {
           gte: dayStart,
           lte: dayEnd,
         },
-      },
+      }),
       select: {
         id: true,
         serviceId: true,
@@ -362,18 +434,11 @@ export class BookingService implements OnModuleInit {
 
     // Re-validación atómica dentro de transacción para prevenir doble reserva
     const appointment = await this.prisma.$transaction(async (tx) => {
-      const conflicting = await tx.appointment.findMany({
-        where: {
-          businessId,
-          status: { in: [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED] },
-          scheduledAt: { lt: scheduledEnd },
-        },
-      });
-
-      const hasConflict = conflicting.some((app) => {
-        const appStart = new Date(app.scheduledAt).getTime();
-        const appEnd = appStart + app.durationMinutes * 60 * 1000;
-        return scheduledAt.getTime() < appEnd && scheduledEnd.getTime() > appStart;
+      const hasConflict = await this.hasConflictingAppointment(tx, {
+        businessId,
+        service,
+        scheduledAt,
+        durationMinutes,
       });
 
       if (hasConflict) {
@@ -523,19 +588,12 @@ export class BookingService implements OnModuleInit {
 
     // Transacción atómica para verificar disponibilidad del nuevo slot
     const updated = await this.prisma.$transaction(async (tx) => {
-      const conflicting = await tx.appointment.findMany({
-        where: {
-          businessId: appointment.businessId,
-          id: { not: appointment.id }, // excluir la cita actual
-          status: { in: [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED] },
-          scheduledAt: { lt: newScheduledEnd },
-        },
-      });
-
-      const hasConflict = conflicting.some((app) => {
-        const appStart = new Date(app.scheduledAt).getTime();
-        const appEnd = appStart + app.durationMinutes * 60 * 1000;
-        return newScheduledAt.getTime() < appEnd && newScheduledEnd.getTime() > appStart;
+      const hasConflict = await this.hasConflictingAppointment(tx, {
+        businessId: appointment.businessId,
+        service: appointment.service,
+        scheduledAt: newScheduledAt,
+        durationMinutes,
+        excludeAppointmentId: appointment.id,
       });
 
       if (hasConflict) {
@@ -597,9 +655,16 @@ export class BookingService implements OnModuleInit {
       status?: AppointmentStatus;
       date?: string;
       serviceId?: string;
+      specialistId?: string;
+      page?: number;
+      limit?: number;
     },
   ) {
     await this.assertCitasActive(businessId);
+
+    const page = Math.max(1, Number(filters?.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(filters?.limit) || 50));
+    const skip = (page - 1) * limit;
 
     const where: Prisma.AppointmentWhereInput = {
       businessId,
@@ -609,7 +674,12 @@ export class BookingService implements OnModuleInit {
       where.status = filters.status;
     }
 
-    if (filters?.serviceId) {
+    if (filters?.specialistId) {
+      where.service = {
+        ...(filters.serviceId ? { id: filters.serviceId } : {}),
+        specialistId: filters.specialistId,
+      };
+    } else if (filters?.serviceId) {
       where.serviceId = filters.serviceId;
     }
 
@@ -622,16 +692,33 @@ export class BookingService implements OnModuleInit {
       };
     }
 
-    return this.prisma.appointment.findMany({
-      where,
-      include: {
-        service: true,
-        customer: true,
-      },
-      orderBy: {
-        scheduledAt: 'asc',
-      },
-    });
+    const [items, total] = await Promise.all([
+      this.prisma.appointment.findMany({
+        where,
+        skip,
+        take: limit,
+        include: {
+          service: {
+            include: {
+              specialist: true,
+            },
+          },
+          customer: true,
+        },
+        orderBy: {
+          scheduledAt: 'asc',
+        },
+      }),
+      this.prisma.appointment.count({ where }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   /**

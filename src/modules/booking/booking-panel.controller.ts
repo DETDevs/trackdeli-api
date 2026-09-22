@@ -34,7 +34,8 @@ export class BookingPanelController {
   constructor(private readonly bookingService: BookingService) {}
 
   private checkBusinessAccess(user: JwtPayload, businessId: string) {
-    if (user.role !== UserRole.SUPERADMIN && user.businessId !== businessId) {
+    const targetBusinessId = businessId === 'me' ? user.businessId : businessId;
+    if (user.role !== UserRole.SUPERADMIN && user.businessId !== targetBusinessId) {
       throw new ForbiddenException(
         'No tienes permiso para gestionar las citas de este negocio',
       );
@@ -46,23 +47,42 @@ export class BookingPanelController {
   // =========================================================================
 
   /**
-   * Listado/agenda de citas del negocio.
-   * GET /businesses/:id/appointments?status=&date=&serviceId=
+   * Listado/agenda de citas del negocio con filtros y paginación.
+   * GET /businesses/:id/appointments?status=&date=&serviceId=&specialistId=&page=&limit=
+   * GET /businesses/me/appointments
+   * GET /appointments
    */
-  @Get('businesses/:id/appointments')
+  @Get([
+    'businesses/:id/appointments',
+    'businesses/me/appointments',
+    'appointments',
+  ])
   @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   async getAppointments(
-    @Param('id') businessId: string,
+    @Param('id') paramBusinessId: string | undefined,
     @CurrentUser() user: JwtPayload,
     @Query('status') status?: AppointmentStatus,
     @Query('date') date?: string,
     @Query('serviceId') serviceId?: string,
+    @Query('specialistId') specialistId?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
   ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
     this.checkBusinessAccess(user, businessId);
     return this.bookingService.getBusinessAppointments(businessId, {
       status,
       date,
       serviceId,
+      specialistId,
+      page,
+      limit,
     });
   }
 
