@@ -3,6 +3,7 @@ import { BusinessType, PosVertical, PricingModel } from '@prisma/client';
 export class BusinessResponseDto {
   id: string;
   name: string;
+  slug?: string | null;
   type: string | null;
   logoUrl: string | null;
   defaultGeofenceRadiusM: number;

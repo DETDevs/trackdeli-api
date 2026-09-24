@@ -8,6 +8,7 @@ import {
   BusinessType,
   Prisma,
 } from '@prisma/client';
+import { slugify } from '../common/utils/slug.util';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
@@ -852,6 +853,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Índice booking_services.specialistId',
           sql: `CREATE INDEX IF NOT EXISTS "booking_services_specialistId_idx" ON "booking_services"("specialistId");`,
         },
+        {
+          name: 'Columna businesses.slug',
+          sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "slug" VARCHAR(100);`,
+        },
+        {
+          name: 'Índice único businesses.slug',
+          sql: `CREATE UNIQUE INDEX IF NOT EXISTS "businesses_slug_key" ON "businesses"("slug");`,
+        },
       ];
 
       for (const step of ddlStatements) {
@@ -868,6 +877,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       await this.ensureBusinessProductsBackfilled();
 
       await this.reconcileProductTrackStock();
+
+      await this.ensureBusinessSlugsBackfilled();
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia general en auto-sincronización de esquema: ${err.message}`);
     }
@@ -1129,6 +1140,59 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ Advertencia en backfill de trackStock: ${err.message}`);
+    }
+  }
+
+  private async ensureBusinessSlugsBackfilled() {
+    try {
+      this.logger.log('[PrismaService] Verificando backfill de slug para businesses...');
+      const businessesWithoutSlug = await this.business.findMany({
+        where: { slug: null },
+        select: { id: true, name: true },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      if (businessesWithoutSlug.length === 0) {
+        this.logger.log('[PrismaService] ✓ Todos los negocios ya tienen slug asignado.');
+        return;
+      }
+
+      let updatedCount = 0;
+      for (const b of businessesWithoutSlug) {
+        const uniqueSlug = await this.generateUniqueSlug(b.name, b.id);
+        await this.business.update({
+          where: { id: b.id },
+          data: { slug: uniqueSlug },
+        });
+        updatedCount++;
+      }
+
+      this.logger.log(`[PrismaService] ✓ Backfill de slug completado: ${updatedCount} negocio(s) actualizados.`);
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ Advertencia en backfill de slug: ${err.message}`);
+    }
+  }
+
+  private async generateUniqueSlug(name: string, businessId: string): Promise<string> {
+    const baseSlug = slugify(name);
+    let candidate = baseSlug;
+    let suffix = 2;
+
+    while (true) {
+      const existing = await this.business.findFirst({
+        where: {
+          slug: candidate,
+          id: { not: businessId },
+        },
+        select: { id: true },
+      });
+
+      if (!existing) {
+        return candidate;
+      }
+
+      candidate = `${baseSlug}-${suffix}`;
+      suffix++;
     }
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UpdateBusinessDto } from './dto/update-business.dto';
 import { BusinessResponseDto } from './dto/business-response.dto';
@@ -14,6 +14,7 @@ export class BusinessesService {
     return {
       id: business.id,
       name: business.name,
+      slug: business.slug ?? null,
       type: business.type,
       logoUrl: business.logoUrl,
       defaultGeofenceRadiusM: business.defaultGeofenceRadiusM,
@@ -107,6 +108,38 @@ export class BusinessesService {
       this.logger.log(`[update] OK businessId=${id}`);
     }
 
+    return this.toResponseDto(updated);
+  }
+
+  async updateSlug(businessId: string, rawSlug: string): Promise<BusinessResponseDto> {
+    const slug = rawSlug.trim().toLowerCase();
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+    });
+
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    if (business.slug === slug) {
+      return this.toResponseDto(business);
+    }
+
+    const existing = await this.prisma.business.findUnique({
+      where: { slug },
+    });
+
+    if (existing && existing.id !== businessId) {
+      throw new ConflictException('Este slug ya está en uso por otro negocio');
+    }
+
+    const updated = await this.prisma.business.update({
+      where: { id: businessId },
+      data: { slug },
+    });
+
+    this.logger.log(`[updateSlug] OK businessId=${businessId} slug=${slug}`);
     return this.toResponseDto(updated);
   }
 }

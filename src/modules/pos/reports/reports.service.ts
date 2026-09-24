@@ -278,7 +278,18 @@ export class ReportsService {
     };
   }
 
-  async getCreditSummary(businessId: string) {
+  async getCreditSummary(
+    businessId: string,
+    filters?: {
+      q?: string;
+      onlyOverdue?: boolean;
+      status?: string;
+      sortBy?: 'debt' | 'days' | 'name';
+      sortOrder?: 'asc' | 'desc';
+      page?: number;
+      limit?: number;
+    },
+  ) {
     await this.ensureCarteraActive(businessId);
     const now = new Date();
     const accounts = await this.prisma.creditAccount.findMany({
@@ -320,6 +331,8 @@ export class ReportsService {
           overdueDebt: 0,
           currentDebt: 0,
           accountsCount: 0,
+          hasOverdue: false,
+          daysOverdue: 0,
           accounts: [],
         });
       }
@@ -328,6 +341,14 @@ export class ReportsService {
       custEntry.totalDebt = Math.round((custEntry.totalDebt + acc.balance) * 100) / 100;
       if (isOverdue) {
         custEntry.overdueDebt = Math.round((custEntry.overdueDebt + acc.balance) * 100) / 100;
+        custEntry.hasOverdue = true;
+        const diffDays = Math.max(
+          0,
+          Math.floor((now.getTime() - new Date(acc.dueDate).getTime()) / (1000 * 60 * 60 * 24)),
+        );
+        if (diffDays > custEntry.daysOverdue) {
+          custEntry.daysOverdue = diffDays;
+        }
       } else {
         custEntry.currentDebt = Math.round((custEntry.currentDebt + acc.balance) * 100) / 100;
       }
@@ -343,13 +364,69 @@ export class ReportsService {
       });
     }
 
+    let customerList = Array.from(customerMap.values());
+
+    // Filtro por búsqueda (nombre, teléfono, RUC)
+    if (filters?.q && filters.q.trim()) {
+      const qLower = filters.q.toLowerCase().trim();
+      customerList = customerList.filter((item) => {
+        const nameMatch = item.customer?.name?.toLowerCase().includes(qLower);
+        const phoneMatch = item.customer?.phone?.toLowerCase().includes(qLower);
+        const rucMatch =
+          item.customer?.ruc?.toLowerCase().includes(qLower) ||
+          item.customer?.taxId?.toLowerCase().includes(qLower);
+        return Boolean(nameMatch || phoneMatch || rucMatch);
+      });
+    }
+
+    // Filtro por mora / estado
+    if (filters?.onlyOverdue || filters?.status === 'OVERDUE') {
+      customerList = customerList.filter((item) => item.hasOverdue);
+    } else if (filters?.status === 'CURRENT') {
+      customerList = customerList.filter((item) => !item.hasOverdue);
+    }
+
+    // Ordenamiento
+    const sortBy = filters?.sortBy || 'debt';
+    const sortAsc = filters?.sortOrder === 'asc';
+    customerList.sort((a, b) => {
+      let comparison = 0;
+      if (sortBy === 'debt') {
+        comparison = a.totalDebt - b.totalDebt;
+      } else if (sortBy === 'days') {
+        comparison = (a.daysOverdue || 0) - (b.daysOverdue || 0);
+      } else if (sortBy === 'name') {
+        comparison = (a.customer?.name || '').localeCompare(b.customer?.name || '');
+      }
+      return sortAsc ? comparison : -comparison;
+    });
+
+    const totalMatching = customerList.length;
+
+    let paginatedCustomers = customerList;
+    let page = filters?.page;
+    let limit = filters?.limit;
+    let totalPages = 1;
+
+    if (page !== undefined || limit !== undefined) {
+      page = Math.max(1, Number(page) || 1);
+      limit = Math.min(100, Math.max(1, Number(limit) || 10));
+      totalPages = Math.max(1, Math.ceil(totalMatching / limit));
+      const skip = (page - 1) * limit;
+      paginatedCustomers = customerList.slice(skip, skip + limit);
+    }
+
     return {
       totalPortfolio: Math.round(totalPortfolio * 100) / 100,
       overduePortfolio: Math.round(overduePortfolio * 100) / 100,
       currentPortfolio: Math.round(currentPortfolio * 100) / 100,
       unpaidAccountsCount: accounts.length,
       customersCount: customerMap.size,
-      breakdownByCustomer: Array.from(customerMap.values()),
+      breakdownByCustomer: paginatedCustomers,
+      total: totalMatching,
+      page: page || 1,
+      limit: limit || totalMatching,
+      totalPages,
     };
   }
 

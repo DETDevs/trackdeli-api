@@ -7,6 +7,7 @@ import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { UpdateBusinessDto } from './dto/update-business.dto';
+import { UpdateBusinessSlugDto } from './dto/update-business-slug.dto';
 
 @Controller('businesses')
 export class BusinessesController {
@@ -26,6 +27,15 @@ export class BusinessesController {
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   updateMyBusiness(@Body() dto: UpdateBusinessDto, @CurrentUser() user: JwtPayload) {
     return this.service.update(user.businessId, dto);
+  }
+
+  @Patch('me/slug')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  updateMySlug(@Body() dto: UpdateBusinessSlugDto, @CurrentUser() user: JwtPayload) {
+    if (!user.businessId) {
+      throw new ForbiddenException('Usuario sin negocio asignado');
+    }
+    return this.service.updateSlug(user.businessId, dto.slug);
   }
 
   @Get(':id')
@@ -48,6 +58,19 @@ export class BusinessesController {
       throw new ForbiddenException('No tienes permiso para editar este negocio');
     }
     return this.service.update(id, dto);
+  }
+
+  @Patch(':id/slug')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  updateBusinessSlugById(
+    @Param('id') id: string,
+    @Body() dto: UpdateBusinessSlugDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    if (user.role !== UserRole.SUPERADMIN && user.businessId !== id) {
+      throw new ForbiddenException('No tienes permiso para editar este negocio');
+    }
+    return this.service.updateSlug(id, dto.slug);
   }
 
   @Put(':id')

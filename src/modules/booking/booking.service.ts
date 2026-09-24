@@ -27,6 +27,7 @@ import {
 import { SaveSchedulesDto } from './dto/save-schedules.dto';
 import { UpdateBookingSettingsDto } from './dto/update-booking-settings.dto';
 import { v4 as uuidv4 } from 'uuid';
+import { UUID_REGEX } from '../../common/utils/slug.util';
 
 export const BOOKING_TIMEZONE = 'America/Managua';
 export const BOOKING_TZ_OFFSET = '-06:00';
@@ -78,33 +79,55 @@ export class BookingService implements OnModuleInit {
   /**
    * Catálogo público de servicios activos del negocio.
    */
-    /**
-   * Información pública del negocio.
+  /**
+   * Resuelve un negocio por UUID o por slug legible.
+   * Da prioridad a búsqueda por ID si coincide con formato UUID,
+   * luego busca por slug, asegurando retrocompatibilidad total.
    */
-  async getPublicBusinessInfo(businessId: string) {
-    await this.assertCitasActive(businessId);
-
-    const business = await this.prisma.business.findUnique({
-      where: { id: businessId },
-      select: {
-        id: true,
-        name: true,
-        logoUrl: true,
-        posAddress: true,
-        whatsappNumber: true,
-        posPhone: true,
-      },
-    });
-
-    if (!business) {
-      throw new NotFoundException('Negocio no encontrado');
+  async resolveBusiness(businessIdOrSlug: string) {
+    if (!businessIdOrSlug) {
+      throw new NotFoundException('Identificador de negocio no proporcionado');
     }
 
-    return business;
+    const trimmed = businessIdOrSlug.trim();
+
+    if (UUID_REGEX.test(trimmed)) {
+      const byId = await this.prisma.business.findUnique({
+        where: { id: trimmed },
+      });
+      if (byId) return byId;
+    }
+
+    const bySlug = await this.prisma.business.findUnique({
+      where: { slug: trimmed.toLowerCase() },
+    });
+    if (bySlug) return bySlug;
+
+    throw new NotFoundException('Negocio no encontrado');
   }
 
-  async getPublicServices(businessId: string) {
-    await this.assertCitasActive(businessId);
+  /**
+   * Información pública del negocio.
+   */
+  async getPublicBusinessInfo(businessIdOrSlug: string) {
+    const business = await this.resolveBusiness(businessIdOrSlug);
+    await this.assertCitasActive(business.id);
+
+    return {
+      id: business.id,
+      name: business.name,
+      slug: business.slug,
+      logoUrl: business.logoUrl,
+      posAddress: business.posAddress,
+      whatsappNumber: business.whatsappNumber,
+      posPhone: business.posPhone,
+    };
+  }
+
+  async getPublicServices(businessIdOrSlug: string) {
+    const business = await this.resolveBusiness(businessIdOrSlug);
+    await this.assertCitasActive(business.id);
+    const businessId = business.id;
 
     const services = await this.prisma.bookingService.findMany({
       where: {
@@ -212,8 +235,10 @@ export class BookingService implements OnModuleInit {
   /**
    * Motor de cálculo de disponibilidad de slots.
    */
-  async getAvailability(businessId: string, serviceId: string, dateStr: string) {
-    await this.assertCitasActive(businessId);
+  async getAvailability(businessIdOrSlug: string, serviceId: string, dateStr: string) {
+    const business = await this.resolveBusiness(businessIdOrSlug);
+    await this.assertCitasActive(business.id);
+    const businessId = business.id;
 
     const service = await this.prisma.bookingService.findFirst({
       where: { id: serviceId, businessId, isActive: true },
@@ -363,8 +388,10 @@ export class BookingService implements OnModuleInit {
   /**
    * Crear reserva pública.
    */
-  async createAppointment(businessId: string, dto: CreateAppointmentDto) {
-    await this.assertCitasActive(businessId);
+  async createAppointment(businessIdOrSlug: string, dto: CreateAppointmentDto) {
+    const business = await this.resolveBusiness(businessIdOrSlug);
+    await this.assertCitasActive(business.id);
+    const businessId = business.id;
 
     const service = await this.prisma.bookingService.findFirst({
       where: { id: dto.serviceId, businessId, isActive: true },

@@ -93,8 +93,23 @@ export class ReportsController {
   creditSummary(
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Query("q") q?: string,
+    @Query("onlyOverdue") onlyOverdue?: string | boolean,
+    @Query("status") status?: string,
+    @Query("sortBy") sortBy?: string,
+    @Query("sortOrder") sortOrder?: 'asc' | 'desc',
+    @Query("page") page?: number,
+    @Query("limit") limit?: number,
   ) {
-    return this.service.getCreditSummary(resolveBusinessId(user, qBid));
+    return this.service.getCreditSummary(resolveBusinessId(user, qBid), {
+      q,
+      onlyOverdue: onlyOverdue === 'true' || onlyOverdue === true || status === 'OVERDUE',
+      status,
+      sortBy: sortBy as any,
+      sortOrder,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
   }
 
   @UseGuards(CarteraCobroGuard)
