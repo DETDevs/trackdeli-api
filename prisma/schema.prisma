@@ -276,6 +276,7 @@ model Business {
   bookingSettings       BusinessBookingSettings?
   appointments          Appointment[]
   specialists           Specialist[]
+  professions           Profession[]
 
   @@map("businesses")
 }
@@ -1218,12 +1219,30 @@ model Appointment {
   @@map("appointments")
 }
 
+model Profession {
+  id         String       @id @default(cuid())
+  businessId String
+  business   Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String       @db.VarChar(60)
+  active     Boolean      @default(true)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  specialists Specialist[]
+
+  @@unique([businessId, name])
+  @@index([businessId])
+  @@map("professions")
+}
+
 model Specialist {
   id                 String              @id @default(cuid())
   businessId         String
   business           Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
   name               String              @db.VarChar(150)
-  specialty          String              @db.VarChar(150)
+  specialty          String?             @db.VarChar(150)
+  professionId       String?
+  profession         Profession?         @relation(fields: [professionId], references: [id], onDelete: SetNull)
   active             Boolean             @default(true)
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
@@ -1231,6 +1250,7 @@ model Specialist {
   appointments       Appointment[]
 
   @@index([businessId])
+  @@index([professionId])
   @@map("specialists")
 }
 

@@ -4,6 +4,7 @@ import { BusinessProductsModule } from '../business-products/business-products.m
 import { BookingController } from './booking.controller';
 import { BookingPanelController } from './booking-panel.controller';
 import { SpecialistsController } from './specialists.controller';
+import { ProfessionsController } from './professions.controller';
 import { BookingService } from './booking.service';
 import { BookingEmailService } from './booking-email.service';
 
@@ -13,6 +14,7 @@ import { BookingEmailService } from './booking-email.service';
     BookingController,
     BookingPanelController,
     SpecialistsController,
+    ProfessionsController,
   ],
   providers: [BookingService, BookingEmailService],
   exports: [BookingService, BookingEmailService],

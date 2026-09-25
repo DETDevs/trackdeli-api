@@ -24,6 +24,10 @@ import {
   CreateSpecialistDto,
   UpdateSpecialistDto,
 } from './dto/specialist.dto';
+import {
+  CreateProfessionDto,
+  UpdateProfessionDto,
+} from './dto/profession.dto';
 import { SaveSchedulesDto } from './dto/save-schedules.dto';
 import { UpdateBookingSettingsDto } from './dto/update-booking-settings.dto';
 import { v4 as uuidv4 } from 'uuid';
@@ -150,6 +154,12 @@ export class BookingService implements OnModuleInit {
                 name: true,
                 specialty: true,
                 active: true,
+                profession: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
               },
             },
           },
@@ -163,7 +173,10 @@ export class BookingService implements OnModuleInit {
     return services.map((s) => {
       const activeSpecialists = s.specialists
         .filter((ss) => ss.specialist.active)
-        .map((ss) => ss.specialist);
+        .map((ss) => ({
+          ...ss.specialist,
+          specialty: ss.specialist.profession?.name ?? ss.specialist.specialty ?? '',
+        }));
       return {
         id: s.id,
         name: s.name,
@@ -1162,6 +1175,12 @@ export class BookingService implements OnModuleInit {
                 name: true,
                 specialty: true,
                 active: true,
+                profession: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
               },
             },
           },
@@ -1173,7 +1192,10 @@ export class BookingService implements OnModuleInit {
     return services.map((s) => {
       const activeSpecialists = s.specialists
         .filter((ss) => ss.specialist.active)
-        .map((ss) => ss.specialist);
+        .map((ss) => ({
+          ...ss.specialist,
+          specialty: ss.specialist.profession?.name ?? ss.specialist.specialty ?? '',
+        }));
       return {
         ...s,
         isActive: s.active,
@@ -1227,6 +1249,12 @@ export class BookingService implements OnModuleInit {
                 name: true,
                 specialty: true,
                 active: true,
+                profession: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
               },
             },
           },
@@ -1236,7 +1264,10 @@ export class BookingService implements OnModuleInit {
 
     const activeSpecialists = created.specialists
       .filter((ss) => ss.specialist.active)
-      .map((ss) => ss.specialist);
+      .map((ss) => ({
+        ...ss.specialist,
+        specialty: ss.specialist.profession?.name ?? ss.specialist.specialty ?? '',
+      }));
 
     return {
       ...created,
@@ -1321,6 +1352,12 @@ export class BookingService implements OnModuleInit {
                   name: true,
                   specialty: true,
                   active: true,
+                  profession: {
+                    select: {
+                      id: true,
+                      name: true,
+                    },
+                  },
                 },
               },
             },
@@ -1331,7 +1368,10 @@ export class BookingService implements OnModuleInit {
 
     const activeSpecialists = updated.specialists
       .filter((ss) => ss.specialist.active)
-      .map((ss) => ss.specialist);
+      .map((ss) => ({
+        ...ss.specialist,
+        specialty: ss.specialist.profession?.name ?? ss.specialist.specialty ?? '',
+      }));
 
     return {
       ...updated,
@@ -1468,27 +1508,61 @@ export class BookingService implements OnModuleInit {
 
   async getSpecialists(businessId: string) {
     await this.assertCitasActive(businessId);
-    return this.prisma.specialist.findMany({
+    const specialists = await this.prisma.specialist.findMany({
       where: { businessId },
       include: {
+        profession: true,
         _count: {
           select: { serviceSpecialists: true },
         },
       },
       orderBy: { name: 'asc' },
     });
+    return specialists.map((s) => ({
+      ...s,
+      specialty: s.profession?.name ?? s.specialty ?? '',
+    }));
   }
 
   async createSpecialist(businessId: string, dto: CreateSpecialistDto) {
     await this.assertCitasActive(businessId);
-    return this.prisma.specialist.create({
+
+    let professionId: string | null = null;
+    let fallbackSpecialty = dto.specialty?.trim() || null;
+
+    if (dto.professionId) {
+      const profession = await this.prisma.profession.findFirst({
+        where: { id: dto.professionId, businessId },
+      });
+      if (!profession) {
+        throw new BadRequestException('La profesión especificada no existe en este negocio');
+      }
+      professionId = profession.id;
+      if (!fallbackSpecialty) {
+        fallbackSpecialty = profession.name;
+      }
+    }
+
+    const created = await this.prisma.specialist.create({
       data: {
         businessId,
         name: dto.name.trim(),
-        specialty: dto.specialty.trim(),
+        professionId,
+        specialty: fallbackSpecialty,
         active: dto.active ?? true,
       },
+      include: {
+        profession: true,
+        _count: {
+          select: { serviceSpecialists: true },
+        },
+      },
     });
+
+    return {
+      ...created,
+      specialty: created.profession?.name ?? created.specialty ?? '',
+    };
   }
 
   async updateSpecialist(
@@ -1510,16 +1584,51 @@ export class BookingService implements OnModuleInit {
     }
     await this.assertCitasActive(specialist.businessId);
 
-    return this.prisma.specialist.update({
+    let professionId: string | null | undefined = undefined;
+    let fallbackSpecialty: string | null | undefined =
+      dto.specialty !== undefined
+        ? dto.specialty
+          ? dto.specialty.trim()
+          : null
+        : undefined;
+
+    if (dto.professionId !== undefined) {
+      if (dto.professionId === null || dto.professionId === '') {
+        professionId = null;
+      } else {
+        const profession = await this.prisma.profession.findFirst({
+          where: { id: dto.professionId, businessId: specialist.businessId },
+        });
+        if (!profession) {
+          throw new BadRequestException('La profesión especificada no existe en este negocio');
+        }
+        professionId = profession.id;
+        if (fallbackSpecialty === undefined) {
+          fallbackSpecialty = profession.name;
+        }
+      }
+    }
+
+    const updated = await this.prisma.specialist.update({
       where: { id },
       data: {
         ...(dto.name !== undefined && { name: dto.name.trim() }),
-        ...(dto.specialty !== undefined && {
-          specialty: dto.specialty.trim(),
-        }),
+        ...(professionId !== undefined && { professionId }),
+        ...(fallbackSpecialty !== undefined && { specialty: fallbackSpecialty }),
         ...(dto.active !== undefined && { active: dto.active }),
       },
+      include: {
+        profession: true,
+        _count: {
+          select: { serviceSpecialists: true },
+        },
+      },
     });
+
+    return {
+      ...updated,
+      specialty: updated.profession?.name ?? updated.specialty ?? '',
+    };
   }
 
   async deleteSpecialist(
@@ -1563,6 +1672,138 @@ export class BookingService implements OnModuleInit {
     });
     return {
       message: 'Especialista eliminado exitosamente',
+      deleted: true,
+    };
+  }
+
+  // =========================================================================
+  // Profesiones / Especialidades (Catálogo separado de Servicios)
+  // =========================================================================
+
+  async getProfessions(businessId: string) {
+    await this.assertCitasActive(businessId);
+    return this.prisma.profession.findMany({
+      where: { businessId },
+      include: {
+        _count: {
+          select: { specialists: true },
+        },
+      },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async createProfession(businessId: string, dto: CreateProfessionDto) {
+    await this.assertCitasActive(businessId);
+    const trimmedName = dto.name.trim();
+
+    const existing = await this.prisma.profession.findFirst({
+      where: {
+        businessId,
+        name: {
+          equals: trimmedName,
+          mode: 'insensitive',
+        },
+      },
+    });
+
+    if (existing) {
+      throw new ConflictException('Ya existe una profesión con este nombre en este negocio');
+    }
+
+    return this.prisma.profession.create({
+      data: {
+        businessId,
+        name: trimmedName,
+        active: dto.active ?? true,
+      },
+      include: {
+        _count: {
+          select: { specialists: true },
+        },
+      },
+    });
+  }
+
+  async updateProfession(
+    id: string,
+    businessId: string,
+    dto: UpdateProfessionDto,
+  ) {
+    await this.assertCitasActive(businessId);
+    const profession = await this.prisma.profession.findFirst({
+      where: { id, businessId },
+    });
+
+    if (!profession) {
+      throw new NotFoundException('Profesión no encontrada');
+    }
+
+    if (dto.name !== undefined) {
+      const trimmedName = dto.name.trim();
+      const existing = await this.prisma.profession.findFirst({
+        where: {
+          businessId,
+          id: { not: id },
+          name: {
+            equals: trimmedName,
+            mode: 'insensitive',
+          },
+        },
+      });
+
+      if (existing) {
+        throw new ConflictException('Ya existe otra profesión con este nombre en este negocio');
+      }
+    }
+
+    return this.prisma.profession.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined && { name: dto.name.trim() }),
+        ...(dto.active !== undefined && { active: dto.active }),
+      },
+      include: {
+        _count: {
+          select: { specialists: true },
+        },
+      },
+    });
+  }
+
+  async deleteProfession(id: string, businessId: string) {
+    await this.assertCitasActive(businessId);
+    const profession = await this.prisma.profession.findFirst({
+      where: { id, businessId },
+      include: {
+        _count: {
+          select: { specialists: true },
+        },
+      },
+    });
+
+    if (!profession) {
+      throw new NotFoundException('Profesión no encontrada');
+    }
+
+    if (profession._count.specialists > 0) {
+      const updated = await this.prisma.profession.update({
+        where: { id },
+        data: { active: false },
+      });
+      return {
+        message: 'La profesión tiene especialistas asociados, por lo que fue desactivada.',
+        deactivated: true,
+        profession: updated,
+      };
+    }
+
+    await this.prisma.profession.delete({
+      where: { id },
+    });
+
+    return {
+      message: 'Profesión eliminada exitosamente',
       deleted: true,
     };
   }

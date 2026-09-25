@@ -923,6 +923,48 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Índice appointments.specialistId',
           sql: `CREATE INDEX IF NOT EXISTS "appointments_specialistId_idx" ON "appointments"("specialistId");`,
         },
+        {
+          name: 'Tabla professions',
+          sql: `CREATE TABLE IF NOT EXISTS "professions" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "name" VARCHAR(60) NOT NULL,
+            "active" BOOLEAN NOT NULL DEFAULT true,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "professions_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "professions_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "professions_businessId_name_key" UNIQUE ("businessId", "name")
+          );`,
+        },
+        {
+          name: 'Índice professions.businessId',
+          sql: `CREATE INDEX IF NOT EXISTS "professions_businessId_idx" ON "professions"("businessId");`,
+        },
+        {
+          name: 'Columna specialists.professionId',
+          sql: `ALTER TABLE "specialists" ADD COLUMN IF NOT EXISTS "professionId" TEXT;`,
+        },
+        {
+          name: 'Constraint specialists.professionId foreign key',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'specialists_professionId_fkey'
+            ) THEN
+              ALTER TABLE "specialists"
+                ADD CONSTRAINT "specialists_professionId_fkey"
+                FOREIGN KEY ("professionId") REFERENCES "professions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;`,
+        },
+        {
+          name: 'Índice specialists.professionId',
+          sql: `CREATE INDEX IF NOT EXISTS "specialists_professionId_idx" ON "specialists"("professionId");`,
+        },
+        {
+          name: 'Columna specialists.specialty nullable',
+          sql: `ALTER TABLE "specialists" ALTER COLUMN "specialty" DROP NOT NULL;`,
+        },
       ];
 
       for (const step of ddlStatements) {
@@ -943,6 +985,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       await this.ensureBusinessSlugsBackfilled();
 
       await this.ensureServicesMigrated();
+
+      await this.ensureProfessionsMigrated();
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia general en auto-sincronización de esquema: ${err.message}`);
     }
@@ -1431,6 +1475,69 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ Advertencia en migración de servicios: ${err.message}`);
+    }
+  }
+
+  async ensureProfessionsMigrated() {
+    try {
+      this.logger.log('[PrismaService] Verificando migración de especialidades de texto libre a Profession...');
+
+      const specialistsWithoutProfession = await this.specialist.findMany({
+        where: {
+          professionId: null,
+          specialty: {
+            not: null,
+          },
+        },
+      });
+
+      if (specialistsWithoutProfession.length === 0) {
+        this.logger.log('[PrismaService] ✓ Todas las profesiones ya están sincronizadas.');
+        return;
+      }
+
+      let professionsCreated = 0;
+      let specialistsLinked = 0;
+
+      for (const spec of specialistsWithoutProfession) {
+        const rawSpecialty = (spec.specialty || '').trim();
+        if (!rawSpecialty) continue;
+
+        const professionName = rawSpecialty.length > 60 ? rawSpecialty.slice(0, 60).trim() : rawSpecialty;
+
+        let profession = await this.profession.findFirst({
+          where: {
+            businessId: spec.businessId,
+            name: {
+              equals: professionName,
+              mode: 'insensitive',
+            },
+          },
+        });
+
+        if (!profession) {
+          profession = await this.profession.create({
+            data: {
+              businessId: spec.businessId,
+              name: professionName,
+              active: true,
+            },
+          });
+          professionsCreated++;
+        }
+
+        await this.specialist.update({
+          where: { id: spec.id },
+          data: { professionId: profession.id },
+        });
+        specialistsLinked++;
+      }
+
+      this.logger.log(
+        `[PrismaService] ✓ Migración a Profession completada. Profesiones creadas: ${professionsCreated}, Especialistas vinculados: ${specialistsLinked}.`
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ Advertencia en migración de profesiones: ${err.message}`);
     }
   }
 }

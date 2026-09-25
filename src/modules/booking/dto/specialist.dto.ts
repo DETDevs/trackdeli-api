@@ -8,11 +8,15 @@ export class CreateSpecialistDto {
   @MaxLength(150, { message: 'El nombre no puede exceder 150 caracteres' })
   name: string;
 
+  @IsOptional()
+  @IsString({ message: 'El professionId debe ser una cadena de texto' })
+  professionId?: string;
+
+  @IsOptional()
   @SanitizeText()
-  @IsNotEmpty({ message: 'La especialidad es obligatoria' })
   @IsString({ message: 'La especialidad debe ser una cadena de texto' })
   @MaxLength(150, { message: 'La especialidad no puede exceder 150 caracteres' })
-  specialty: string;
+  specialty?: string;
 
   @IsOptional()
   @IsBoolean({ message: 'El campo activo debe ser booleano' })
@@ -27,10 +31,13 @@ export class UpdateSpecialistDto {
   name?: string;
 
   @IsOptional()
+  professionId?: string | null;
+
+  @IsOptional()
   @SanitizeText()
   @IsString({ message: 'La especialidad debe ser una cadena de texto' })
   @MaxLength(150, { message: 'La especialidad no puede exceder 150 caracteres' })
-  specialty?: string;
+  specialty?: string | null;
 
   @IsOptional()
   @IsBoolean({ message: 'El campo activo debe ser booleano' })
