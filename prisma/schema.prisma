@@ -271,7 +271,7 @@ model Business {
   productAuditLogs     BusinessProductAuditLog[]
 
   // Citas / Booking
-  bookingServices       BookingService[]
+  services              Service[]
   availabilitySchedules AvailabilitySchedule[]
   bookingSettings       BusinessBookingSettings?
   appointments          Appointment[]
@@ -1121,35 +1121,47 @@ enum AppointmentStatus {
   NO_SHOW
 }
 
-model BookingService {
-  id                 String                 @id @default(uuid())
+model Service {
+  id                 String                 @id @default(cuid())
   businessId         String
   business           Business               @relation(fields: [businessId], references: [id], onDelete: Cascade)
   name               String                 @db.VarChar(100)
   description        String?                @db.VarChar(500)
   durationMinutes    Int
   price              Float
-  isActive           Boolean                @default(true)
+  active             Boolean                @default(true)
   hasCustomSchedule  Boolean                @default(false)
   createdAt          DateTime               @default(now())
   updatedAt          DateTime               @updatedAt
 
+  specialists        ServiceSpecialist[]
   appointments       Appointment[]
   schedules          AvailabilitySchedule[]
-  specialistId       String?
-  specialist         Specialist?            @relation(fields: [specialistId], references: [id], onDelete: SetNull)
 
-  @@index([businessId, isActive])
+  @@index([businessId, active])
+  @@map("services")
+}
+
+model ServiceSpecialist {
+  id           String     @id @default(cuid())
+  serviceId    String
+  service      Service    @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  specialistId String
+  specialist   Specialist @relation(fields: [specialistId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([serviceId, specialistId])
+  @@index([serviceId])
   @@index([specialistId])
-  @@map("booking_services")
+  @@map("service_specialists")
 }
 
 model AvailabilitySchedule {
-  id          String          @id @default(uuid())
+  id          String   @id @default(uuid())
   businessId  String
-  business    Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
   serviceId   String?
-  service     BookingService? @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  service     Service? @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   dayOfWeek   Int             // 0=Domingo, 1=Lunes, ..., 6=Sábado
   startTime   String          @db.VarChar(10) // "09:00"
   endTime     String          @db.VarChar(10) // "18:00"
@@ -1179,7 +1191,9 @@ model Appointment {
   businessId         String
   business           Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
   serviceId          String
-  service            BookingService    @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  service            Service           @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  specialistId       String?
+  specialist         Specialist?       @relation(fields: [specialistId], references: [id], onDelete: SetNull)
   customerId         String
   customer           Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
   scheduledAt        DateTime
@@ -1200,19 +1214,21 @@ model Appointment {
 
   @@index([businessId, status, scheduledAt])
   @@index([manageToken])
+  @@index([specialistId])
   @@map("appointments")
 }
 
 model Specialist {
-  id          String            @id @default(cuid())
-  businessId  String
-  business    Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  name        String            @db.VarChar(150)
-  specialty   String            @db.VarChar(150)
-  active      Boolean           @default(true)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
-  services    BookingService[]
+  id                 String              @id @default(cuid())
+  businessId         String
+  business           Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name               String              @db.VarChar(150)
+  specialty          String              @db.VarChar(150)
+  active             Boolean             @default(true)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  serviceSpecialists ServiceSpecialist[]
+  appointments       Appointment[]
 
   @@index([businessId])
   @@map("specialists")

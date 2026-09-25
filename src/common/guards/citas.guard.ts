@@ -64,8 +64,11 @@ export class CitasGuard implements CanActivate {
         if (appointment) {
           businessId = appointment.businessId;
         }
-      } else if (request.route?.path?.includes('/booking/services/:id')) {
-        const service = await this.prisma.bookingService.findUnique({
+      } else if (
+        request.route?.path?.includes('/booking/services/:id') ||
+        request.route?.path?.includes('/services/:id')
+      ) {
+        const service = await this.prisma.service.findUnique({
           where: { id: request.params.id },
           select: { businessId: true },
         });

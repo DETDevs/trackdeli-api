@@ -861,6 +861,68 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Índice único businesses.slug',
           sql: `CREATE UNIQUE INDEX IF NOT EXISTS "businesses_slug_key" ON "businesses"("slug");`,
         },
+        {
+          name: 'Tabla services',
+          sql: `CREATE TABLE IF NOT EXISTS "services" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "name" VARCHAR(100) NOT NULL,
+            "description" VARCHAR(500),
+            "durationMinutes" INTEGER NOT NULL,
+            "price" DOUBLE PRECISION NOT NULL,
+            "active" BOOLEAN NOT NULL DEFAULT true,
+            "hasCustomSchedule" BOOLEAN NOT NULL DEFAULT false,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "services_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "services_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice services.businessId_active',
+          sql: `CREATE INDEX IF NOT EXISTS "services_businessId_active_idx" ON "services"("businessId", "active");`,
+        },
+        {
+          name: 'Tabla service_specialists',
+          sql: `CREATE TABLE IF NOT EXISTS "service_specialists" (
+            "id" TEXT NOT NULL,
+            "serviceId" TEXT NOT NULL,
+            "specialistId" TEXT NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "service_specialists_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "service_specialists_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "services"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "service_specialists_specialistId_fkey" FOREIGN KEY ("specialistId") REFERENCES "specialists"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "service_specialists_serviceId_specialistId_key" UNIQUE ("serviceId", "specialistId")
+          );`,
+        },
+        {
+          name: 'Índice service_specialists.serviceId',
+          sql: `CREATE INDEX IF NOT EXISTS "service_specialists_serviceId_idx" ON "service_specialists"("serviceId");`,
+        },
+        {
+          name: 'Índice service_specialists.specialistId',
+          sql: `CREATE INDEX IF NOT EXISTS "service_specialists_specialistId_idx" ON "service_specialists"("specialistId");`,
+        },
+        {
+          name: 'Columna appointments.specialistId',
+          sql: `ALTER TABLE "appointments" ADD COLUMN IF NOT EXISTS "specialistId" TEXT;`,
+        },
+        {
+          name: 'Constraint appointments.specialistId foreign key',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'appointments_specialistId_fkey'
+            ) THEN
+              ALTER TABLE "appointments"
+                ADD CONSTRAINT "appointments_specialistId_fkey"
+                FOREIGN KEY ("specialistId") REFERENCES "specialists"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;`,
+        },
+        {
+          name: 'Índice appointments.specialistId',
+          sql: `CREATE INDEX IF NOT EXISTS "appointments_specialistId_idx" ON "appointments"("specialistId");`,
+        },
       ];
 
       for (const step of ddlStatements) {
@@ -879,6 +941,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       await this.reconcileProductTrackStock();
 
       await this.ensureBusinessSlugsBackfilled();
+
+      await this.ensureServicesMigrated();
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia general en auto-sincronización de esquema: ${err.message}`);
     }
@@ -1193,6 +1257,180 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
 
       candidate = `${baseSlug}-${suffix}`;
       suffix++;
+    }
+  }
+
+  private async ensureServicesMigrated() {
+    try {
+      this.logger.log('[PrismaService] Verificando migración de BookingService a Service/ServiceSpecialist...');
+
+      const tableCheck: any = await this.$queryRawUnsafe(`
+        SELECT 1 FROM information_schema.tables WHERE table_name = 'booking_services'
+      `);
+      if (!tableCheck || tableCheck.length === 0) {
+        this.logger.log('[PrismaService] Tabla booking_services no existe, nada que migrar.');
+        return;
+      }
+
+      const totalAppointmentsBefore = await this.appointment.count();
+
+      const legacyServices: any[] = await this.$queryRawUnsafe(`
+        SELECT * FROM "booking_services" ORDER BY "createdAt" ASC
+      `);
+
+      if (legacyServices.length === 0) {
+        this.logger.log('[PrismaService] No hay servicios legacy en booking_services.');
+        return;
+      }
+
+      const byBiz = new Map<string, Map<string, any[]>>();
+      for (const s of legacyServices) {
+        let bizMap = byBiz.get(s.businessId);
+        if (!bizMap) {
+          bizMap = new Map<string, any[]>();
+          byBiz.set(s.businessId, bizMap);
+        }
+        const normName = s.name.trim().toLowerCase();
+        const list = bizMap.get(normName) || [];
+        list.push(s);
+        bizMap.set(normName, list);
+      }
+
+      let servicesCreated = 0;
+      let servicesMerged = 0;
+      let specialistLinksCreated = 0;
+
+      for (const [bizId, bizMap] of byBiz.entries()) {
+        for (const [normName, group] of bizMap.entries()) {
+          const primaryLegacy = group[0];
+          const targetServiceId = primaryLegacy.id;
+
+          const existingService = await this.service.findUnique({
+            where: { id: targetServiceId },
+          });
+
+          if (!existingService) {
+            await this.service.create({
+              data: {
+                id: targetServiceId,
+                businessId: bizId,
+                name: primaryLegacy.name,
+                description: primaryLegacy.description,
+                durationMinutes: primaryLegacy.durationMinutes,
+                price: Number(primaryLegacy.price),
+                active: primaryLegacy.isActive !== undefined ? primaryLegacy.isActive : true,
+                hasCustomSchedule: primaryLegacy.hasCustomSchedule || false,
+                createdAt: primaryLegacy.createdAt,
+                updatedAt: primaryLegacy.updatedAt,
+              },
+            });
+            servicesCreated++;
+          }
+
+          if (group.length > 1) {
+            servicesMerged += (group.length - 1);
+            this.logger.log(`[PrismaService] Fusión de ${group.length} servicios con nombre "${normName}" en servicio ${targetServiceId}`);
+          }
+
+          for (const s of group) {
+            if (s.specialistId) {
+              const existingLink = await this.serviceSpecialist.findUnique({
+                where: {
+                  serviceId_specialistId: {
+                    serviceId: targetServiceId,
+                    specialistId: s.specialistId,
+                  },
+                },
+              });
+              if (!existingLink) {
+                await this.serviceSpecialist.create({
+                  data: {
+                    serviceId: targetServiceId,
+                    specialistId: s.specialistId,
+                  },
+                });
+                specialistLinksCreated++;
+              }
+            }
+
+            if (s.specialistId) {
+              await this.$executeRawUnsafe(`
+                UPDATE "appointments"
+                SET "specialistId" = COALESCE("specialistId", '${s.specialistId}'),
+                    "serviceId" = '${targetServiceId}'
+                WHERE "serviceId" = '${s.id}'
+              `);
+            } else {
+              await this.$executeRawUnsafe(`
+                UPDATE "appointments"
+                SET "serviceId" = '${targetServiceId}'
+                WHERE "serviceId" = '${s.id}'
+              `);
+            }
+
+            if (s.id !== targetServiceId) {
+              await this.$executeRawUnsafe(`
+                UPDATE "availability_schedules"
+                SET "serviceId" = '${targetServiceId}'
+                WHERE "serviceId" = '${s.id}'
+              `);
+            }
+          }
+        }
+      }
+
+      await this.$executeRawUnsafe(`
+        DO $$ BEGIN
+          IF EXISTS (
+            SELECT 1 FROM pg_constraint c
+            JOIN pg_class t ON c.conrelid = t.oid
+            WHERE c.conname = 'appointments_serviceId_fkey'
+              AND c.confrelid = (SELECT oid FROM pg_class WHERE relname = 'booking_services')
+          ) THEN
+            ALTER TABLE "appointments" DROP CONSTRAINT "appointments_serviceId_fkey";
+          END IF;
+
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'appointments_serviceId_fkey'
+          ) THEN
+            ALTER TABLE "appointments"
+              ADD CONSTRAINT "appointments_serviceId_fkey"
+              FOREIGN KEY ("serviceId") REFERENCES "services"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+          END IF;
+
+          IF EXISTS (
+            SELECT 1 FROM pg_constraint c
+            JOIN pg_class t ON c.conrelid = t.oid
+            WHERE c.conname = 'availability_schedules_serviceId_fkey'
+              AND c.confrelid = (SELECT oid FROM pg_class WHERE relname = 'booking_services')
+          ) THEN
+            ALTER TABLE "availability_schedules" DROP CONSTRAINT "availability_schedules_serviceId_fkey";
+          END IF;
+
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'availability_schedules_serviceId_fkey'
+          ) THEN
+            ALTER TABLE "availability_schedules"
+              ADD CONSTRAINT "availability_schedules_serviceId_fkey"
+              FOREIGN KEY ("serviceId") REFERENCES "services"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+          END IF;
+        END $$;
+      `);
+
+      const totalAppointmentsAfter = await this.appointment.count();
+      if (totalAppointmentsBefore !== totalAppointmentsAfter) {
+        throw new Error(
+          `¡ALERTA DE INTEGRIDAD! Total de citas antes (${totalAppointmentsBefore}) no coincide con después (${totalAppointmentsAfter})`
+        );
+      }
+
+      this.logger.log(
+        `[PrismaService] ✓ Migración a Service/ServiceSpecialist completada exitosamente. ` +
+        `Servicios: ${servicesCreated} creados, ${servicesMerged} fusionados. ` +
+        `Especialistas asociados: ${specialistLinksCreated}. Total citas verificadas: ${totalAppointmentsAfter}/${totalAppointmentsBefore}.`
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ Advertencia en migración de servicios: ${err.message}`);
     }
   }
 }

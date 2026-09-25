@@ -26,6 +26,7 @@ import {
 import { SaveSchedulesDto } from './dto/save-schedules.dto';
 import { UpdateBookingSettingsDto } from './dto/update-booking-settings.dto';
 import { DeclineAppointmentDto } from './dto/decline-appointment.dto';
+import { ReassignSpecialistDto } from './dto/reassign-specialist.dto';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, CitasGuard)
@@ -139,44 +140,117 @@ export class BookingPanelController {
     return this.bookingService.markNoShow(id);
   }
 
+  /**
+   * Reasignar especialista para una cita existente.
+   * PATCH /businesses/me/appointments/:id/specialist
+   * PATCH /businesses/:businessId/appointments/:id/specialist
+   * PATCH /appointments/:id/specialist
+   */
+  @Patch([
+    'businesses/me/appointments/:id/specialist',
+    'businesses/:businessId/appointments/:id/specialist',
+    'appointments/:id/specialist',
+  ])
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
+  async reassignSpecialist(
+    @Param('id') appointmentId: string,
+    @Param('businessId') paramBusinessId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ReassignSpecialistDto,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Sin negocio asociado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.bookingService.reassignAppointmentSpecialist(
+      appointmentId,
+      businessId,
+      dto.specialistId,
+    );
+  }
+
   // =========================================================================
   // Configuración de Servicios (ENCARGADO, SUPERADMIN)
   // =========================================================================
 
-  @Get('businesses/:id/booking/services')
+  @Get([
+    'businesses/:id/booking/services',
+    'businesses/me/booking/services',
+    'businesses/:id/services',
+    'businesses/me/services',
+  ])
   @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   async getServices(
-    @Param('id') businessId: string,
+    @Param('id') paramBusinessId: string | undefined,
     @CurrentUser() user: JwtPayload,
   ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Sin negocio asociado');
+    }
     this.checkBusinessAccess(user, businessId);
     return this.bookingService.getServices(businessId);
   }
 
-  @Post('businesses/:id/booking/services')
+  @Post([
+    'businesses/:id/booking/services',
+    'businesses/me/booking/services',
+    'businesses/:id/services',
+    'businesses/me/services',
+  ])
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async createService(
-    @Param('id') businessId: string,
+    @Param('id') paramBusinessId: string | undefined,
     @CurrentUser() user: JwtPayload,
     @Body() dto: CreateBookingServiceDto,
   ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Sin negocio asociado');
+    }
     this.checkBusinessAccess(user, businessId);
     return this.bookingService.createService(businessId, dto);
   }
 
-  @Patch('booking/services/:id')
+  @Patch([
+    'booking/services/:id',
+    'businesses/:id/services/:serviceId',
+    'businesses/me/services/:id',
+    'services/:id',
+  ])
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async updateService(
     @Param('id') id: string,
+    @Param('serviceId') serviceId: string | undefined,
     @Body() dto: UpdateBookingServiceDto,
   ) {
-    return this.bookingService.updateService(id, dto);
+    const targetId = serviceId || id;
+    return this.bookingService.updateService(targetId, dto);
   }
 
-  @Delete('booking/services/:id')
+  @Delete([
+    'booking/services/:id',
+    'businesses/:id/services/:serviceId',
+    'businesses/me/services/:id',
+    'services/:id',
+  ])
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
-  async deleteService(@Param('id') id: string) {
-    return this.bookingService.deleteService(id);
+  async deleteService(
+    @Param('id') id: string,
+    @Param('serviceId') serviceId: string | undefined,
+  ) {
+    const targetId = serviceId || id;
+    return this.bookingService.deleteService(targetId);
   }
 
   // =========================================================================

@@ -129,10 +129,10 @@ export class BookingService implements OnModuleInit {
     await this.assertCitasActive(business.id);
     const businessId = business.id;
 
-    const services = await this.prisma.bookingService.findMany({
+    const services = await this.prisma.service.findMany({
       where: {
         businessId,
-        isActive: true,
+        active: true,
       },
       select: {
         id: true,
@@ -141,12 +141,17 @@ export class BookingService implements OnModuleInit {
         durationMinutes: true,
         price: true,
         hasCustomSchedule: true,
-        specialistId: true,
-        specialist: {
+        active: true,
+        specialists: {
           select: {
-            id: true,
-            name: true,
-            specialty: true,
+            specialist: {
+              select: {
+                id: true,
+                name: true,
+                specialty: true,
+                active: true,
+              },
+            },
           },
         },
       },
@@ -155,17 +160,34 @@ export class BookingService implements OnModuleInit {
       },
     });
 
-    return services;
+    return services.map((s) => {
+      const activeSpecialists = s.specialists
+        .filter((ss) => ss.specialist.active)
+        .map((ss) => ss.specialist);
+      return {
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        durationMinutes: s.durationMinutes,
+        price: s.price,
+        hasCustomSchedule: s.hasCustomSchedule,
+        active: s.active,
+        isActive: s.active,
+        specialists: activeSpecialists,
+        specialistId: activeSpecialists[0]?.id ?? null,
+        specialist: activeSpecialists[0] ?? null,
+      };
+    });
   }
 
   /**
-   * Construye el criterio de filtrado de citas en conflicto para un servicio:
-   * - Si el servicio tiene especialista asignado: busca citas de cualquier servicio de ese especialista.
-   * - Si el servicio no tiene especialista (genérico): busca citas exclusivamente del mismo servicio.
+   * Construye el criterio de filtrado de citas en conflicto para un servicio / especialista:
+   * - Si hay specialistId: busca citas de ese especialista independientemente del servicio.
+   * - Si no hay specialistId (servicio genérico): busca citas exclusivamente del mismo servicio sin especialista.
    */
   private buildConflictWhereClause(
     businessId: string,
-    service: { id: string; specialistId?: string | null },
+    params: { serviceId: string; specialistId?: string | null },
     extraWhere?: Prisma.AppointmentWhereInput,
   ): Prisma.AppointmentWhereInput {
     return {
@@ -178,9 +200,9 @@ export class BookingService implements OnModuleInit {
           AppointmentStatus.NO_SHOW,
         ],
       },
-      ...(service.specialistId
-        ? { service: { specialistId: service.specialistId } }
-        : { serviceId: service.id }),
+      ...(params.specialistId
+        ? { specialistId: params.specialistId }
+        : { serviceId: params.serviceId, specialistId: null }),
       ...extraWhere,
     };
   }
@@ -192,7 +214,8 @@ export class BookingService implements OnModuleInit {
     prismaOrTx: Prisma.TransactionClient | PrismaService,
     params: {
       businessId: string;
-      service: { id: string; specialistId?: string | null };
+      serviceId: string;
+      specialistId?: string | null;
       scheduledAt: Date;
       durationMinutes: number;
       excludeAppointmentId?: string;
@@ -200,7 +223,8 @@ export class BookingService implements OnModuleInit {
   ): Promise<boolean> {
     const {
       businessId,
-      service,
+      serviceId,
+      specialistId,
       scheduledAt,
       durationMinutes,
       excludeAppointmentId,
@@ -209,10 +233,14 @@ export class BookingService implements OnModuleInit {
       scheduledAt.getTime() + durationMinutes * 60 * 1000,
     );
 
-    const where = this.buildConflictWhereClause(businessId, service, {
-      ...(excludeAppointmentId ? { id: { not: excludeAppointmentId } } : {}),
-      scheduledAt: { lt: scheduledEnd },
-    });
+    const where = this.buildConflictWhereClause(
+      businessId,
+      { serviceId, specialistId },
+      {
+        ...(excludeAppointmentId ? { id: { not: excludeAppointmentId } } : {}),
+        scheduledAt: { lt: scheduledEnd },
+      },
+    );
 
     const candidates = await prismaOrTx.appointment.findMany({
       where,
@@ -235,13 +263,25 @@ export class BookingService implements OnModuleInit {
   /**
    * Motor de cálculo de disponibilidad de slots.
    */
-  async getAvailability(businessIdOrSlug: string, serviceId: string, dateStr: string) {
+  async getAvailability(
+    businessIdOrSlug: string,
+    serviceId: string,
+    dateStr: string,
+    requestedSpecialistId?: string,
+  ) {
     const business = await this.resolveBusiness(businessIdOrSlug);
     await this.assertCitasActive(business.id);
     const businessId = business.id;
 
-    const service = await this.prisma.bookingService.findFirst({
-      where: { id: serviceId, businessId, isActive: true },
+    const service = await this.prisma.service.findFirst({
+      where: { id: serviceId, businessId, active: true },
+      include: {
+        specialists: {
+          include: {
+            specialist: true,
+          },
+        },
+      },
     });
 
     if (!service) {
@@ -252,8 +292,18 @@ export class BookingService implements OnModuleInit {
       throw new BadRequestException('El formato de fecha debe ser YYYY-MM-DD');
     }
 
+    const assignedSpecialists = service.specialists
+      .filter((s) => s.specialist.active)
+      .map((s) => s.specialist);
+
+    if (requestedSpecialistId) {
+      const isAssigned = assignedSpecialists.some((s) => s.id === requestedSpecialistId);
+      if (!isAssigned) {
+        throw new BadRequestException('El especialista no está asignado a este servicio');
+      }
+    }
+
     const [year, month, day] = dateStr.split('-').map(Number);
-    // Usar Date UTC para consistencia absoluta
     const dayDate = new Date(Date.UTC(year, month - 1, day));
     const dayOfWeek = dayDate.getUTCDay(); // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
 
@@ -292,23 +342,32 @@ export class BookingService implements OnModuleInit {
       };
     }
 
-    // 2. Citas existentes del especialista (o del servicio si es genérico) en esa fecha (rango en hora local de Nicaragua UTC-6)
+    // 2. Citas existentes en esa fecha
     const dayStart = new Date(`${dateStr}T00:00:00.000${BOOKING_TZ_OFFSET}`);
     const dayEnd = new Date(`${dateStr}T23:59:59.999${BOOKING_TZ_OFFSET}`);
 
     const existingAppointments = await this.prisma.appointment.findMany({
-      where: this.buildConflictWhereClause(businessId, service, {
+      where: {
+        businessId,
+        status: {
+          in: [
+            AppointmentStatus.PENDING,
+            AppointmentStatus.CONFIRMED,
+            AppointmentStatus.COMPLETED,
+            AppointmentStatus.NO_SHOW,
+          ],
+        },
         scheduledAt: {
           gte: dayStart,
           lte: dayEnd,
         },
-      }),
+      },
       select: {
         id: true,
         serviceId: true,
+        specialistId: true,
         scheduledAt: true,
         durationMinutes: true,
-        capacity: true,
       },
     });
 
@@ -342,25 +401,49 @@ export class BookingService implements OnModuleInit {
         const slotStartTimeStr = `${slotStartHStr}:${slotStartMStr}`;
         const slotEndTimeStr = `${slotEndHStr}:${slotEndMStr}`;
 
-        // Crear la fecha en UTC convirtiendo desde la hora local de Nicaragua (UTC-6)
         const slotStartDate = new Date(`${dateStr}T${slotStartTimeStr}:00${BOOKING_TZ_OFFSET}`);
         const slotEndDate = new Date(`${dateStr}T${slotEndTimeStr}:00${BOOKING_TZ_OFFSET}`);
 
-        // Descartar si ya pasó la hora actual
         if (slotStartDate.getTime() > now.getTime()) {
-          // 4. Verificar solapamiento con citas existentes
-          const overlappingCount = existingAppointments.filter((app) => {
-            const appStart = new Date(app.scheduledAt).getTime();
-            const appEnd = appStart + app.durationMinutes * 60 * 1000;
-            const slotStartMs = slotStartDate.getTime();
-            const slotEndMs = slotEndDate.getTime();
+          const slotStartMs = slotStartDate.getTime();
+          const slotEndMs = slotEndDate.getTime();
 
-            // Solapamiento de intervalos [slotStart, slotEnd) y [appStart, appEnd)
-            return slotStartMs < appEnd && slotEndMs > appStart;
-          }).length;
+          let isSlotAvailable = false;
 
-          // Capacidad en MVP es 1
-          if (overlappingCount < 1) {
+          if (assignedSpecialists.length > 0) {
+            if (requestedSpecialistId) {
+              const hasConflict = existingAppointments.some((app) => {
+                if (app.specialistId !== requestedSpecialistId) return false;
+                const appStart = new Date(app.scheduledAt).getTime();
+                const appEnd = appStart + app.durationMinutes * 60 * 1000;
+                return slotStartMs < appEnd && slotEndMs > appStart;
+              });
+              isSlotAvailable = !hasConflict;
+            } else {
+              // Disponible si al menos un especialista asignado está libre
+              const freeSpecialists = assignedSpecialists.filter((spec) => {
+                const hasConflict = existingAppointments.some((app) => {
+                  if (app.specialistId !== spec.id) return false;
+                  const appStart = new Date(app.scheduledAt).getTime();
+                  const appEnd = appStart + app.durationMinutes * 60 * 1000;
+                  return slotStartMs < appEnd && slotEndMs > appStart;
+                });
+                return !hasConflict;
+              });
+              isSlotAvailable = freeSpecialists.length > 0;
+            }
+          } else {
+            // Servicio genérico sin especialistas asignados
+            const hasConflict = existingAppointments.some((app) => {
+              if (app.serviceId !== service.id || app.specialistId !== null) return false;
+              const appStart = new Date(app.scheduledAt).getTime();
+              const appEnd = appStart + app.durationMinutes * 60 * 1000;
+              return slotStartMs < appEnd && slotEndMs > appStart;
+            });
+            isSlotAvailable = !hasConflict;
+          }
+
+          if (isSlotAvailable) {
             availableSlots.push({
               startTime: slotStartTimeStr,
               endTime: slotEndTimeStr,
@@ -393,8 +476,15 @@ export class BookingService implements OnModuleInit {
     await this.assertCitasActive(business.id);
     const businessId = business.id;
 
-    const service = await this.prisma.bookingService.findFirst({
-      where: { id: dto.serviceId, businessId, isActive: true },
+    const service = await this.prisma.service.findFirst({
+      where: { id: dto.serviceId, businessId, active: true },
+      include: {
+        specialists: {
+          include: {
+            specialist: true,
+          },
+        },
+      },
     });
     if (!service) {
       throw new NotFoundException('Servicio no encontrado o inactivo');
@@ -411,6 +501,30 @@ export class BookingService implements OnModuleInit {
     const cleanPhone = dto.customerPhone.trim();
     if (!cleanPhone) {
       throw new BadRequestException('El teléfono del cliente es requerido');
+    }
+
+    // Resolver especialistas válidos
+    const activeSpecialists = service.specialists
+      .filter((s) => s.specialist.active)
+      .map((s) => s.specialist);
+
+    let targetSpecialistId: string | null = null;
+
+    if (activeSpecialists.length === 0) {
+      if (dto.specialistId) {
+        throw new BadRequestException('Este servicio no tiene especialistas asignables');
+      }
+      targetSpecialistId = null;
+    } else {
+      if (dto.specialistId) {
+        const found = activeSpecialists.find((s) => s.id === dto.specialistId);
+        if (!found) {
+          throw new BadRequestException(
+            'El especialista seleccionado no está asignado a este servicio',
+          );
+        }
+        targetSpecialistId = dto.specialistId;
+      }
     }
 
     // Buscar o crear Customer por (businessId, phone)
@@ -448,7 +562,6 @@ export class BookingService implements OnModuleInit {
       }
     }
 
-    // Validar bloqueo por no-shows
     if (customer.isBlocked) {
       throw new ForbiddenException(
         'El cliente se encuentra bloqueado para realizar reservas debido a inasistencias previas (no-shows). Contacte al negocio directamente.',
@@ -456,28 +569,54 @@ export class BookingService implements OnModuleInit {
     }
 
     const durationMinutes = service.durationMinutes;
-    const scheduledEnd = new Date(scheduledAt.getTime() + durationMinutes * 60 * 1000);
     const manageToken = uuidv4();
 
-    // Re-validación atómica dentro de transacción para prevenir doble reserva
+    // Re-validación atómica dentro de transacción
     const appointment = await this.prisma.$transaction(async (tx) => {
-      const hasConflict = await this.hasConflictingAppointment(tx, {
-        businessId,
-        service,
-        scheduledAt,
-        durationMinutes,
-      });
+      let resolvedSpecialistId = targetSpecialistId;
 
-      if (hasConflict) {
-        throw new ConflictException(
-          'El horario seleccionado ya no se encuentra disponible. Por favor elija otro horario.',
-        );
+      if (activeSpecialists.length > 0 && !resolvedSpecialistId) {
+        // Auto-asignar al primer especialista libre en ese horario
+        for (const spec of activeSpecialists) {
+          const conflict = await this.hasConflictingAppointment(tx, {
+            businessId,
+            serviceId: service.id,
+            specialistId: spec.id,
+            scheduledAt,
+            durationMinutes,
+          });
+          if (!conflict) {
+            resolvedSpecialistId = spec.id;
+            break;
+          }
+        }
+
+        if (!resolvedSpecialistId) {
+          throw new ConflictException(
+            'El horario seleccionado ya no se encuentra disponible. Por favor elija otro horario.',
+          );
+        }
+      } else {
+        const hasConflict = await this.hasConflictingAppointment(tx, {
+          businessId,
+          serviceId: service.id,
+          specialistId: resolvedSpecialistId,
+          scheduledAt,
+          durationMinutes,
+        });
+
+        if (hasConflict) {
+          throw new ConflictException(
+            'El horario seleccionado ya no se encuentra disponible. Por favor elija otro horario.',
+          );
+        }
       }
 
       const newApp = await tx.appointment.create({
         data: {
           businessId,
           serviceId: service.id,
+          specialistId: resolvedSpecialistId,
           customerId: customer.id,
           scheduledAt,
           durationMinutes,
@@ -490,6 +629,7 @@ export class BookingService implements OnModuleInit {
         },
         include: {
           service: true,
+          specialist: true,
           customer: true,
           business: true,
         },
@@ -617,7 +757,8 @@ export class BookingService implements OnModuleInit {
     const updated = await this.prisma.$transaction(async (tx) => {
       const hasConflict = await this.hasConflictingAppointment(tx, {
         businessId: appointment.businessId,
-        service: appointment.service,
+        serviceId: appointment.serviceId,
+        specialistId: appointment.specialistId,
         scheduledAt: newScheduledAt,
         durationMinutes,
         excludeAppointmentId: appointment.id,
@@ -639,6 +780,7 @@ export class BookingService implements OnModuleInit {
         },
         include: {
           service: true,
+          specialist: true,
           customer: true,
           business: true,
         },
@@ -702,11 +844,9 @@ export class BookingService implements OnModuleInit {
     }
 
     if (filters?.specialistId) {
-      where.service = {
-        ...(filters.serviceId ? { id: filters.serviceId } : {}),
-        specialistId: filters.specialistId,
-      };
-    } else if (filters?.serviceId) {
+      where.specialistId = filters.specialistId;
+    }
+    if (filters?.serviceId) {
       where.serviceId = filters.serviceId;
     }
 
@@ -725,11 +865,8 @@ export class BookingService implements OnModuleInit {
         skip,
         take: limit,
         include: {
-          service: {
-            include: {
-              specialist: true,
-            },
-          },
+          service: true,
+          specialist: true,
           customer: true,
         },
         orderBy: {
@@ -739,8 +876,19 @@ export class BookingService implements OnModuleInit {
       this.prisma.appointment.count({ where }),
     ]);
 
+    const mappedItems = items.map((app) => ({
+      ...app,
+      service: app.service
+        ? {
+            ...app.service,
+            specialist: app.specialist ?? null,
+            specialistId: app.specialistId ?? null,
+          }
+        : null,
+    }));
+
     return {
-      items,
+      items: mappedItems,
       total,
       page,
       limit,
@@ -1003,61 +1151,104 @@ export class BookingService implements OnModuleInit {
 
   async getServices(businessId: string) {
     await this.assertCitasActive(businessId);
-    return this.prisma.bookingService.findMany({
+    const services = await this.prisma.service.findMany({
       where: { businessId },
       include: {
-        specialist: {
-          select: {
-            id: true,
-            name: true,
-            specialty: true,
-            active: true,
+        specialists: {
+          include: {
+            specialist: {
+              select: {
+                id: true,
+                name: true,
+                specialty: true,
+                active: true,
+              },
+            },
           },
         },
       },
       orderBy: { createdAt: 'desc' },
+    });
+
+    return services.map((s) => {
+      const activeSpecialists = s.specialists
+        .filter((ss) => ss.specialist.active)
+        .map((ss) => ss.specialist);
+      return {
+        ...s,
+        isActive: s.active,
+        specialists: activeSpecialists,
+        specialistId: activeSpecialists[0]?.id ?? null,
+        specialist: activeSpecialists[0] ?? null,
+      };
     });
   }
 
   async createService(businessId: string, dto: CreateBookingServiceDto) {
     await this.assertCitasActive(businessId);
 
-    if (dto.specialistId) {
-      const specialist = await this.prisma.specialist.findFirst({
-        where: { id: dto.specialistId, businessId },
+    const rawIds = dto.specialistIds ?? (dto.specialistId ? [dto.specialistId] : []);
+    const specialistIds = Array.from(new Set(rawIds.filter(Boolean)));
+
+    if (specialistIds.length > 0) {
+      const count = await this.prisma.specialist.count({
+        where: { id: { in: specialistIds }, businessId },
       });
-      if (!specialist) {
+      if (count !== specialistIds.length) {
         throw new BadRequestException(
-          'El especialista no existe o no pertenece a este negocio',
+          'Uno o más especialistas no existen o no pertenecen a este negocio',
         );
       }
     }
 
-    return this.prisma.bookingService.create({
+    const active = dto.active ?? dto.isActive ?? true;
+
+    const created = await this.prisma.service.create({
       data: {
         businessId,
         name: dto.name.trim(),
         description: dto.description?.trim() || null,
         durationMinutes: dto.durationMinutes,
         price: dto.price,
+        active,
         hasCustomSchedule: dto.hasCustomSchedule ?? false,
-        specialistId: dto.specialistId || null,
+        specialists: {
+          create: specialistIds.map((specId) => ({
+            specialistId: specId,
+          })),
+        },
       },
       include: {
-        specialist: {
-          select: {
-            id: true,
-            name: true,
-            specialty: true,
-            active: true,
+        specialists: {
+          include: {
+            specialist: {
+              select: {
+                id: true,
+                name: true,
+                specialty: true,
+                active: true,
+              },
+            },
           },
         },
       },
     });
+
+    const activeSpecialists = created.specialists
+      .filter((ss) => ss.specialist.active)
+      .map((ss) => ss.specialist);
+
+    return {
+      ...created,
+      isActive: created.active,
+      specialists: activeSpecialists,
+      specialistId: activeSpecialists[0]?.id ?? null,
+      specialist: activeSpecialists[0] ?? null,
+    };
   }
 
   async updateService(serviceId: string, dto: UpdateBookingServiceDto) {
-    const service = await this.prisma.bookingService.findUnique({
+    const service = await this.prisma.service.findUnique({
       where: { id: serviceId },
     });
     if (!service) {
@@ -1065,51 +1256,94 @@ export class BookingService implements OnModuleInit {
     }
     await this.assertCitasActive(service.businessId);
 
-    if (dto.specialistId) {
-      const specialist = await this.prisma.specialist.findFirst({
-        where: { id: dto.specialistId, businessId: service.businessId },
-      });
-      if (!specialist) {
-        throw new BadRequestException(
-          'El especialista no existe o no pertenece a este negocio',
-        );
+    const rawIds =
+      dto.specialistIds ??
+      (dto.specialistId !== undefined
+        ? dto.specialistId
+          ? [dto.specialistId]
+          : []
+        : undefined);
+
+    let specialistIds: string[] | undefined = undefined;
+    if (rawIds !== undefined) {
+      specialistIds = Array.from(new Set(rawIds.filter(Boolean)));
+      if (specialistIds.length > 0) {
+        const count = await this.prisma.specialist.count({
+          where: { id: { in: specialistIds }, businessId: service.businessId },
+        });
+        if (count !== specialistIds.length) {
+          throw new BadRequestException(
+            'Uno o más especialistas no existen o no pertenecen a este negocio',
+          );
+        }
       }
     }
 
-    return this.prisma.bookingService.update({
-      where: { id: serviceId },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name.trim() }),
-        ...(dto.description !== undefined && {
-          description: dto.description?.trim() || null,
-        }),
-        ...(dto.durationMinutes !== undefined && {
-          durationMinutes: dto.durationMinutes,
-        }),
-        ...(dto.price !== undefined && { price: dto.price }),
-        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-        ...(dto.hasCustomSchedule !== undefined && {
-          hasCustomSchedule: dto.hasCustomSchedule,
-        }),
-        ...(dto.specialistId !== undefined && {
-          specialistId: dto.specialistId || null,
-        }),
-      },
-      include: {
-        specialist: {
-          select: {
-            id: true,
-            name: true,
-            specialty: true,
-            active: true,
+    const active = dto.active ?? dto.isActive;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (specialistIds !== undefined) {
+        await tx.serviceSpecialist.deleteMany({
+          where: { serviceId },
+        });
+        if (specialistIds.length > 0) {
+          await tx.serviceSpecialist.createMany({
+            data: specialistIds.map((specId) => ({
+              serviceId,
+              specialistId: specId,
+            })),
+          });
+        }
+      }
+
+      return tx.service.update({
+        where: { id: serviceId },
+        data: {
+          ...(dto.name !== undefined && { name: dto.name.trim() }),
+          ...(dto.description !== undefined && {
+            description: dto.description?.trim() || null,
+          }),
+          ...(dto.durationMinutes !== undefined && {
+            durationMinutes: dto.durationMinutes,
+          }),
+          ...(dto.price !== undefined && { price: dto.price }),
+          ...(active !== undefined && { active }),
+          ...(dto.hasCustomSchedule !== undefined && {
+            hasCustomSchedule: dto.hasCustomSchedule,
+          }),
+        },
+        include: {
+          specialists: {
+            include: {
+              specialist: {
+                select: {
+                  id: true,
+                  name: true,
+                  specialty: true,
+                  active: true,
+                },
+              },
+            },
           },
         },
-      },
+      });
     });
+
+    const activeSpecialists = updated.specialists
+      .filter((ss) => ss.specialist.active)
+      .map((ss) => ss.specialist);
+
+    return {
+      ...updated,
+      isActive: updated.active,
+      specialists: activeSpecialists,
+      specialistId: activeSpecialists[0]?.id ?? null,
+      specialist: activeSpecialists[0] ?? null,
+    };
   }
 
   async deleteService(serviceId: string) {
-    const service = await this.prisma.bookingService.findUnique({
+    const service = await this.prisma.service.findUnique({
       where: { id: serviceId },
     });
     if (!service) {
@@ -1118,9 +1352,9 @@ export class BookingService implements OnModuleInit {
     await this.assertCitasActive(service.businessId);
 
     // Soft delete para mantener integridad histórica de citas
-    return this.prisma.bookingService.update({
+    return this.prisma.service.update({
       where: { id: serviceId },
-      data: { isActive: false },
+      data: { active: false },
     });
   }
 
@@ -1140,7 +1374,7 @@ export class BookingService implements OnModuleInit {
 
     const targetServiceId = dto.serviceId || null;
     if (targetServiceId) {
-      const service = await this.prisma.bookingService.findFirst({
+      const service = await this.prisma.service.findFirst({
         where: { id: targetServiceId, businessId },
       });
       if (!service) {
@@ -1238,7 +1472,7 @@ export class BookingService implements OnModuleInit {
       where: { businessId },
       include: {
         _count: {
-          select: { services: true },
+          select: { serviceSpecialists: true },
         },
       },
       orderBy: { name: 'asc' },
@@ -1297,7 +1531,7 @@ export class BookingService implements OnModuleInit {
       where: { id },
       include: {
         _count: {
-          select: { services: true },
+          select: { serviceSpecialists: true },
         },
       },
     });
@@ -1311,7 +1545,7 @@ export class BookingService implements OnModuleInit {
     }
     await this.assertCitasActive(specialist.businessId);
 
-    if (specialist._count.services > 0) {
+    if (specialist._count.serviceSpecialists > 0) {
       const updated = await this.prisma.specialist.update({
         where: { id },
         data: { active: false },
@@ -1331,5 +1565,90 @@ export class BookingService implements OnModuleInit {
       message: 'Especialista eliminado exitosamente',
       deleted: true,
     };
+  }
+
+  /**
+   * Reasignación de especialista para una cita existente (ENCARGADO/CAJERO).
+   */
+  async reassignAppointmentSpecialist(
+    appointmentId: string,
+    businessId: string,
+    newSpecialistId: string,
+  ) {
+    await this.assertCitasActive(businessId);
+
+    const appointment = await this.prisma.appointment.findFirst({
+      where: { id: appointmentId, businessId },
+      include: {
+        service: {
+          include: {
+            specialists: true,
+          },
+        },
+      },
+    });
+
+    if (!appointment) {
+      throw new NotFoundException('Cita no encontrada');
+    }
+
+    if (
+      appointment.status === AppointmentStatus.CANCELLED ||
+      appointment.status === AppointmentStatus.COMPLETED
+    ) {
+      throw new BadRequestException(
+        'No se puede reasignar una cita cancelada o completada',
+      );
+    }
+
+    // Validar que el especialista pertenezca al negocio
+    const specialist = await this.prisma.specialist.findFirst({
+      where: { id: newSpecialistId, businessId, active: true },
+    });
+    if (!specialist) {
+      throw new BadRequestException(
+        'El especialista no existe, está inactivo o no pertenece a este negocio',
+      );
+    }
+
+    // Validar que el nuevo especialista esté asignado al servicio de esa cita
+    const isAssigned = appointment.service.specialists.some(
+      (s) => s.specialistId === newSpecialistId,
+    );
+    if (!isAssigned) {
+      throw new BadRequestException(
+        'El especialista no está asignado al servicio de esta cita',
+      );
+    }
+
+    if (appointment.specialistId === newSpecialistId) {
+      return this.prisma.appointment.findUnique({
+        where: { id: appointmentId },
+        include: { service: true, specialist: true, customer: true },
+      });
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const hasConflict = await this.hasConflictingAppointment(tx, {
+        businessId,
+        serviceId: appointment.serviceId,
+        specialistId: newSpecialistId,
+        scheduledAt: appointment.scheduledAt,
+        durationMinutes: appointment.durationMinutes,
+        excludeAppointmentId: appointment.id,
+      });
+
+      if (hasConflict) {
+        throw new ConflictException(
+          'El especialista no se encuentra disponible en el horario de esta cita',
+        );
+      }
+
+      return tx.appointment.update({
+        where: { id: appointmentId },
+        data: { specialistId: newSpecialistId },
+        include: { service: true, specialist: true, customer: true },
+      });
+    });
   }
 }

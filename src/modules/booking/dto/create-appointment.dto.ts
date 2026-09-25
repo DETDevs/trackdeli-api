@@ -6,6 +6,10 @@ export class CreateAppointmentDto {
   @IsString()
   serviceId: string;
 
+  @IsOptional()
+  @IsString()
+  specialistId?: string;
+
   @IsNotEmpty({ message: 'La fecha y hora de la cita (scheduledAt) es obligatoria' })
   @IsString()
   scheduledAt: string;

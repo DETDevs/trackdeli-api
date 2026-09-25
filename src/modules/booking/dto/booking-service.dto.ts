@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsBoolean,
   IsInt,
   IsNotEmpty,
@@ -38,6 +39,19 @@ export class CreateBookingServiceDto {
   hasCustomSchedule?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  active?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  specialistIds?: string[];
+
+  @IsOptional()
   @IsString()
   specialistId?: string;
 }
@@ -67,6 +81,10 @@ export class UpdateBookingServiceDto {
 
   @IsOptional()
   @IsBoolean()
+  active?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   isActive?: boolean;
 
   @IsOptional()
@@ -74,6 +92,12 @@ export class UpdateBookingServiceDto {
   hasCustomSchedule?: boolean;
 
   @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  specialistIds?: string[];
+
+  @IsOptional()
   @IsString()
   specialistId?: string | null;
 }
+

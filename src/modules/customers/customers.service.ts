@@ -638,13 +638,13 @@ export class CustomersService {
                   name: true,
                   price: true,
                   durationMinutes: true,
-                  specialist: {
-                    select: {
-                      id: true,
-                      name: true,
-                      specialty: true,
-                    },
-                  },
+                },
+              },
+              specialist: {
+                select: {
+                  id: true,
+                  name: true,
+                  specialty: true,
                 },
               },
             },
@@ -680,6 +680,18 @@ export class CustomersService {
         : Promise.resolve(null),
     ]);
 
+    const mappedAppointments = appointments
+      ? appointments.map((app: any) => ({
+          ...app,
+          service: app.service
+            ? {
+                ...app.service,
+                specialist: app.specialist ?? null,
+              }
+            : null,
+        }))
+      : null;
+
     return {
       customer: {
         id: customer.id,
@@ -699,7 +711,7 @@ export class CustomersService {
         citas: isCitasActive,
         carteraCobro: isCarteraActive,
       },
-      appointments,
+      appointments: mappedAppointments,
       creditAccounts,
     };
   }

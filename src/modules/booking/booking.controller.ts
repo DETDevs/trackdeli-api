@@ -46,8 +46,9 @@ export class BookingController {
     @Param('businessId') businessId: string,
     @Param('serviceId') serviceId: string,
     @Query('date') date: string,
+    @Query('specialistId') specialistId?: string,
   ) {
-    return this.bookingService.getAvailability(businessId, serviceId, date);
+    return this.bookingService.getAvailability(businessId, serviceId, date, specialistId);
   }
 
   /**
