@@ -44,9 +44,7 @@ export class OrdersService {
       ? order.dispatches[0]
       : null;
 
-    const trackingBaseUrl =
-      this.configService.get<string>('TRACKING_URL') ||
-      'https://trackdeli-web-tracking.vercel.app';
+    const trackingBaseUrl = this.configService.getOrThrow<string>('TRACKING_URL');
 
     return {
       id: order.id,

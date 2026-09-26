@@ -150,9 +150,7 @@ export class WaitersService {
       expiresIn: '30d',
     });
 
-    const refreshSecret =
-      this.configService.get<string>('JWT_REFRESH_SECRET') ||
-      this.configService.get<string>('JWT_SECRET');
+    const refreshSecret = this.configService.getOrThrow<string>('JWT_REFRESH_SECRET');
 
     const refreshToken = this.jwtService.sign(payload, {
       secret: refreshSecret,

@@ -245,9 +245,7 @@ export class CustomersService {
       },
     });
 
-    const trackingBaseUrl =
-      this.configService.get<string>('TRACKING_URL') ||
-      'https://trackdeli-web-tracking.vercel.app';
+    const trackingBaseUrl = this.configService.getOrThrow<string>('TRACKING_URL');
     const url = `${trackingBaseUrl}/confirm-location/${token}`;
 
     this.logger.log(
@@ -291,9 +289,7 @@ export class CustomersService {
       },
     });
 
-    const trackingBaseUrl =
-      this.configService.get<string>('TRACKING_URL') ||
-      'https://trackdeli-web-tracking.vercel.app';
+    const trackingBaseUrl = this.configService.getOrThrow<string>('TRACKING_URL');
     const url = `${trackingBaseUrl}/confirm-location/${token}`;
 
     this.logger.log(

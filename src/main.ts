@@ -25,8 +25,13 @@ async function bootstrap() {
         .filter(Boolean)
     : [];
 
+  const isProduction = configService.get<string>('NODE_ENV') === 'production';
+  if (isProduction && originsArray.length === 0) {
+    throw new Error('CORS_ORIGINS debe contener orígenes válidos en producción.');
+  }
+
   app.enableCors({
-    origin: originsArray.length > 0 ? originsArray : true,
+    origin: originsArray.length > 0 ? originsArray : (!isProduction),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true,
   });

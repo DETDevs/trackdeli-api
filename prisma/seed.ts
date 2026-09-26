@@ -614,8 +614,9 @@ async function seedPOS(prisma: PrismaClient, businessId: string, cashierId: stri
 async function main() {
   console.log('Starting seed...');
 
-  // SuperAdmin user
-  const superAdminPassword = await bcrypt.hash('SuperAdmin2026!', 10);
+  // SuperAdmin user (permite sobrescribir por env var en entornos de prueba/staging)
+  const superAdminPlain = process.env.SEED_SUPERADMIN_PASSWORD || 'SuperAdmin2026!';
+  const superAdminPassword = await bcrypt.hash(superAdminPlain, 10);
   const superadmin = await prisma.user.upsert({
     where: { email: 'superadmin@trackdeli.com' },
     update: {

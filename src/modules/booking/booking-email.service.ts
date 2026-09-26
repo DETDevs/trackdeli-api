@@ -36,10 +36,8 @@ export class BookingEmailService {
 
     this.fromEmail =
       this.configService.get<string>('RESEND_FROM_EMAIL') ||
-      'TrackDeli Citas <onboarding@resend.dev>';
-    this.appUrl =
-      this.configService.get<string>('BOOKING_APP_URL') ||
-      'http://localhost:5173';
+      'TrackDeli Citas <notificaciones@trackdeli.com>';
+    this.appUrl = this.configService.getOrThrow<string>('BOOKING_APP_URL');
   }
 
   async sendBookingReceipt(data: BookingReceiptData): Promise<boolean> {

@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 dist/
 .env
 .DS_Store
@@ -20,12 +20,7 @@ docs/interno/
 .env.*
 *.env
 *.env.*
-*.example
-*.example.*
-*.sample
-*.sample.*
-.env.example
-.env.sample
+!.env.example
  
 # Credenciales y secrets
 *.pem
