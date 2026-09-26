@@ -560,17 +560,14 @@ export class BookingService implements OnModuleInit {
         },
       });
     } else {
-      const updateData: any = {};
-      if (dto.customerName && dto.customerName.trim() !== customer.name) {
-        updateData.name = dto.customerName.trim();
-      }
-      if (dto.customerEmail && dto.customerEmail.trim() !== customer.email) {
-        updateData.email = dto.customerEmail.trim();
-      }
-      if (Object.keys(updateData).length > 0) {
+      // 75a: Fix: El nombre del Customer queda fijo tras la primera vez que se crea.
+      // Nunca se sobreescribe automáticamente desde una reserva pública nueva.
+      // Customer.email solo se completa si estaba vacío/null y ahora sí se proporciona uno válido.
+      const candidateEmail = dto.customerEmail?.trim();
+      if (!customer.email?.trim() && candidateEmail) {
         customer = await this.prisma.customer.update({
           where: { id: customer.id },
-          data: updateData,
+          data: { email: candidateEmail },
         });
       }
     }
@@ -636,6 +633,8 @@ export class BookingService implements OnModuleInit {
           capacity: 1,
           status: AppointmentStatus.PENDING,
           price: service.price,
+          customerName: dto.customerName.trim(),
+          customerPhone: cleanPhone,
           customerEmail: dto.customerEmail?.trim() || null,
           manageToken,
           rescheduleCount: 0,

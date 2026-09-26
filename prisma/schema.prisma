@@ -1197,6 +1197,8 @@ model Appointment {
   specialist         Specialist?       @relation(fields: [specialistId], references: [id], onDelete: SetNull)
   customerId         String
   customer           Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  customerName       String            @default("") @db.VarChar(100)
+  customerPhone      String?           @db.VarChar(30)
   scheduledAt        DateTime
   durationMinutes    Int
   capacity           Int               @default(1)

@@ -965,6 +965,29 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Columna specialists.specialty nullable',
           sql: `ALTER TABLE "specialists" ALTER COLUMN "specialty" DROP NOT NULL;`,
         },
+
+        // 75a: Snapshot inmutable de nombre y teléfono en Appointment
+        {
+          name: 'Columna appointments.customerName',
+          sql: `ALTER TABLE "appointments" ADD COLUMN IF NOT EXISTS "customerName" VARCHAR(100) NOT NULL DEFAULT '';`,
+        },
+        {
+          name: 'Columna appointments.customerPhone',
+          sql: `ALTER TABLE "appointments" ADD COLUMN IF NOT EXISTS "customerPhone" VARCHAR(30);`,
+        },
+        {
+          name: 'Backfill appointments.customerName y customerPhone desde customers',
+          sql: `UPDATE "appointments" a
+SET "customerName" = COALESCE(NULLIF(TRIM(c."name"), ''), 'Cliente'),
+    "customerPhone" = COALESCE(a."customerPhone", c."phone")
+FROM "customers" c
+WHERE a."customerId" = c."id"
+  AND (a."customerName" IS NULL OR a."customerName" = '');`,
+        },
+        {
+          name: 'Backfill fallback appointments.customerName para registros huérfanos',
+          sql: `UPDATE "appointments" SET "customerName" = 'Cliente' WHERE "customerName" IS NULL OR "customerName" = '';`,
+        },
       ];
 
       for (const step of ddlStatements) {
