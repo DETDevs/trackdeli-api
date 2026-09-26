@@ -44,20 +44,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
       );
     }
 
+    const isObject = typeof message === 'object' && message !== null;
+    const msgObj = isObject ? (message as Record<string, any>) : {};
+
     response.status(status).json({
       statusCode: status,
-      code:
-        typeof message === 'object' && 'code' in (message as object)
-          ? (message as any).code
-          : undefined,
-      message:
-        typeof message === 'object' && 'message' in (message as object)
-          ? (message as any).message
-          : message,
-      error:
-        typeof message === 'object' && 'error' in (message as object)
-          ? (message as any).error
-          : undefined,
+      ...msgObj,
+      message: msgObj.message ?? message,
       timestamp: new Date().toISOString(),
       path: request.url,
     });

@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -540,6 +541,86 @@ export class BookingService implements OnModuleInit {
       }
     }
 
+    // 74b: Validar si ya existe una cita PENDIENTE para este negocio con el mismo teléfono o email
+    const cleanEmail = dto.customerEmail?.trim().toLowerCase() || null;
+    const phoneVariants = Array.from(
+      new Set(
+        [
+          cleanPhone,
+          cleanPhone.replace(/\s+/g, ''),
+          cleanPhone.replace(/\D/g, ''),
+        ].filter(Boolean),
+      ),
+    );
+
+    const phoneConditions: Prisma.AppointmentWhereInput[] = [
+      { customerPhone: { in: phoneVariants } },
+      { customer: { phone: { in: phoneVariants } } },
+    ];
+
+    let duplicateWhere: Prisma.AppointmentWhereInput;
+    if (cleanEmail) {
+      const emailConditions: Prisma.AppointmentWhereInput[] = [
+        { customerEmail: { equals: cleanEmail, mode: 'insensitive' } },
+        { customer: { email: { equals: cleanEmail, mode: 'insensitive' } } },
+      ];
+      duplicateWhere = {
+        businessId,
+        status: AppointmentStatus.PENDING,
+        OR: [...phoneConditions, ...emailConditions],
+      };
+    } else {
+      duplicateWhere = {
+        businessId,
+        status: AppointmentStatus.PENDING,
+        OR: phoneConditions,
+      };
+    }
+
+    const existingPending = await this.prisma.appointment.findFirst({
+      where: duplicateWhere,
+      include: { customer: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingPending) {
+      const existingPhones = [
+        existingPending.customerPhone,
+        existingPending.customer?.phone,
+        existingPending.customerPhone?.replace(/\s+/g, ''),
+        existingPending.customer?.phone?.replace(/\s+/g, ''),
+        existingPending.customerPhone?.replace(/\D/g, ''),
+        existingPending.customer?.phone?.replace(/\D/g, ''),
+      ].filter(Boolean);
+
+      const phoneMatches = phoneVariants.some((v) => existingPhones.includes(v));
+      const emailMatches =
+        Boolean(cleanEmail) &&
+        ((existingPending.customerEmail &&
+          existingPending.customerEmail.toLowerCase() === cleanEmail) ||
+          (existingPending.customer?.email &&
+            existingPending.customer.email.toLowerCase() === cleanEmail));
+
+      let reason = 'con este número de teléfono';
+      let matchedBy: 'phone' | 'email' | 'both' = 'phone';
+      if (phoneMatches && emailMatches) {
+        reason = 'con este número de teléfono y correo electrónico';
+        matchedBy = 'both';
+      } else if (emailMatches) {
+        reason = 'con este correo electrónico';
+        matchedBy = 'email';
+      }
+
+      throw new ConflictException({
+        statusCode: HttpStatus.CONFLICT,
+        error: 'Conflict',
+        message: `Ya tenés una solicitud de reserva pendiente ${reason}. Esperá a que el negocio la confirme, o cancelala antes de crear una nueva.`,
+        code: 'DUPLICATE_PENDING_APPOINTMENT',
+        matchedBy,
+        manageToken: existingPending.manageToken,
+      });
+    }
+
     // Buscar o crear Customer por (businessId, phone)
     let customer = await this.prisma.customer.findUnique({
       where: {
@@ -583,6 +664,53 @@ export class BookingService implements OnModuleInit {
 
     // Re-validación atómica dentro de transacción
     const appointment = await this.prisma.$transaction(async (tx) => {
+      // Re-verificar cita pendiente duplicada dentro de la transacción contra concurrencia
+      const txPending = await tx.appointment.findFirst({
+        where: duplicateWhere,
+        include: { customer: true },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (txPending) {
+        const existingPhones = [
+          txPending.customerPhone,
+          txPending.customer?.phone,
+          txPending.customerPhone?.replace(/\s+/g, ''),
+          txPending.customer?.phone?.replace(/\s+/g, ''),
+          txPending.customerPhone?.replace(/\D/g, ''),
+          txPending.customer?.phone?.replace(/\D/g, ''),
+        ].filter(Boolean);
+
+        const phoneMatches = phoneVariants.some((v) => existingPhones.includes(v));
+        const emailMatches =
+          Boolean(cleanEmail) &&
+          ((txPending.customerEmail &&
+            txPending.customerEmail.toLowerCase() === cleanEmail) ||
+            (txPending.customer?.email &&
+              txPending.customer.email.toLowerCase() === cleanEmail));
+
+        if (phoneMatches || emailMatches) {
+          let reason = 'con este número de teléfono';
+          let matchedBy: 'phone' | 'email' | 'both' = 'phone';
+          if (phoneMatches && emailMatches) {
+            reason = 'con este número de teléfono y correo electrónico';
+            matchedBy = 'both';
+          } else if (emailMatches) {
+            reason = 'con este correo electrónico';
+            matchedBy = 'email';
+          }
+
+          throw new ConflictException({
+            statusCode: HttpStatus.CONFLICT,
+            error: 'Conflict',
+            message: `Ya tenés una solicitud de reserva pendiente ${reason}. Esperá a que el negocio la confirme, o cancelala antes de crear una nueva.`,
+            code: 'DUPLICATE_PENDING_APPOINTMENT',
+            matchedBy,
+            manageToken: txPending.manageToken,
+          });
+        }
+      }
+
       let resolvedSpecialistId = targetSpecialistId;
 
       if (activeSpecialists.length > 0 && !resolvedSpecialistId) {
