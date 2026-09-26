@@ -17,6 +17,7 @@ export class SettingsController {
   constructor(private readonly service: SettingsService) {}
 
   @Get()
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   getSettings(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
     return this.service.getSettings(resolveBusinessId(user, qBid));
   }

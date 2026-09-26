@@ -5,8 +5,9 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { PosPaymentMethod, TableOrderStatus, TableShape } from '@prisma/client';
+import { PosPaymentMethod, TableOrderStatus, TableShape, UserRole } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { JwtPayload } from '../../../common/types/jwt-payload.interface';
 import { SalesService } from '../sales/sales.service';
 import { CreateSaleDto } from '../sales/dto/create-sale.dto';
 import { CreateTableDto } from './dto/create-table.dto';
@@ -243,7 +244,7 @@ export class TablesService {
     });
   }
 
-  async openTableOrder(businessId: string, tableId: string) {
+  async openTableOrder(businessId: string, tableId: string, user?: JwtPayload) {
     const table = await this.prisma.restaurantTable.findFirst({
       where: { id: tableId, businessId, isActive: true },
     });
@@ -271,11 +272,17 @@ export class TablesService {
       return this.formatOrderResponse(existingOrder);
     }
 
+    const isWaiter = user?.role === UserRole.WAITER;
+    const openedByWaiterId = isWaiter ? user.sub : null;
+    const openedByWaiterName = isWaiter ? (user.waiterName || null) : null;
+
     const newOrder = await this.prisma.tableOrder.create({
       data: {
         businessId,
         tableId,
         status: TableOrderStatus.OPEN,
+        openedByWaiterId,
+        openedByWaiterName,
       },
       include: {
         items: {
@@ -320,7 +327,7 @@ export class TablesService {
     return this.formatOrderResponse(order);
   }
 
-  async addOrderItems(businessId: string, tableId: string, dto: AddOrderItemsDto) {
+  async addOrderItems(businessId: string, tableId: string, dto: AddOrderItemsDto, user?: JwtPayload) {
     const table = await this.prisma.restaurantTable.findFirst({
       where: { id: tableId, businessId, isActive: true },
     });
@@ -328,13 +335,25 @@ export class TablesService {
       throw new NotFoundException('Mesa no encontrada');
     }
 
+    const isWaiter = user?.role === UserRole.WAITER;
+    const openedByWaiterId = isWaiter ? user.sub : null;
+    const openedByWaiterName = isWaiter ? (user.waiterName || null) : null;
+    const waiterId = isWaiter ? user.sub : null;
+    const waiterName = isWaiter ? (user.waiterName || null) : null;
+
     let order = await this.prisma.tableOrder.findFirst({
       where: { tableId, status: TableOrderStatus.OPEN },
     });
 
     if (!order) {
       order = await this.prisma.tableOrder.create({
-        data: { businessId, tableId, status: TableOrderStatus.OPEN },
+        data: {
+          businessId,
+          tableId,
+          status: TableOrderStatus.OPEN,
+          openedByWaiterId,
+          openedByWaiterName,
+        },
       });
     }
 
@@ -368,6 +387,8 @@ export class TablesService {
             unitPrice: product.price,
             quantity: item.quantity,
             notes: item.notes?.trim() || null,
+            waiterId,
+            waiterName,
           },
         });
       }
@@ -515,6 +536,8 @@ export class TablesService {
         quantity: item.quantity,
         subtotal: Math.round(itemSubtotal * 100) / 100,
         notes: item.notes,
+        waiterId: item.waiterId || null,
+        waiterName: item.waiterName || null,
         product: item.product || null,
         createdAt: item.createdAt,
       };
@@ -526,6 +549,8 @@ export class TablesService {
       tableId: order.tableId,
       status: order.status,
       notes: order.notes,
+      openedByWaiterId: order.openedByWaiterId || null,
+      openedByWaiterName: order.openedByWaiterName || null,
       createdAt: order.createdAt,
       closedAt: order.closedAt,
       saleId: order.saleId,

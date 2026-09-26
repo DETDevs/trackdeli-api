@@ -5,6 +5,7 @@ export interface JwtPayload {
   email: string;
   role: UserRole;
   businessId: string | null;
+  waiterName?: string | null;
   phone?: string | null;
   vehicleType?: string | null;
   vehiclePlate?: string | null;

@@ -988,6 +988,46 @@ WHERE a."customerId" = c."id"
           name: 'Backfill fallback appointments.customerName para registros huérfanos',
           sql: `UPDATE "appointments" SET "customerName" = 'Cliente' WHERE "customerName" IS NULL OR "customerName" = '';`,
         },
+
+        // 78a: Modelo Waiter y snapshots en TableOrder / TableOrderItem
+        {
+          name: 'Enum UserRole - Agregar WAITER',
+          sql: `ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'WAITER';`,
+        },
+        {
+          name: 'Tabla pos_waiters',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_waiters" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "name" VARCHAR(100) NOT NULL,
+            "pinHash" VARCHAR(100) NOT NULL,
+            "active" BOOLEAN NOT NULL DEFAULT true,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_waiters_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_waiters_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice pos_waiters.businessId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_waiters_businessId_idx" ON "pos_waiters"("businessId");`,
+        },
+        {
+          name: 'Columna pos_table_orders.openedByWaiterId',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "openedByWaiterId" VARCHAR(100);`,
+        },
+        {
+          name: 'Columna pos_table_orders.openedByWaiterName',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "openedByWaiterName" VARCHAR(100);`,
+        },
+        {
+          name: 'Columna pos_table_order_items.waiterId',
+          sql: `ALTER TABLE "pos_table_order_items" ADD COLUMN IF NOT EXISTS "waiterId" VARCHAR(100);`,
+        },
+        {
+          name: 'Columna pos_table_order_items.waiterName',
+          sql: `ALTER TABLE "pos_table_order_items" ADD COLUMN IF NOT EXISTS "waiterName" VARCHAR(100);`,
+        },
       ];
 
       for (const step of ddlStatements) {

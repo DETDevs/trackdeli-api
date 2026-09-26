@@ -12,6 +12,7 @@ enum UserRole {
   REPARTIDOR
   SUPERADMIN
   CAJERO
+  WAITER
 }
 
 enum AuthProvider {
@@ -262,6 +263,7 @@ model Business {
   cashMovements    CashMovement[]
   restaurantTables RestaurantTable[]
   tableOrders      TableOrder[]
+  waiters          Waiter[]
   terminals        PosTerminal[]
   inventoryDiscrepancies InventoryDiscrepancy[]
   creditAccounts   CreditAccount[]
@@ -962,8 +964,10 @@ model TableOrder {
   status     TableOrderStatus @default(OPEN)
   createdAt  DateTime         @default(now())
   closedAt   DateTime?
-  saleId     String?
-  notes      String?
+  saleId             String?
+  notes              String?
+  openedByWaiterId   String?          @db.VarChar(100)
+  openedByWaiterName String?          @db.VarChar(100)
 
   items      TableOrderItem[]
 
@@ -982,9 +986,25 @@ model TableOrderItem {
   quantity     Int
   unitPrice    Float
   notes        String?
+  waiterId     String?     @db.VarChar(100)
+  waiterName   String?     @db.VarChar(100)
   createdAt    DateTime    @default(now())
 
   @@map("pos_table_order_items")
+}
+
+model Waiter {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String   @db.VarChar(100)
+  pinHash    String   @db.VarChar(100)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([businessId])
+  @@map("pos_waiters")
 }
 
 // ═══════════════════════════════════════════════

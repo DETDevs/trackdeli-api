@@ -1,4 +1,4 @@
-﻿import {
+import {
   Injectable,
   CanActivate,
   ExecutionContext,
@@ -53,6 +53,30 @@ export class PosGuard implements CanActivate {
       throw new ForbiddenException(
         'El modulo POS no esta activo para este negocio. Contacta a TrackDeli.',
       );
+    }
+
+    if (user.role === UserRole.WAITER) {
+      const rawPath =
+        request.path ||
+        (request.originalUrl ? request.originalUrl.split('?')[0] : (request.url ? request.url.split('?')[0] : ''));
+      const normalizedPath = rawPath.replace(/^\/api\/v1/, '').replace(/\/$/, '') || '/';
+      const method = (request.method || '').toUpperCase();
+
+      const isAllowed =
+        (method === 'GET' && normalizedPath === '/pos/tables/status') ||
+        (method === 'GET' && /^\/pos\/tables\/[^/]+\/order$/.test(normalizedPath)) ||
+        (method === 'POST' && /^\/pos\/tables\/[^/]+\/open-order$/.test(normalizedPath)) ||
+        (method === 'GET' && normalizedPath === '/pos/products') ||
+        (method === 'GET' && normalizedPath === '/pos/categories') ||
+        (method === 'POST' && /^\/pos\/tables\/[^/]+\/order\/items$/.test(normalizedPath)) ||
+        (method === 'PATCH' && /^\/pos\/tables\/[^/]+\/order\/items\/[^/]+$/.test(normalizedPath)) ||
+        (method === 'DELETE' && /^\/pos\/tables\/[^/]+\/order\/items\/[^/]+$/.test(normalizedPath));
+
+      if (!isAllowed) {
+        throw new ForbiddenException(
+          'Acceso denegado: el rol WAITER no tiene permiso para este recurso',
+        );
+      }
     }
 
     return true;

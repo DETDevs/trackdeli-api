@@ -3,7 +3,9 @@ import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
-import { JwtPayload } from "../../../common/types/jwt-payload.interface";
+import { JwtPayload } from '../../../common/types/jwt-payload.interface';
+import { Roles } from '../../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 import { resolveBusinessId } from "../pos.utils";
 import { CashRegisterService } from "./cash-register.service";
 import { OpenCashRegisterDto } from "./dto/open-register.dto";
@@ -12,6 +14,7 @@ import { CashMovementDto } from "./dto/cash-movement.dto";
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
+@Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
 @Controller("pos/cash-register")
 export class CashRegisterController {
   constructor(private readonly service: CashRegisterService) {}

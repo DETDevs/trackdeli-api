@@ -1,4 +1,4 @@
-﻿import {
+import {
   Body, Controller, Get, Param, Post, Query, UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
@@ -6,6 +6,8 @@ import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from "../../../common/types/jwt-payload.interface";
+import { Roles } from '../../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 import { resolveBusinessId } from "../pos.utils";
 import { SalesService } from "./sales.service";
 import { CreateSaleDto } from "./dto/create-sale.dto";
@@ -13,6 +15,7 @@ import { CancelSaleDto } from "./dto/cancel-sale.dto";
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
+@Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
 @Controller("pos/sales")
 export class SalesController {
   constructor(private readonly service: SalesService) {}

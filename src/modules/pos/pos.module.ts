@@ -9,6 +9,7 @@ import { SettingsModule } from './settings/settings.module';
 import { TablesModule } from './tables/tables.module';
 import { OfflineModule } from './offline/offline.module';
 import { CreditModule } from './credit/credit.module';
+import { WaitersModule } from './waiters/waiters.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { CreditModule } from './credit/credit.module';
     TablesModule,
     OfflineModule,
     CreditModule,
+    WaitersModule,
   ],
 })
 export class PosModule {}

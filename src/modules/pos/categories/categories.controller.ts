@@ -18,6 +18,7 @@ export class CategoriesController {
   constructor(private readonly service: CategoriesService) {}
 
   @Get()
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
   findAll(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') queryBusinessId?: string,

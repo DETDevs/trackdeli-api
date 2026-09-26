@@ -27,6 +27,7 @@ import {
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
+@Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
 @Controller("pos")
 export class OfflineController {
   constructor(private readonly service: OfflineService) {}

@@ -21,6 +21,7 @@ export class ProductsController {
   constructor(private readonly service: ProductsService) {}
 
   @Get()
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
   findAll(
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
@@ -36,6 +37,7 @@ export class ProductsController {
   }
 
   @Get("barcode/:barcode")
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   findByBarcode(
     @Param("barcode") barcode: string,
     @CurrentUser() user: JwtPayload,
@@ -45,6 +47,7 @@ export class ProductsController {
   }
 
   @Get(":id")
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   findOne(
     @Param("id") id: string,
     @CurrentUser() user: JwtPayload,

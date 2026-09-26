@@ -33,6 +33,7 @@ export class TablesController {
   constructor(private readonly service: TablesService) {}
 
   @Get()
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   findAll(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
@@ -51,6 +52,7 @@ export class TablesController {
   }
 
   @Get('status')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
   getTablesStatus(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
@@ -80,16 +82,18 @@ export class TablesController {
   }
 
   @Post(':id/open-order')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
   @HttpCode(HttpStatus.OK)
   openOrder(
     @Param('id') tableId: string,
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
   ) {
-    return this.service.openTableOrder(resolveBusinessId(user, qBid), tableId);
+    return this.service.openTableOrder(resolveBusinessId(user, qBid), tableId, user);
   }
 
   @Get(':id/order')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
   getActiveOrder(
     @Param('id') tableId: string,
     @CurrentUser() user: JwtPayload,
@@ -99,16 +103,18 @@ export class TablesController {
   }
 
   @Post(':id/order/items')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
   addItems(
     @Param('id') tableId: string,
     @Body() dto: AddOrderItemsDto,
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
   ) {
-    return this.service.addOrderItems(resolveBusinessId(user, qBid), tableId, dto);
+    return this.service.addOrderItems(resolveBusinessId(user, qBid), tableId, dto, user);
   }
 
   @Patch(':id/order/items/:itemId')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
   updateItem(
     @Param('id') tableId: string,
     @Param('itemId') itemId: string,
@@ -125,6 +131,7 @@ export class TablesController {
   }
 
   @Delete(':id/order/items/:itemId')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
   deleteItem(
     @Param('id') tableId: string,
     @Param('itemId') itemId: string,
@@ -139,6 +146,7 @@ export class TablesController {
   }
 
   @Post(':id/order/checkout')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   @HttpCode(HttpStatus.OK)
   checkout(
     @Param('id') tableId: string,

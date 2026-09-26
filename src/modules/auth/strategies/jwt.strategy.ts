@@ -2,6 +2,7 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { UserRole } from '@prisma/client';
 import { JwtPayload } from '../../../common/types/jwt-payload.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 
@@ -21,6 +22,37 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload): Promise<JwtPayload> {
+    if (payload.role === UserRole.WAITER) {
+      const waiter = await this.prisma.waiter.findUnique({
+        where: { id: payload.sub },
+        select: {
+          id: true,
+          name: true,
+          businessId: true,
+          active: true,
+        },
+      });
+
+      if (!waiter) {
+        this.logger.warn(`[validate] Token válido pero mesero inexistente en DB: sub=${payload.sub}`);
+        throw new UnauthorizedException('Mesero no encontrado');
+      }
+
+      if (!waiter.active) {
+        this.logger.warn(`[validate] Intento de acceso de mesero inactivo: id=${waiter.id}`);
+        throw new UnauthorizedException('Mesero inactivo');
+      }
+
+      return {
+        sub: waiter.id,
+        email: `${waiter.id}@waiter.trackdeli.com`,
+        role: UserRole.WAITER,
+        businessId: waiter.businessId,
+        waiterName: waiter.name,
+        profileComplete: true,
+      };
+    }
+
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       select: {
