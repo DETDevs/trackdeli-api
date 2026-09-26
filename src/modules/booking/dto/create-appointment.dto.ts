@@ -23,7 +23,7 @@ export class CreateAppointmentDto {
   @IsString()
   customerPhone: string;
 
-  @IsOptional()
+  @IsNotEmpty({ message: 'El correo electrónico es obligatorio para enviar la confirmación de la cita' })
   @IsEmail({}, { message: 'El correo electrónico ingresado no es válido' })
-  customerEmail?: string;
+  customerEmail: string;
 }
