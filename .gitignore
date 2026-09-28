@@ -4,6 +4,7 @@ dist/
 .DS_Store
 *.log
 scratch/
+scripts/
 
 # Documentos internos — nunca subir al repo
 ROADMAP_INTERNO.md
@@ -37,3 +38,4 @@ google-credentials.json
 *credentials*.json
 *service-account*.json
 *secret*.json
+

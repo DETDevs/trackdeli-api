@@ -816,6 +816,30 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `CREATE INDEX IF NOT EXISTS "appointments_manageToken_idx" ON "appointments"("manageToken");`,
         },
         {
+          name: 'Tabla appointment_holds',
+          sql: `CREATE TABLE IF NOT EXISTS "appointment_holds" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "serviceId" TEXT NOT NULL,
+            "specialistId" TEXT NOT NULL,
+            "startAt" TIMESTAMP(3) NOT NULL,
+            "endAt" TIMESTAMP(3) NOT NULL,
+            "holderToken" TEXT NOT NULL,
+            "expiresAt" TIMESTAMP(3) NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "appointment_holds_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "appointment_holds_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice appointment_holds.businessId_specialistId_startAt',
+          sql: `CREATE INDEX IF NOT EXISTS "appointment_holds_businessId_specialistId_startAt_idx" ON "appointment_holds"("businessId", "specialistId", "startAt");`,
+        },
+        {
+          name: 'Índice appointment_holds.expiresAt',
+          sql: `CREATE INDEX IF NOT EXISTS "appointment_holds_expiresAt_idx" ON "appointment_holds"("expiresAt");`,
+        },
+        {
           name: 'Tabla specialists',
           sql: `CREATE TABLE IF NOT EXISTS "specialists" (
             "id" TEXT NOT NULL,

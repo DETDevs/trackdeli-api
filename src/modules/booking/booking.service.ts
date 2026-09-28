@@ -31,11 +31,13 @@ import {
 } from './dto/profession.dto';
 import { SaveSchedulesDto } from './dto/save-schedules.dto';
 import { UpdateBookingSettingsDto } from './dto/update-booking-settings.dto';
+import { CreateAppointmentHoldDto } from './dto/create-appointment-hold.dto';
 import { v4 as uuidv4 } from 'uuid';
 import { UUID_REGEX } from '../../common/utils/slug.util';
 
 export const BOOKING_TIMEZONE = 'America/Managua';
 export const BOOKING_TZ_OFFSET = '-06:00';
+export const APPOINTMENT_HOLD_TTL_MINUTES = 7;
 
 @Injectable()
 export class BookingService implements OnModuleInit {
@@ -386,6 +388,24 @@ export class BookingService implements OnModuleInit {
     });
 
     const now = new Date();
+
+    // 80a: Reservas temporales (holds) activas para esa fecha
+    const activeHolds = await this.prisma.appointmentHold.findMany({
+      where: {
+        businessId,
+        expiresAt: { gt: now },
+        startAt: { lte: dayEnd },
+        endAt: { gte: dayStart },
+      },
+      select: {
+        id: true,
+        serviceId: true,
+        specialistId: true,
+        startAt: true,
+        endAt: true,
+      },
+    });
+
     const availableSlots: Array<{
       startTime: string;
       endTime: string;
@@ -426,34 +446,56 @@ export class BookingService implements OnModuleInit {
 
           if (assignedSpecialists.length > 0) {
             if (requestedSpecialistId) {
-              const hasConflict = existingAppointments.some((app) => {
-                if (app.specialistId !== requestedSpecialistId) return false;
-                const appStart = new Date(app.scheduledAt).getTime();
-                const appEnd = appStart + app.durationMinutes * 60 * 1000;
-                return slotStartMs < appEnd && slotEndMs > appStart;
-              });
+              const hasConflict =
+                existingAppointments.some((app) => {
+                  if (app.specialistId !== requestedSpecialistId) return false;
+                  const appStart = new Date(app.scheduledAt).getTime();
+                  const appEnd = appStart + app.durationMinutes * 60 * 1000;
+                  return slotStartMs < appEnd && slotEndMs > appStart;
+                }) ||
+                activeHolds.some((hold) => {
+                  if (hold.specialistId !== requestedSpecialistId) return false;
+                  const holdStart = new Date(hold.startAt).getTime();
+                  const holdEnd = new Date(hold.endAt).getTime();
+                  return slotStartMs < holdEnd && slotEndMs > holdStart;
+                });
               isSlotAvailable = !hasConflict;
             } else {
-              // Disponible si al menos un especialista asignado está libre
+              // Disponible si al menos un especialista asignado está libre (sin cita ni hold activo)
               const freeSpecialists = assignedSpecialists.filter((spec) => {
-                const hasConflict = existingAppointments.some((app) => {
+                const hasAppConflict = existingAppointments.some((app) => {
                   if (app.specialistId !== spec.id) return false;
                   const appStart = new Date(app.scheduledAt).getTime();
                   const appEnd = appStart + app.durationMinutes * 60 * 1000;
                   return slotStartMs < appEnd && slotEndMs > appStart;
                 });
-                return !hasConflict;
+                if (hasAppConflict) return false;
+
+                const hasHoldConflict = activeHolds.some((hold) => {
+                  if (hold.specialistId !== spec.id) return false;
+                  const holdStart = new Date(hold.startAt).getTime();
+                  const holdEnd = new Date(hold.endAt).getTime();
+                  return slotStartMs < holdEnd && slotEndMs > holdStart;
+                });
+                return !hasHoldConflict;
               });
               isSlotAvailable = freeSpecialists.length > 0;
             }
           } else {
             // Servicio genérico sin especialistas asignados
-            const hasConflict = existingAppointments.some((app) => {
-              if (app.serviceId !== service.id || app.specialistId !== null) return false;
-              const appStart = new Date(app.scheduledAt).getTime();
-              const appEnd = appStart + app.durationMinutes * 60 * 1000;
-              return slotStartMs < appEnd && slotEndMs > appStart;
-            });
+            const hasConflict =
+              existingAppointments.some((app) => {
+                if (app.serviceId !== service.id || app.specialistId !== null) return false;
+                const appStart = new Date(app.scheduledAt).getTime();
+                const appEnd = appStart + app.durationMinutes * 60 * 1000;
+                return slotStartMs < appEnd && slotEndMs > appStart;
+              }) ||
+              activeHolds.some((hold) => {
+                if (hold.serviceId !== service.id) return false;
+                const holdStart = new Date(hold.startAt).getTime();
+                const holdEnd = new Date(hold.endAt).getTime();
+                return slotStartMs < holdEnd && slotEndMs > holdStart;
+              });
             isSlotAvailable = !hasConflict;
           }
 
@@ -483,9 +525,202 @@ export class BookingService implements OnModuleInit {
   }
 
   /**
+   * 80a: Crear reserva temporal (hold) de horario para evitar doble reserva.
+   */
+  async createHold(businessIdOrSlug: string, dto: CreateAppointmentHoldDto) {
+    const business = await this.resolveBusiness(businessIdOrSlug);
+    await this.assertCitasActive(business.id);
+    const businessId = business.id;
+
+    const service = await this.prisma.service.findFirst({
+      where: { id: dto.serviceId, businessId, active: true },
+      include: {
+        specialists: {
+          include: {
+            specialist: true,
+          },
+        },
+      },
+    });
+
+    if (!service) {
+      throw new NotFoundException('Servicio no encontrado o inactivo');
+    }
+
+    const startAt = new Date(dto.startAt);
+    if (isNaN(startAt.getTime())) {
+      throw new BadRequestException('Fecha y hora inválida');
+    }
+    if (startAt.getTime() <= Date.now()) {
+      throw new BadRequestException('La fecha y hora de inicio debe ser futura');
+    }
+
+    const durationMinutes = service.durationMinutes;
+    const endAt = new Date(startAt.getTime() + durationMinutes * 60 * 1000);
+
+    const activeSpecialists = service.specialists
+      .filter((s) => s.specialist.active)
+      .map((s) => s.specialist);
+
+    let targetSpecialistId: string | null = null;
+
+    if (activeSpecialists.length === 0) {
+      if (dto.specialistId) {
+        throw new BadRequestException('Este servicio no tiene especialistas asignables');
+      }
+      targetSpecialistId = 'generic';
+    } else {
+      if (dto.specialistId) {
+        const found = activeSpecialists.find((s) => s.id === dto.specialistId);
+        if (!found) {
+          throw new BadRequestException(
+            'El especialista seleccionado no está asignado a este servicio',
+          );
+        }
+        targetSpecialistId = dto.specialistId;
+      }
+    }
+
+    // Transacción atómica con lock para evitar ventana de carrera
+    const hold = await this.prisma.$transaction(async (tx) => {
+      const dateStr = startAt.toISOString().slice(0, 10);
+      const lockTarget = targetSpecialistId || 'auto';
+      const lockKey = `hold_${businessId}_${lockTarget}_${dateStr}`;
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext('${lockKey}'))`);
+
+      let resolvedSpecialistId = targetSpecialistId;
+
+      if (activeSpecialists.length > 0 && !resolvedSpecialistId) {
+        // Auto-asignar al primer especialista libre en ese horario (sin conflicto de cita ni de hold activo)
+        for (const spec of activeSpecialists) {
+          const appConflict = await this.hasConflictingAppointment(tx, {
+            businessId,
+            serviceId: service.id,
+            specialistId: spec.id,
+            scheduledAt: startAt,
+            durationMinutes,
+          });
+          if (appConflict) continue;
+
+          const holdConflict = await tx.appointmentHold.findFirst({
+            where: {
+              businessId,
+              specialistId: spec.id,
+              expiresAt: { gt: new Date() },
+              startAt: { lt: endAt },
+              endAt: { gt: startAt },
+            },
+          });
+          if (holdConflict) continue;
+
+          resolvedSpecialistId = spec.id;
+          break;
+        }
+
+        if (!resolvedSpecialistId) {
+          throw new ConflictException(
+            'Este horario ya no está disponible',
+          );
+        }
+      } else {
+        const hasConflict = await this.hasConflictingAppointment(tx, {
+          businessId,
+          serviceId: service.id,
+          specialistId: resolvedSpecialistId === 'generic' ? null : resolvedSpecialistId,
+          scheduledAt: startAt,
+          durationMinutes,
+        });
+
+        if (hasConflict) {
+          throw new ConflictException(
+            'Este horario ya no está disponible',
+          );
+        }
+
+        const hasHoldConflict = await tx.appointmentHold.findFirst({
+          where: {
+            businessId,
+            ...(resolvedSpecialistId === 'generic'
+              ? { serviceId: service.id }
+              : { specialistId: resolvedSpecialistId! }),
+            expiresAt: { gt: new Date() },
+            startAt: { lt: endAt },
+            endAt: { gt: startAt },
+          },
+        });
+
+        if (hasHoldConflict) {
+          throw new ConflictException(
+            'Este horario ya no está disponible',
+          );
+        }
+      }
+
+      const holderToken = uuidv4();
+      const expiresAt = new Date(Date.now() + APPOINTMENT_HOLD_TTL_MINUTES * 60 * 1000);
+
+      const created = await tx.appointmentHold.create({
+        data: {
+          businessId,
+          serviceId: service.id,
+          specialistId: resolvedSpecialistId!,
+          startAt,
+          endAt,
+          holderToken,
+          expiresAt,
+        },
+      });
+
+      return created;
+    });
+
+    return {
+      holdId: hold.id,
+      holderToken: hold.holderToken,
+      expiresAt: hold.expiresAt,
+      serviceId: hold.serviceId,
+      specialistId: hold.specialistId,
+    };
+  }
+
+  /**
+   * 80a: Liberar reserva temporal explícitamente.
+   */
+  async releaseHold(holdId: string, holderToken?: string) {
+    if (!holderToken?.trim()) {
+      throw new BadRequestException('El holderToken es obligatorio para liberar la reserva temporal');
+    }
+
+    const hold = await this.prisma.appointmentHold.findUnique({
+      where: { id: holdId },
+    });
+
+    if (!hold) {
+      throw new NotFoundException('Reserva temporal no encontrada');
+    }
+
+    if (hold.holderToken !== holderToken.trim()) {
+      throw new ForbiddenException('El holderToken proporcionado no coincide con el de la reserva temporal');
+    }
+
+    await this.prisma.appointmentHold.delete({
+      where: { id: holdId },
+    });
+
+    return {
+      success: true,
+      message: 'Reserva temporal liberada exitosamente',
+    };
+  }
+
+  /**
    * Crear reserva pública.
    */
   async createAppointment(businessIdOrSlug: string, dto: CreateAppointmentDto) {
+    if (!dto.holdId?.trim() || !dto.holderToken?.trim()) {
+      throw new BadRequestException('holdId y holderToken son requeridos para confirmar la cita');
+    }
+
     const business = await this.resolveBusiness(businessIdOrSlug);
     await this.assertCitasActive(business.id);
     const businessId = business.id;
@@ -664,6 +899,60 @@ export class BookingService implements OnModuleInit {
 
     // Re-validación atómica dentro de transacción
     const appointment = await this.prisma.$transaction(async (tx) => {
+      // 80a: Lock y validación atómica del hold para evitar carreras o doble uso
+      const holdLockKey = `booking_hold_confirm_${dto.holdId.trim()}`;
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext('${holdLockKey}'))`);
+
+      const hold = await tx.appointmentHold.findUnique({
+        where: { id: dto.holdId.trim() },
+      });
+
+      if (!hold) {
+        throw new ConflictException(
+          'La reserva temporal no existe o ya fue utilizada. Por favor seleccioná el horario nuevamente.',
+        );
+      }
+
+      if (hold.expiresAt.getTime() <= Date.now()) {
+        throw new ConflictException(
+          'La reserva temporal ha expirado. Por favor seleccioná el horario nuevamente.',
+        );
+      }
+
+      if (hold.holderToken !== dto.holderToken.trim()) {
+        throw new ConflictException(
+          'El token de la reserva temporal no coincide. Verificación rechazada.',
+        );
+      }
+
+      if (hold.businessId !== businessId) {
+        throw new ConflictException(
+          'La reserva temporal no corresponde a este negocio.',
+        );
+      }
+
+      if (hold.serviceId !== service.id) {
+        throw new ConflictException(
+          'La reserva temporal no corresponde a este servicio.',
+        );
+      }
+
+      if (new Date(hold.startAt).getTime() !== scheduledAt.getTime()) {
+        throw new ConflictException(
+          'La fecha y hora de la cita no coincide con el horario reservado temporalmente.',
+        );
+      }
+
+      let resolvedSpecialistId = targetSpecialistId;
+      if (hold.specialistId && hold.specialistId !== 'generic') {
+        if (targetSpecialistId && targetSpecialistId !== hold.specialistId) {
+          throw new ConflictException(
+            'El especialista seleccionado no coincide con el especialista reservado temporalmente.',
+          );
+        }
+        resolvedSpecialistId = hold.specialistId;
+      }
+
       // Re-verificar cita pendiente duplicada dentro de la transacción contra concurrencia
       const txPending = await tx.appointment.findFirst({
         where: duplicateWhere,
@@ -711,8 +1000,6 @@ export class BookingService implements OnModuleInit {
         }
       }
 
-      let resolvedSpecialistId = targetSpecialistId;
-
       if (activeSpecialists.length > 0 && !resolvedSpecialistId) {
         // Auto-asignar al primer especialista libre en ese horario
         for (const spec of activeSpecialists) {
@@ -738,7 +1025,7 @@ export class BookingService implements OnModuleInit {
         const hasConflict = await this.hasConflictingAppointment(tx, {
           businessId,
           serviceId: service.id,
-          specialistId: resolvedSpecialistId,
+          specialistId: resolvedSpecialistId === 'generic' ? null : resolvedSpecialistId,
           scheduledAt,
           durationMinutes,
         });
@@ -754,7 +1041,7 @@ export class BookingService implements OnModuleInit {
         data: {
           businessId,
           serviceId: service.id,
-          specialistId: resolvedSpecialistId,
+          specialistId: resolvedSpecialistId === 'generic' ? null : resolvedSpecialistId,
           customerId: customer.id,
           scheduledAt,
           durationMinutes,
@@ -773,6 +1060,11 @@ export class BookingService implements OnModuleInit {
           customer: true,
           business: true,
         },
+      });
+
+      // 80a: Eliminar el hold consumido dentro de la misma transacción atómica
+      await tx.appointmentHold.delete({
+        where: { id: hold.id },
       });
 
       return newApp;
@@ -904,7 +1196,17 @@ export class BookingService implements OnModuleInit {
         excludeAppointmentId: appointment.id,
       });
 
-      if (hasConflict) {
+      const hasHoldConflict = await tx.appointmentHold.findFirst({
+        where: {
+          businessId: appointment.businessId,
+          ...(appointment.specialistId ? { specialistId: appointment.specialistId } : { serviceId: appointment.serviceId }),
+          expiresAt: { gt: new Date() },
+          startAt: { lt: newScheduledEnd },
+          endAt: { gt: newScheduledAt },
+        },
+      });
+
+      if (hasConflict || hasHoldConflict) {
         throw new ConflictException(
           'El nuevo horario seleccionado ya no se encuentra disponible. Por favor elige otro.',
         );
@@ -2006,7 +2308,21 @@ export class BookingService implements OnModuleInit {
         excludeAppointmentId: appointment.id,
       });
 
-      if (hasConflict) {
+      const appEnd = new Date(
+        appointment.scheduledAt.getTime() + appointment.durationMinutes * 60 * 1000,
+      );
+
+      const hasHoldConflict = await tx.appointmentHold.findFirst({
+        where: {
+          businessId,
+          specialistId: newSpecialistId,
+          expiresAt: { gt: new Date() },
+          startAt: { lt: appEnd },
+          endAt: { gt: appointment.scheduledAt },
+        },
+      });
+
+      if (hasConflict || hasHoldConflict) {
         throw new ConflictException(
           'El especialista no se encuentra disponible en el horario de esta cita',
         );

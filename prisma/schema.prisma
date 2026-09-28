@@ -277,6 +277,7 @@ model Business {
   availabilitySchedules AvailabilitySchedule[]
   bookingSettings       BusinessBookingSettings?
   appointments          Appointment[]
+  appointmentHolds      AppointmentHold[]
   specialists           Specialist[]
   professions           Profession[]
 
@@ -1239,6 +1240,23 @@ model Appointment {
   @@index([manageToken])
   @@index([specialistId])
   @@map("appointments")
+}
+
+model AppointmentHold {
+  id            String   @id @default(cuid())
+  businessId    String
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  serviceId     String
+  specialistId  String
+  startAt       DateTime
+  endAt         DateTime
+  holderToken   String   // token random generado al crear el hold, para validar que solo el dueño lo libere/confirme
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+
+  @@index([businessId, specialistId, startAt])
+  @@index([expiresAt])
+  @@map("appointment_holds")
 }
 
 model Profession {

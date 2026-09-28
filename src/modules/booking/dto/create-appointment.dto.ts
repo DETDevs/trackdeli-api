@@ -26,4 +26,12 @@ export class CreateAppointmentDto {
   @IsNotEmpty({ message: 'El correo electrónico es obligatorio para enviar la confirmación de la cita' })
   @IsEmail({}, { message: 'El correo electrónico ingresado no es válido' })
   customerEmail: string;
+
+  @IsNotEmpty({ message: 'El holdId es obligatorio' })
+  @IsString()
+  holdId: string;
+
+  @IsNotEmpty({ message: 'El holderToken es obligatorio' })
+  @IsString()
+  holderToken: string;
 }
