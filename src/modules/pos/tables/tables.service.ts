@@ -15,6 +15,7 @@ import { UpdateTableDto } from './dto/update-table.dto';
 import { AddOrderItemsDto } from './dto/add-order-items.dto';
 import { UpdateOrderItemDto } from './dto/update-order-item.dto';
 import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
+import { CancelTableOrderDto } from './dto/cancel-table-order.dto';
 
 @Injectable()
 export class TablesService {
@@ -202,6 +203,7 @@ export class TablesService {
           include: {
             items: true,
           },
+          orderBy: { createdAt: 'desc' },
           take: 1,
         },
       },
@@ -234,6 +236,7 @@ export class TablesService {
           ? {
               id: currentOrder.id,
               status: currentOrder.status,
+              openedAt: currentOrder.createdAt,
               createdAt: currentOrder.createdAt,
               notes: currentOrder.notes,
               itemsCount,
@@ -520,6 +523,64 @@ export class TablesService {
     };
   }
 
+  async cancelTableOrder(
+    businessId: string,
+    user: JwtPayload,
+    tableId: string,
+    dto?: CancelTableOrderDto,
+  ) {
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      include: {
+        items: true,
+        table: true,
+      },
+    });
+
+    if (!order) {
+      throw new BadRequestException('No hay un pedido abierto para cancelar en esta mesa');
+    }
+
+    let cancelledByUserName: string | null = null;
+    if (user?.sub) {
+      const dbUser = await this.prisma.user.findUnique({
+        where: { id: user.sub },
+        select: { name: true },
+      });
+      cancelledByUserName = dbUser?.name || user.email || null;
+    }
+
+    const cancelledOrder = await this.prisma.tableOrder.update({
+      where: { id: order.id },
+      data: {
+        status: TableOrderStatus.CANCELLED,
+        cancelledAt: new Date(),
+        cancelledByUserId: user?.sub || null,
+        cancelledByUserName,
+        cancellationReason: dto?.reason?.trim() || null,
+      },
+    });
+
+    this.logger.log(
+      `[cancelTableOrder] Mesa ${order.table?.number || tableId} orden cancelada: orderId=${order.id} por user=${cancelledByUserName || user?.sub} motivo=${dto?.reason || 'sin motivo'}`,
+    );
+
+    return {
+      success: true,
+      message: 'Mesa liberada y pedido cancelado exitosamente',
+      tableOrder: {
+        id: cancelledOrder.id,
+        tableId: cancelledOrder.tableId,
+        status: cancelledOrder.status,
+        cancelledAt: cancelledOrder.cancelledAt,
+        cancelledByUserId: cancelledOrder.cancelledByUserId,
+        cancelledByUserName: cancelledOrder.cancelledByUserName,
+        reason: cancelledOrder.cancellationReason,
+        cancellationReason: cancelledOrder.cancellationReason,
+      },
+    };
+  }
+
   private formatOrderResponse(order: any) {
     let subtotal = 0;
     let itemsCount = 0;
@@ -551,6 +612,10 @@ export class TablesService {
       notes: order.notes,
       openedByWaiterId: order.openedByWaiterId || null,
       openedByWaiterName: order.openedByWaiterName || null,
+      cancelledAt: order.cancelledAt || null,
+      cancelledByUserId: order.cancelledByUserId || null,
+      cancelledByUserName: order.cancelledByUserName || null,
+      cancellationReason: order.cancellationReason || null,
       createdAt: order.createdAt,
       closedAt: order.closedAt,
       saleId: order.saleId,

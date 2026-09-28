@@ -165,6 +165,7 @@ enum TableShape {
 enum TableOrderStatus {
   OPEN
   CLOSED
+  CANCELLED
 }
 
 enum BusinessProductType {
@@ -969,6 +970,10 @@ model TableOrder {
   notes              String?
   openedByWaiterId   String?          @db.VarChar(100)
   openedByWaiterName String?          @db.VarChar(100)
+  cancelledAt        DateTime?
+  cancelledByUserId  String?          @db.VarChar(100)
+  cancelledByUserName String?         @db.VarChar(100)
+  cancellationReason String?          @db.VarChar(500)
 
   items      TableOrderItem[]
 

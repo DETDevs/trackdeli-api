@@ -25,6 +25,7 @@ import { UpdateTableDto } from './dto/update-table.dto';
 import { AddOrderItemsDto } from './dto/add-order-items.dto';
 import { UpdateOrderItemDto } from './dto/update-order-item.dto';
 import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
+import { CancelTableOrderDto } from './dto/cancel-table-order.dto';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
@@ -157,6 +158,23 @@ export class TablesController {
     return this.service.checkoutTableOrder(
       resolveBusinessId(user, qBid),
       user.sub,
+      tableId,
+      dto,
+    );
+  }
+
+  @Post(':id/order/cancel')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
+  @HttpCode(HttpStatus.OK)
+  cancelOrder(
+    @Param('id') tableId: string,
+    @Body() dto: CancelTableOrderDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.cancelTableOrder(
+      resolveBusinessId(user, qBid),
+      user,
       tableId,
       dto,
     );

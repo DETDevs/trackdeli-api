@@ -1052,6 +1052,26 @@ WHERE a."customerId" = c."id"
           name: 'Columna pos_table_order_items.waiterName',
           sql: `ALTER TABLE "pos_table_order_items" ADD COLUMN IF NOT EXISTS "waiterName" VARCHAR(100);`,
         },
+        {
+          name: 'Enum TableOrderStatus valor CANCELLED',
+          sql: `ALTER TYPE "TableOrderStatus" ADD VALUE IF NOT EXISTS 'CANCELLED';`,
+        },
+        {
+          name: 'Columna pos_table_orders.cancelledAt',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "cancelledAt" TIMESTAMP(3);`,
+        },
+        {
+          name: 'Columna pos_table_orders.cancelledByUserId',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "cancelledByUserId" VARCHAR(100);`,
+        },
+        {
+          name: 'Columna pos_table_orders.cancelledByUserName',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "cancelledByUserName" VARCHAR(100);`,
+        },
+        {
+          name: 'Columna pos_table_orders.cancellationReason',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "cancellationReason" VARCHAR(500);`,
+        },
       ];
 
       for (const step of ddlStatements) {
