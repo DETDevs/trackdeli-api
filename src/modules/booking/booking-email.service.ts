@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Resend } from 'resend';
-import * as Sentry from '@sentry/nestjs';
+import { EmailChannel } from '../notifications/channels/email.channel';
 
 export interface BookingReceiptData {
   to: string;
@@ -19,24 +18,12 @@ export interface BookingReceiptData {
 @Injectable()
 export class BookingEmailService {
   private readonly logger = new Logger(BookingEmailService.name);
-  private readonly resend: Resend | null = null;
-  private readonly fromEmail: string;
   private readonly appUrl: string;
 
-  constructor(private readonly configService: ConfigService) {
-    const apiKey = this.configService.get<string>('RESEND_API_KEY');
-    if (apiKey) {
-      this.resend = new Resend(apiKey);
-      this.logger.log('[BookingEmailService] Resend inicializado correctamente con API Key.');
-    } else {
-      this.logger.warn(
-        '[BookingEmailService] RESEND_API_KEY no configurada. Los correos se simularán en logs.',
-      );
-    }
-
-    this.fromEmail =
-      this.configService.get<string>('RESEND_FROM_EMAIL') ||
-      'TrackDeli Citas <notificaciones@trackdeli.com>';
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly emailChannel: EmailChannel,
+  ) {
     this.appUrl = this.configService.getOrThrow<string>('BOOKING_APP_URL');
   }
 
@@ -137,55 +124,18 @@ export class BookingEmailService {
 </html>
     `.trim();
 
-    if (!this.resend) {
-      this.logger.log(
-        `[BookingEmailService] (Simulación) Email enviado a "${to}". Asunto: "${subject}". ManageUrl: ${manageUrl}`,
-      );
-      Sentry.logger.info(`[BookingEmailService] (Simulación) Email enviado a "${to}"`, {
-        to,
+    const result = await this.emailChannel.send({
+      to,
+      subject,
+      html,
+      metadata: {
         businessName,
         serviceName,
         status,
         manageToken,
-      });
-      return true;
-    }
+      },
+    });
 
-    try {
-      const response = await this.resend.emails.send({
-        from: this.fromEmail,
-        to,
-        subject,
-        html,
-      });
-
-      this.logger.log(
-        `[BookingEmailService] ✓ Correo enviado exitosamente a "${to}". ID: ${response.data?.id}`,
-      );
-      Sentry.logger.info(`[BookingEmailService] ✓ Correo enviado a "${to}"`, {
-        to,
-        emailId: response.data?.id,
-        businessName,
-        serviceName,
-        status,
-        manageToken,
-      });
-      return true;
-    } catch (err: any) {
-      this.logger.error(
-        `[BookingEmailService] ⚠ Error enviando correo a "${to}": ${err.message}`,
-        err.stack,
-      );
-      Sentry.captureException(err, {
-        extra: {
-          to,
-          businessName,
-          serviceName,
-          status,
-          manageToken,
-        },
-      });
-      return false;
-    }
+    return result.success;
   }
 }

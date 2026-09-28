@@ -1,15 +1,42 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bull';
+import { Queue } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FirebaseMultipleSendResult, FirebaseService } from './firebase.service';
+import { NotificationChannel, NotificationLogStatus, NotificationLog } from '@prisma/client';
+import { NotificationsProcessor } from './processors/notifications.processor';
+import { NotificationVariables } from './templates/notification-template.registry';
+
+export interface DispatchNotificationDto {
+  businessId?: string;
+  channel: NotificationChannel;
+  event: string;
+  recipientContact: string;
+  variables: NotificationVariables;
+  relatedEntityType?: string;
+  relatedEntityId?: string;
+}
 
 @Injectable()
-export class NotificationsService {
+export class NotificationsService implements OnModuleInit {
   private readonly logger = new Logger(NotificationsService.name);
 
   constructor(
     private prisma: PrismaService,
     private firebase: FirebaseService,
+    private processor: NotificationsProcessor,
+    @Optional()
+    @InjectQueue('notifications')
+    private readonly notificationsQueue?: Queue,
   ) {}
+
+  onModuleInit() {
+    if (this.notificationsQueue) {
+      this.notificationsQueue.on('error', (err) => {
+        this.logger.warn(`[NotificationsService] Advertencia en cola Bull/Redis: ${err.message}`);
+      });
+    }
+  }
 
   async registerDeviceToken(
     userId: string,
@@ -278,4 +305,101 @@ export class NotificationsService {
       take: 50,
     });
   }
+
+  /**
+   * Encola y gestiona el envío asíncrono de notificaciones multicanal (Email / WhatsApp)
+   * registrando trazabilidad completa en NotificationLog.
+   */
+  async dispatchNotification(dto: DispatchNotificationDto): Promise<NotificationLog> {
+    const {
+      businessId,
+      channel,
+      event,
+      recipientContact,
+      variables,
+      relatedEntityType,
+      relatedEntityId,
+    } = dto;
+
+    // 1. Crear registro NotificationLog en estado inicial PENDING
+    const log = await this.prisma.notificationLog.create({
+      data: {
+        businessId: businessId || null,
+        channel,
+        event,
+        recipientContact,
+        status: NotificationLogStatus.PENDING,
+        relatedEntityType: relatedEntityType || null,
+        relatedEntityId: relatedEntityId || null,
+        metadata: variables as any,
+      },
+    });
+
+    // 2. Intentar encolar en Bull / Redis
+    let enqueued = false;
+    try {
+      if (this.notificationsQueue) {
+        await this.notificationsQueue.add(
+          'send',
+          { logId: log.id },
+          {
+            attempts: 3,
+            backoff: {
+              type: 'exponential',
+              delay: 2000,
+            },
+            removeOnComplete: true,
+            removeOnFail: false,
+          },
+        );
+        enqueued = true;
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[NotificationsService] ⚠ No se pudo encolar en Bull/Redis (${err.message}). Ejecutando en segundo plano de respaldo.`,
+      );
+    }
+
+    // 3. Fallback asíncrono inmediato si Redis no está disponible, para no bloquear el endpoint ni fallar la transacción
+    if (!enqueued) {
+      setImmediate(async () => {
+        try {
+          await this.processor.processNotification(log.id, false);
+        } catch (procErr: any) {
+          this.logger.error(
+            `[NotificationsService] Error en procesamiento en segundo plano (fallback): ${procErr.message}`,
+          );
+        }
+      });
+    }
+
+    return log;
+  }
+
+  /**
+   * Consulta registros de auditoría de notificaciones.
+   */
+  async getNotificationLogs(filter: {
+    businessId?: string;
+    channel?: NotificationChannel;
+    status?: NotificationLogStatus;
+    event?: string;
+    relatedEntityType?: string;
+    relatedEntityId?: string;
+    take?: number;
+  }): Promise<NotificationLog[]> {
+    return this.prisma.notificationLog.findMany({
+      where: {
+        businessId: filter.businessId,
+        channel: filter.channel,
+        status: filter.status,
+        event: filter.event,
+        relatedEntityType: filter.relatedEntityType,
+        relatedEntityId: filter.relatedEntityId,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: filter.take || 50,
+    });
+  }
 }
+

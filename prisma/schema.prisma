@@ -278,6 +278,7 @@ model Business {
   availabilitySchedules AvailabilitySchedule[]
   bookingSettings       BusinessBookingSettings?
   appointments          Appointment[]
+  notificationLogs      NotificationLog[]
   appointmentHolds      AppointmentHold[]
   specialists           Specialist[]
   professions           Profession[]
@@ -654,6 +655,43 @@ model DeviceToken {
   user User @relation(fields: [userId], references: [id])
 
   @@map("device_tokens")
+}
+
+enum NotificationChannel {
+  EMAIL
+  WHATSAPP
+}
+
+enum NotificationLogStatus {
+  PENDING
+  SENT
+  FAILED
+  SIMULATED
+}
+
+model NotificationLog {
+  id                String                @id @default(uuid())
+  businessId        String?
+  channel           NotificationChannel
+  event             String                @db.VarChar(100)
+  recipientContact  String                @db.VarChar(255)
+  status            NotificationLogStatus @default(PENDING)
+  sentAt            DateTime?
+  errorMessage      String?               @db.Text
+  relatedEntityType String?               @db.VarChar(100)
+  relatedEntityId   String?               @db.VarChar(100)
+  metadata          Json?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  business          Business?             @relation(fields: [businessId], references: [id], onDelete: SetNull)
+
+  @@index([businessId])
+  @@index([channel, event])
+  @@index([relatedEntityType, relatedEntityId])
+  @@index([recipientContact])
+  @@index([status])
+  @@map("notification_logs")
 }
 
 // ═══════════════════════════════════════════════

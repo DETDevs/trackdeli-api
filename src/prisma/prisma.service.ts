@@ -1115,6 +1115,57 @@ WHERE a."customerId" = c."id"
             END IF;
           END $$;`,
         },
+        {
+          name: 'Enums NotificationChannel y NotificationLogStatus',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'NotificationChannel') THEN
+              CREATE TYPE "NotificationChannel" AS ENUM ('EMAIL', 'WHATSAPP');
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'NotificationLogStatus') THEN
+              CREATE TYPE "NotificationLogStatus" AS ENUM ('PENDING', 'SENT', 'FAILED', 'SIMULATED');
+            END IF;
+          END $$;`,
+        },
+        {
+          name: 'Tabla notification_logs',
+          sql: `CREATE TABLE IF NOT EXISTS "notification_logs" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT,
+            "channel" "NotificationChannel" NOT NULL,
+            "event" VARCHAR(100) NOT NULL,
+            "recipientContact" VARCHAR(255) NOT NULL,
+            "status" "NotificationLogStatus" NOT NULL DEFAULT 'PENDING',
+            "sentAt" TIMESTAMP(3),
+            "errorMessage" TEXT,
+            "relatedEntityType" VARCHAR(100),
+            "relatedEntityId" VARCHAR(100),
+            "metadata" JSONB,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "notification_logs_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "notification_logs_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE SET NULL ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice notification_logs.businessId',
+          sql: `CREATE INDEX IF NOT EXISTS "notification_logs_businessId_idx" ON "notification_logs"("businessId");`,
+        },
+        {
+          name: 'Índice notification_logs.channel_event',
+          sql: `CREATE INDEX IF NOT EXISTS "notification_logs_channel_event_idx" ON "notification_logs"("channel", "event");`,
+        },
+        {
+          name: 'Índice notification_logs.relatedEntityType_relatedEntityId',
+          sql: `CREATE INDEX IF NOT EXISTS "notification_logs_relatedEntityType_relatedEntityId_idx" ON "notification_logs"("relatedEntityType", "relatedEntityId");`,
+        },
+        {
+          name: 'Índice notification_logs.recipientContact',
+          sql: `CREATE INDEX IF NOT EXISTS "notification_logs_recipientContact_idx" ON "notification_logs"("recipientContact");`,
+        },
+        {
+          name: 'Índice notification_logs.status',
+          sql: `CREATE INDEX IF NOT EXISTS "notification_logs_status_idx" ON "notification_logs"("status");`,
+        },
       ];
 
       for (const step of ddlStatements) {

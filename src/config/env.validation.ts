@@ -28,6 +28,9 @@ export const envValidationSchema = Joi.object({
   REDIS_TLS: Joi.string().valid('true', 'false').optional().allow(''),
   RESEND_API_KEY: Joi.string().optional().allow(''),
   RESEND_FROM_EMAIL: Joi.string().optional().allow(''),
+  WHATSAPP_BSP_API_KEY: Joi.string().optional().allow(''),
+  WHATSAPP_BSP_PHONE_NUMBER_ID: Joi.string().optional().allow(''),
+  WHATSAPP_BSP_API_URL: Joi.string().uri().optional().allow(''),
   SENTRY_DSN: Joi.string().optional().allow(''),
 });
 

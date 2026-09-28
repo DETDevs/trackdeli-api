@@ -11,10 +11,13 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { BusinessProductsService } from '../business-products/business-products.service';
 import { BookingEmailService } from './booking-email.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { ConfigService } from '@nestjs/config';
 import {
   AppointmentStatus,
   BusinessProductType,
   CashStatus,
+  NotificationChannel,
   PosPaymentMethod,
   Prisma,
 } from '@prisma/client';
@@ -73,6 +76,8 @@ export class BookingService implements OnModuleInit {
     private readonly businessProductsService: BusinessProductsService,
     private readonly emailService: BookingEmailService,
     private readonly salesService: SalesService,
+    private readonly notificationsService: NotificationsService,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
@@ -1183,6 +1188,41 @@ export class BookingService implements OnModuleInit {
       return newApp;
     });
 
+    if (appointment.customerEmail) {
+      const serviceName =
+        appointment.service?.name ||
+        (appointment.items && appointment.items.length > 0
+          ? appointment.items.map((i) => i.serviceName).join(', ')
+          : 'Servicio');
+      const bookingAppUrl = this.configService.get<string>('BOOKING_APP_URL') || '';
+      const manageUrl = `${bookingAppUrl.replace(/\/$/, '')}/manage/${appointment.manageToken}`;
+
+      this.notificationsService
+        .dispatchNotification({
+          businessId: appointment.businessId,
+          channel: NotificationChannel.EMAIL,
+          event: 'APPOINTMENT_RECEIPT',
+          recipientContact: appointment.customerEmail,
+          variables: {
+            customerName: appointment.customerName || appointment.customer?.name,
+            businessName: appointment.business?.name,
+            serviceName,
+            scheduledAt: appointment.scheduledAt,
+            durationMinutes: appointment.durationMinutes,
+            price: appointment.price,
+            address: appointment.business?.posAddress,
+            manageToken: appointment.manageToken,
+            manageUrl,
+            status: appointment.status,
+          },
+          relatedEntityType: 'Appointment',
+          relatedEntityId: appointment.id,
+        })
+        .catch((err) =>
+          this.logger.warn(`[BookingService] Error despachando comprobante de reserva: ${err.message}`),
+        );
+    }
+
     return appointment;
   }
 
@@ -1343,6 +1383,9 @@ export class BookingService implements OnModuleInit {
         },
         include: {
           service: true,
+          items: {
+            orderBy: { orderIndex: 'asc' },
+          },
           specialist: true,
           customer: true,
           business: true,
@@ -1351,17 +1394,34 @@ export class BookingService implements OnModuleInit {
     });
 
     if (updated.customerEmail) {
-      this.emailService
-        .sendBookingReceipt({
-          to: updated.customerEmail,
-          businessName: updated.business.name,
-          serviceName: updated.service.name,
-          scheduledAt: updated.scheduledAt,
-          durationMinutes: updated.durationMinutes,
-          price: updated.price,
-          address: updated.business.posAddress,
-          manageToken: updated.manageToken,
-          status: updated.status,
+      const serviceName =
+        updated.service?.name ||
+        (updated.items && updated.items.length > 0
+          ? updated.items.map((i) => i.serviceName).join(', ')
+          : 'Servicio');
+      const bookingAppUrl = this.configService.get<string>('BOOKING_APP_URL') || '';
+      const manageUrl = `${bookingAppUrl.replace(/\/$/, '')}/manage/${updated.manageToken}`;
+
+      this.notificationsService
+        .dispatchNotification({
+          businessId: updated.businessId,
+          channel: NotificationChannel.EMAIL,
+          event: 'APPOINTMENT_RESCHEDULED',
+          recipientContact: updated.customerEmail,
+          variables: {
+            customerName: updated.customer.name,
+            businessName: updated.business.name,
+            serviceName,
+            scheduledAt: updated.scheduledAt,
+            durationMinutes: updated.durationMinutes,
+            price: updated.price,
+            address: updated.business.posAddress,
+            manageToken: updated.manageToken,
+            manageUrl,
+            status: updated.status,
+          },
+          relatedEntityType: 'Appointment',
+          relatedEntityId: updated.id,
         })
         .catch((err) =>
           this.logger.warn(`Error enviando correo de cita reagendada: ${err.message}`),
@@ -1493,47 +1553,96 @@ export class BookingService implements OnModuleInit {
       include: {
         business: true,
         service: true,
+        items: {
+          orderBy: { orderIndex: 'asc' },
+        },
         customer: true,
       },
     });
 
-    // Generar link de WhatsApp pre-armado
+    // Formatear fecha para el mensaje
     const formattedDate = new Intl.DateTimeFormat('es-NI', {
+      timeZone: 'America/Managua',
       dateStyle: 'medium',
       timeStyle: 'short',
     }).format(new Date(updated.scheduledAt));
 
-    const text = `¡Hola ${updated.customer.name}! Te confirmamos tu cita para *${updated.service.name}* el *${formattedDate}* en *${updated.business.name}*. ¡Te esperamos!`;
-    const cleanPhone = updated.customer.phone.replace(/\D/g, '');
-    const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+    const serviceName =
+      updated.service?.name ||
+      (updated.items && updated.items.length > 0
+        ? updated.items.map((i) => i.serviceName).join(', ')
+        : 'Servicio');
 
+    const cleanPhone = updated.customer.phone ? updated.customer.phone.replace(/\D/g, '') : '';
+    const text = `¡Hola ${updated.customer.name}! Te confirmamos tu cita para *${serviceName}* el *${formattedDate}* en *${updated.business.name}*. ¡Te esperamos!`;
+    const whatsappUrl = cleanPhone
+      ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`
+      : '';
+
+    const bookingAppUrl = this.configService.get<string>('BOOKING_APP_URL') || '';
+    const manageUrl = `${bookingAppUrl.replace(/\/$/, '')}/manage/${updated.manageToken}`;
+
+    // 1. Envío automático por WhatsApp vía NotificationsModule (simulado si no hay credenciales)
+    if (cleanPhone) {
+      this.notificationsService
+        .dispatchNotification({
+          businessId: updated.businessId,
+          channel: NotificationChannel.WHATSAPP,
+          event: 'APPOINTMENT_CONFIRMED',
+          recipientContact: cleanPhone,
+          variables: {
+            customerName: updated.customer.name,
+            businessName: updated.business.name,
+            serviceName,
+            dateFormatted: formattedDate,
+            scheduledAt: updated.scheduledAt,
+            manageToken: updated.manageToken,
+            manageUrl,
+          },
+          relatedEntityType: 'Appointment',
+          relatedEntityId: updated.id,
+        })
+        .catch((err) =>
+          this.logger.warn(`[BookingService] Error despachando WhatsApp: ${err.message}`),
+        );
+    }
+
+    // 2. Envío automático por Email vía NotificationsModule (idempotente)
     if (updated.customerEmail) {
       if (!updated.confirmationEmailSentAt) {
-        this.emailService
-          .sendBookingReceipt({
-            to: updated.customerEmail,
-            businessName: updated.business.name,
-            serviceName: updated.service.name,
-            scheduledAt: updated.scheduledAt,
-            durationMinutes: updated.durationMinutes,
-            price: updated.price,
-            address: updated.business.posAddress,
-            manageToken: updated.manageToken,
-            status: AppointmentStatus.CONFIRMED,
+        this.notificationsService
+          .dispatchNotification({
+            businessId: updated.businessId,
+            channel: NotificationChannel.EMAIL,
+            event: 'APPOINTMENT_CONFIRMED',
+            recipientContact: updated.customerEmail,
+            variables: {
+              customerName: updated.customer.name,
+              businessName: updated.business.name,
+              serviceName,
+              dateFormatted: formattedDate,
+              scheduledAt: updated.scheduledAt,
+              durationMinutes: updated.durationMinutes,
+              price: updated.price,
+              address: updated.business.posAddress,
+              manageToken: updated.manageToken,
+              manageUrl,
+              status: AppointmentStatus.CONFIRMED,
+            },
+            relatedEntityType: 'Appointment',
+            relatedEntityId: updated.id,
           })
-          .then(async (success) => {
-            if (success) {
-              await this.prisma.appointment.update({
-                where: { id: appointmentId },
-                data: { confirmationEmailSentAt: new Date() },
-              });
-              this.logger.log(
-                `[BookingService] ✓ Correo de confirmación enviado y registrado para cita ${appointmentId} a ${updated.customerEmail}`,
-              );
-            }
+          .then(async () => {
+            await this.prisma.appointment.update({
+              where: { id: appointmentId },
+              data: { confirmationEmailSentAt: new Date() },
+            });
+            this.logger.log(
+              `[BookingService] ✓ Notificación de confirmación por email encolada para cita ${appointmentId} a ${updated.customerEmail}`,
+            );
           })
           .catch((err) =>
-            this.logger.warn(`Error enviando correo de confirmación: ${err.message}`),
+            this.logger.warn(`[BookingService] Error despachando email de confirmación: ${err.message}`),
           );
       } else {
         this.logger.log(
