@@ -14,6 +14,8 @@ import { BookingEmailService } from './booking-email.service';
 import {
   AppointmentStatus,
   BusinessProductType,
+  CashStatus,
+  PosPaymentMethod,
   Prisma,
 } from '@prisma/client';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
@@ -32,6 +34,10 @@ import {
 import { SaveSchedulesDto } from './dto/save-schedules.dto';
 import { UpdateBookingSettingsDto } from './dto/update-booking-settings.dto';
 import { CreateAppointmentHoldDto } from './dto/create-appointment-hold.dto';
+import { CheckoutAppointmentDto } from './dto/checkout-appointment.dto';
+import { SalesService } from '../pos/sales/sales.service';
+import { CreateSaleDto } from '../pos/sales/dto/create-sale.dto';
+import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { v4 as uuidv4 } from 'uuid';
 import { UUID_REGEX } from '../../common/utils/slug.util';
 
@@ -66,6 +72,7 @@ export class BookingService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly businessProductsService: BusinessProductsService,
     private readonly emailService: BookingEmailService,
+    private readonly salesService: SalesService,
   ) {}
 
   /**
@@ -277,11 +284,11 @@ export class BookingService implements OnModuleInit {
   }
 
   /**
-   * Motor de cálculo de disponibilidad de slots.
+   * Motor de cálculo de disponibilidad de slots para uno o varios servicios.
    */
   async getAvailability(
     businessIdOrSlug: string,
-    serviceId: string,
+    serviceIdsInput: string | string[],
     dateStr: string,
     requestedSpecialistId?: string,
   ) {
@@ -289,8 +296,14 @@ export class BookingService implements OnModuleInit {
     await this.assertCitasActive(business.id);
     const businessId = business.id;
 
-    const service = await this.prisma.service.findFirst({
-      where: { id: serviceId, businessId, active: true },
+    const rawIds = Array.isArray(serviceIdsInput) ? serviceIdsInput : [serviceIdsInput];
+    const serviceIds = Array.from(new Set(rawIds.map((s) => s.trim()).filter(Boolean)));
+    if (serviceIds.length === 0) {
+      throw new BadRequestException('Debe especificar al menos un servicio');
+    }
+
+    const services = await this.prisma.service.findMany({
+      where: { id: { in: serviceIds }, businessId, active: true },
       include: {
         specialists: {
           include: {
@@ -300,22 +313,28 @@ export class BookingService implements OnModuleInit {
       },
     });
 
-    if (!service) {
-      throw new NotFoundException('Servicio no encontrado o inactivo');
+    if (services.length !== serviceIds.length) {
+      throw new NotFoundException('Uno o más servicios no fueron encontrados o están inactivos');
     }
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
       throw new BadRequestException('El formato de fecha debe ser YYYY-MM-DD');
     }
 
-    const assignedSpecialists = service.specialists
-      .filter((s) => s.specialist.active)
-      .map((s) => s.specialist);
+    const totalDurationMinutes = services.reduce((sum, s) => sum + s.durationMinutes, 0);
+
+    // Especialistas asignados que cubren TODOS los servicios solicitados (intersección)
+    const specialistsPerService = services.map((s) =>
+      s.specialists.filter((ss) => ss.specialist.active).map((ss) => ss.specialist),
+    );
+    const assignedSpecialists = specialistsPerService[0].filter((spec) =>
+      specialistsPerService.every((list) => list.some((s) => s.id === spec.id)),
+    );
 
     if (requestedSpecialistId) {
       const isAssigned = assignedSpecialists.some((s) => s.id === requestedSpecialistId);
       if (!isAssigned) {
-        throw new BadRequestException('El especialista no está asignado a este servicio');
+        throw new BadRequestException('El especialista no está asignado a todos los servicios seleccionados');
       }
     }
 
@@ -323,37 +342,73 @@ export class BookingService implements OnModuleInit {
     const dayDate = new Date(Date.UTC(year, month - 1, day));
     const dayOfWeek = dayDate.getUTCDay(); // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
 
-    // 1. Resolver el horario base (override por servicio si hasCustomSchedule es true; si no, horario general)
-    let schedules = [];
-    if (service.hasCustomSchedule) {
-      schedules = await this.prisma.availabilitySchedule.findMany({
-        where: {
-          businessId,
-          serviceId: service.id,
-          dayOfWeek,
-        },
-        orderBy: { startTime: 'asc' },
-      });
-    } else {
-      schedules = await this.prisma.availabilitySchedule.findMany({
-        where: {
-          businessId,
-          serviceId: null,
-          dayOfWeek,
-        },
-        orderBy: { startTime: 'asc' },
-      });
+    // 1. Resolver los horarios de cada servicio e intersectar las ventanas permitidas
+    const parseTime = (t: string) => {
+      const [h, m] = t.split(':').map(Number);
+      return h * 60 + m;
+    };
+
+    let commonWindows: Array<{ startMin: number; endMin: number }> = [];
+
+    for (let i = 0; i < services.length; i++) {
+      const s = services[i];
+      let sSchedules = [];
+      if (s.hasCustomSchedule) {
+        sSchedules = await this.prisma.availabilitySchedule.findMany({
+          where: { businessId, serviceId: s.id, dayOfWeek },
+          orderBy: { startTime: 'asc' },
+        });
+      } else {
+        sSchedules = await this.prisma.availabilitySchedule.findMany({
+          where: { businessId, serviceId: null, dayOfWeek },
+          orderBy: { startTime: 'asc' },
+        });
+      }
+
+      if (!sSchedules.length) {
+        commonWindows = [];
+        break;
+      }
+
+      const sWindows = sSchedules.map((sched) => ({
+        startMin: parseTime(sched.startTime),
+        endMin: parseTime(sched.endTime),
+      }));
+
+      if (i === 0) {
+        commonWindows = sWindows;
+      } else {
+        const nextCommon: Array<{ startMin: number; endMin: number }> = [];
+        for (const w1 of commonWindows) {
+          for (const w2 of sWindows) {
+            const startInter = Math.max(w1.startMin, w2.startMin);
+            const endInter = Math.min(w1.endMin, w2.endMin);
+            if (endInter - startInter >= totalDurationMinutes) {
+              nextCommon.push({ startMin: startInter, endMin: endInter });
+            }
+          }
+        }
+        commonWindows = nextCommon;
+      }
     }
 
-    if (!schedules.length) {
+    if (!commonWindows.length) {
       return {
         date: dateStr,
         dayOfWeek,
         service: {
-          id: service.id,
-          name: service.name,
-          durationMinutes: service.durationMinutes,
+          id: services[0].id,
+          name: services.map((s) => s.name).join(' + '),
+          durationMinutes: totalDurationMinutes,
         },
+        services: services.map((s) => ({
+          id: s.id,
+          name: s.name,
+          durationMinutes: s.durationMinutes,
+          price: s.price,
+        })),
+        totalDurationMinutes,
+        totalPrice: services.reduce((sum, s) => sum + s.price, 0),
         availableSlots: [],
       };
     }
@@ -389,7 +444,7 @@ export class BookingService implements OnModuleInit {
 
     const now = new Date();
 
-    // 80a: Reservas temporales (holds) activas para esa fecha
+    // 80a/85a: Reservas temporales (holds) activas para esa fecha
     const activeHolds = await this.prisma.appointmentHold.findMany({
       where: {
         businessId,
@@ -399,7 +454,7 @@ export class BookingService implements OnModuleInit {
       },
       select: {
         id: true,
-        serviceId: true,
+        serviceIds: true,
         specialistId: true,
         startAt: true,
         endAt: true,
@@ -412,18 +467,15 @@ export class BookingService implements OnModuleInit {
       scheduledAt: string;
     }> = [];
 
-    // 3. Generar slots posibles dentro de cada ventana de horario
-    for (const sched of schedules) {
-      const [startH, startM] = sched.startTime.split(':').map(Number);
-      const [endH, endM] = sched.endTime.split(':').map(Number);
+    // 3. Generar slots posibles dentro de cada ventana común
+    for (const win of commonWindows) {
+      let currentMin = win.startMin;
+      const endMin = win.endMin;
 
-      let currentMin = startH * 60 + startM;
-      const endMin = endH * 60 + endM;
-
-      while (currentMin + service.durationMinutes <= endMin) {
+      while (currentMin + totalDurationMinutes <= endMin) {
         const slotStartH = Math.floor(currentMin / 60);
         const slotStartM = currentMin % 60;
-        const slotEndMin = currentMin + service.durationMinutes;
+        const slotEndMin = currentMin + totalDurationMinutes;
         const slotEndH = Math.floor(slotEndMin / 60);
         const slotEndM = slotEndMin % 60;
 
@@ -482,16 +534,15 @@ export class BookingService implements OnModuleInit {
               isSlotAvailable = freeSpecialists.length > 0;
             }
           } else {
-            // Servicio genérico sin especialistas asignados
+            // Sin especialistas asignados (servicio genérico)
             const hasConflict =
               existingAppointments.some((app) => {
-                if (app.serviceId !== service.id || app.specialistId !== null) return false;
+                if (app.specialistId !== null) return false;
                 const appStart = new Date(app.scheduledAt).getTime();
                 const appEnd = appStart + app.durationMinutes * 60 * 1000;
                 return slotStartMs < appEnd && slotEndMs > appStart;
               }) ||
               activeHolds.some((hold) => {
-                if (hold.serviceId !== service.id) return false;
                 const holdStart = new Date(hold.startAt).getTime();
                 const holdEnd = new Date(hold.endAt).getTime();
                 return slotStartMs < holdEnd && slotEndMs > holdStart;
@@ -508,7 +559,7 @@ export class BookingService implements OnModuleInit {
           }
         }
 
-        currentMin += service.durationMinutes;
+        currentMin += totalDurationMinutes;
       }
     }
 
@@ -516,24 +567,41 @@ export class BookingService implements OnModuleInit {
       date: dateStr,
       dayOfWeek,
       service: {
-        id: service.id,
-        name: service.name,
-        durationMinutes: service.durationMinutes,
+        id: services[0].id,
+        name: services.map((s) => s.name).join(' + '),
+        durationMinutes: totalDurationMinutes,
       },
+      services: services.map((s) => ({
+        id: s.id,
+        name: s.name,
+        durationMinutes: s.durationMinutes,
+        price: s.price,
+      })),
+      totalDurationMinutes,
+      totalPrice: services.reduce((sum, s) => sum + s.price, 0),
       availableSlots,
     };
   }
 
   /**
-   * 80a: Crear reserva temporal (hold) de horario para evitar doble reserva.
+   * 80a/85a: Crear reserva temporal (hold) de horario para evitar doble reserva con soporte para múltiples servicios.
    */
   async createHold(businessIdOrSlug: string, dto: CreateAppointmentHoldDto) {
     const business = await this.resolveBusiness(businessIdOrSlug);
     await this.assertCitasActive(business.id);
     const businessId = business.id;
 
-    const service = await this.prisma.service.findFirst({
-      where: { id: dto.serviceId, businessId, active: true },
+    const rawServiceIds = dto.serviceIds && dto.serviceIds.length > 0
+      ? dto.serviceIds
+      : (dto.serviceId ? [dto.serviceId] : []);
+
+    const serviceIds = Array.from(new Set(rawServiceIds.map((s) => s.trim()).filter(Boolean)));
+    if (serviceIds.length === 0) {
+      throw new BadRequestException('Debe especificar al menos un servicio');
+    }
+
+    const services = await this.prisma.service.findMany({
+      where: { id: { in: serviceIds }, businessId, active: true },
       include: {
         specialists: {
           include: {
@@ -543,8 +611,8 @@ export class BookingService implements OnModuleInit {
       },
     });
 
-    if (!service) {
-      throw new NotFoundException('Servicio no encontrado o inactivo');
+    if (services.length !== serviceIds.length) {
+      throw new NotFoundException('Uno o más servicios no fueron encontrados o están inactivos');
     }
 
     const startAt = new Date(dto.startAt);
@@ -555,26 +623,29 @@ export class BookingService implements OnModuleInit {
       throw new BadRequestException('La fecha y hora de inicio debe ser futura');
     }
 
-    const durationMinutes = service.durationMinutes;
-    const endAt = new Date(startAt.getTime() + durationMinutes * 60 * 1000);
+    const totalDurationMinutes = services.reduce((sum, s) => sum + s.durationMinutes, 0);
+    const endAt = new Date(startAt.getTime() + totalDurationMinutes * 60 * 1000);
 
-    const activeSpecialists = service.specialists
-      .filter((s) => s.specialist.active)
-      .map((s) => s.specialist);
+    const specialistsPerService = services.map((s) =>
+      s.specialists.filter((ss) => ss.specialist.active).map((ss) => ss.specialist),
+    );
+    const assignedSpecialists = specialistsPerService[0].filter((spec) =>
+      specialistsPerService.every((list) => list.some((s) => s.id === spec.id)),
+    );
 
     let targetSpecialistId: string | null = null;
 
-    if (activeSpecialists.length === 0) {
+    if (assignedSpecialists.length === 0) {
       if (dto.specialistId) {
-        throw new BadRequestException('Este servicio no tiene especialistas asignables');
+        throw new BadRequestException('Los servicios seleccionados no tienen especialistas asignables en común');
       }
       targetSpecialistId = 'generic';
     } else {
       if (dto.specialistId) {
-        const found = activeSpecialists.find((s) => s.id === dto.specialistId);
+        const found = assignedSpecialists.find((s) => s.id === dto.specialistId);
         if (!found) {
           throw new BadRequestException(
-            'El especialista seleccionado no está asignado a este servicio',
+            'El especialista seleccionado no está asignado a todos los servicios seleccionados',
           );
         }
         targetSpecialistId = dto.specialistId;
@@ -590,15 +661,15 @@ export class BookingService implements OnModuleInit {
 
       let resolvedSpecialistId = targetSpecialistId;
 
-      if (activeSpecialists.length > 0 && !resolvedSpecialistId) {
+      if (assignedSpecialists.length > 0 && !resolvedSpecialistId) {
         // Auto-asignar al primer especialista libre en ese horario (sin conflicto de cita ni de hold activo)
-        for (const spec of activeSpecialists) {
+        for (const spec of assignedSpecialists) {
           const appConflict = await this.hasConflictingAppointment(tx, {
             businessId,
-            serviceId: service.id,
+            serviceId: services[0].id,
             specialistId: spec.id,
             scheduledAt: startAt,
-            durationMinutes,
+            durationMinutes: totalDurationMinutes,
           });
           if (appConflict) continue;
 
@@ -625,10 +696,10 @@ export class BookingService implements OnModuleInit {
       } else {
         const hasConflict = await this.hasConflictingAppointment(tx, {
           businessId,
-          serviceId: service.id,
+          serviceId: services[0].id,
           specialistId: resolvedSpecialistId === 'generic' ? null : resolvedSpecialistId,
           scheduledAt: startAt,
-          durationMinutes,
+          durationMinutes: totalDurationMinutes,
         });
 
         if (hasConflict) {
@@ -641,7 +712,7 @@ export class BookingService implements OnModuleInit {
           where: {
             businessId,
             ...(resolvedSpecialistId === 'generic'
-              ? { serviceId: service.id }
+              ? { serviceIds: { hasSome: serviceIds } }
               : { specialistId: resolvedSpecialistId! }),
             expiresAt: { gt: new Date() },
             startAt: { lt: endAt },
@@ -662,7 +733,7 @@ export class BookingService implements OnModuleInit {
       const created = await tx.appointmentHold.create({
         data: {
           businessId,
-          serviceId: service.id,
+          serviceIds: services.map((s) => s.id),
           specialistId: resolvedSpecialistId!,
           startAt,
           endAt,
@@ -678,7 +749,8 @@ export class BookingService implements OnModuleInit {
       holdId: hold.id,
       holderToken: hold.holderToken,
       expiresAt: hold.expiresAt,
-      serviceId: hold.serviceId,
+      serviceIds: hold.serviceIds,
+      serviceId: hold.serviceIds[0],
       specialistId: hold.specialistId,
     };
   }
@@ -714,7 +786,7 @@ export class BookingService implements OnModuleInit {
   }
 
   /**
-   * Crear reserva pública.
+   * 85a: Crear reserva pública con soporte para múltiples servicios.
    */
   async createAppointment(businessIdOrSlug: string, dto: CreateAppointmentDto) {
     if (!dto.holdId?.trim() || !dto.holderToken?.trim()) {
@@ -725,8 +797,29 @@ export class BookingService implements OnModuleInit {
     await this.assertCitasActive(business.id);
     const businessId = business.id;
 
-    const service = await this.prisma.service.findFirst({
-      where: { id: dto.serviceId, businessId, active: true },
+    const candidateHold = await this.prisma.appointmentHold.findUnique({
+      where: { id: dto.holdId.trim() },
+    });
+    if (!candidateHold) {
+      throw new ConflictException(
+        'La reserva temporal no existe o ya fue utilizada. Por favor seleccioná el horario nuevamente.',
+      );
+    }
+
+    const holdServiceIds = candidateHold.serviceIds || [];
+    const inputServiceIds = dto.serviceIds && dto.serviceIds.length > 0
+      ? dto.serviceIds
+      : (dto.serviceId ? [dto.serviceId] : []);
+
+    // Si viene de un hold (80a), usar los serviceIds del hold, no volver a pedirlos.
+    const rawServiceIds = holdServiceIds.length > 0 ? holdServiceIds : inputServiceIds;
+    const serviceIds = Array.from(new Set(rawServiceIds.map((s) => s.trim()).filter(Boolean)));
+    if (serviceIds.length === 0) {
+      throw new BadRequestException('Debe especificar al menos un servicio');
+    }
+
+    const services = await this.prisma.service.findMany({
+      where: { id: { in: serviceIds }, businessId, active: true },
       include: {
         specialists: {
           include: {
@@ -735,9 +828,14 @@ export class BookingService implements OnModuleInit {
         },
       },
     });
-    if (!service) {
-      throw new NotFoundException('Servicio no encontrado o inactivo');
+
+    if (services.length !== serviceIds.length) {
+      throw new NotFoundException('Uno o más servicios no fueron encontrados o están inactivos');
     }
+
+    const orderedServices = serviceIds.map((id) => services.find((s) => s.id === id)!);
+    const totalDurationMinutes = orderedServices.reduce((sum, s) => sum + s.durationMinutes, 0);
+    const totalPrice = orderedServices.reduce((sum, s) => sum + s.price, 0);
 
     const scheduledAt = new Date(dto.scheduledAt);
     if (isNaN(scheduledAt.getTime())) {
@@ -752,16 +850,19 @@ export class BookingService implements OnModuleInit {
       throw new BadRequestException('El teléfono del cliente es requerido');
     }
 
-    // Resolver especialistas válidos
-    const activeSpecialists = service.specialists
-      .filter((s) => s.specialist.active)
-      .map((s) => s.specialist);
+    // Resolver especialistas válidos en común para todos los servicios
+    const specialistsPerService = orderedServices.map((s) =>
+      s.specialists.filter((ss) => ss.specialist.active).map((ss) => ss.specialist),
+    );
+    const activeSpecialists = specialistsPerService[0].filter((spec) =>
+      specialistsPerService.every((list) => list.some((s) => s.id === spec.id)),
+    );
 
     let targetSpecialistId: string | null = null;
 
     if (activeSpecialists.length === 0) {
       if (dto.specialistId) {
-        throw new BadRequestException('Este servicio no tiene especialistas asignables');
+        throw new BadRequestException('Los servicios seleccionados no tienen especialistas asignables en común');
       }
       targetSpecialistId = null;
     } else {
@@ -769,7 +870,7 @@ export class BookingService implements OnModuleInit {
         const found = activeSpecialists.find((s) => s.id === dto.specialistId);
         if (!found) {
           throw new BadRequestException(
-            'El especialista seleccionado no está asignado a este servicio',
+            'El especialista seleccionado no está asignado a todos los servicios seleccionados',
           );
         }
         targetSpecialistId = dto.specialistId;
@@ -876,9 +977,6 @@ export class BookingService implements OnModuleInit {
         },
       });
     } else {
-      // 75a: Fix: El nombre del Customer queda fijo tras la primera vez que se crea.
-      // Nunca se sobreescribe automáticamente desde una reserva pública nueva.
-      // Customer.email solo se completa si estaba vacío/null y ahora sí se proporciona uno válido.
       const candidateEmail = dto.customerEmail?.trim();
       if (!customer.email?.trim() && candidateEmail) {
         customer = await this.prisma.customer.update({
@@ -894,7 +992,6 @@ export class BookingService implements OnModuleInit {
       );
     }
 
-    const durationMinutes = service.durationMinutes;
     const manageToken = uuidv4();
 
     // Re-validación atómica dentro de transacción
@@ -931,9 +1028,13 @@ export class BookingService implements OnModuleInit {
         );
       }
 
-      if (hold.serviceId !== service.id) {
+      const holdServices = hold.serviceIds || [];
+      const hasAllServices =
+        holdServices.length === serviceIds.length &&
+        serviceIds.every((id) => holdServices.includes(id));
+      if (!hasAllServices) {
         throw new ConflictException(
-          'La reserva temporal no corresponde a este servicio.',
+          'La reserva temporal no corresponde a los servicios seleccionados.',
         );
       }
 
@@ -1005,10 +1106,10 @@ export class BookingService implements OnModuleInit {
         for (const spec of activeSpecialists) {
           const conflict = await this.hasConflictingAppointment(tx, {
             businessId,
-            serviceId: service.id,
+            serviceId: orderedServices[0].id,
             specialistId: spec.id,
             scheduledAt,
-            durationMinutes,
+            durationMinutes: totalDurationMinutes,
           });
           if (!conflict) {
             resolvedSpecialistId = spec.id;
@@ -1024,10 +1125,10 @@ export class BookingService implements OnModuleInit {
       } else {
         const hasConflict = await this.hasConflictingAppointment(tx, {
           businessId,
-          serviceId: service.id,
+          serviceId: orderedServices[0].id,
           specialistId: resolvedSpecialistId === 'generic' ? null : resolvedSpecialistId,
           scheduledAt,
-          durationMinutes,
+          durationMinutes: totalDurationMinutes,
         });
 
         if (hasConflict) {
@@ -1040,22 +1141,34 @@ export class BookingService implements OnModuleInit {
       const newApp = await tx.appointment.create({
         data: {
           businessId,
-          serviceId: service.id,
+          serviceId: orderedServices[0]?.id || null,
           specialistId: resolvedSpecialistId === 'generic' ? null : resolvedSpecialistId,
           customerId: customer.id,
           scheduledAt,
-          durationMinutes,
+          durationMinutes: totalDurationMinutes,
           capacity: 1,
           status: AppointmentStatus.PENDING,
-          price: service.price,
+          price: totalPrice,
           customerName: dto.customerName.trim(),
           customerPhone: cleanPhone,
           customerEmail: dto.customerEmail?.trim() || null,
           manageToken,
           rescheduleCount: 0,
+          items: {
+            create: orderedServices.map((s, idx) => ({
+              serviceId: s.id,
+              serviceName: s.name,
+              price: s.price,
+              durationMinutes: s.durationMinutes,
+              orderIndex: idx,
+            })),
+          },
         },
         include: {
           service: true,
+          items: {
+            orderBy: { orderIndex: 'asc' },
+          },
           specialist: true,
           customer: true,
           business: true,
@@ -1081,6 +1194,10 @@ export class BookingService implements OnModuleInit {
       where: { manageToken: token },
       include: {
         service: true,
+        items: {
+          orderBy: { orderIndex: 'asc' },
+        },
+        specialist: true,
         customer: true,
         business: {
           select: {
@@ -1199,7 +1316,11 @@ export class BookingService implements OnModuleInit {
       const hasHoldConflict = await tx.appointmentHold.findFirst({
         where: {
           businessId: appointment.businessId,
-          ...(appointment.specialistId ? { specialistId: appointment.specialistId } : { serviceId: appointment.serviceId }),
+          ...(appointment.specialistId
+            ? { specialistId: appointment.specialistId }
+            : appointment.serviceId
+            ? { serviceIds: { has: appointment.serviceId } }
+            : {}),
           expiresAt: { gt: new Date() },
           startAt: { lt: newScheduledEnd },
           endAt: { gt: newScheduledAt },
@@ -1289,7 +1410,10 @@ export class BookingService implements OnModuleInit {
       where.specialistId = filters.specialistId;
     }
     if (filters?.serviceId) {
-      where.serviceId = filters.serviceId;
+      where.OR = [
+        { serviceId: filters.serviceId },
+        { items: { some: { serviceId: filters.serviceId } } },
+      ];
     }
 
     if (filters?.date) {
@@ -1308,6 +1432,9 @@ export class BookingService implements OnModuleInit {
         take: limit,
         include: {
           service: true,
+          items: {
+            orderBy: { orderIndex: 'asc' },
+          },
           specialist: true,
           customer: true,
         },
@@ -1495,11 +1622,23 @@ export class BookingService implements OnModuleInit {
   }
 
   /**
-   * Marcar cita como completada (resetea racha de no-shows).
+   * 85a: Cobrar y completar cita generando una Sale con SaleItem por servicio.
    */
-  async completeAppointment(appointmentId: string) {
+  async checkoutAppointment(
+    appointmentId: string,
+    dto: CheckoutAppointmentDto,
+    user?: JwtPayload,
+  ) {
     const appointment = await this.prisma.appointment.findUnique({
       where: { id: appointmentId },
+      include: {
+        items: {
+          orderBy: { orderIndex: 'asc' },
+        },
+        service: true,
+        customer: true,
+        business: true,
+      },
     });
 
     if (!appointment) {
@@ -1508,27 +1647,198 @@ export class BookingService implements OnModuleInit {
 
     await this.assertCitasActive(appointment.businessId);
 
+    if (appointment.status === AppointmentStatus.COMPLETED) {
+      throw new BadRequestException('Esta cita ya fue completada y cobrada previamente');
+    }
+    if (appointment.status === AppointmentStatus.CANCELLED) {
+      throw new BadRequestException('No se puede cobrar una cita que ha sido cancelada');
+    }
+
+    const businessId = appointment.businessId;
+
+    // 1. Resolver items para la Sale
+    let saleItems: Array<{
+      productId?: string;
+      productName: string;
+      unitPrice: number;
+      quantity: number;
+      discount: number;
+    }> = [];
+
+    if (appointment.items && appointment.items.length > 0) {
+      saleItems = appointment.items.map((item) => ({
+        productName: item.serviceName,
+        unitPrice: item.price,
+        quantity: 1,
+        discount: 0,
+      }));
+    } else {
+      // Fallback para citas previas a 85a sin AppointmentServiceItem
+      saleItems = [
+        {
+          productName: appointment.service?.name || 'Servicio de Cita',
+          unitPrice: appointment.price,
+          quantity: 1,
+          discount: 0,
+        },
+      ];
+    }
+
+    // 2. Calcular montos e impuestos
+    const subtotal = saleItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+    const discountAmount = dto?.discountAmount || 0;
+    const taxableAmount = Math.max(0, subtotal - discountAmount);
+    const taxRate = appointment.business.taxRate || 0;
+    const taxAmount = taxableAmount * (taxRate / 100);
+    const total = taxableAmount + taxAmount;
+
+    const paymentMethod = dto?.paymentMethod || PosPaymentMethod.EFECTIVO;
+    const isCredit = paymentMethod === PosPaymentMethod.CREDITO;
+
+    const amountPaid = isCredit
+      ? (dto?.amountPaid ?? 0)
+      : (dto?.amountPaid !== undefined ? dto.amountPaid : Math.round(total * 100) / 100);
+
+    // 3. Estrategia híbrida de caja:
+    let resolvedCashRegisterId = dto?.cashRegisterId;
+
+    if (resolvedCashRegisterId) {
+      const explicit = await this.prisma.cashRegister.findFirst({
+        where: { id: resolvedCashRegisterId, businessId, status: CashStatus.OPEN },
+      });
+      if (!explicit) {
+        throw new BadRequestException('La caja especificada no existe o no está abierta');
+      }
+    } else {
+      let activeRegister: { id: string } | null = null;
+      let effectiveCashierId = user?.sub;
+
+      if (!effectiveCashierId) {
+        const anyUser = await this.prisma.user.findFirst({
+          where: { businessId, isActive: true },
+          select: { id: true },
+        });
+        effectiveCashierId = anyUser?.id;
+      }
+
+      if (effectiveCashierId) {
+        activeRegister = await this.prisma.cashRegister.findFirst({
+          where: { businessId, cashierId: effectiveCashierId, status: CashStatus.OPEN },
+          select: { id: true },
+        });
+      }
+
+      if (!activeRegister) {
+        activeRegister = await this.prisma.cashRegister.findFirst({
+          where: { businessId, status: CashStatus.OPEN },
+          orderBy: { openedAt: 'desc' },
+          select: { id: true },
+        });
+      }
+
+      if (!activeRegister) {
+        activeRegister = await this.prisma.cashRegister.findFirst({
+          where: {
+            businessId,
+            notes: 'Caja Virtual - Citas',
+            status: CashStatus.OPEN,
+          },
+          select: { id: true },
+        });
+
+        if (!activeRegister) {
+          if (!effectiveCashierId) {
+            throw new BadRequestException('No se pudo determinar un usuario cajero para abrir la caja de citas');
+          }
+          activeRegister = await this.prisma.cashRegister.create({
+            data: {
+              businessId,
+              cashierId: effectiveCashierId,
+              openingCash: 0,
+              notes: 'Caja Virtual - Citas',
+              status: CashStatus.OPEN,
+            },
+            select: { id: true },
+          });
+        }
+      }
+
+      resolvedCashRegisterId = activeRegister.id;
+    }
+
+    const saleDto: CreateSaleDto = {
+      cashRegisterId: resolvedCashRegisterId,
+      paymentMethod,
+      amountPaid,
+      discountAmount,
+      customerName: appointment.customerName || appointment.customer?.name,
+      customerPhone: appointment.customerPhone || appointment.customer?.phone,
+      customerId: appointment.customerId,
+      creditDueDate: dto?.creditDueDate,
+      notes: dto?.notes ? `${dto.notes} (Cita ${appointment.id})` : `Cita ${appointment.id}`,
+      items: saleItems,
+    };
+
+    let cashierId = user?.sub;
+    if (!cashierId) {
+      const anyUser = await this.prisma.user.findFirst({
+        where: { businessId, isActive: true },
+        select: { id: true },
+      });
+      cashierId = anyUser?.id || '';
+    }
+
+    // 4. Crear venta usando SalesService
+    const sale = await this.salesService.create(saleDto, businessId, cashierId);
+
+    // 5. Actualizar la cita a COMPLETED con saleId y completedAt
     const updated = await this.prisma.appointment.update({
       where: { id: appointmentId },
       data: {
         status: AppointmentStatus.COMPLETED,
         completedAt: new Date(),
+        saleId: sale.id,
       },
       include: {
         service: true,
+        items: {
+          orderBy: { orderIndex: 'asc' },
+        },
+        specialist: true,
         customer: true,
+        business: true,
       },
     });
 
-    // Resetear contador de inasistencias consecutivas del cliente
-    await this.prisma.customer.update({
-      where: { id: appointment.customerId },
-      data: {
-        consecutiveNoShows: 0,
-      },
-    });
+    // 6. Resetear contador de inasistencias consecutivas
+    if (appointment.customerId) {
+      await this.prisma.customer.update({
+        where: { id: appointment.customerId },
+        data: {
+          consecutiveNoShows: 0,
+        },
+      });
+    }
 
-    return updated;
+    return {
+      ...updated,
+      sale,
+    };
+  }
+
+  /**
+   * Marcar cita como completada (85a: delega en checkoutAppointment).
+   */
+  async completeAppointment(
+    appointmentId: string,
+    dto?: CheckoutAppointmentDto,
+    user?: JwtPayload,
+  ) {
+    return this.checkoutAppointment(
+      appointmentId,
+      dto || { paymentMethod: PosPaymentMethod.EFECTIVO },
+      user,
+    );
   }
 
   /**

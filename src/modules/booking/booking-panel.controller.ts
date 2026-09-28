@@ -27,6 +27,8 @@ import { SaveSchedulesDto } from './dto/save-schedules.dto';
 import { UpdateBookingSettingsDto } from './dto/update-booking-settings.dto';
 import { DeclineAppointmentDto } from './dto/decline-appointment.dto';
 import { ReassignSpecialistDto } from './dto/reassign-specialist.dto';
+import { CheckoutAppointmentDto } from './dto/checkout-appointment.dto';
+import { HttpCode, HttpStatus } from '@nestjs/common';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, CitasGuard)
@@ -121,13 +123,33 @@ export class BookingPanelController {
   }
 
   /**
+   * Cobrar y completar cita (Checkout).
+   * Genera Sale + SaleItem por cada servicio y crea CreditAccount si paymentMethod === CREDITO.
+   * POST /appointments/:id/checkout
+   */
+  @Post('appointments/:id/checkout')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
+  @HttpCode(HttpStatus.OK)
+  async checkoutAppointment(
+    @Param('id') id: string,
+    @Body() dto: CheckoutAppointmentDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.bookingService.checkoutAppointment(id, dto, user);
+  }
+
+  /**
    * Marcar cita como completada.
    * PATCH /appointments/:id/complete
    */
   @Patch('appointments/:id/complete')
   @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
-  async completeAppointment(@Param('id') id: string) {
-    return this.bookingService.completeAppointment(id);
+  async completeAppointment(
+    @Param('id') id: string,
+    @Body() dto?: CheckoutAppointmentDto,
+    @CurrentUser() user?: JwtPayload,
+  ) {
+    return this.bookingService.completeAppointment(id, dto, user);
   }
 
   /**

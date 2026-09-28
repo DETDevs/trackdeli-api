@@ -1072,6 +1072,49 @@ WHERE a."customerId" = c."id"
           name: 'Columna pos_table_orders.cancellationReason',
           sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "cancellationReason" VARCHAR(500);`,
         },
+        {
+          name: 'Columna service_specialists.commissionPercent',
+          sql: `ALTER TABLE "service_specialists" ADD COLUMN IF NOT EXISTS "commissionPercent" DOUBLE PRECISION;`,
+        },
+        {
+          name: 'Columna appointments.saleId',
+          sql: `ALTER TABLE "appointments" ADD COLUMN IF NOT EXISTS "saleId" VARCHAR(100);`,
+        },
+        {
+          name: 'Columna appointments.serviceId nullable',
+          sql: `ALTER TABLE "appointments" ALTER COLUMN "serviceId" DROP NOT NULL;`,
+        },
+        {
+          name: 'Tabla appointment_service_items',
+          sql: `CREATE TABLE IF NOT EXISTS "appointment_service_items" (
+            "id" TEXT NOT NULL,
+            "appointmentId" TEXT NOT NULL,
+            "serviceId" TEXT NOT NULL,
+            "serviceName" VARCHAR(150) NOT NULL,
+            "price" DOUBLE PRECISION NOT NULL,
+            "durationMinutes" INTEGER NOT NULL,
+            "orderIndex" INTEGER NOT NULL DEFAULT 0,
+            CONSTRAINT "appointment_service_items_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "appointment_service_items_appointmentId_fkey" FOREIGN KEY ("appointmentId") REFERENCES "appointments"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice appointment_service_items.appointmentId',
+          sql: `CREATE INDEX IF NOT EXISTS "appointment_service_items_appointmentId_idx" ON "appointment_service_items"("appointmentId");`,
+        },
+        {
+          name: 'Columna appointment_holds.serviceIds',
+          sql: `ALTER TABLE "appointment_holds" ADD COLUMN IF NOT EXISTS "serviceIds" TEXT[] NOT NULL DEFAULT '{}';`,
+        },
+        {
+          name: 'Migración appointment_holds.serviceIds desde serviceId',
+          sql: `DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'appointment_holds' AND column_name = 'serviceId') THEN
+              UPDATE "appointment_holds" SET "serviceIds" = ARRAY["serviceId"] WHERE ("serviceIds" IS NULL OR "serviceIds" = '{}') AND "serviceId" IS NOT NULL;
+              ALTER TABLE "appointment_holds" ALTER COLUMN "serviceId" DROP NOT NULL;
+            END IF;
+          END $$;`,
+        },
       ];
 
       for (const step of ddlStatements) {

@@ -7,9 +7,10 @@ import { SpecialistsController } from './specialists.controller';
 import { ProfessionsController } from './professions.controller';
 import { BookingService } from './booking.service';
 import { BookingEmailService } from './booking-email.service';
+import { SalesModule } from '../pos/sales/sales.module';
 
 @Module({
-  imports: [PrismaModule, BusinessProductsModule],
+  imports: [PrismaModule, BusinessProductsModule, SalesModule],
   controllers: [
     BookingController,
     BookingPanelController,

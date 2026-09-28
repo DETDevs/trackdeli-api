@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -58,14 +59,32 @@ export class BookingController {
     'booking/:businessId/services/:serviceId/availability',
     'businesses/:businessId/booking/services/:serviceId/availability',
     'businesses/:businessId/booking/availability',
+    'booking/:businessId/availability',
   ])
   async getAvailability(
     @Param('businessId') businessId: string,
-    @Param('serviceId') serviceId: string,
-    @Query('date') date: string,
+    @Param('serviceId') serviceId?: string,
+    @Query('date') date?: string,
     @Query('specialistId') specialistId?: string,
+    @Query('serviceIds') qServiceIds?: string | string[],
+    @Query('serviceId') qServiceId?: string,
   ) {
-    return this.bookingService.getAvailability(businessId, serviceId, date, specialistId);
+    let resolvedServiceIds: string[] = [];
+    if (qServiceIds) {
+      resolvedServiceIds = Array.isArray(qServiceIds)
+        ? qServiceIds
+        : String(qServiceIds).split(',').map((s) => s.trim()).filter(Boolean);
+    } else if (serviceId) {
+      resolvedServiceIds = [serviceId];
+    } else if (qServiceId) {
+      resolvedServiceIds = [qServiceId];
+    }
+
+    if (resolvedServiceIds.length === 0) {
+      throw new BadRequestException('Debe especificar al menos un serviceId o serviceIds');
+    }
+
+    return this.bookingService.getAvailability(businessId, resolvedServiceIds, date || '', specialistId);
   }
 
   /**
