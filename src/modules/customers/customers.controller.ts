@@ -58,6 +58,52 @@ export class CustomersController {
   }
 
   @Get([
+    'businesses/:businessId/customers/search',
+    'businesses/me/customers/search',
+    'pos/customers/search',
+    'customers/search',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async search(
+    @Query('q') query: string,
+    @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.search(businessId, query);
+  }
+
+  @Get([
+    'businesses/:businessId/customers/lookup',
+    'businesses/me/customers/lookup',
+    'pos/customers/lookup',
+    'customers/lookup',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async lookup(
+    @Query('phone') phone: string,
+    @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.lookup(businessId, phone);
+  }
+
+  @Get([
     'businesses/:businessId/customers/:id/history',
     'businesses/me/customers/:id/history',
     'customers/:id/history',
@@ -122,52 +168,6 @@ export class CustomersController {
     }
     this.checkBusinessAccess(user, businessId);
     return this.customersService.updateCustomer(businessId, id, dto);
-  }
-
-  @Get([
-    'businesses/:businessId/customers/search',
-    'businesses/me/customers/search',
-    'pos/customers/search',
-    'customers/search',
-  ])
-  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
-  async search(
-    @Query('q') query: string,
-    @CurrentUser() user: JwtPayload,
-    @Param('businessId') paramBusinessId?: string,
-  ) {
-    const businessId =
-      paramBusinessId && paramBusinessId !== 'me'
-        ? paramBusinessId
-        : user.businessId;
-    if (!businessId) {
-      throw new ForbiddenException('Negocio no especificado');
-    }
-    this.checkBusinessAccess(user, businessId);
-    return this.customersService.search(businessId, query);
-  }
-
-  @Get([
-    'businesses/:businessId/customers/lookup',
-    'businesses/me/customers/lookup',
-    'pos/customers/lookup',
-    'customers/lookup',
-  ])
-  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
-  async lookup(
-    @Query('phone') phone: string,
-    @CurrentUser() user: JwtPayload,
-    @Param('businessId') paramBusinessId?: string,
-  ) {
-    const businessId =
-      paramBusinessId && paramBusinessId !== 'me'
-        ? paramBusinessId
-        : user.businessId;
-    if (!businessId) {
-      throw new ForbiddenException('Negocio no especificado');
-    }
-    this.checkBusinessAccess(user, businessId);
-    return this.customersService.lookup(businessId, phone);
   }
 
   @Post([
