@@ -22,6 +22,8 @@ export interface RenderedTemplate {
   subject?: string;
   html?: string;
   text: string;
+  templateName?: string;
+  templateParams?: string[];
 }
 
 @Injectable()
@@ -169,7 +171,11 @@ export class NotificationTemplateRegistry {
       case 'APPOINTMENT_CONFIRMED': {
         if (channel === NotificationChannel.WHATSAPP) {
           const text = `¡Hola ${customerName}! Te confirmamos tu cita para *${serviceName}* el *${dateFormatted}* en *${businessName}*. ¡Te esperamos!`;
-          return { text };
+          return {
+            text,
+            templateName: 'appointment_confirmed',
+            templateParams: [customerName, serviceName, dateFormatted, businessName],
+          };
         } else {
           const subject = `¡Cita Confirmada! — ${serviceName} en ${businessName}`;
           const badgeHtml =
@@ -194,7 +200,11 @@ export class NotificationTemplateRegistry {
       case 'APPOINTMENT_RECEIPT': {
         if (channel === NotificationChannel.WHATSAPP) {
           const text = `¡Hola ${customerName}! Recibimos tu reserva para *${serviceName}* el *${dateFormatted}* en *${businessName}*. Te notificaremos cuando sea confirmada. Podés ver los detalles aquí: ${manageUrl}`;
-          return { text };
+          return {
+            text,
+            templateName: 'appointment_receipt',
+            templateParams: [customerName, serviceName, dateFormatted, businessName, manageUrl],
+          };
         } else {
           const subject = `Comprobante de Reserva — ${serviceName} en ${businessName}`;
           const badgeHtml =
@@ -219,7 +229,11 @@ export class NotificationTemplateRegistry {
       case 'APPOINTMENT_RESCHEDULED': {
         if (channel === NotificationChannel.WHATSAPP) {
           const text = `¡Hola ${customerName}! Tu cita para *${serviceName}* en *${businessName}* fue reagendada para el *${dateFormatted}*. Podés gestionarla aquí: ${manageUrl}`;
-          return { text };
+          return {
+            text,
+            templateName: 'appointment_rescheduled',
+            templateParams: [customerName, serviceName, businessName, dateFormatted, manageUrl],
+          };
         } else {
           const subject = `Cita Reagendada — ${serviceName} en ${businessName}`;
           const badgeHtml =

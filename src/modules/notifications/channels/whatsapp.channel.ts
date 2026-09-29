@@ -4,9 +4,9 @@ import * as Sentry from '@sentry/nestjs';
 
 export interface SendWhatsAppOptions {
   to: string; // Número de teléfono destinatario
-  text: string; // Mensaje de texto formateado
+  text?: string; // Mensaje de texto (fallback o logs)
   templateName?: string;
-  templateParams?: Record<string, string>;
+  templateParams?: string[] | Record<string, string>;
   metadata?: Record<string, any>;
 }
 
@@ -20,33 +20,32 @@ export interface SendWhatsAppResult {
 @Injectable()
 export class WhatsAppChannel {
   private readonly logger = new Logger(WhatsAppChannel.name);
-  private readonly apiKey: string | null = null;
+  private readonly accessToken: string | null = null;
   private readonly phoneNumberId: string | null = null;
-  private readonly apiUrl: string;
+  private readonly apiVersion: string;
 
   constructor(private readonly configService: ConfigService) {
-    const key = this.configService.get<string>('WHATSAPP_BSP_API_KEY');
-    const phoneId = this.configService.get<string>('WHATSAPP_BSP_PHONE_NUMBER_ID');
+    const token = this.configService.get<string>('WHATSAPP_ACCESS_TOKEN');
+    const phoneId = this.configService.get<string>('WHATSAPP_PHONE_NUMBER_ID');
+    const version = this.configService.get<string>('WHATSAPP_API_VERSION') || 'v21.0';
 
-    this.apiKey = key && key.trim() !== '' ? key.trim() : null;
+    this.accessToken = token && token.trim() !== '' ? token.trim() : null;
     this.phoneNumberId = phoneId && phoneId.trim() !== '' ? phoneId.trim() : null;
-    this.apiUrl =
-      this.configService.get<string>('WHATSAPP_BSP_API_URL') ||
-      '';
+    this.apiVersion = version.trim().startsWith('v') ? version.trim() : `v${version.trim()}`;
 
-    if (this.apiKey && this.phoneNumberId) {
+    if (this.accessToken && this.phoneNumberId) {
       this.logger.log(
-        `[WhatsAppChannel] WhatsApp BSP configurado en modo REAL (Phone ID: ${this.phoneNumberId}).`,
+        `[WhatsAppChannel] Meta Cloud API configurada en modo REAL (Phone ID: ${this.phoneNumberId}, Versión: ${this.apiVersion}).`,
       );
     } else {
       this.logger.warn(
-        '[WhatsAppChannel] Credenciales de WhatsApp BSP no configuradas. Los envíos se registrarán en modo SIMULADO.',
+        '[WhatsAppChannel] Credenciales de Meta Cloud API no configuradas (WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID). Los envíos se registrarán en modo SIMULADO.',
       );
     }
   }
 
   /**
-   * Limpia y estandariza el número telefónico para WhatsApp (solo dígitos, con código de país si falta).
+   * Limpia y estandariza el número telefónico para Meta Cloud API (solo dígitos, formato internacional sin '+').
    */
   private cleanPhoneNumber(phone: string): string {
     const digits = phone.replace(/\D/g, '');
@@ -58,21 +57,80 @@ export class WhatsAppChannel {
   }
 
   /**
-   * Envía un mensaje de WhatsApp a través del proveedor BSP o en modo simulado.
+   * Formatea los errores devueltos por Meta Graph API en mensajes legibles y comprensibles.
+   */
+  private formatMetaError(responseBody: any, httpStatus: number): string {
+    const error = responseBody?.error;
+    if (!error) {
+      return `Error HTTP ${httpStatus} en Meta Cloud API`;
+    }
+
+    const code = error.code;
+    const subcode = error.error_subcode;
+    const message = error.message || '';
+    const details = error.error_data?.details || '';
+
+    // Plantilla no existe en el idioma o está pendiente de aprobación
+    if (code === 132001 || subcode === 2494011) {
+      return `Plantilla no aprobada o inexistente en Meta: ${details || message} (code ${code})`;
+    }
+
+    // Parámetros de plantilla incompatibles
+    if (code === 132000 || subcode === 2494005) {
+      return `Parámetros de plantilla incompatibles con la definición en Meta: ${details || message} (code ${code})`;
+    }
+
+    // Token inválido o expirado
+    if (code === 190) {
+      return `Token de acceso de Meta inválido o expirado (WHATSAPP_ACCESS_TOKEN): ${message} (code 190)`;
+    }
+
+    // ID de teléfono no válido o sin permisos
+    if (code === 100) {
+      return `Parámetro o Phone Number ID no válido en Meta (WHATSAPP_PHONE_NUMBER_ID): ${message} (code 100)`;
+    }
+
+    // Destinatario no válido / no tiene WhatsApp / no entregable
+    if (code === 131026) {
+      return `Número destinatario no registrado en WhatsApp o mensaje no entregable: ${details || message} (code 131026)`;
+    }
+
+    // Ventana de conversación de 24h expirada para mensajes tipo texto libre
+    if (code === 131047) {
+      return `Ventana de 24h cerrada. Se requiere una plantilla aprobada para iniciar conversación: ${message} (code 131047)`;
+    }
+
+    // Límite de tasa (Rate limit hit)
+    if (code === 130429) {
+      return `Límite de envíos excedido en Meta (Rate limit hit): ${message} (code 130429)`;
+    }
+
+    // Cuenta o número restringido / suspendido
+    if (code === 131056 || code === 368) {
+      return `Cuenta de WhatsApp Business o número restringido temporalmente por Meta: ${message} (code ${code})`;
+    }
+
+    // Fallback detallado
+    return `Meta Cloud API (${code}${subcode ? '/' + subcode : ''}): ${message}${details ? ' - ' + details : ''}`;
+  }
+
+  /**
+   * Envía un mensaje de WhatsApp directo a través de Meta Cloud API o en modo simulado.
    */
   async send(options: SendWhatsAppOptions): Promise<SendWhatsAppResult> {
     const { to, text, templateName, templateParams, metadata } = options;
     const cleanTo = this.cleanPhoneNumber(to);
 
-    // Modo simulado por defecto si no hay credenciales
-    if (!this.apiKey || !this.phoneNumberId) {
+    // Modo simulado por defecto si faltan credenciales
+    if (!this.accessToken || !this.phoneNumberId) {
       this.logger.log(
-        `[WhatsAppChannel] (SIMULADO) WhatsApp a "${cleanTo}". Mensaje: "${text}"`,
+        `[WhatsAppChannel] (SIMULADO) WhatsApp a "${cleanTo}". Template: "${templateName || 'none'}". Mensaje: "${text || ''}"`,
       );
       Sentry.logger.info(`[WhatsAppChannel] (SIMULADO) WhatsApp enviado a "${cleanTo}"`, {
         to: cleanTo,
         text,
         templateName,
+        templateParams,
         metadata,
       });
 
@@ -83,46 +141,55 @@ export class WhatsAppChannel {
     }
 
     try {
-      // Estructura de payload compatible con 360dialog y Meta WhatsApp Business Cloud API
-      const payload: Record<string, any> = {
-        messaging_product: 'whatsapp',
-        recipient_type: 'individual',
-        to: cleanTo,
-      };
+      let payload: Record<string, any>;
 
       if (templateName) {
-        payload.type = 'template';
-        payload.template = {
-          name: templateName,
-          language: { code: 'es' },
-          components: templateParams
-            ? [
-              {
-                type: 'body',
-                parameters: Object.entries(templateParams).map(([_, val]) => ({
-                  type: 'text',
-                  text: val,
-                })),
-              },
-            ]
-            : [],
+        const components: any[] = [];
+
+        if (templateParams) {
+          const paramList = Array.isArray(templateParams)
+            ? templateParams
+            : Object.values(templateParams);
+
+          if (paramList.length > 0) {
+            components.push({
+              type: 'body',
+              parameters: paramList.map((val) => ({
+                type: 'text',
+                text: String(val ?? ''),
+              })),
+            });
+          }
+        }
+
+        payload = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: cleanTo,
+          type: 'template',
+          template: {
+            name: templateName,
+            language: { code: 'es' },
+            components,
+          },
         };
       } else {
-        payload.type = 'text';
-        payload.text = { body: text };
+        payload = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: cleanTo,
+          type: 'text',
+          text: { body: text || '' },
+        };
       }
 
-      // Si la URL contiene placeholder de phoneNumberId, reemplazarlo
-      const targetUrl = this.apiUrl.includes('{phoneNumberId}')
-        ? this.apiUrl.replace('{phoneNumberId}', this.phoneNumberId)
-        : this.apiUrl;
+      const url = `https://graph.facebook.com/${this.apiVersion}/${this.phoneNumberId}/messages`;
 
-      const response = await fetch(targetUrl, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'D360-API-KEY': this.apiKey, // Header 360dialog
-          Authorization: `Bearer ${this.apiKey}`, // Header Meta Cloud API
+          Authorization: `Bearer ${this.accessToken}`,
         },
         body: JSON.stringify(payload),
       });
@@ -130,17 +197,14 @@ export class WhatsAppChannel {
       const responseBody = await response.json().catch(() => null);
 
       if (!response.ok) {
-        const errorMsg =
-          responseBody?.error?.message ||
-          responseBody?.message ||
-          `HTTP ${response.status}: ${response.statusText}`;
+        const errorMsg = this.formatMetaError(responseBody, response.status);
 
         this.logger.error(
-          `[WhatsAppChannel] ⚠ Error proveedor WhatsApp BSP enviando a "${cleanTo}": ${errorMsg}`,
+          `[WhatsAppChannel] ⚠ Error Meta Cloud API enviando a "${cleanTo}": ${errorMsg}`,
         );
-        Sentry.captureMessage(`[WhatsAppChannel] Error enviando WhatsApp: ${errorMsg}`, {
+        Sentry.captureMessage(`[WhatsAppChannel] Meta Cloud API Error: ${errorMsg}`, {
           level: 'error',
-          extra: { to: cleanTo, text, metadata, responseBody },
+          extra: { to: cleanTo, templateName, payload, responseBody },
         });
 
         return {
@@ -154,11 +218,12 @@ export class WhatsAppChannel {
         responseBody?.messages?.[0]?.id || responseBody?.id || undefined;
 
       this.logger.log(
-        `[WhatsAppChannel] ✓ WhatsApp enviado exitosamente a "${cleanTo}". ID: ${messageId}`,
+        `[WhatsAppChannel] ✓ WhatsApp enviado exitosamente vía Meta Cloud API a "${cleanTo}". ID: ${messageId}`,
       );
-      Sentry.logger.info(`[WhatsAppChannel] ✓ WhatsApp enviado a "${cleanTo}"`, {
+      Sentry.logger.info(`[WhatsAppChannel] ✓ WhatsApp enviado vía Meta Cloud API a "${cleanTo}"`, {
         to: cleanTo,
         messageId,
+        templateName,
         metadata,
       });
 
@@ -176,6 +241,7 @@ export class WhatsAppChannel {
         extra: {
           to: cleanTo,
           text,
+          templateName,
           metadata,
         },
       });
@@ -183,7 +249,7 @@ export class WhatsAppChannel {
       return {
         success: false,
         simulated: false,
-        error: err.message || 'Error desconocido enviando WhatsApp',
+        error: err.message || 'Error desconocido de conexión con Meta Cloud API',
       };
     }
   }

@@ -77,6 +77,8 @@ export class NotificationsProcessor {
       sendResult = await this.whatsappChannel.send({
         to: log.recipientContact,
         text: rendered.text,
+        templateName: rendered.templateName,
+        templateParams: rendered.templateParams,
         metadata: variables,
       });
     } else {
