@@ -30,6 +30,7 @@ export class CustomerSearchResultDto {
 export class CustomerLocationConfirmationLinkDto {
   customerId: string;
   token: string;
+  shortCode?: string;
   url: string;
   confirmationUrl: string;
   whatsappUrl?: string;
@@ -42,6 +43,8 @@ export class CustomerLocationSessionPublicDto {
   sessionStatus?: 'PENDING' | 'RESPONDED';
   status?: string;
   respondedAt?: Date | null;
+  token?: string;
+  shortCode?: string;
   customerId?: string;
   name?: string;
   phone?: string;

@@ -222,6 +222,8 @@ export class CustomersController {
   }
 
   @Get([
+    'c/:token',
+    'customers/c/:token',
     'customers/confirm-location/:token',
     'customers/location-session/:token',
     'confirm-location/:token',

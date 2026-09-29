@@ -21,6 +21,7 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { BusinessProductType, NotificationChannel, Prisma, UserRole } from '@prisma/client';
 import { BusinessProductsService } from '../business-products/business-products.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { generateShortCode, normalizeShortCode } from '../../common/utils/short-code.util';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -34,6 +35,26 @@ export class CustomersService {
     private readonly businessProductsService: BusinessProductsService,
     private readonly notificationsService: NotificationsService,
   ) {}
+
+  private async generateUniqueShortCode(): Promise<string> {
+    const maxAttempts = 5;
+    for (let i = 0; i < maxAttempts; i++) {
+      const candidate = generateShortCode();
+      const existing = await this.prisma.customerLocationSession.findFirst({
+        where: {
+          OR: [
+            { shortCode: candidate },
+            { token: candidate },
+          ],
+        },
+        select: { id: true },
+      });
+      if (!existing) {
+        return candidate;
+      }
+    }
+    return generateShortCode(10);
+  }
 
   private isRecent(
     lastConfirmedAt: Date | null,
@@ -236,6 +257,7 @@ export class CustomersService {
       },
     });
 
+    const shortCode = await this.generateUniqueShortCode();
     const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
 
@@ -243,12 +265,15 @@ export class CustomersService {
       data: {
         customerId: customer.id,
         token,
+        shortCode,
         expiresAt,
       },
     });
 
-    const trackingBaseUrl = this.configService.getOrThrow<string>('TRACKING_URL');
-    const url = `${trackingBaseUrl}/confirm-location/${token}`;
+    const trackingBaseUrl = this.configService
+      .getOrThrow<string>('TRACKING_URL')
+      .replace(/\/+$/, '');
+    const url = `${trackingBaseUrl}/c/${shortCode}`;
 
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
@@ -295,12 +320,13 @@ export class CustomersService {
     }
 
     this.logger.log(
-      `[Customers] Link de confirmación generado por datos: customerId=${customer.id}, phone=${phone}, token=${token}`,
+      `[Customers] Link de confirmación generado por datos: customerId=${customer.id}, phone=${phone}, shortCode=${shortCode}`,
     );
 
     return {
       customerId: customer.id,
-      token,
+      token: shortCode,
+      shortCode,
       url,
       confirmationUrl: url,
       whatsappUrl,
@@ -326,6 +352,7 @@ export class CustomersService {
       throw new ForbiddenException('Sin acceso a este cliente');
     }
 
+    const shortCode = await this.generateUniqueShortCode();
     const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
 
@@ -333,12 +360,15 @@ export class CustomersService {
       data: {
         customerId,
         token,
+        shortCode,
         expiresAt,
       },
     });
 
-    const trackingBaseUrl = this.configService.getOrThrow<string>('TRACKING_URL');
-    const url = `${trackingBaseUrl}/confirm-location/${token}`;
+    const trackingBaseUrl = this.configService
+      .getOrThrow<string>('TRACKING_URL')
+      .replace(/\/+$/, '');
+    const url = `${trackingBaseUrl}/c/${shortCode}`;
 
     const business = await this.prisma.business.findUnique({
       where: { id: customer.businessId },
@@ -385,12 +415,13 @@ export class CustomersService {
     }
 
     this.logger.log(
-      `[Customers] Link de confirmación generado: customerId=${customerId}, token=${token}`,
+      `[Customers] Link de confirmación generado: customerId=${customerId}, shortCode=${shortCode}`,
     );
 
     return {
       customerId: customer.id,
-      token,
+      token: shortCode,
+      shortCode,
       url,
       confirmationUrl: url,
       whatsappUrl,
@@ -398,9 +429,18 @@ export class CustomersService {
     };
   }
 
-  async getLocationSession(token: string): Promise<CustomerLocationSessionPublicDto> {
-    const session = await this.prisma.customerLocationSession.findUnique({
-      where: { token },
+  async getLocationSession(tokenOrCode: string): Promise<CustomerLocationSessionPublicDto> {
+    const raw = (tokenOrCode || '').trim();
+    const normalized = normalizeShortCode(raw);
+
+    const session = await this.prisma.customerLocationSession.findFirst({
+      where: {
+        OR: [
+          { shortCode: raw },
+          { shortCode: normalized },
+          { token: raw },
+        ],
+      },
       include: {
         customer: {
           include: {
@@ -425,6 +465,8 @@ export class CustomersService {
       sessionStatus,
       status: sessionStatus,
       respondedAt: (session as any).respondedAt ?? null,
+      token: session.shortCode || session.token,
+      shortCode: session.shortCode ?? undefined,
       customerId: session.customer.id,
       name: session.customer.name,
       phone: session.customer.phone,
@@ -468,10 +510,10 @@ export class CustomersService {
       userRole &&
       (userRole === UserRole.SUPERADMIN || customer.businessId === userBusinessId);
 
-    const token = dto.token || tokenParam;
+    const token = (dto.token || tokenParam || '').trim();
+    const normalizedToken = normalizeShortCode(token);
 
     if (!isAuthUser) {
-
       if (!token) {
         throw new ForbiddenException('Token de confirmación requerido');
       }
@@ -479,7 +521,11 @@ export class CustomersService {
       const session = await this.prisma.customerLocationSession.findFirst({
         where: {
           customerId,
-          token,
+          OR: [
+            { shortCode: token },
+            { shortCode: normalizedToken },
+            { token },
+          ],
           isActive: true,
           expiresAt: { gt: new Date() },
         },
@@ -512,7 +558,14 @@ export class CustomersService {
 
       if (token) {
         await tx.customerLocationSession.updateMany({
-          where: { customerId, token },
+          where: {
+            customerId,
+            OR: [
+              { shortCode: token },
+              { shortCode: normalizedToken },
+              { token },
+            ],
+          },
           data: {
             status: 'RESPONDED',
             respondedAt: now,

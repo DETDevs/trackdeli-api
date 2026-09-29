@@ -588,6 +588,7 @@ model CustomerLocationSession {
   id          String    @id @default(uuid())
   customerId  String
   token       String    @unique @db.VarChar(64)
+  shortCode   String?   @unique @db.VarChar(16)
   isActive    Boolean   @default(true)
   status      String    @default("PENDING") @db.VarChar(20)
   respondedAt DateTime?
@@ -596,6 +597,7 @@ model CustomerLocationSession {
 
   customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
+  @@index([shortCode])
   @@map("customer_location_sessions")
 }
 
