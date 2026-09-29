@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsNumber, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsString, MaxLength } from 'class-validator';
 import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class CreateClientDto {
@@ -26,4 +26,8 @@ export class CreateClientDto {
   @IsOptional()
   @IsNumber()
   longitude?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 }

@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
@@ -9,12 +10,63 @@ export class ClientsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(businessId: string) {
-    this.logger.log(`[findAll] Listando clientes para businessId=${businessId}`);
-    return this.prisma.businessClient.findMany({
-      where: { businessId, isActive: true },
-      orderBy: { name: 'asc' },
-    });
+  async findAll(
+    businessId: string,
+    options: {
+      q?: string;
+      page?: number;
+      limit?: number;
+      isActive?: boolean;
+    } = {},
+  ) {
+    this.logger.log(
+      `[findAll] Listando business-clients para businessId=${businessId} options=${JSON.stringify(options)}`,
+    );
+
+    const trimmed = (options.q || '').trim();
+    const hasPagination = options.page !== undefined || options.limit !== undefined;
+    const page = Math.max(1, Number(options.page) || 1);
+    const limit = hasPagination
+      ? Math.min(100, Math.max(1, Number(options.limit) || 50))
+      : 100;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.BusinessClientWhereInput = {
+      businessId,
+      ...(options.isActive !== undefined ? { isActive: options.isActive } : {}),
+      ...(trimmed
+        ? {
+            OR: [
+              { name: { contains: trimmed, mode: 'insensitive' } },
+              { phone: { contains: trimmed, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.businessClient.findMany({
+        where,
+        ...(hasPagination ? { skip, take: limit } : {}),
+        orderBy: { name: 'asc' },
+        include: {
+          _count: {
+            select: {
+              orders: true,
+            },
+          },
+        },
+      }),
+      this.prisma.businessClient.count({ where }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      limit: hasPagination ? limit : total,
+      totalPages: hasPagination ? Math.ceil(total / limit) : 1,
+    };
   }
 
   async findOne(id: string, businessId: string) {

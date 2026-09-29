@@ -34,11 +34,9 @@ export class CustomersController {
   }
 
   @Get([
-    'businesses/:businessId/clients',
-    'businesses/me/clients',
     'businesses/:businessId/customers',
     'businesses/me/customers',
-    'clients',
+    'customers',
   ])
   @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async findAll(
@@ -60,11 +58,9 @@ export class CustomersController {
   }
 
   @Get([
-    'businesses/:businessId/clients/:id/history',
-    'businesses/me/clients/:id/history',
     'businesses/:businessId/customers/:id/history',
     'businesses/me/customers/:id/history',
-    'clients/:id/history',
+    'customers/:id/history',
   ])
   @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async getHistory(
@@ -84,11 +80,9 @@ export class CustomersController {
   }
 
   @Get([
-    'businesses/:businessId/clients/:id',
-    'businesses/me/clients/:id',
     'businesses/:businessId/customers/:id',
     'businesses/me/customers/:id',
-    'clients/:id',
+    'customers/:id',
   ])
   @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async findOne(
@@ -108,11 +102,9 @@ export class CustomersController {
   }
 
   @Patch([
-    'businesses/:businessId/clients/:id',
-    'businesses/me/clients/:id',
     'businesses/:businessId/customers/:id',
     'businesses/me/customers/:id',
-    'clients/:id',
+    'customers/:id',
   ])
   @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async updateCustomer(
@@ -179,8 +171,6 @@ export class CustomersController {
   }
 
   @Post([
-    'businesses/:businessId/clients',
-    'businesses/me/clients',
     'businesses/:businessId/customers',
     'businesses/me/customers',
     'pos/customers',

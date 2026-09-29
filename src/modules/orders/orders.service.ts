@@ -229,6 +229,7 @@ export class OrdersService {
         createdBy,
       },
       include: {
+        originBusinessClient: true,
         deliveryUser: true,
         photos: true,
         trackingSession: true,

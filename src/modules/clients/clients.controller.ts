@@ -29,16 +29,29 @@ export class ClientsController {
   }
 
   @Get()
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   findAll(
     @CurrentUser() user: JwtPayload,
+    @Query('q') query?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+    @Query('isActive') isActiveStr?: string,
     @Query('businessId') queryBusinessId?: string,
   ) {
-    return this.clientsService.findAll(this.resolveBusinessId(user, queryBusinessId));
+    let isActive: boolean | undefined = undefined;
+    if (isActiveStr !== undefined && isActiveStr !== '') {
+      isActive = isActiveStr === 'true' || isActiveStr === '1';
+    }
+    return this.clientsService.findAll(this.resolveBusinessId(user, queryBusinessId), {
+      q: query,
+      page,
+      limit,
+      isActive,
+    });
   }
 
   @Get(':id')
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   findOne(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
