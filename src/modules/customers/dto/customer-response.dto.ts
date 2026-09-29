@@ -32,6 +32,7 @@ export class CustomerLocationConfirmationLinkDto {
   token: string;
   url: string;
   confirmationUrl: string;
+  whatsappUrl?: string;
   expiresAt: Date;
 }
 

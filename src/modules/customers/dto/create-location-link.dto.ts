@@ -12,4 +12,8 @@ export class CreateLocationConfirmationLinkDto {
   @IsString()
   @IsNotEmpty()
   name: string;
+
+  @IsOptional()
+  @IsString()
+  orderId?: string;
 }

@@ -18,8 +18,9 @@ import {
   CustomerSearchResultDto,
 } from './dto/customer-response.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
-import { BusinessProductType, Prisma, UserRole } from '@prisma/client';
+import { BusinessProductType, NotificationChannel, Prisma, UserRole } from '@prisma/client';
 import { BusinessProductsService } from '../business-products/business-products.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -31,6 +32,7 @@ export class CustomersService {
     private readonly trackingGateway: TrackingGateway,
     private readonly configService: ConfigService,
     private readonly businessProductsService: BusinessProductsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   private isRecent(
@@ -194,7 +196,7 @@ export class CustomersService {
   }
 
   async createLocationConfirmationLinkByData(
-    dto: { businessId?: string; phone: string; name: string },
+    dto: { businessId?: string; phone: string; name: string; orderId?: string },
     userBusinessId: string | null,
     userRole: UserRole,
   ): Promise<CustomerLocationConfirmationLinkDto> {
@@ -248,6 +250,50 @@ export class CustomersService {
     const trackingBaseUrl = this.configService.getOrThrow<string>('TRACKING_URL');
     const url = `${trackingBaseUrl}/confirm-location/${token}`;
 
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { name: true },
+    });
+    const businessName = business?.name || 'TrackDeli';
+
+    const clientName = customer.name.trim();
+    const greeting = clientName ? `¡Hola ${clientName}!` : '¡Hola!';
+    const message =
+      `${greeting} Para coordinar la entrega de tu pedido con ${businessName}, ` +
+      `por favor confirmá tu ubicación exacta en este enlace:\n\n` +
+      `${url}\n\n` +
+      `📍 TrackDeli`;
+
+    const cleanDigits = phone.replace(/\D/g, '');
+    const fullPhone = cleanDigits.length === 8 ? `505${cleanDigits}` : cleanDigits;
+    const whatsappUrl = cleanDigits
+      ? `https://wa.me/${fullPhone}?text=${encodeURIComponent(message)}`
+      : '';
+
+    // Encolar envío automático vía WhatsAppChannel (asíncrono, no bloquea el endpoint)
+    if (cleanDigits) {
+      this.notificationsService
+        .dispatchNotification({
+          businessId,
+          channel: NotificationChannel.WHATSAPP,
+          event: 'LOCATION_CONFIRMATION_REQUEST',
+          recipientContact: fullPhone,
+          variables: {
+            customerName: customer.name,
+            businessName,
+            confirmationUrl: url,
+            url,
+          },
+          relatedEntityType: dto.orderId ? 'Order' : 'Customer',
+          relatedEntityId: dto.orderId ? dto.orderId : customer.id,
+        })
+        .catch((err) =>
+          this.logger.warn(
+            `[Customers] Error encolando WhatsApp de confirmación de ubicación: ${err.message}`,
+          ),
+        );
+    }
+
     this.logger.log(
       `[Customers] Link de confirmación generado por datos: customerId=${customer.id}, phone=${phone}, token=${token}`,
     );
@@ -257,6 +303,7 @@ export class CustomersService {
       token,
       url,
       confirmationUrl: url,
+      whatsappUrl,
       expiresAt,
     };
   }
@@ -265,6 +312,7 @@ export class CustomersService {
     customerId: string,
     userBusinessId: string | null,
     userRole: UserRole,
+    orderId?: string,
   ): Promise<CustomerLocationConfirmationLinkDto> {
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
@@ -292,6 +340,50 @@ export class CustomersService {
     const trackingBaseUrl = this.configService.getOrThrow<string>('TRACKING_URL');
     const url = `${trackingBaseUrl}/confirm-location/${token}`;
 
+    const business = await this.prisma.business.findUnique({
+      where: { id: customer.businessId },
+      select: { name: true },
+    });
+    const businessName = business?.name || 'TrackDeli';
+
+    const clientName = customer.name.trim();
+    const greeting = clientName ? `¡Hola ${clientName}!` : '¡Hola!';
+    const message =
+      `${greeting} Para coordinar la entrega de tu pedido con ${businessName}, ` +
+      `por favor confirmá tu ubicación exacta en este enlace:\n\n` +
+      `${url}\n\n` +
+      `📍 TrackDeli`;
+
+    const cleanDigits = (customer.phone || '').replace(/\D/g, '');
+    const fullPhone = cleanDigits.length === 8 ? `505${cleanDigits}` : cleanDigits;
+    const whatsappUrl = cleanDigits
+      ? `https://wa.me/${fullPhone}?text=${encodeURIComponent(message)}`
+      : '';
+
+    // Encolar envío automático vía WhatsAppChannel (asíncrono, no bloquea el endpoint)
+    if (cleanDigits) {
+      this.notificationsService
+        .dispatchNotification({
+          businessId: customer.businessId,
+          channel: NotificationChannel.WHATSAPP,
+          event: 'LOCATION_CONFIRMATION_REQUEST',
+          recipientContact: fullPhone,
+          variables: {
+            customerName: customer.name,
+            businessName,
+            confirmationUrl: url,
+            url,
+          },
+          relatedEntityType: orderId ? 'Order' : 'Customer',
+          relatedEntityId: orderId ? orderId : customer.id,
+        })
+        .catch((err) =>
+          this.logger.warn(
+            `[Customers] Error encolando WhatsApp de confirmación de ubicación: ${err.message}`,
+          ),
+        );
+    }
+
     this.logger.log(
       `[Customers] Link de confirmación generado: customerId=${customerId}, token=${token}`,
     );
@@ -301,6 +393,7 @@ export class CustomersService {
       token,
       url,
       confirmationUrl: url,
+      whatsappUrl,
       expiresAt,
     };
   }

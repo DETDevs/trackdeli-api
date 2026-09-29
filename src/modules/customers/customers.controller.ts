@@ -210,12 +210,14 @@ export class CustomersController {
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async createConfirmationLink(
     @Param('id') customerId: string,
+    @Body('orderId') orderId: string | undefined,
     @CurrentUser() user: JwtPayload,
   ) {
     return this.customersService.createLocationConfirmationLink(
       customerId,
       user.businessId,
       user.role,
+      orderId,
     );
   }
 

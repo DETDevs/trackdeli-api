@@ -13,6 +13,8 @@ export interface NotificationVariables {
   address?: string | null;
   manageToken?: string;
   manageUrl?: string;
+  confirmationUrl?: string;
+  url?: string;
   status?: string;
   dateFormatted?: string;
   [key: string]: any;
@@ -251,6 +253,48 @@ export class NotificationTemplateRegistry {
             manageUrl,
           });
           const text = `¡Hola ${customerName}! Tu cita para ${serviceName} en ${businessName} fue reagendada para el ${dateFormatted}.`;
+          return { subject, html, text };
+        }
+      }
+
+      case 'LOCATION_CONFIRMATION_REQUEST': {
+        const confirmUrl = vars.confirmationUrl || vars.url || '';
+        const cleanClientName = vars.customerName?.trim() || 'cliente';
+        if (channel === NotificationChannel.WHATSAPP) {
+          const text = `¡Hola ${cleanClientName}! Para coordinar la entrega de tu pedido con ${businessName}, por favor confirmá tu ubicación exacta en este enlace:\n\n${confirmUrl}\n\n📍 TrackDeli`;
+          return {
+            text,
+            templateName: 'location_confirmation_request',
+            templateParams: [cleanClientName, businessName, confirmUrl],
+          };
+        } else {
+          const subject = `Confirmá tu ubicación de entrega — ${businessName}`;
+          const text = `¡Hola ${cleanClientName}! Para coordinar la entrega de tu pedido con ${businessName}, por favor confirmá tu ubicación exacta en el siguiente enlace: ${confirmUrl}`;
+          const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>${subject}</title></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f3f4f6; margin: 0; padding: 24px;">
+  <div style="max-width: 520px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e5e7eb;">
+    <div style="background-color: #111827; padding: 20px 24px; text-align: center;">
+      <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 700;">${businessName}</h1>
+      <p style="color: #9ca3af; margin: 4px 0 0 0; font-size: 14px;">Confirmación de Ubicación</p>
+    </div>
+    <div style="padding: 24px;">
+      <p style="color: #111827; font-size: 15px; margin-top: 0;">¡Hola <strong>${cleanClientName}</strong>!</p>
+      <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">
+        Para coordinar la entrega de tu pedido con <strong>${businessName}</strong>, por favor confirmá tu ubicación exacta en el siguiente enlace:
+      </p>
+      <div style="text-align: center; margin: 24px 0;">
+        <a href="${confirmUrl}" style="display: inline-block; background-color: #10b981; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px;">Confirmar mi Ubicación</a>
+      </div>
+      <div style="border-top: 1px solid #e5e7eb; padding-top: 16px; text-align: center; color: #9ca3af; font-size: 12px;">
+        <p style="margin: 0;">Enlace directo: <a href="${confirmUrl}" style="color: #2563eb;">${confirmUrl}</a></p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`.trim();
           return { subject, html, text };
         }
       }
