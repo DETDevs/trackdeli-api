@@ -582,6 +582,25 @@ export class CustomersService {
     };
   }
 
+  private getPhoneVariants(phone: string): string[] {
+    const trimmed = (phone || '').trim();
+    if (!trimmed) return [];
+    const digitsOnly = trimmed.replace(/\D/g, '');
+    const variants = new Set<string>();
+    variants.add(trimmed);
+    if (digitsOnly) {
+      variants.add(digitsOnly);
+      if (digitsOnly.length === 8) {
+        variants.add(`+505${digitsOnly}`);
+        variants.add(`505${digitsOnly}`);
+      } else if (digitsOnly.length === 11 && digitsOnly.startsWith('505')) {
+        variants.add(digitsOnly.slice(3));
+        variants.add(`+${digitsOnly}`);
+      }
+    }
+    return Array.from(variants);
+  }
+
   async findById(businessId: string, id: string) {
     const customer = await this.prisma.customer.findFirst({
       where: { id, businessId },
@@ -600,7 +619,57 @@ export class CustomersService {
       throw new NotFoundException('Cliente no encontrado');
     }
 
-    return customer;
+    const phoneVariants = this.getPhoneVariants(customer.phone);
+
+    const [orders, sales, ordersCount] = await Promise.all([
+      this.prisma.order.findMany({
+        where: {
+          businessId,
+          customerPhone: { in: phoneVariants },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+        include: {
+          deliveryUser: {
+            select: { id: true, name: true, phone: true },
+          },
+          photos: true,
+          originBusinessClient: {
+            select: { id: true, name: true },
+          },
+        },
+      }),
+      this.prisma.sale.findMany({
+        where: {
+          businessId,
+          OR: [
+            { customerId: id },
+            { customerPhone: { in: phoneVariants } },
+          ],
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+        include: {
+          items: true,
+        },
+      }),
+      this.prisma.order.count({
+        where: {
+          businessId,
+          customerPhone: { in: phoneVariants },
+        },
+      }),
+    ]);
+
+    return {
+      ...customer,
+      orders,
+      sales,
+      _count: {
+        ...customer._count,
+        orders: ordersCount,
+      },
+    };
   }
 
   async getHistory(businessId: string, id: string) {
@@ -623,58 +692,98 @@ export class CustomersService {
       ),
     ]);
 
-    const [appointments, creditAccounts] = await Promise.all([
-      isCitasActive
-        ? this.prisma.appointment.findMany({
-            where: { customerId: id, businessId },
-            include: {
-              service: {
-                select: {
-                  id: true,
-                  name: true,
-                  price: true,
-                  durationMinutes: true,
+    const phoneVariants = this.getPhoneVariants(customer.phone);
+
+    const [appointments, creditAccounts, orders, sales, ordersCount] =
+      await Promise.all([
+        isCitasActive
+          ? this.prisma.appointment.findMany({
+              where: { customerId: id, businessId },
+              include: {
+                service: {
+                  select: {
+                    id: true,
+                    name: true,
+                    price: true,
+                    durationMinutes: true,
+                  },
+                },
+                specialist: {
+                  select: {
+                    id: true,
+                    name: true,
+                    specialty: true,
+                  },
                 },
               },
-              specialist: {
-                select: {
-                  id: true,
-                  name: true,
-                  specialty: true,
+              orderBy: { scheduledAt: 'desc' },
+            })
+          : Promise.resolve(null),
+        isCarteraActive
+          ? this.prisma.creditAccount.findMany({
+              where: { customerId: id, businessId },
+              include: {
+                sale: {
+                  select: {
+                    id: true,
+                    invoiceNumber: true,
+                    invoiceDate: true,
+                    total: true,
+                  },
                 },
-              },
-            },
-            orderBy: { scheduledAt: 'desc' },
-          })
-        : Promise.resolve(null),
-      isCarteraActive
-        ? this.prisma.creditAccount.findMany({
-            where: { customerId: id, businessId },
-            include: {
-              sale: {
-                select: {
-                  id: true,
-                  invoiceNumber: true,
-                  invoiceDate: true,
-                  total: true,
-                },
-              },
-              payments: {
-                orderBy: { receivedAt: 'desc' },
-                include: {
-                  receivedByUser: {
-                    select: {
-                      id: true,
-                      name: true,
+                payments: {
+                  orderBy: { receivedAt: 'desc' },
+                  include: {
+                    receivedByUser: {
+                      select: {
+                        id: true,
+                        name: true,
+                      },
                     },
                   },
                 },
               },
+              orderBy: { createdAt: 'desc' },
+            })
+          : Promise.resolve(null),
+        this.prisma.order.findMany({
+          where: {
+            businessId,
+            customerPhone: { in: phoneVariants },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+          include: {
+            deliveryUser: {
+              select: { id: true, name: true, phone: true },
             },
-            orderBy: { createdAt: 'desc' },
-          })
-        : Promise.resolve(null),
-    ]);
+            photos: true,
+            originBusinessClient: {
+              select: { id: true, name: true },
+            },
+          },
+        }),
+        this.prisma.sale.findMany({
+          where: {
+            businessId,
+            OR: [
+              { customerId: id },
+              { customerPhone: { in: phoneVariants } },
+            ],
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+          include: {
+            items: true,
+          },
+        }),
+        this.prisma.order.count({
+          where: {
+            businessId,
+            customerPhone: { in: phoneVariants },
+          },
+        }),
+      ]);
 
     const mappedAppointments = appointments
       ? appointments.map((app: any) => ({
@@ -700,8 +809,12 @@ export class CustomersService {
         ruc: customer.ruc,
         isBlocked: customer.isBlocked,
         consecutiveNoShows: customer.consecutiveNoShows,
+        lastLatitude: customer.lastLatitude,
+        lastLongitude: customer.lastLongitude,
         lastAddressText: customer.lastAddressText,
+        lastConfirmedAt: customer.lastConfirmedAt,
         createdAt: customer.createdAt,
+        updatedAt: customer.updatedAt,
       },
       products: {
         citas: isCitasActive,
@@ -709,6 +822,14 @@ export class CustomersService {
       },
       appointments: mappedAppointments,
       creditAccounts,
+      orders,
+      sales,
+      _count: {
+        orders: ordersCount,
+        sales: sales.length,
+        appointments: mappedAppointments?.length ?? 0,
+        creditAccounts: creditAccounts?.length ?? 0,
+      },
     };
   }
 
@@ -741,6 +862,9 @@ export class CustomersService {
       }
     }
 
+    const hasNewCoords = dto.latitude != null && dto.longitude != null;
+    const now = new Date();
+
     return this.prisma.customer.update({
       where: { id },
       data: {
@@ -755,6 +879,13 @@ export class CustomersService {
         ...(dto.address !== undefined && {
           lastAddressText: dto.address?.trim() || null,
         }),
+        ...(dto.latitude !== undefined && {
+          lastLatitude: dto.latitude != null ? Number(dto.latitude) : null,
+        }),
+        ...(dto.longitude !== undefined && {
+          lastLongitude: dto.longitude != null ? Number(dto.longitude) : null,
+        }),
+        ...(hasNewCoords && { lastConfirmedAt: now }),
         ...(dto.isBlocked !== undefined && { isBlocked: dto.isBlocked }),
       },
     });

@@ -1,4 +1,12 @@
-import { IsBoolean, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
@@ -10,6 +18,8 @@ export class UpdateCustomerDto {
 
   @IsOptional()
   @IsString({ message: 'El teléfono debe ser una cadena de texto' })
+  @MaxLength(30, { message: 'El teléfono no puede superar 30 caracteres' })
+  @Matches(/^[0-9+ ()-]{7,25}$/, { message: 'El formato del teléfono no es válido' })
   phone?: string;
 
   @IsOptional()
@@ -37,6 +47,17 @@ export class UpdateCustomerDto {
   address?: string;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsNumber({}, { message: 'La latitud debe ser un número' })
+  latitude?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({}, { message: 'La longitud debe ser un número' })
+  longitude?: number | null;
+
+  @IsOptional()
   @IsBoolean({ message: 'isBlocked debe ser un booleano' })
   isBlocked?: boolean;
 }
+
