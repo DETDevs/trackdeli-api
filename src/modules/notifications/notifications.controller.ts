@@ -7,12 +7,14 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { Public } from '../../common/decorators/public.decorator';
 
 import { WhatsAppChannel } from './channels/whatsapp.channel';
+import { PrismaService } from '../../prisma/prisma.service';
 
 @Controller('notifications')
 export class NotificationsController {
   constructor(
     private readonly notificationsService: NotificationsService,
     private readonly whatsappChannel: WhatsAppChannel,
+    private readonly prisma: PrismaService,
   ) {}
 
   @Get('diagnostic')
@@ -20,14 +22,33 @@ export class NotificationsController {
   async getDiagnostic(@Query('wabaId') queryWabaId?: string) {
     const targetWabaId = queryWabaId?.trim() || '1453312026366922';
     const config = this.whatsappChannel.getConfigInfo();
-    const [metaPhoneStatus, wabaInfo, lastLogs] = await Promise.all([
+    const [metaPhoneStatus, wabaInfo, lastLogs, businesses] = await Promise.all([
       this.whatsappChannel.verifyMetaPhoneStatus(),
       this.whatsappChannel.queryWaba(targetWabaId),
       this.notificationsService.getNotificationLogs({ take: 10 }),
+      this.prisma.business.findMany({
+        select: { id: true, name: true, posVertical: true, businessType: true, isActive: true },
+      }),
     ]);
+
+    const posVerticalCounts = businesses.reduce((acc, b) => {
+      acc[b.posVertical] = (acc[b.posVertical] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
 
     return {
       status: 'ok',
+      businessStats: {
+        totalBusinesses: businesses.length,
+        byPosVertical: posVerticalCounts,
+        businesses: businesses.map((b) => ({
+          id: b.id,
+          name: b.name,
+          posVertical: b.posVertical,
+          businessType: b.businessType,
+          isActive: b.isActive,
+        })),
+      },
       whatsappConfig: config,
       metaPhoneStatus,
       wabaInfo,
