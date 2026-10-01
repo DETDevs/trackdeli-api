@@ -70,6 +70,42 @@ export class WhatsAppChannel {
     };
   }
 
+  async verifyMetaPhoneStatus(): Promise<any> {
+    if (!this.accessToken || !this.phoneNumberId) {
+      return { error: 'Credenciales de Meta no configuradas en el entorno' };
+    }
+    try {
+      const url = `https://graph.facebook.com/${this.apiVersion}/${this.phoneNumberId}?fields=verified_name,display_phone_number,code_verification_status,quality_rating,status,account_mode`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${this.accessToken}` },
+      });
+      const data = await res.json().catch(() => null);
+      return {
+        httpStatus: res.status,
+        data,
+      };
+    } catch (err: any) {
+      return { error: err.message };
+    }
+  }
+
+  async getWabaPhoneNumbers(wabaId = '2314197736047823'): Promise<any> {
+    if (!this.accessToken) return null;
+    try {
+      const url = `https://graph.facebook.com/${this.apiVersion}/${wabaId}/phone_numbers`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${this.accessToken}` },
+      });
+      const data = await res.json().catch(() => null);
+      return {
+        httpStatus: res.status,
+        data,
+      };
+    } catch (err: any) {
+      return { error: err.message };
+    }
+  }
+
   /**
    * Limpia y estandariza el número telefónico para Meta Cloud API (E.164 numérico sin '+').
    */

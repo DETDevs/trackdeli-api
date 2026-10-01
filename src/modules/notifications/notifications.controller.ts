@@ -19,10 +19,17 @@ export class NotificationsController {
   @Public()
   async getDiagnostic() {
     const config = this.whatsappChannel.getConfigInfo();
-    const lastLogs = await this.notificationsService.getNotificationLogs({ take: 10 });
+    const [metaPhoneStatus, wabaNumbers, lastLogs] = await Promise.all([
+      this.whatsappChannel.verifyMetaPhoneStatus(),
+      this.whatsappChannel.getWabaPhoneNumbers(),
+      this.notificationsService.getNotificationLogs({ take: 10 }),
+    ]);
+
     return {
       status: 'ok',
       whatsappConfig: config,
+      metaPhoneStatus,
+      wabaNumbers,
       recentLogs: lastLogs.map((l) => ({
         id: l.id,
         channel: l.channel,
