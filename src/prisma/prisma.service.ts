@@ -6,6 +6,7 @@ import {
   BusinessProductAction,
   PosVertical,
   BusinessType,
+  ProductFieldDataType,
   Prisma,
 } from '@prisma/client';
 import { slugify } from '../common/utils/slug.util';
@@ -1166,6 +1167,100 @@ WHERE a."customerId" = c."id"
           name: 'Índice notification_logs.status',
           sql: `CREATE INDEX IF NOT EXISTS "notification_logs_status_idx" ON "notification_logs"("status");`,
         },
+        // ==========================================
+        // MÓDULO 103a: Industrias y Campos Dinámicos
+        // ==========================================
+        {
+          name: 'Enum ProductFieldDataType',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ProductFieldDataType') THEN
+              CREATE TYPE "ProductFieldDataType" AS ENUM ('TEXT', 'NUMBER', 'SELECT', 'BOOLEAN', 'DATE');
+            END IF;
+          END $$;`,
+        },
+        {
+          name: 'Tabla industries',
+          sql: `CREATE TABLE IF NOT EXISTS "industries" (
+            "id" TEXT NOT NULL,
+            "code" VARCHAR(50) NOT NULL,
+            "name" VARCHAR(100) NOT NULL,
+            "posVertical" "PosVertical" NOT NULL DEFAULT 'RETAIL',
+            "usesVariants" BOOLEAN NOT NULL DEFAULT false,
+            "tracksBatches" BOOLEAN NOT NULL DEFAULT false,
+            "isActive" BOOLEAN NOT NULL DEFAULT true,
+            "order" INTEGER NOT NULL DEFAULT 0,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "industries_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "industries_code_key" UNIQUE ("code")
+          );`,
+        },
+        {
+          name: 'Tabla industry_field_templates',
+          sql: `CREATE TABLE IF NOT EXISTS "industry_field_templates" (
+            "id" TEXT NOT NULL,
+            "industryId" TEXT NOT NULL,
+            "key" VARCHAR(50) NOT NULL,
+            "label" VARCHAR(100) NOT NULL,
+            "dataType" "ProductFieldDataType" NOT NULL,
+            "required" BOOLEAN NOT NULL DEFAULT false,
+            "options" JSONB,
+            "order" INTEGER NOT NULL DEFAULT 0,
+            "searchable" BOOLEAN NOT NULL DEFAULT false,
+            "showInPos" BOOLEAN NOT NULL DEFAULT false,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "industry_field_templates_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "industry_field_templates_industryId_key_key" UNIQUE ("industryId", "key"),
+            CONSTRAINT "industry_field_templates_industryId_fkey" FOREIGN KEY ("industryId") REFERENCES "industries"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Tabla product_field_definitions',
+          sql: `CREATE TABLE IF NOT EXISTS "product_field_definitions" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "key" VARCHAR(50) NOT NULL,
+            "label" VARCHAR(100) NOT NULL,
+            "dataType" "ProductFieldDataType" NOT NULL,
+            "required" BOOLEAN NOT NULL DEFAULT false,
+            "options" JSONB,
+            "order" INTEGER NOT NULL DEFAULT 0,
+            "searchable" BOOLEAN NOT NULL DEFAULT false,
+            "showInPos" BOOLEAN NOT NULL DEFAULT false,
+            "isActive" BOOLEAN NOT NULL DEFAULT true,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "product_field_definitions_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "product_field_definitions_businessId_key_key" UNIQUE ("businessId", "key"),
+            CONSTRAINT "product_field_definitions_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índice product_field_definitions.businessId_isActive',
+          sql: `CREATE INDEX IF NOT EXISTS "product_field_definitions_businessId_isActive_idx" ON "product_field_definitions"("businessId", "isActive");`,
+        },
+        {
+          name: 'Columnas businesses.industryId, usesVariants, tracksBatches',
+          sql: `DO $$ BEGIN
+            ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "industryId" TEXT;
+            ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "usesVariants" BOOLEAN NOT NULL DEFAULT false;
+            ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "tracksBatches" BOOLEAN NOT NULL DEFAULT false;
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE constraint_name = 'businesses_industryId_fkey'
+            ) THEN
+              ALTER TABLE "businesses" ADD CONSTRAINT "businesses_industryId_fkey" FOREIGN KEY ("industryId") REFERENCES "industries"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;`,
+        },
+        {
+          name: 'Columna pos_products.attributes e índice GIN',
+          sql: `DO $$ BEGIN
+            ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "attributes" JSONB NOT NULL DEFAULT '{}';
+            CREATE INDEX IF NOT EXISTS "idx_pos_products_attributes" ON "pos_products" USING GIN ("attributes");
+          END $$;`,
+        },
       ];
 
       for (const step of ddlStatements) {
@@ -1188,6 +1283,10 @@ WHERE a."customerId" = c."id"
       await this.ensureServicesMigrated();
 
       await this.ensureProfessionsMigrated();
+
+      await this.ensureIndustriesAndFieldTemplatesSeeded();
+
+      await this.ensureBusinessesMigratedToIndustries();
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia general en auto-sincronización de esquema: ${err.message}`);
     }
@@ -1739,6 +1838,205 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ Advertencia en migración de profesiones: ${err.message}`);
+    }
+  }
+
+  private async ensureIndustriesAndFieldTemplatesSeeded() {
+    try {
+      this.logger.log('[103a Seed] Verificando seed de Industrias y Plantillas de Campos...');
+
+      const industriesSeed = [
+        {
+          code: 'general',
+          name: 'General',
+          posVertical: PosVertical.RETAIL,
+          order: 1,
+          fields: [] as any[],
+        },
+        {
+          code: 'restaurante',
+          name: 'Restaurante / Cafetería',
+          posVertical: PosVertical.RESTAURANTE,
+          order: 2,
+          fields: [] as any[],
+        },
+        {
+          code: 'abarrotes',
+          name: 'Abarrotería / Pulpería',
+          posVertical: PosVertical.RETAIL,
+          order: 3,
+          fields: [
+            { key: 'marca', label: 'Marca', dataType: ProductFieldDataType.TEXT, order: 1 },
+            { key: 'contenido', label: 'Contenido', dataType: ProductFieldDataType.TEXT, order: 2 },
+            {
+              key: 'unidad',
+              label: 'Unidad',
+              dataType: ProductFieldDataType.SELECT,
+              options: ['unidad', 'libra', 'kg', 'caja', 'docena', 'metro', 'litro'],
+              order: 3,
+            },
+          ],
+        },
+        {
+          code: 'farmacia',
+          name: 'Farmacia',
+          posVertical: PosVertical.RETAIL,
+          order: 4,
+          fields: [
+            { key: 'laboratorio', label: 'Laboratorio', dataType: ProductFieldDataType.TEXT, order: 1 },
+            { key: 'principio_activo', label: 'Principio activo', dataType: ProductFieldDataType.TEXT, searchable: true, order: 2 },
+            { key: 'presentacion', label: 'Presentación', dataType: ProductFieldDataType.TEXT, order: 3 },
+            { key: 'requiere_receta', label: 'Requiere receta', dataType: ProductFieldDataType.BOOLEAN, showInPos: true, order: 4 },
+          ],
+        },
+        {
+          code: 'ferreteria',
+          name: 'Ferretería',
+          posVertical: PosVertical.RETAIL,
+          order: 5,
+          fields: [
+            { key: 'marca', label: 'Marca', dataType: ProductFieldDataType.TEXT, order: 1 },
+            { key: 'medida', label: 'Medida', dataType: ProductFieldDataType.TEXT, order: 2 },
+            {
+              key: 'unidad',
+              label: 'Unidad',
+              dataType: ProductFieldDataType.SELECT,
+              options: ['unidad', 'libra', 'kg', 'caja', 'docena', 'metro', 'litro'],
+              order: 3,
+            },
+          ],
+        },
+        {
+          code: 'cosmetica',
+          name: 'Cosmetiquería',
+          posVertical: PosVertical.RETAIL,
+          order: 6,
+          fields: [
+            { key: 'marca', label: 'Marca', dataType: ProductFieldDataType.TEXT, order: 1 },
+            { key: 'linea', label: 'Línea', dataType: ProductFieldDataType.TEXT, order: 2 },
+            { key: 'tono_color', label: 'Tono / Color', dataType: ProductFieldDataType.TEXT, order: 3 },
+            { key: 'contenido', label: 'Contenido', dataType: ProductFieldDataType.TEXT, order: 4 },
+          ],
+        },
+        {
+          code: 'ropa_calzado',
+          name: 'Ropa y calzado',
+          posVertical: PosVertical.RETAIL,
+          order: 7,
+          fields: [
+            { key: 'marca', label: 'Marca', dataType: ProductFieldDataType.TEXT, order: 1 },
+            {
+              key: 'talla',
+              label: 'Talla',
+              dataType: ProductFieldDataType.SELECT,
+              options: ['XS', 'S', 'M', 'L', 'XL', 'XXL'],
+              order: 2,
+            },
+            { key: 'color', label: 'Color', dataType: ProductFieldDataType.TEXT, order: 3 },
+            {
+              key: 'genero',
+              label: 'Género',
+              dataType: ProductFieldDataType.SELECT,
+              options: ['Hombre', 'Mujer', 'Unisex', 'Niño', 'Niña'],
+              order: 4,
+            },
+            { key: 'temporada', label: 'Temporada', dataType: ProductFieldDataType.TEXT, order: 5 },
+          ],
+        },
+      ];
+
+      for (const item of industriesSeed) {
+        const industry = await (this as any).industry.upsert({
+          where: { code: item.code },
+          update: {
+            name: item.name,
+            posVertical: item.posVertical,
+            order: item.order,
+          },
+          create: {
+            code: item.code,
+            name: item.name,
+            posVertical: item.posVertical,
+            order: item.order,
+          },
+        });
+
+        for (const field of item.fields) {
+          await (this as any).industryFieldTemplate.upsert({
+            where: {
+              industryId_key: {
+                industryId: industry.id,
+                key: field.key,
+              },
+            },
+            update: {
+              label: field.label,
+              dataType: field.dataType,
+              required: field.required ?? false,
+              options: field.options ?? null,
+              order: field.order ?? 0,
+              searchable: field.searchable ?? false,
+              showInPos: field.showInPos ?? false,
+            },
+            create: {
+              industryId: industry.id,
+              key: field.key,
+              label: field.label,
+              dataType: field.dataType,
+              required: field.required ?? false,
+              options: field.options ?? null,
+              order: field.order ?? 0,
+              searchable: field.searchable ?? false,
+              showInPos: field.showInPos ?? false,
+            },
+          });
+        }
+      }
+
+      this.logger.log('[103a Seed] ✓ Seed de Industrias y Plantillas de Campos verificado y sincronizado.');
+    } catch (err: any) {
+      this.logger.warn(`[103a Seed] ⚠ Advertencia en seed de industrias: ${err.message}`);
+    }
+  }
+
+  private async ensureBusinessesMigratedToIndustries() {
+    try {
+      this.logger.log('[103a Migration] Verificando asignación de Industry a negocios existentes...');
+
+      // Reportar los valores distintos de la columna libre businesses.type
+      const typesResult: any[] = await this.$queryRawUnsafe(`SELECT DISTINCT "type" FROM "businesses";`);
+      const distinctTypes = typesResult.map((r: any) => r.type);
+      this.logger.log(`[103a Migration] Valores distintos en columna businesses.type: ${JSON.stringify(distinctTypes)}`);
+
+      const generalIndustry = await (this as any).industry.findUnique({ where: { code: 'general' } });
+      const restauranteIndustry = await (this as any).industry.findUnique({ where: { code: 'restaurante' } });
+
+      if (!generalIndustry || !restauranteIndustry) {
+        this.logger.warn('[103a Migration] Industrias base general/restaurante no encontradas para migración.');
+        return;
+      }
+
+      const unassigned = await (this as any).business.findMany({
+        where: { industryId: null },
+        select: { id: true, name: true, posVertical: true },
+      });
+
+      for (const b of unassigned) {
+        const targetIndustryId = b.posVertical === PosVertical.RESTAURANTE ? restauranteIndustry.id : generalIndustry.id;
+        await (this as any).business.update({
+          where: { id: b.id },
+          data: { industryId: targetIndustryId },
+        });
+        this.logger.log(
+          `[103a Migration] Negocio '${b.name}' (${b.id}) vinculado a industria '${b.posVertical === PosVertical.RESTAURANTE ? 'restaurante' : 'general'}'.`,
+        );
+      }
+
+      // Asegurar que attributes en pos_products no sea NULL
+      await this.$executeRawUnsafe(`UPDATE "pos_products" SET "attributes" = '{}' WHERE "attributes" IS NULL;`);
+      this.logger.log('[103a Migration] ✓ Migración de negocios existentes a industrias completada.');
+    } catch (err: any) {
+      this.logger.warn(`[103a Migration] ⚠ Advertencia en migración de negocios a industrias: ${err.message}`);
     }
   }
 }

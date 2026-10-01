@@ -27,7 +27,7 @@ export class NotificationsController {
       this.whatsappChannel.queryWaba(targetWabaId),
       this.notificationsService.getNotificationLogs({ take: 10 }),
       this.prisma.business.findMany({
-        select: { id: true, name: true, posVertical: true, businessType: true, isActive: true },
+        select: { id: true, name: true, type: true, posVertical: true, businessType: true, isActive: true },
       }),
     ]);
 
@@ -36,14 +36,18 @@ export class NotificationsController {
       return acc;
     }, {} as Record<string, number>);
 
+    const distinctTypes = [...new Set(businesses.map((b) => b.type))];
+
     return {
       status: 'ok',
       businessStats: {
         totalBusinesses: businesses.length,
         byPosVertical: posVerticalCounts,
+        distinctTypes,
         businesses: businesses.map((b) => ({
           id: b.id,
           name: b.name,
+          type: b.type,
           posVertical: b.posVertical,
           businessType: b.businessType,
           isActive: b.isActive,

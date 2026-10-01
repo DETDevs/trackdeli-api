@@ -157,6 +157,14 @@ enum PosVertical {
   RESTAURANTE
 }
 
+enum ProductFieldDataType {
+  TEXT
+  NUMBER
+  SELECT
+  BOOLEAN
+  DATE
+}
+
 enum TableShape {
   ROUND
   SQUARE
@@ -243,6 +251,12 @@ model Business {
   // Umbral de confirmación de ubicación de clientes (días)
   customerLocationMaxDays Int          @default(30)
 
+  // Industria / Tipo de negocio (103a)
+  industryId              String?
+  industry                Industry?     @relation(fields: [industryId], references: [id])
+  usesVariants            Boolean       @default(false)
+  tracksBatches           Boolean       @default(false)
+
   createdAt              DateTime     @default(now())
 
   // TrackDeli relations
@@ -268,6 +282,7 @@ model Business {
   terminals        PosTerminal[]
   inventoryDiscrepancies InventoryDiscrepancy[]
   creditAccounts   CreditAccount[]
+  productFieldDefinitions ProductFieldDefinition[]
 
   // Subscripciones de Productos y Auditoría
   productSubscriptions BusinessProductSubscription[]
@@ -756,6 +771,7 @@ model Product {
   maxStock    Int?
 
   isActive    Boolean   @default(true)
+  attributes  Json      @default("{}")
 
   saleItems       SaleItem[]
   stockMovements  StockMovement[]
@@ -1355,6 +1371,68 @@ model Specialist {
   @@index([businessId])
   @@index([professionId])
   @@map("specialists")
+}
+
+// ==========================================
+// MÓDULO 103a: Industrias y Campos Dinámicos
+// ==========================================
+
+model Industry {
+  id            String                  @id @default(uuid())
+  code          String                  @unique @db.VarChar(50)
+  name          String                  @db.VarChar(100)
+  posVertical   PosVertical             @default(RETAIL)
+  usesVariants  Boolean                 @default(false)
+  tracksBatches Boolean                 @default(false)
+  isActive      Boolean                 @default(true)
+  order         Int                     @default(0)
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  fieldTemplates IndustryFieldTemplate[]
+  businesses     Business[]
+
+  @@map("industries")
+}
+
+model IndustryFieldTemplate {
+  id          String               @id @default(uuid())
+  industryId  String
+  industry    Industry             @relation(fields: [industryId], references: [id], onDelete: Cascade)
+  key         String               @db.VarChar(50)
+  label       String               @db.VarChar(100)
+  dataType    ProductFieldDataType
+  required    Boolean              @default(false)
+  options     Json?
+  order       Int                  @default(0)
+  searchable  Boolean              @default(false)
+  showInPos   Boolean              @default(false)
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@unique([industryId, key])
+  @@map("industry_field_templates")
+}
+
+model ProductFieldDefinition {
+  id          String               @id @default(uuid())
+  businessId  String
+  business    Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  key         String               @db.VarChar(50)
+  label       String               @db.VarChar(100)
+  dataType    ProductFieldDataType
+  required    Boolean              @default(false)
+  options     Json?
+  order       Int                  @default(0)
+  searchable  Boolean              @default(false)
+  showInPos   Boolean              @default(false)
+  isActive    Boolean              @default(true)
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@unique([businessId, key])
+  @@index([businessId, isActive])
+  @@map("product_field_definitions")
 }
 
 
