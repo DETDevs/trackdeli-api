@@ -18,6 +18,7 @@ import {
   BusinessProductType,
   CashStatus,
   NotificationChannel,
+  NotificationLogStatus,
   PosPaymentMethod,
   Prisma,
 } from '@prisma/client';
@@ -1582,10 +1583,11 @@ export class BookingService implements OnModuleInit {
     const bookingAppUrl = this.configService.get<string>('BOOKING_APP_URL') || '';
     const manageUrl = `${bookingAppUrl.replace(/\/$/, '')}/manage/${updated.manageToken}`;
 
-    // 1. Envío automático por WhatsApp vía NotificationsModule (simulado si no hay credenciales)
+    // 1. Envío automático por WhatsApp vía NotificationsModule (awaitDirect para retornar autoSent sin fallar la aprobación)
+    let autoSent = false;
     if (cleanPhone) {
-      this.notificationsService
-        .dispatchNotification({
+      try {
+        const notif = await this.notificationsService.dispatchNotification({
           businessId: updated.businessId,
           channel: NotificationChannel.WHATSAPP,
           event: 'APPOINTMENT_CONFIRMED',
@@ -1601,10 +1603,12 @@ export class BookingService implements OnModuleInit {
           },
           relatedEntityType: 'Appointment',
           relatedEntityId: updated.id,
-        })
-        .catch((err) =>
-          this.logger.warn(`[BookingService] Error despachando WhatsApp: ${err.message}`),
-        );
+          awaitDirect: true,
+        });
+        autoSent = notif.status === NotificationLogStatus.SENT;
+      } catch (err: any) {
+        this.logger.warn(`[BookingService] Error despachando WhatsApp: ${err.message}`);
+      }
     }
 
     // 2. Envío automático por Email vía NotificationsModule (idempotente)
@@ -1654,6 +1658,7 @@ export class BookingService implements OnModuleInit {
     return {
       appointment: updated,
       whatsappUrl,
+      autoSent,
     };
   }
 

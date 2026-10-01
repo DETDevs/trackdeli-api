@@ -15,6 +15,7 @@ export interface DispatchNotificationDto {
   variables: NotificationVariables;
   relatedEntityType?: string;
   relatedEntityId?: string;
+  awaitDirect?: boolean;
 }
 
 @Injectable()
@@ -334,6 +335,22 @@ export class NotificationsService implements OnModuleInit {
         metadata: variables as any,
       },
     });
+
+    // Si se solicita awaitDirect (ej. confirmación inmediata para marcar autoSent),
+    // procesar de forma directa y retornar el estado final registrado
+    if (dto.awaitDirect) {
+      try {
+        await this.processor.processNotification(log.id, false);
+      } catch (procErr: any) {
+        this.logger.error(
+          `[NotificationsService] Error en procesamiento directo de notificación ${log.id}: ${procErr.message}`,
+        );
+      }
+      const updatedLog = await this.prisma.notificationLog.findUnique({
+        where: { id: log.id },
+      });
+      return updatedLog || log;
+    }
 
     // 2. Intentar encolar en Bull / Redis
     let enqueued = false;

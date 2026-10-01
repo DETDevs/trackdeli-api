@@ -18,7 +18,7 @@ import {
   CustomerSearchResultDto,
 } from './dto/customer-response.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
-import { BusinessProductType, NotificationChannel, Prisma, UserRole } from '@prisma/client';
+import { BusinessProductType, NotificationChannel, NotificationLogStatus, Prisma, UserRole } from '@prisma/client';
 import { BusinessProductsService } from '../business-products/business-products.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { generateShortCode, normalizeShortCode } from '../../common/utils/short-code.util';
@@ -295,10 +295,11 @@ export class CustomersService {
       ? `https://wa.me/${fullPhone}?text=${encodeURIComponent(message)}`
       : '';
 
-    // Encolar envío automático vía WhatsAppChannel (asíncrono, no bloquea el endpoint)
+    let autoSent = false;
+    // Envío automático vía WhatsAppChannel (awaitDirect para retornar autoSent sin fallar la creación del link)
     if (cleanDigits) {
-      this.notificationsService
-        .dispatchNotification({
+      try {
+        const notif = await this.notificationsService.dispatchNotification({
           businessId,
           channel: NotificationChannel.WHATSAPP,
           event: 'LOCATION_CONFIRMATION_REQUEST',
@@ -306,21 +307,25 @@ export class CustomersService {
           variables: {
             customerName: customer.name,
             businessName,
+            orderSummary: dto.orderId ? 'tu pedido' : businessName,
+            shortCode,
             confirmationUrl: url,
             url,
           },
           relatedEntityType: dto.orderId ? 'Order' : 'Customer',
           relatedEntityId: dto.orderId ? dto.orderId : customer.id,
-        })
-        .catch((err) =>
-          this.logger.warn(
-            `[Customers] Error encolando WhatsApp de confirmación de ubicación: ${err.message}`,
-          ),
+          awaitDirect: true,
+        });
+        autoSent = notif.status === NotificationLogStatus.SENT;
+      } catch (err: any) {
+        this.logger.warn(
+          `[Customers] Error enviando WhatsApp de confirmación de ubicación: ${err.message}`,
         );
+      }
     }
 
     this.logger.log(
-      `[Customers] Link de confirmación generado por datos: customerId=${customer.id}, phone=${phone}, shortCode=${shortCode}`,
+      `[Customers] Link de confirmación generado por datos: customerId=${customer.id}, phone=${phone}, shortCode=${shortCode}, autoSent=${autoSent}`,
     );
 
     return {
@@ -331,6 +336,7 @@ export class CustomersService {
       confirmationUrl: url,
       whatsappUrl,
       expiresAt,
+      autoSent,
     };
   }
 
@@ -390,10 +396,11 @@ export class CustomersService {
       ? `https://wa.me/${fullPhone}?text=${encodeURIComponent(message)}`
       : '';
 
-    // Encolar envío automático vía WhatsAppChannel (asíncrono, no bloquea el endpoint)
+    let autoSent = false;
+    // Envío automático vía WhatsAppChannel (awaitDirect para retornar autoSent sin fallar la creación del link)
     if (cleanDigits) {
-      this.notificationsService
-        .dispatchNotification({
+      try {
+        const notif = await this.notificationsService.dispatchNotification({
           businessId: customer.businessId,
           channel: NotificationChannel.WHATSAPP,
           event: 'LOCATION_CONFIRMATION_REQUEST',
@@ -401,21 +408,25 @@ export class CustomersService {
           variables: {
             customerName: customer.name,
             businessName,
+            orderSummary: orderId ? 'tu pedido' : businessName,
+            shortCode,
             confirmationUrl: url,
             url,
           },
           relatedEntityType: orderId ? 'Order' : 'Customer',
           relatedEntityId: orderId ? orderId : customer.id,
-        })
-        .catch((err) =>
-          this.logger.warn(
-            `[Customers] Error encolando WhatsApp de confirmación de ubicación: ${err.message}`,
-          ),
+          awaitDirect: true,
+        });
+        autoSent = notif.status === NotificationLogStatus.SENT;
+      } catch (err: any) {
+        this.logger.warn(
+          `[Customers] Error enviando WhatsApp de confirmación de ubicación: ${err.message}`,
         );
+      }
     }
 
     this.logger.log(
-      `[Customers] Link de confirmación generado: customerId=${customerId}, shortCode=${shortCode}`,
+      `[Customers] Link de confirmación generado: customerId=${customerId}, shortCode=${shortCode}, autoSent=${autoSent}`,
     );
 
     return {
@@ -426,6 +437,7 @@ export class CustomersService {
       confirmationUrl: url,
       whatsappUrl,
       expiresAt,
+      autoSent,
     };
   }
 

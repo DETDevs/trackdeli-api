@@ -79,6 +79,7 @@ export class NotificationsProcessor {
         text: rendered.text,
         templateName: rendered.templateName,
         templateParams: rendered.templateParams,
+        buttonSuffix: rendered.buttonSuffix,
         metadata: variables,
       });
     } else {
@@ -103,6 +104,10 @@ export class NotificationsProcessor {
           status: finalStatus,
           sentAt: new Date(),
           errorMessage: null,
+          metadata: {
+            ...variables,
+            ...(sendResult.messageId ? { wamid: sendResult.messageId } : {}),
+          },
         },
       });
 

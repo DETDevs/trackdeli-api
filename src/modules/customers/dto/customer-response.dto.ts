@@ -35,6 +35,7 @@ export class CustomerLocationConfirmationLinkDto {
   confirmationUrl: string;
   whatsappUrl?: string;
   expiresAt: Date;
+  autoSent?: boolean;
 }
 
 export class CustomerLocationSessionPublicDto {

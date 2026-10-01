@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { NotificationChannel } from '@prisma/client';
+import {
+  formatAppointmentDate,
+  sanitizeMetaParam,
+} from '../../../common/utils/date.util';
 
 export interface NotificationVariables {
   customerName?: string;
@@ -15,6 +19,8 @@ export interface NotificationVariables {
   manageUrl?: string;
   confirmationUrl?: string;
   url?: string;
+  shortCode?: string;
+  orderSummary?: string;
   status?: string;
   dateFormatted?: string;
   [key: string]: any;
@@ -26,6 +32,7 @@ export interface RenderedTemplate {
   text: string;
   templateName?: string;
   templateParams?: string[];
+  buttonSuffix?: string;
 }
 
 @Injectable()
@@ -171,12 +178,31 @@ export class NotificationTemplateRegistry {
 
     switch (event) {
       case 'APPOINTMENT_CONFIRMED': {
+        const clientName = sanitizeMetaParam(vars.customerName, 'cliente');
+        const bizName = sanitizeMetaParam(vars.businessName, 'el negocio');
+        const aptDate = vars.scheduledAt
+          ? formatAppointmentDate(vars.scheduledAt)
+          : (vars.dateFormatted || '').replace(/\.+$/, '');
+        const services = sanitizeMetaParam(
+          vars.serviceName || vars.concept,
+          'tu cita',
+        );
+        const buttonSuffix = (vars.manageToken || vars.token || '').trim();
+
         if (channel === NotificationChannel.WHATSAPP) {
-          const text = `¡Hola ${customerName}! Te confirmamos tu cita para *${serviceName}* el *${dateFormatted}* en *${businessName}*. ¡Te esperamos!`;
+          const text =
+            `¡Hola ${clientName}!\n\n` +
+            `Tu cita en ${bizName} 📅\n` +
+            `quedó confirmada: para el ${aptDate}.\n\n` +
+            `Servicio(s): ${services}.\n\n` +
+            `Si necesitás reagendar o cancelar, contactanos.` +
+            (manageUrl ? `\n\nGestionar mi cita: ${manageUrl}` : '');
+
           return {
             text,
             templateName: 'appointment_confirmed',
-            templateParams: [customerName, serviceName, dateFormatted, businessName],
+            templateParams: [clientName, bizName, aptDate, services],
+            buttonSuffix: buttonSuffix || undefined,
           };
         } else {
           const subject = `¡Cita Confirmada! — ${serviceName} en ${businessName}`;
@@ -187,14 +213,14 @@ export class NotificationTemplateRegistry {
             badgeHtml,
             businessName,
             serviceName,
-            dateFormatted,
+            dateFormatted: aptDate || dateFormatted,
             durationMinutes: vars.durationMinutes,
             price: vars.price,
             currencySymbol,
             address: vars.address,
             manageUrl,
           });
-          const text = `¡Hola ${customerName}! Te confirmamos tu cita para ${serviceName} el ${dateFormatted} en ${businessName}.`;
+          const text = `¡Hola ${customerName}! Te confirmamos tu cita para ${serviceName} el ${aptDate || dateFormatted} en ${businessName}.`;
           return { subject, html, text };
         }
       }
@@ -259,17 +285,30 @@ export class NotificationTemplateRegistry {
 
       case 'LOCATION_CONFIRMATION_REQUEST': {
         const confirmUrl = vars.confirmationUrl || vars.url || '';
-        const cleanClientName = vars.customerName?.trim() || 'cliente';
+        const clientName = sanitizeMetaParam(vars.customerName, 'cliente');
+        const orderSummary = sanitizeMetaParam(
+          vars.orderSummary || vars.concept || vars.businessName,
+          'tu pedido',
+        );
+        const buttonSuffix = (vars.shortCode || vars.token || '').trim();
+
         if (channel === NotificationChannel.WHATSAPP) {
-          const text = `¡Hola ${cleanClientName}! Para coordinar la entrega de tu pedido con ${businessName}, por favor confirmá tu ubicación exacta en este enlace:\n\n${confirmUrl}\n\n📍 TrackDeli`;
+          const text =
+            `¡Hola ${clientName}! 📍\n\n` +
+            `Para coordinar la entrega de tu pedido de ${orderSummary},\n` +
+            `necesitamos que confirmes tu ubicación exacta.\n\n` +
+            `¡Gracias! 🙌` +
+            (confirmUrl ? `\n\n${confirmUrl}` : '');
+
           return {
             text,
             templateName: 'location_confirmation_request',
-            templateParams: [cleanClientName, businessName, confirmUrl],
+            templateParams: [clientName, orderSummary],
+            buttonSuffix: buttonSuffix || undefined,
           };
         } else {
           const subject = `Confirmá tu ubicación de entrega — ${businessName}`;
-          const text = `¡Hola ${cleanClientName}! Para coordinar la entrega de tu pedido con ${businessName}, por favor confirmá tu ubicación exacta en el siguiente enlace: ${confirmUrl}`;
+          const text = `¡Hola ${clientName}! Para coordinar la entrega de tu pedido con ${businessName}, por favor confirmá tu ubicación exacta en el siguiente enlace: ${confirmUrl}`;
           const html = `
 <!DOCTYPE html>
 <html>
@@ -281,7 +320,7 @@ export class NotificationTemplateRegistry {
       <p style="color: #9ca3af; margin: 4px 0 0 0; font-size: 14px;">Confirmación de Ubicación</p>
     </div>
     <div style="padding: 24px;">
-      <p style="color: #111827; font-size: 15px; margin-top: 0;">¡Hola <strong>${cleanClientName}</strong>!</p>
+      <p style="color: #111827; font-size: 15px; margin-top: 0;">¡Hola <strong>${clientName}</strong>!</p>
       <p style="color: #4b5563; font-size: 14px; line-height: 1.5;">
         Para coordinar la entrega de tu pedido con <strong>${businessName}</strong>, por favor confirmá tu ubicación exacta en el siguiente enlace:
       </p>

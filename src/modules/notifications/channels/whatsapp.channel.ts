@@ -7,6 +7,15 @@ export interface SendWhatsAppOptions {
   text?: string; // Mensaje de texto (fallback o logs)
   templateName?: string;
   templateParams?: string[] | Record<string, string>;
+  buttonSuffix?: string; // Sufijo dinámico del botón URL (index: 0)
+  metadata?: Record<string, any>;
+}
+
+export interface SendWhatsAppTemplateOptions {
+  to: string;
+  templateName: 'location_confirmation_request' | 'appointment_confirmed';
+  bodyParams: string[];
+  buttonSuffix?: string;
   metadata?: Record<string, any>;
 }
 
@@ -45,10 +54,12 @@ export class WhatsAppChannel {
   }
 
   /**
-   * Limpia y estandariza el número telefónico para Meta Cloud API (solo dígitos, formato internacional sin '+').
+   * Limpia y estandariza el número telefónico para Meta Cloud API (E.164 numérico sin '+').
    */
-  private cleanPhoneNumber(phone: string): string {
-    const digits = phone.replace(/\D/g, '');
+  cleanPhoneNumber(phone: string): string {
+    let digits = phone.replace(/\D/g, '');
+    // Quitar ceros iniciales si los hubiera (ej. 00505...)
+    digits = digits.replace(/^00/, '');
     // Si tiene 8 dígitos (formato estándar de Nicaragua), anteponer 505
     if (digits.length === 8) {
       return `505${digits}`;
@@ -69,6 +80,11 @@ export class WhatsAppChannel {
     const subcode = error.error_subcode;
     const message = error.message || '';
     const details = error.error_data?.details || '';
+
+    // Método de pago no configurado
+    if (code === 131042) {
+      return `Método de pago no configurado en la cuenta de WhatsApp Business (Meta code 131042): ${message}`;
+    }
 
     // Plantilla no existe en el idioma o está pendiente de aprobación
     if (code === 132001 || subcode === 2494011) {
@@ -115,22 +131,36 @@ export class WhatsAppChannel {
   }
 
   /**
+   * Envía una plantilla tipada de forma unificada.
+   */
+  async sendTemplate(options: SendWhatsAppTemplateOptions): Promise<SendWhatsAppResult> {
+    return this.send({
+      to: options.to,
+      templateName: options.templateName,
+      templateParams: options.bodyParams,
+      buttonSuffix: options.buttonSuffix,
+      metadata: options.metadata,
+    });
+  }
+
+  /**
    * Envía un mensaje de WhatsApp directo a través de Meta Cloud API o en modo simulado.
    */
   async send(options: SendWhatsAppOptions): Promise<SendWhatsAppResult> {
-    const { to, text, templateName, templateParams, metadata } = options;
+    const { to, text, templateName, templateParams, buttonSuffix, metadata } = options;
     const cleanTo = this.cleanPhoneNumber(to);
 
     // Modo simulado por defecto si faltan credenciales
     if (!this.accessToken || !this.phoneNumberId) {
       this.logger.log(
-        `[WhatsAppChannel] (SIMULADO) WhatsApp a "${cleanTo}". Template: "${templateName || 'none'}". Mensaje: "${text || ''}"`,
+        `[WhatsAppChannel] (SIMULADO) WhatsApp a "${cleanTo}". Template: "${templateName || 'none'}". ButtonSuffix: "${buttonSuffix || 'none'}". Mensaje: "${text || ''}"`,
       );
       Sentry.logger.info(`[WhatsAppChannel] (SIMULADO) WhatsApp enviado a "${cleanTo}"`, {
         to: cleanTo,
         text,
         templateName,
         templateParams,
+        buttonSuffix,
         metadata,
       });
 
@@ -160,6 +190,21 @@ export class WhatsAppChannel {
               })),
             });
           }
+        }
+
+        // Agregar componente button dinámico (index 0, sub_type url) si hay sufijo
+        if (buttonSuffix && buttonSuffix.trim() !== '') {
+          components.push({
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [
+              {
+                type: 'text',
+                text: buttonSuffix.trim(),
+              },
+            ],
+          });
         }
 
         payload = {
