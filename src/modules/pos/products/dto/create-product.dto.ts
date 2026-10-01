@@ -67,4 +67,7 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   taxIncluded?: boolean;
+
+  @IsOptional()
+  attributes?: Record<string, any>;
 }

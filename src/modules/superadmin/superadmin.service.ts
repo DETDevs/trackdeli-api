@@ -431,10 +431,31 @@ export class SuperAdminService {
     const hasCitas = dto.hasCitas ?? false;
 
     const result = await this.prisma.$transaction(async (tx) => {
+      let targetIndustry: any = null;
+      if (dto.industryId) {
+        targetIndustry = await tx.industry.findUnique({
+          where: { id: dto.industryId },
+          include: { fieldTemplates: { orderBy: { order: 'asc' } } },
+        });
+        if (!targetIndustry) {
+          throw new NotFoundException(`La industria con ID '${dto.industryId}' no existe`);
+        }
+      } else {
+        targetIndustry = await tx.industry.findUnique({
+          where: { code: 'general' },
+          include: { fieldTemplates: { orderBy: { order: 'asc' } } },
+        });
+      }
+
+      const resolvedPosVertical = dto.posVertical || targetIndustry?.posVertical || PosVertical.RESTAURANTE;
+
       const business = await tx.business.create({
         data: {
           name: dto.name,
           type: dto.type || null,
+          industryId: targetIndustry?.id || null,
+          usesVariants: targetIndustry?.usesVariants ?? false,
+          tracksBatches: targetIndustry?.tracksBatches ?? false,
           businessType: dto.businessType || BusinessType.NEGOCIO,
           commissionRate: dto.commissionRate ?? 0.15,
           altCommissionRate: dto.altCommissionRate ?? 0.12,
@@ -447,9 +468,28 @@ export class SuperAdminService {
           hasPOS: hasPOS,
           hasCarteraCobro: hasCarteraCobro,
           hasCitas: hasCitas,
-          posVertical: dto.posVertical || PosVertical.RESTAURANTE,
+          posVertical: resolvedPosVertical,
         },
       });
+
+      if (targetIndustry?.fieldTemplates && targetIndustry.fieldTemplates.length > 0) {
+        for (const tmpl of targetIndustry.fieldTemplates) {
+          await tx.productFieldDefinition.create({
+            data: {
+              businessId: business.id,
+              key: tmpl.key,
+              label: tmpl.label,
+              dataType: tmpl.dataType,
+              required: tmpl.required,
+              options: tmpl.options as any,
+              order: tmpl.order,
+              searchable: tmpl.searchable,
+              showInPos: tmpl.showInPos,
+              isActive: true,
+            },
+          });
+        }
+      }
 
       const encargado = await tx.user.create({
         data: {
@@ -520,7 +560,7 @@ export class SuperAdminService {
         const posFee = dto.posMonthlyFee !== undefined && dto.posMonthlyFee !== null
           ? Number(dto.posMonthlyFee)
           : 25.00;
-        const posVertical = dto.posVertical || PosVertical.RESTAURANTE;
+        const posVertical = resolvedPosVertical;
 
         const posSub = await tx.businessProductSubscription.create({
           data: {
@@ -735,11 +775,56 @@ export class SuperAdminService {
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
     }
+
+    if (dto.industryId !== undefined && dto.industryId !== business.industryId) {
+      if (dto.industryId !== null) {
+        const targetIndustry = await this.prisma.industry.findUnique({
+          where: { id: dto.industryId },
+          include: { fieldTemplates: { orderBy: { order: 'asc' } } },
+        });
+        if (!targetIndustry) {
+          throw new NotFoundException(`La industria '${dto.industryId}' no existe`);
+        }
+
+        const activeCount = await this.prisma.productFieldDefinition.count({
+          where: { businessId: id, isActive: true },
+        });
+        const existingKeys = (
+          await this.prisma.productFieldDefinition.findMany({
+            where: { businessId: id },
+            select: { key: true },
+          })
+        ).map((f) => f.key);
+
+        let remainingSlots = 15 - activeCount;
+        for (const tmpl of targetIndustry.fieldTemplates) {
+          if (!existingKeys.includes(tmpl.key) && remainingSlots > 0) {
+            await this.prisma.productFieldDefinition.create({
+              data: {
+                businessId: id,
+                key: tmpl.key,
+                label: tmpl.label,
+                dataType: tmpl.dataType,
+                required: tmpl.required,
+                options: tmpl.options as any,
+                order: tmpl.order,
+                searchable: tmpl.searchable,
+                showInPos: tmpl.showInPos,
+                isActive: true,
+              },
+            });
+            remainingSlots--;
+          }
+        }
+      }
+    }
+
     const updated = await this.prisma.business.update({
       where: { id },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.type !== undefined && { type: dto.type }),
+        ...(dto.industryId !== undefined && { industryId: dto.industryId }),
         ...(dto.logoUrl !== undefined && { logoUrl: dto.logoUrl }),
         ...(dto.latitude !== undefined && { latitude: dto.latitude }),
         ...(dto.longitude !== undefined && { longitude: dto.longitude }),

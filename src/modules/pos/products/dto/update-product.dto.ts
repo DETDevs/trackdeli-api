@@ -68,4 +68,7 @@ export class UpdateProductDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  attributes?: Record<string, any>;
 }

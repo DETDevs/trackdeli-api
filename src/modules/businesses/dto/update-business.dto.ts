@@ -15,6 +15,10 @@ export class UpdateBusinessDto {
   @MaxLength(50)
   type?: string;
 
+  @IsOptional()
+  @IsString()
+  industryId?: string;
+
   @IsUrl()
   @IsOptional()
   logoUrl?: string;

@@ -29,6 +29,10 @@ export class CreateBusinessSuperAdminDto {
   @IsString()
   type?: string;
 
+  @IsOptional()
+  @IsString()
+  industryId?: string;
+
   @IsString()
   @IsOptional()
   whatsappNumber?: string;

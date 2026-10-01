@@ -10,12 +10,14 @@ import { TablesModule } from './tables/tables.module';
 import { OfflineModule } from './offline/offline.module';
 import { CreditModule } from './credit/credit.module';
 import { WaitersModule } from './waiters/waiters.module';
+import { ProductFieldsModule } from './product-fields/product-fields.module';
 
 @Module({
   imports: [
     CategoriesModule,
     SuppliersModule,
     ProductsModule,
+    ProductFieldsModule,
     SalesModule,
     CashRegisterModule,
     ReportsModule,
@@ -25,5 +27,6 @@ import { WaitersModule } from './waiters/waiters.module';
     CreditModule,
     WaitersModule,
   ],
+  exports: [ProductFieldsModule],
 })
 export class PosModule {}
