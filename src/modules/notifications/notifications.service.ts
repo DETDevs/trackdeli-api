@@ -337,10 +337,22 @@ export class NotificationsService implements OnModuleInit {
     });
 
     // Si se solicita awaitDirect (ej. confirmación inmediata para marcar autoSent),
-    // procesar de forma directa y retornar el estado final registrado
+    // procesar de forma directa con límite de 3.5s para jamás bloquear el endpoint ni ralentizar la API
     if (dto.awaitDirect) {
       try {
-        await this.processor.processNotification(log.id, false);
+        const timeoutPromise = new Promise<'TIMEOUT'>((resolve) =>
+          setTimeout(() => resolve('TIMEOUT'), 3500),
+        );
+        const result = await Promise.race([
+          this.processor.processNotification(log.id, false),
+          timeoutPromise,
+        ]);
+
+        if (result === 'TIMEOUT') {
+          this.logger.warn(
+            `[NotificationsService] Procesamiento directo de log ${log.id} excedió 3.5s. Continuando en segundo plano sin bloquear.`,
+          );
+        }
       } catch (procErr: any) {
         this.logger.error(
           `[NotificationsService] Error en procesamiento directo de notificación ${log.id}: ${procErr.message}`,

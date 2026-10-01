@@ -38,19 +38,36 @@ export class WhatsAppChannel {
     const phoneId = this.configService.get<string>('WHATSAPP_PHONE_NUMBER_ID');
     const version = this.configService.get<string>('WHATSAPP_API_VERSION') || 'v21.0';
 
-    this.accessToken = token && token.trim() !== '' ? token.trim() : null;
-    this.phoneNumberId = phoneId && phoneId.trim() !== '' ? phoneId.trim() : null;
+    let cleanToken = token ? token.trim().replace(/^['"]|['"]$/g, '') : null;
+    if (cleanToken && cleanToken.toLowerCase().startsWith('bearer ')) {
+      cleanToken = cleanToken.slice(7).trim();
+    }
+    const cleanPhoneId = phoneId ? phoneId.trim().replace(/^['"]|['"]$/g, '') : null;
+
+    this.accessToken = cleanToken && cleanToken !== '' ? cleanToken : null;
+    this.phoneNumberId = cleanPhoneId && cleanPhoneId !== '' ? cleanPhoneId : null;
     this.apiVersion = version.trim().startsWith('v') ? version.trim() : `v${version.trim()}`;
 
     if (this.accessToken && this.phoneNumberId) {
       this.logger.log(
-        `[WhatsAppChannel] Meta Cloud API configurada en modo REAL (Phone ID: ${this.phoneNumberId}, Versión: ${this.apiVersion}).`,
+        `[WhatsAppChannel] Meta Cloud API configurada en modo REAL (Phone ID: ${this.phoneNumberId}, Versión: ${this.apiVersion}, TokenLen: ${this.accessToken.length}).`,
       );
     } else {
       this.logger.warn(
-        '[WhatsAppChannel] Credenciales de Meta Cloud API no configuradas (WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID). Los envíos se registrarán en modo SIMULADO.',
+        `[WhatsAppChannel] Credenciales de Meta Cloud API incompletas (hasToken=${Boolean(this.accessToken)}, hasPhoneId=${Boolean(this.phoneNumberId)}). Los envíos se registrarán en modo SIMULADO.`,
       );
     }
+  }
+
+  getConfigInfo() {
+    return {
+      configured: Boolean(this.accessToken && this.phoneNumberId),
+      hasToken: Boolean(this.accessToken),
+      tokenLength: this.accessToken ? this.accessToken.length : 0,
+      tokenPrefix: this.accessToken ? this.accessToken.substring(0, 7) + '...' : null,
+      phoneNumberId: this.phoneNumberId,
+      apiVersion: this.apiVersion,
+    };
   }
 
   /**
@@ -230,22 +247,44 @@ export class WhatsAppChannel {
 
       const url = `https://graph.facebook.com/${this.apiVersion}/${this.phoneNumberId}/messages`;
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.accessToken}`,
-        },
-        body: JSON.stringify(payload),
-      });
+      this.logger.log(
+        `[WhatsAppChannel] 📤 Enviando WhatsApp a Meta: URL=${url}, to=${cleanTo}, template=${templateName || 'none'}`,
+      );
+      this.logger.log(
+        `[WhatsAppChannel] 📦 Payload completo Meta: ${JSON.stringify(payload)}`,
+      );
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+      const startTime = Date.now();
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.accessToken}`,
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      const durationMs = Date.now() - startTime;
       const responseBody = await response.json().catch(() => null);
+
+      this.logger.log(
+        `[WhatsAppChannel] 📥 Meta respuesta (${durationMs}ms): HTTP ${response.status} ${response.statusText}. Body: ${JSON.stringify(responseBody)}`,
+      );
 
       if (!response.ok) {
         const errorMsg = this.formatMetaError(responseBody, response.status);
 
         this.logger.error(
-          `[WhatsAppChannel] ⚠ Error Meta Cloud API enviando a "${cleanTo}": ${errorMsg}`,
+          `[WhatsAppChannel] ⚠ Error Meta Cloud API (${response.status}) enviando a "${cleanTo}": ${errorMsg} - Raw: ${JSON.stringify(responseBody)}`,
         );
         Sentry.captureMessage(`[WhatsAppChannel] Meta Cloud API Error: ${errorMsg}`, {
           level: 'error',
@@ -263,7 +302,7 @@ export class WhatsAppChannel {
         responseBody?.messages?.[0]?.id || responseBody?.id || undefined;
 
       this.logger.log(
-        `[WhatsAppChannel] ✓ WhatsApp enviado exitosamente vía Meta Cloud API a "${cleanTo}". ID: ${messageId}`,
+        `[WhatsAppChannel] ✓ WhatsApp enviado exitosamente vía Meta Cloud API a "${cleanTo}" en ${durationMs}ms. ID: ${messageId}`,
       );
       Sentry.logger.info(`[WhatsAppChannel] ✓ WhatsApp enviado vía Meta Cloud API a "${cleanTo}"`, {
         to: cleanTo,
@@ -278,8 +317,13 @@ export class WhatsAppChannel {
         messageId,
       };
     } catch (err: any) {
+      const isAbort = err.name === 'AbortError';
+      const errorMsg = isAbort
+        ? 'Timeout de 6s esperando respuesta de Meta Cloud API'
+        : err.message || 'Error desconocido de conexión con Meta Cloud API';
+
       this.logger.error(
-        `[WhatsAppChannel] ⚠ Excepción enviando WhatsApp a "${cleanTo}": ${err.message}`,
+        `[WhatsAppChannel] ⚠ Excepción enviando WhatsApp a "${cleanTo}": ${errorMsg}`,
         err.stack,
       );
       Sentry.captureException(err, {
@@ -294,7 +338,7 @@ export class WhatsAppChannel {
       return {
         success: false,
         simulated: false,
-        error: err.message || 'Error desconocido de conexión con Meta Cloud API',
+        error: errorMsg,
       };
     }
   }

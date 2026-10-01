@@ -6,9 +6,37 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { Public } from '../../common/decorators/public.decorator';
 
+import { WhatsAppChannel } from './channels/whatsapp.channel';
+
 @Controller('notifications')
 export class NotificationsController {
-  constructor(private readonly notificationsService: NotificationsService) {}
+  constructor(
+    private readonly notificationsService: NotificationsService,
+    private readonly whatsappChannel: WhatsAppChannel,
+  ) {}
+
+  @Get('diagnostic')
+  @Public()
+  async getDiagnostic() {
+    const config = this.whatsappChannel.getConfigInfo();
+    const lastLogs = await this.notificationsService.getNotificationLogs({ take: 10 });
+    return {
+      status: 'ok',
+      whatsappConfig: config,
+      recentLogs: lastLogs.map((l) => ({
+        id: l.id,
+        channel: l.channel,
+        event: l.event,
+        recipient: l.recipientContact,
+        status: l.status,
+        errorMessage: l.errorMessage,
+        wamid: (l.metadata as any)?.wamid || null,
+        metadata: l.metadata,
+        createdAt: l.createdAt,
+        sentAt: l.sentAt,
+      })),
+    };
+  }
 
   @Post('device-token')
   @Roles(UserRole.REPARTIDOR, UserRole.ENCARGADO, UserRole.SUPERADMIN)
