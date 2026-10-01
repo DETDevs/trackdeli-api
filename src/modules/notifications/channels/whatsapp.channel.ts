@@ -92,20 +92,30 @@ export class WhatsAppChannel {
   async queryWaba(wabaId = '1453312026366922'): Promise<any> {
     if (!this.accessToken) return null;
     try {
-      const [numbersRes, templatesRes] = await Promise.all([
+      const [numbersRes, templatesRes, debugRes] = await Promise.all([
         fetch(`https://graph.facebook.com/${this.apiVersion}/${wabaId}/phone_numbers`, {
           headers: { Authorization: `Bearer ${this.accessToken}` },
         }),
         fetch(`https://graph.facebook.com/${this.apiVersion}/${wabaId}/message_templates`, {
           headers: { Authorization: `Bearer ${this.accessToken}` },
         }),
+        fetch(`https://graph.facebook.com/${this.apiVersion}/debug_token?input_token=${this.accessToken}`, {
+          headers: { Authorization: `Bearer ${this.accessToken}` },
+        }).catch(() => null),
       ]);
 
       const numbers = await numbersRes.json().catch(() => null);
       const templates = await templatesRes.json().catch(() => null);
+      const tokenDebug = debugRes ? await debugRes.json().catch(() => null) : null;
 
       return {
         wabaId,
+        tokenDebug: tokenDebug?.data ? {
+          app_id: tokenDebug.data.app_id,
+          type: tokenDebug.data.type,
+          scopes: tokenDebug.data.scopes,
+          granular_scopes: tokenDebug.data.granular_scopes,
+        } : tokenDebug,
         numbersStatus: numbersRes.status,
         numbers,
         templatesStatus: templatesRes.status,
