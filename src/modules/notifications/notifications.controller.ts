@@ -1,4 +1,4 @@
-import { Controller, Post, Delete, Get, Patch, Body } from '@nestjs/common';
+import { Controller, Post, Delete, Get, Patch, Body, Query } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
@@ -17,11 +17,12 @@ export class NotificationsController {
 
   @Get('diagnostic')
   @Public()
-  async getDiagnostic() {
+  async getDiagnostic(@Query('wabaId') queryWabaId?: string) {
+    const targetWabaId = queryWabaId?.trim() || '1453312026366922';
     const config = this.whatsappChannel.getConfigInfo();
-    const [metaPhoneStatus, wabaNumbers, lastLogs] = await Promise.all([
+    const [metaPhoneStatus, wabaInfo, lastLogs] = await Promise.all([
       this.whatsappChannel.verifyMetaPhoneStatus(),
-      this.whatsappChannel.getWabaPhoneNumbers(),
+      this.whatsappChannel.queryWaba(targetWabaId),
       this.notificationsService.getNotificationLogs({ take: 10 }),
     ]);
 
@@ -29,7 +30,7 @@ export class NotificationsController {
       status: 'ok',
       whatsappConfig: config,
       metaPhoneStatus,
-      wabaNumbers,
+      wabaInfo,
       recentLogs: lastLogs.map((l) => ({
         id: l.id,
         channel: l.channel,

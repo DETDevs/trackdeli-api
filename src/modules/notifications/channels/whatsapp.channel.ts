@@ -89,17 +89,32 @@ export class WhatsAppChannel {
     }
   }
 
-  async getWabaPhoneNumbers(wabaId = '2314197736047823'): Promise<any> {
+  async queryWaba(wabaId = '1453312026366922'): Promise<any> {
     if (!this.accessToken) return null;
     try {
-      const url = `https://graph.facebook.com/${this.apiVersion}/${wabaId}/phone_numbers`;
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${this.accessToken}` },
-      });
-      const data = await res.json().catch(() => null);
+      const [numbersRes, templatesRes] = await Promise.all([
+        fetch(`https://graph.facebook.com/${this.apiVersion}/${wabaId}/phone_numbers`, {
+          headers: { Authorization: `Bearer ${this.accessToken}` },
+        }),
+        fetch(`https://graph.facebook.com/${this.apiVersion}/${wabaId}/message_templates`, {
+          headers: { Authorization: `Bearer ${this.accessToken}` },
+        }),
+      ]);
+
+      const numbers = await numbersRes.json().catch(() => null);
+      const templates = await templatesRes.json().catch(() => null);
+
       return {
-        httpStatus: res.status,
-        data,
+        wabaId,
+        numbersStatus: numbersRes.status,
+        numbers,
+        templatesStatus: templatesRes.status,
+        templates: templates?.data?.map((t: any) => ({
+          name: t.name,
+          status: t.status,
+          language: t.language,
+          category: t.category,
+        })) || templates,
       };
     } catch (err: any) {
       return { error: err.message };
