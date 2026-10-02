@@ -776,14 +776,22 @@ export class SuperAdminService {
       throw new NotFoundException('Negocio no encontrado');
     }
 
+    let targetIndustry: any = null;
+    let updatePosVertical = dto.posVertical;
+
     if (dto.industryId !== undefined && dto.industryId !== business.industryId) {
       if (dto.industryId !== null) {
-        const targetIndustry = await this.prisma.industry.findUnique({
+        targetIndustry = await this.prisma.industry.findUnique({
           where: { id: dto.industryId },
           include: { fieldTemplates: { orderBy: { order: 'asc' } } },
         });
         if (!targetIndustry) {
           throw new NotFoundException(`La industria '${dto.industryId}' no existe`);
+        }
+
+        // Si no se proporcionó posVertical explícitamente, tomamos el de la industria
+        if (updatePosVertical === undefined) {
+          updatePosVertical = targetIndustry.posVertical;
         }
 
         const activeCount = await this.prisma.productFieldDefinition.count({
@@ -816,6 +824,9 @@ export class SuperAdminService {
             remainingSlots--;
           }
         }
+      } else {
+        // Si se quita la industria, se podría opcionalmente resetear usesVariants/tracksBatches
+        // pero por ahora lo dejamos intacto.
       }
     }
 
@@ -842,8 +853,19 @@ export class SuperAdminService {
         ...(dto.altCommissionRate !== undefined && { altCommissionRate: dto.altCommissionRate }),
         ...(dto.altCommissionDistanceKm !== undefined && { altCommissionDistanceKm: dto.altCommissionDistanceKm }),
         ...(dto.dispatchTimeoutMin !== undefined && { dispatchTimeoutMin: dto.dispatchTimeoutMin }),
+        ...(updatePosVertical !== undefined && { posVertical: updatePosVertical }),
+        ...(targetIndustry !== null && { usesVariants: targetIndustry.usesVariants }),
+        ...(targetIndustry !== null && { tracksBatches: targetIndustry.tracksBatches }),
       },
     });
+
+    if (updatePosVertical !== undefined) {
+      await this.prisma.businessProductSubscription.updateMany({
+        where: { businessId: id, productType: BusinessProductType.POS },
+        data: { posVertical: updatePosVertical },
+      });
+    }
+
     this.logger.log(`[updateBusiness] OK negocio actualizado id=${id}, businessType=${updated.businessType}`);
     return updated;
   }
