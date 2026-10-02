@@ -93,6 +93,31 @@ export class ProductsImportService {
     return !row || row.every((c) => c === null || c === undefined || String(c).trim() === '');
   }
 
+  private isEqual(a: any, b: any): boolean {
+    if (a === b) return true;
+    if (a == null && b == null) return true; // loose equality checks null == undefined
+    if (a == null || b == null) return false;
+    
+    // Normalize dates to YYYY-MM-DD
+    if (typeof a === 'string' && /^\d{4}-\d{2}-\d{2}/.test(a)) a = a.substring(0, 10);
+    if (typeof b === 'string' && /^\d{4}-\d{2}-\d{2}/.test(b)) b = b.substring(0, 10);
+    
+    // Normalize number vs string
+    if (typeof a === 'number' && typeof b === 'string') return a === Number(b);
+    if (typeof b === 'number' && typeof a === 'string') return b === Number(a);
+
+    if (typeof a === 'object' && typeof b === 'object') {
+      const keysA = Object.keys(a);
+      const keysB = Object.keys(b);
+      if (keysA.length !== keysB.length) return false;
+      for (const k of keysA) {
+        if (!this.isEqual(a[k], b[k])) return false;
+      }
+      return true;
+    }
+    return a === b;
+  }
+
   async getTargets(businessId: string): Promise<ImportTarget[]> {
     const fields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: true },
@@ -196,7 +221,7 @@ export class ProductsImportService {
     for (let i = 0; i < headers.length; i++) {
       const h = headers[i];
       if (!h) continue;
-      const colName = `col_\${i}`;
+      const colName = `col_${i}`;
       const normH = this.normalizeStr(h);
       let matchedTarget = '';
 
@@ -260,10 +285,11 @@ export class ProductsImportService {
         rows.push(row.values as any[]);
       });
       rows = rows.map(r => {
-        const arr = [...r];
+        const arr = Array.isArray(r) ? [...r] : Object.values(r);
         arr.shift();
         return arr;
       });
+      // console.log("EXCEL ROWS:", rows);
     }
 
     const dataRows = rows.slice(headerRow);
@@ -275,6 +301,7 @@ export class ProductsImportService {
     
     const targets = await this.getTargets(businessId);
     const targetMap = new Map(targets.map(t => [t.id, t]));
+    
     
     const activeFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: true },
@@ -312,23 +339,22 @@ export class ProductsImportService {
       if (this.isRowEmpty(row)) continue;
       const rowNum = headerRow + rIdx + 1;
       
-      const payload: any = { core: {}, dynamic: {}, appendDesc: [] };
+      const payload: any = { core: { taxIncluded: false, trackStock: true, isActive: true }, dynamic: {}, appendDesc: [] };
       let rowError = null;
 
       for (let cIdx = 0; cIdx < headers.length; cIdx++) {
         const h = headers[cIdx];
         if (!h) continue;
-        const colKey = `col_\${cIdx}`;
+        const colKey = `col_${cIdx}`;
         const mapConf = mapping[colKey];
         if (!mapConf || mapConf.target === 'ignore') continue;
-        
         const rawVal = row[cIdx];
         const valStr = typeof rawVal === 'object' && rawVal instanceof Date 
             ? rawVal.toISOString()
             : rawVal !== undefined && rawVal !== null ? String(rawVal).trim() : '';
 
         if (mapConf.target === 'append_description') {
-          if (valStr) payload.appendDesc.push(`\${h}: \${valStr}`);
+          if (valStr) payload.appendDesc.push(`${h}: ${valStr}`);
           continue;
         }
 
@@ -337,10 +363,26 @@ export class ProductsImportService {
 
         let parsedVal: any = valStr;
         if (valStr !== '') {
-          if (tgt.dataType === 'NUMBER') {
+          if (tgt.id === 'stock' || tgt.id === 'minStock' || tgt.id === 'maxStock') {
+             parsedVal = this.parseTolerantNumber(valStr);
+             if (isNaN(parsedVal) || !Number.isInteger(parsedVal)) {
+               rowError = `Columna '${h}': debe ser un número entero.`;
+               break;
+             }
+             if (parsedVal < 0) {
+               rowError = `Columna '${h}': no puede ser negativo.`;
+               break;
+             }
+          } else if (tgt.id === 'price' || tgt.id === 'cost') {
+             parsedVal = this.parseTolerantNumber(valStr);
+             if (isNaN(parsedVal) || parsedVal < 0) {
+               rowError = `Columna '${h}': debe ser un número mayor o igual a 0.`;
+               break;
+             }
+          } else if (tgt.dataType === 'NUMBER') {
             parsedVal = this.parseTolerantNumber(valStr);
             if (isNaN(parsedVal)) {
-              rowError = `Columna '\${h}': debe ser un número.`;
+              rowError = `Columna '${h}': debe ser un número.`;
               break;
             }
           } else if (tgt.dataType === 'BOOLEAN') {
@@ -349,49 +391,34 @@ export class ProductsImportService {
           } else if (tgt.dataType === 'DATE') {
             let d = new Date(valStr);
             if (isNaN(d.getTime())) {
-              // Excel serial date fallback
               const num = Number(valStr);
               if (!isNaN(num)) {
-                d = new Date((num - (25567 + 2)) * 86400 * 1000); // approximate Excel to JS epoch
+                d = new Date((num - (25567 + 2)) * 86400 * 1000);
               }
             }
             if (isNaN(d.getTime())) {
-              rowError = `Columna '\${h}': formato de fecha inválido.`;
+              rowError = `Columna '${h}': formato de fecha inválido.`;
               break;
             }
-            parsedVal = d.toISOString();
+            parsedVal = d.toISOString().split('T')[0];
           } else if (tgt.dataType === 'SELECT' && tgt.options) {
              const canonic = tgt.options.find(o => this.normalizeStr(o) === this.normalizeStr(valStr));
              if (!canonic) {
-               rowError = `Valor '\${valStr}' no está en las opciones permitidas de '\${h}'.`;
+               rowError = `Valor '${valStr}' no está en las opciones permitidas de '${h}'.`;
                break;
              }
              parsedVal = canonic;
-          } else if (tgt.id === 'stock' || tgt.id === 'minStock' || tgt.id === 'maxStock') {
-             parsedVal = this.parseTolerantNumber(valStr);
-             if (isNaN(parsedVal) || !Number.isInteger(parsedVal)) {
-               rowError = `Columna '\${h}': debe ser un número entero.`;
-               break;
-             }
-             if (parsedVal < 0) {
-               rowError = `Columna '\${h}': no puede ser negativo.`;
-               break;
-             }
-          } else if (tgt.id === 'price' || tgt.id === 'cost') {
-             parsedVal = this.parseTolerantNumber(valStr);
-             if (isNaN(parsedVal) || parsedVal < 0) {
-               rowError = `Columna '\${h}': debe ser un número mayor o igual a 0.`;
-               break;
-             }
           }
         } else {
           parsedVal = undefined;
         }
 
-        if (tgt.kind === 'core') payload.core[tgt.id] = parsedVal;
-        else payload.dynamic[tgt.id] = parsedVal;
+        if (parsedVal !== undefined) {
+          if (tgt.kind === 'core') payload.core[tgt.id] = parsedVal;
+          else payload.dynamic[tgt.id] = parsedVal;
+        }
       }
-
+      
       if (rowError) {
         result.errors.push({ row: rowNum, column: '', message: rowError });
         continue;
@@ -434,7 +461,7 @@ export class ProductsImportService {
         const supName = payload.core.supplierId.trim();
         const sup = supplierByName.get(this.normalizeStr(supName));
         if (!sup) {
-          result.warnings.push({ row: rowNum, column: 'supplierId', message: `Proveedor '\${supName}' no encontrado. Se dejó vacío.` });
+          result.warnings.push({ row: rowNum, column: 'supplierId', message: `Proveedor '${supName}' no encontrado. Se dejó vacío.` });
           payload.core.supplierId = null;
         } else {
           payload.core.supplierId = sup.id;
@@ -457,7 +484,22 @@ export class ProductsImportService {
              stockDiff = coreUpdate.stock - existing.stock;
           }
           
-          toUpdate.push({ id: existing.id, rowNum, data: { ...coreUpdate, attributes: mergedAttrs }, stockDiff, oldStock: existing.stock });
+          let isUnchanged = true;
+          for (const k of Object.keys(coreUpdate)) {
+            if (!this.isEqual(coreUpdate[k], (existing as any)[k])) {
+              isUnchanged = false;
+              break;
+            }
+          }
+          if (isUnchanged && !this.isEqual(mergedAttrs, existingAttrs)) {
+            isUnchanged = false;
+          }
+
+          if (isUnchanged) {
+            result.unchanged++;
+          } else {
+            toUpdate.push({ id: existing.id, rowNum, data: { ...coreUpdate, attributes: mergedAttrs }, stockDiff, oldStock: existing.stock });
+          }
         } else {
           toCreate.push({ rowNum, data: { ...payload.core, attributes: mergedAttrs, businessId } });
         }
@@ -564,7 +606,7 @@ export class ProductsImportService {
     ];
     for (const t of targets) {
       let typeStr = t.dataType;
-      if (t.dataType === 'SELECT') typeStr = `Opciones: \${t.options?.join(', ')}`;
+      if (t.dataType === 'SELECT') typeStr = `Opciones: ${t.options?.join(', ')}`;
       if (t.dataType === 'BOOLEAN') typeStr = 'SI / NO';
       wsHelp.addRow({ col: t.label, req: t.required ? 'Sí' : 'No', type: typeStr, desc: '...' });
     }
@@ -592,7 +634,7 @@ export class ProductsImportService {
         if (t.kind === 'core') {
            if (t.id === 'categoryId') row[t.id] = p.category?.name || '';
            else if (t.id === 'supplierId') row[t.id] = p.supplier?.name || '';
-           else if (t.id === 'sku' || t.id === 'barcode') row[t.id] = p[t.id] ? `'\${p[t.id]}` : '';
+           else if (t.id === 'sku' || t.id === 'barcode') row[t.id] = p[t.id] ? `'${p[t.id]}` : '';
            else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive') {
              row[t.id] = (p as any)[t.id] ? 'SI' : 'NO';
            } else {
@@ -605,7 +647,7 @@ export class ProductsImportService {
         }
 
         if (typeof row[t.id] === 'string' && /^[=+\-@]/.test(row[t.id])) {
-          row[t.id] = `'\${row[t.id]}`;
+          row[t.id] = `'${row[t.id]}`;
         }
       }
       ws.addRow(row);
