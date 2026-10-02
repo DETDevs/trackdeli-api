@@ -97,6 +97,9 @@ export class SuperAdminService {
             renewalCanceledAt: true,
           },
         },
+        industry: {
+          select: { id: true, code: true, name: true },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -164,6 +167,11 @@ export class SuperAdminService {
         pricingZones: (b as any).pricingZones ?? null,
         whatsappNumber: (b as any).whatsappNumber ?? null,
         whatsappDisplay: (b as any).whatsappDisplay ?? null,
+        industryId: b.industryId,
+        industry: b.industry,
+        usesVariants: b.usesVariants,
+        tracksBatches: b.tracksBatches,
+        posVertical: b.posVertical,
         createdAt: b.createdAt,
         _count: {
           orders: b._count.orders,
@@ -218,6 +226,9 @@ export class SuperAdminService {
           },
         },
         productSubscriptions: true,
+        industry: {
+          select: { id: true, code: true, name: true },
+        },
       },
     });
 
@@ -337,6 +348,11 @@ export class SuperAdminService {
       pricingZones: (business as any).pricingZones ?? null,
       whatsappNumber: (business as any).whatsappNumber ?? null,
       whatsappDisplay: (business as any).whatsappDisplay ?? null,
+      industryId: business.industryId,
+      industry: business.industry,
+      usesVariants: business.usesVariants,
+      tracksBatches: business.tracksBatches,
+      posVertical: business.posVertical,
       createdAt: business.createdAt,
       encargados: business.users,
       riders,
