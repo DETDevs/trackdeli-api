@@ -349,9 +349,13 @@ export class ProductsImportService {
         const mapConf = mapping[colKey];
         if (!mapConf || mapConf.target === 'ignore') continue;
         const rawVal = row[cIdx];
-        const valStr = typeof rawVal === 'object' && rawVal instanceof Date 
+        let valStr = typeof rawVal === 'object' && rawVal instanceof Date 
             ? rawVal.toISOString()
             : rawVal !== undefined && rawVal !== null ? String(rawVal).trim() : '';
+
+        if (valStr.startsWith("'") && valStr.length > 1 && /^[=+\-@]/.test(valStr.charAt(1))) {
+          valStr = valStr.substring(1);
+        }
 
         if (mapConf.target === 'append_description') {
           if (valStr) payload.appendDesc.push(`${h}: ${valStr}`);
@@ -619,7 +623,12 @@ export class ProductsImportService {
     const ws = workbook.addWorksheet('Productos');
     const targets = await this.getTargets(businessId);
     
-    ws.columns = targets.map(t => ({ header: t.label, key: t.id, width: 20 }));
+    ws.columns = targets.map(t => ({ 
+      header: t.label, 
+      key: t.id, 
+      width: 20,
+      style: (t.id === 'sku' || t.id === 'barcode') ? { numFmt: '@' } : undefined
+    }));
 
     const products = await this.prisma.product.findMany({
       where: { businessId },
@@ -634,7 +643,7 @@ export class ProductsImportService {
         if (t.kind === 'core') {
            if (t.id === 'categoryId') row[t.id] = p.category?.name || '';
            else if (t.id === 'supplierId') row[t.id] = p.supplier?.name || '';
-           else if (t.id === 'sku' || t.id === 'barcode') row[t.id] = p[t.id] ? `'${p[t.id]}` : '';
+           else if (t.id === 'sku' || t.id === 'barcode') row[t.id] = p[t.id] || '';
            else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive') {
              row[t.id] = (p as any)[t.id] ? 'SI' : 'NO';
            } else {

@@ -101,10 +101,10 @@ describe('ProductsImportService', () => {
       // 1. Prepare an Excel file buffer with 3 products
       const wb = new exceljs.Workbook();
       const ws = wb.addWorksheet('Sheet1');
-      ws.addRow(['Nombre', 'Precio', 'Stock', 'Talla', 'Es Frágil', 'Vencimiento']);
-      ws.addRow(['Prod A', 'C$ 100', 10, 'm', 'sí', '2026-12-31']);
-      ws.addRow(['Prod B', '250.50', 5, 'xl', 'no', '44197']); // 44197 = 2021-01-01
-      ws.addRow(['Prod C', '1,250.00', '20', 'S', '1', '2027-01-01']);
+      ws.addRow(['Nombre', 'Precio', 'Stock', 'Talla', 'Es Frágil', 'Vencimiento', 'SKU']);
+      ws.addRow(['Prod A', 'C$ 100', 10, 'm', 'sí', '2026-12-31', 'POM-288']);
+      ws.addRow(['Prod B', '250.50', 5, 'xl', 'no', '44197', '=-123']); // 44197 = 2021-01-01
+      ws.addRow(['Prod C', '1,250.00', '20', 'S', '1', '2027-01-01', '@TEST']);
       
       const buffer = await wb.xlsx.writeBuffer();
       
@@ -115,6 +115,7 @@ describe('ProductsImportService', () => {
         col_3: { target: 'talla' },
         col_4: { target: 'is_fragile' },
         col_5: { target: 'vencimiento' },
+        col_6: { target: 'sku' },
       };
 
       // 2. First Import
