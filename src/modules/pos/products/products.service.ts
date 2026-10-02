@@ -69,6 +69,15 @@ export class ProductsService {
     const activeMap = new Map(activeFields.map((f) => [f.key, f]));
     const inactiveMap = new Map(inactiveFields.map((f) => [f.key, f]));
 
+    return this.validateAttributesSync(incomingAttributes, existingAttributes, activeMap, inactiveMap);
+  }
+
+  public validateAttributesSync(
+    incomingAttributes: Record<string, any>,
+    existingAttributes: Record<string, any> | undefined,
+    activeMap: Map<string, any>,
+    inactiveMap: Map<string, any>,
+  ): Record<string, any> {
     // 1. Claves desconocidas
     for (const key of Object.keys(incomingAttributes)) {
       if (!activeMap.has(key)) {
@@ -89,7 +98,7 @@ export class ProductsService {
     }
 
     // 2. Campos requeridos (solo para campos activos)
-    for (const field of activeFields) {
+    for (const field of activeMap.values()) {
       if (field.required) {
         const value =
           incomingAttributes[field.key] !== undefined
