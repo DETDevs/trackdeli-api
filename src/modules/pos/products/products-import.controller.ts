@@ -4,16 +4,16 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
-import { JwtAuthGuard } from '../../../../src/common/guards/jwt-auth.guard';
-import { PosGuard } from '../../../../src/common/guards/pos.guard';
-import { RolesGuard } from '../../../../src/common/guards/roles.guard';
-import { Roles } from '../../../../src/common/decorators/roles.decorator';
+import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { PosGuard } from '../../../common/guards/pos.guard';
+import { RolesGuard } from '../../../common/guards/roles.guard';
+import { Roles } from '../../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
-import { CurrentUser } from '../../../../src/common/decorators/current-user.decorator';
-import { JwtPayload } from '../../../../src/common/types/jwt-payload.interface';
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
+import { JwtPayload } from '../../../common/types/jwt-payload.interface';
 import { resolveBusinessId } from '../pos.utils';
 import { ProductsImportService } from './products-import.service';
-import { SkipMembershipCheck } from '../../../../src/common/decorators/skip-membership.decorator';
+import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
