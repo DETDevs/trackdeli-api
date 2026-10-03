@@ -46,6 +46,8 @@ const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.INCIDENCIA,
 ];
 
+import { UserQuotaService } from '../users/user-quota.service';
+
 @Injectable()
 export class SuperAdminService {
   private readonly logger = new Logger(SuperAdminService.name);
@@ -53,6 +55,7 @@ export class SuperAdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
+    private readonly userQuotaService: UserQuotaService,
   ) { }
 
   async getBusinesses() {
@@ -325,6 +328,8 @@ export class SuperAdminService {
       (s) => s.productType === BusinessProductType.CITAS && s.status === BusinessProductStatus.ACTIVE,
     );
 
+    const userUsage = await this.userQuotaService.getUsage(id);
+
     return {
       id: business.id,
       name: business.name,
@@ -368,6 +373,7 @@ export class SuperAdminService {
       hasTrackDeli: hasTrackDeliActive,
       hasCarteraCobro: hasCarteraActive,
       hasCitas: hasCitasActive,
+      userUsage,
     };
   }
 
@@ -1942,5 +1948,17 @@ export class SuperAdminService {
       deactivatedProductsCount,
     };
   }
-
+  async updateUserQuota(id: string, extraUserSlots: number) {
+    if (typeof extraUserSlots !== 'number' || extraUserSlots < 0) {
+      throw new BadRequestException('El número de cupos extra debe ser un entero positivo o cero');
+    }
+    
+    await this.prisma.business.update({
+      where: { id },
+      data: { extraUserSlots },
+    });
+    
+    this.logger.log(`[updateUserQuota] Se actualizaron los cupos extra del negocio ${id} a ${extraUserSlots}`);
+    return this.userQuotaService.getUsage(id);
+  }
 }

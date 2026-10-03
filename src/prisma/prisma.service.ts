@@ -1148,6 +1148,10 @@ WHERE a."customerId" = c."id"
           );`,
         },
         {
+          name: 'Columna businesses.extraUserSlots',
+          sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "extraUserSlots" INTEGER NOT NULL DEFAULT 0;`,
+        },
+        {
           name: 'Índice notification_logs.businessId',
           sql: `CREATE INDEX IF NOT EXISTS "notification_logs_businessId_idx" ON "notification_logs"("businessId");`,
         },

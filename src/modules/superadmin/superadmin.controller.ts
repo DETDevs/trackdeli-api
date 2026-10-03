@@ -182,5 +182,15 @@ export class SuperAdminController {
   async getDebtors() {
     return this.commissionsService.getDebtors();
   }
+
+  @Get('businesses/:id/user-quota')
+  async getUserQuota(@Param('id') id: string) {
+    return this.superAdminService.getBusinessById(id).then(b => b.userUsage);
+  }
+
+  @Patch('businesses/:id/user-quota')
+  async updateUserQuota(@Param('id') id: string, @Body() dto: { extraUserSlots: number }) {
+    return this.superAdminService.updateUserQuota(id, dto.extraUserSlots);
+  }
 }
 

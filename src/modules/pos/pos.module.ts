@@ -11,6 +11,8 @@ import { OfflineModule } from './offline/offline.module';
 import { CreditModule } from './credit/credit.module';
 import { WaitersModule } from './waiters/waiters.module';
 import { ProductFieldsModule } from './product-fields/product-fields.module';
+import { PosUsersController } from './users/pos-users.controller';
+import { PosUsersService } from './users/pos-users.service';
 
 @Module({
   imports: [
@@ -27,6 +29,8 @@ import { ProductFieldsModule } from './product-fields/product-fields.module';
     CreditModule,
     WaitersModule,
   ],
+  controllers: [PosUsersController],
+  providers: [PosUsersService],
   exports: [ProductFieldsModule],
 })
 export class PosModule {}

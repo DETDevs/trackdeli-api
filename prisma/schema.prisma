@@ -256,6 +256,7 @@ model Business {
   industry                Industry?     @relation(fields: [industryId], references: [id])
   usesVariants            Boolean       @default(false)
   tracksBatches           Boolean       @default(false)
+  extraUserSlots          Int           @default(0)
 
   createdAt              DateTime     @default(now())
 

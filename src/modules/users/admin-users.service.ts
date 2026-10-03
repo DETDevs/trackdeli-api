@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
   Logger,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UserRole } from '@prisma/client';
@@ -13,6 +14,8 @@ import { AdminResetPasswordDto } from './dto/admin-reset-password.dto';
 import { AdminUpdateStatusDto } from './dto/admin-update-status.dto';
 import { AdminListUsersQueryDto } from './dto/admin-list-users-query.dto';
 import * as bcrypt from 'bcrypt';
+
+import { UserQuotaService } from './user-quota.service';
 
 const USER_SELECT_FIELDS = {
   id: true,
@@ -31,7 +34,10 @@ const USER_SELECT_FIELDS = {
 export class AdminUsersService {
   private readonly logger = new Logger(AdminUsersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly userQuotaService: UserQuotaService,
+  ) {}
 
   async createUser(currentUser: JwtPayload, dto: AdminCreateUserDto) {
     let targetBusinessId: string | null = null;
@@ -51,6 +57,16 @@ export class AdminUsersService {
       targetRole = dto.role;
     } else {
       throw new ForbiddenException('No tienes permisos para crear usuarios');
+    }
+
+    if (targetBusinessId && (targetRole === UserRole.ENCARGADO || targetRole === UserRole.CAJERO || targetRole === UserRole.WAITER)) {
+      if (targetRole === UserRole.WAITER) {
+        const business = await this.prisma.business.findUnique({ where: { id: targetBusinessId } });
+        if (business?.posVertical !== 'RESTAURANTE') {
+          throw new UnprocessableEntityException('El rol WAITER solo está permitido para negocios con vertical RESTAURANTE.');
+        }
+      }
+      await this.userQuotaService.checkQuota(targetBusinessId);
     }
 
     const normalizedEmail = dto.email.trim().toLowerCase();
