@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, Global } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 import { AdminUsersService } from './admin-users.service';
@@ -7,6 +7,7 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { UploadModule } from '../upload/upload.module';
 import { UserQuotaService } from './user-quota.service';
 
+@Global()
 @Module({
   imports: [PrismaModule, UploadModule],
   controllers: [UsersController, AdminUsersController],
