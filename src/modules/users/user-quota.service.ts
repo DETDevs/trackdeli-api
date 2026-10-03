@@ -22,7 +22,7 @@ export class UserQuotaService {
       where: {
         businessId,
         isActive: true,
-        role: { in: [UserRole.ENCARGADO, UserRole.CAJERO, UserRole.WAITER] },
+        role: { in: [UserRole.ENCARGADO, UserRole.CAJERO] },
       },
     });
 
@@ -38,9 +38,14 @@ export class UserQuotaService {
     const usage = await this.getUsage(businessId);
     if (usage.remaining <= 0) {
       throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
         code: 'USER_LIMIT_REACHED',
-        message: `Se ha alcanzado el límite de usuarios activos para este negocio (${usage.limit}). Desactive un usuario existente o solicite al superadmin una ampliación de cupos.`,
-        usage
+        message: {
+          code: 'USER_LIMIT_REACHED',
+          message: `Se ha alcanzado el límite de usuarios activos para este negocio (${usage.limit}). Desactive un usuario existente o solicite al superadmin una ampliación de cupos.`,
+          usage
+        }
       });
     }
   }

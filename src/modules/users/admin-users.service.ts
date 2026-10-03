@@ -59,14 +59,12 @@ export class AdminUsersService {
       throw new ForbiddenException('No tienes permisos para crear usuarios');
     }
 
-    if (targetBusinessId && (targetRole === UserRole.ENCARGADO || targetRole === UserRole.CAJERO || targetRole === UserRole.WAITER)) {
-      if (targetRole === UserRole.WAITER) {
-        const business = await this.prisma.business.findUnique({ where: { id: targetBusinessId } });
-        if (business?.posVertical !== 'RESTAURANTE') {
-          throw new UnprocessableEntityException('El rol WAITER solo está permitido para negocios con vertical RESTAURANTE.');
-        }
-      }
+    if (targetBusinessId && (targetRole === UserRole.ENCARGADO || targetRole === UserRole.CAJERO)) {
       await this.userQuotaService.checkQuota(targetBusinessId);
+    }
+
+    if (targetRole === UserRole.WAITER) {
+      throw new UnprocessableEntityException('Los meseros se gestionan en su propia sección (pos_waiters). No se permite crear rol WAITER en User.');
     }
 
     const normalizedEmail = dto.email.trim().toLowerCase();

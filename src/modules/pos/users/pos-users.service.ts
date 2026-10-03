@@ -41,17 +41,13 @@ export class PosUsersService {
   }
 
   async createUser(businessId: string, dto: any, creatorId: string) {
-    if (dto.role !== UserRole.CAJERO && dto.role !== UserRole.WAITER) {
-      throw new UnprocessableEntityException('Rol inválido. Solo puede crear CAJERO o WAITER.');
+    if (dto.role === UserRole.WAITER) {
+      throw new UnprocessableEntityException('Los meseros se gestionan en su propia sección (pos_waiters). No se permite crear rol WAITER aquí.');
+    }
+    if (dto.role !== UserRole.CAJERO) {
+      throw new UnprocessableEntityException('Rol inválido. Solo puede crear CAJERO.');
     }
     
-    if (dto.role === UserRole.WAITER) {
-      const business = await this.prisma.business.findUnique({ where: { id: businessId } });
-      if (business?.posVertical !== 'RESTAURANTE') {
-        throw new UnprocessableEntityException('El rol WAITER solo está permitido para negocios con vertical RESTAURANTE.');
-      }
-    }
-
     await this.quotaService.checkQuota(businessId);
 
     const tempPassword = this.generateTempPassword();
@@ -100,14 +96,11 @@ export class PosUsersService {
       if (user.id === updaterId) {
         throw new ForbiddenException('No puede cambiar su propio rol');
       }
-      if (dto.role !== UserRole.CAJERO && dto.role !== UserRole.WAITER) {
-        throw new UnprocessableEntityException('Solo puede cambiar el rol a CAJERO o WAITER');
-      }
       if (dto.role === UserRole.WAITER) {
-        const business = await this.prisma.business.findUnique({ where: { id: businessId } });
-        if (business?.posVertical !== 'RESTAURANTE') {
-          throw new UnprocessableEntityException('El rol WAITER solo está permitido para negocios con vertical RESTAURANTE.');
-        }
+        throw new UnprocessableEntityException('Los meseros se gestionan en su propia sección (pos_waiters). No se permite asignar rol WAITER aquí.');
+      }
+      if (dto.role !== UserRole.CAJERO) {
+        throw new UnprocessableEntityException('Solo puede cambiar el rol a CAJERO');
       }
       updateData.role = dto.role;
     }

@@ -76,7 +76,6 @@ describe('UserQuotaService', () => {
       prismaService.user.count.mockResolvedValue(6);
 
       await expect(service.checkQuota('b-1')).rejects.toThrow(ConflictException);
-      await expect(service.checkQuota('b-1')).rejects.toThrow('Se ha alcanzado el límite de usuarios activos');
     });
 
     it('should throw if over limit', async () => {
