@@ -54,9 +54,15 @@ export class AuditService {
 
   private sanitizeSecrets(obj: any): any {
     if (!obj) return obj;
-    if (typeof obj !== 'object') return obj;
+    let jsonSafeObj = obj;
+    try {
+      jsonSafeObj = JSON.parse(JSON.stringify(obj));
+    } catch {
+      jsonSafeObj = obj;
+    }
+    if (typeof jsonSafeObj !== 'object' || jsonSafeObj === null) return jsonSafeObj;
     
-    const clone = Array.isArray(obj) ? [...obj] : { ...obj };
+    const clone = Array.isArray(jsonSafeObj) ? [...jsonSafeObj] : { ...jsonSafeObj };
     const secretKeys = ['password', 'passwordHash', 'token', 'pin', 'managerPassword', 'accessToken', 'refreshToken'];
     
     for (const key of Object.keys(clone)) {

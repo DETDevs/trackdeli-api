@@ -26,6 +26,12 @@ export class CountedBreakdownDto {
   @IsNumber()
   @Min(0)
   OTHER?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  CASH_USD?: number;
 }
 
 export class CloseCashRegisterDto {
@@ -34,6 +40,12 @@ export class CloseCashRegisterDto {
   @IsNumber()
   @Min(0)
   closingCash?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  closingCashUsd?: number;
 
   @IsOptional()
   @Type(() => Number)

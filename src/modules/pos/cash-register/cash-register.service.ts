@@ -7,6 +7,7 @@ import { MovementType, Prisma } from "@prisma/client";
 import { getSalePaymentBreakdown } from "./pos-cash.utils";
 import { PoliciesService } from '../policies/policies.service';
 import { AuditService } from '../audit/audit.service';
+import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 
 @Injectable()
 export class CashRegisterService {
@@ -16,6 +17,7 @@ export class CashRegisterService {
     private readonly prisma: PrismaService,
     private readonly policiesService: PoliciesService,
     private readonly auditService: AuditService,
+    private readonly exchangeRateService: ExchangeRateService,
   ) {}
 
   private formatRegister(register: any) {
@@ -27,33 +29,49 @@ export class CashRegisterService {
       reason: m.concept || m.reason || 'Movimiento de caja',
       concept: m.concept || m.reason || 'Movimiento de caja',
       amount: Number(new Prisma.Decimal(m.amount != null ? m.amount.toString() : 0).toDecimalPlaces(2)),
+      currency: m.currency || 'NIO',
+      exchangeRate: m.exchangeRate != null ? Number(new Prisma.Decimal(m.exchangeRate.toString()).toDecimalPlaces(4)) : 1,
+      amountBase: m.amountBase != null ? Number(new Prisma.Decimal(m.amountBase.toString()).toDecimalPlaces(2)) : 0,
     }));
 
     const completedSales = (register.sales || []).filter((s: any) => s.status === 'COMPLETED');
     let decCalculatedSales = new Prisma.Decimal(0);
-    let decCalculatedCash = new Prisma.Decimal(0);
+    let decCalculatedCashNio = new Prisma.Decimal(0);
+    let decCalculatedCashUsd = new Prisma.Decimal(0);
+    let decCalculatedCashUsdBase = new Prisma.Decimal(0);
     let decCalculatedCard = new Prisma.Decimal(0);
     let decCalculatedTransfer = new Prisma.Decimal(0);
 
     for (const s of completedSales) {
       decCalculatedSales = decCalculatedSales.plus(new Prisma.Decimal(s.total != null ? s.total.toString() : 0));
       const breakdown = getSalePaymentBreakdown(s);
-      decCalculatedCash = decCalculatedCash.plus(new Prisma.Decimal(breakdown.cash));
+      decCalculatedCashNio = decCalculatedCashNio.plus(new Prisma.Decimal(breakdown.cashNio));
+      decCalculatedCashUsd = decCalculatedCashUsd.plus(new Prisma.Decimal(breakdown.cashUsd));
+      decCalculatedCashUsdBase = decCalculatedCashUsdBase.plus(new Prisma.Decimal(breakdown.cashUsdBase));
       decCalculatedCard = decCalculatedCard.plus(new Prisma.Decimal(breakdown.card));
       decCalculatedTransfer = decCalculatedTransfer.plus(new Prisma.Decimal(breakdown.transfer));
     }
 
-    let decMovementsIn = new Prisma.Decimal(0);
-    let decMovementsOut = new Prisma.Decimal(0);
+    let decMovementsInNio = new Prisma.Decimal(0);
+    let decMovementsOutNio = new Prisma.Decimal(0);
+    let decMovementsInUsd = new Prisma.Decimal(0);
+    let decMovementsOutUsd = new Prisma.Decimal(0);
+
     for (const m of movements) {
       const amt = new Prisma.Decimal(m.amount != null ? m.amount.toString() : 0);
-      if (m.type === 'IN') decMovementsIn = decMovementsIn.plus(amt);
-      if (m.type === 'OUT') decMovementsOut = decMovementsOut.plus(amt);
+      const isUsd = (m.currency || '').toUpperCase() === 'USD';
+      if (isUsd) {
+        if (m.type === 'IN') decMovementsInUsd = decMovementsInUsd.plus(amt);
+        if (m.type === 'OUT') decMovementsOutUsd = decMovementsOutUsd.plus(amt);
+      } else {
+        if (m.type === 'IN') decMovementsInNio = decMovementsInNio.plus(amt);
+        if (m.type === 'OUT') decMovementsOutNio = decMovementsOutNio.plus(amt);
+      }
     }
 
     const decInitialAmount = new Prisma.Decimal(register.openingCash ?? register.initialAmount ?? 0);
 
-    const liveExpectedCash = decInitialAmount.plus(decCalculatedCash).plus(decMovementsIn).minus(decMovementsOut);
+    const liveExpectedCash = decInitialAmount.plus(decCalculatedCashNio).plus(decMovementsInNio).minus(decMovementsOutNio);
     const expectedCashDec = register.expectedCash != null ? new Prisma.Decimal(register.expectedCash.toString()) : liveExpectedCash;
 
     const actualAmountDec = register.closingCash != null 
@@ -63,6 +81,13 @@ export class CashRegisterService {
     const differenceDec = register.difference != null 
       ? new Prisma.Decimal(register.difference.toString()) 
       : (actualAmountDec != null ? actualAmountDec.minus(expectedCashDec) : null);
+
+    const liveExpectedCashUsd = decCalculatedCashUsd.plus(decMovementsInUsd).minus(decMovementsOutUsd);
+    const expectedCashUsdDec = register.expectedCashUsd != null ? new Prisma.Decimal(register.expectedCashUsd.toString()) : liveExpectedCashUsd;
+    const closingCashUsdDec = register.closingCashUsd != null ? new Prisma.Decimal(register.closingCashUsd.toString()) : null;
+    const differenceUsdDec = register.differenceUsd != null 
+      ? new Prisma.Decimal(register.differenceUsd.toString()) 
+      : (closingCashUsdDec != null ? closingCashUsdDec.minus(expectedCashUsdDec) : null);
 
     const cashierInfo = register.cashier
       ? { id: register.cashier.id, name: register.cashier.name }
@@ -75,20 +100,30 @@ export class CashRegisterService {
     const expectedCash = Number(expectedCashDec.toDecimalPlaces(2));
     const actualAmount = actualAmountDec != null ? Number(actualAmountDec.toDecimalPlaces(2)) : null;
     const difference = differenceDec != null ? Number(differenceDec.toDecimalPlaces(2)) : null;
+
+    const expectedCashUsd = Number(expectedCashUsdDec.toDecimalPlaces(2));
+    const closingCashUsd = closingCashUsdDec != null ? Number(closingCashUsdDec.toDecimalPlaces(2)) : null;
+    const differenceUsd = differenceUsdDec != null ? Number(differenceUsdDec.toDecimalPlaces(2)) : null;
+
     const totalSales = register.totalSales != null 
       ? Number(new Prisma.Decimal(register.totalSales.toString()).toDecimalPlaces(2)) 
       : Number(decCalculatedSales.toDecimalPlaces(2));
     const totalCash = register.totalCash != null 
       ? Number(new Prisma.Decimal(register.totalCash.toString()).toDecimalPlaces(2)) 
-      : Number(decCalculatedCash.toDecimalPlaces(2));
+      : Number(decCalculatedCashNio.toDecimalPlaces(2));
+    const totalCashUsd = register.totalCashUsd != null 
+      ? Number(new Prisma.Decimal(register.totalCashUsd.toString()).toDecimalPlaces(2)) 
+      : Number(decCalculatedCashUsd.toDecimalPlaces(2));
     const totalCard = register.totalCard != null 
       ? Number(new Prisma.Decimal(register.totalCard.toString()).toDecimalPlaces(2)) 
       : Number(decCalculatedCard.toDecimalPlaces(2));
     const totalTransfer = register.totalTransfer != null 
       ? Number(new Prisma.Decimal(register.totalTransfer.toString()).toDecimalPlaces(2)) 
       : Number(decCalculatedTransfer.toDecimalPlaces(2));
-    const movementsIn = Number(decMovementsIn.toDecimalPlaces(2));
-    const movementsOut = Number(decMovementsOut.toDecimalPlaces(2));
+    const movementsIn = Number(decMovementsInNio.toDecimalPlaces(2));
+    const movementsOut = Number(decMovementsOutNio.toDecimalPlaces(2));
+    const movementsInUsd = Number(decMovementsInUsd.toDecimalPlaces(2));
+    const movementsOutUsd = Number(decMovementsOutUsd.toDecimalPlaces(2));
 
     return {
       ...register,
@@ -99,12 +134,18 @@ export class CashRegisterService {
       closingCash: actualAmount,
       actualAmount,
       difference,
+      expectedCashUsd,
+      closingCashUsd,
+      differenceUsd,
       totalSales,
       totalCash,
+      totalCashUsd,
       totalCard,
       totalTransfer,
       movementsIn,
       movementsOut,
+      movementsInUsd,
+      movementsOutUsd,
       salesCount: completedSales.length || register._count?.sales || 0,
       openedById: register.cashierId || register.openedById,
       openedBy: cashierInfo,
@@ -263,8 +304,16 @@ export class CashRegisterService {
       closingCashDec = new Prisma.Decimal(dto.closingCash ?? dto.actualAmount ?? dto.amount ?? 0);
     }
 
+    let closingCashUsdDec: Prisma.Decimal | null = null;
+    if (dto.closingCashUsd !== undefined && dto.closingCashUsd !== null) {
+      closingCashUsdDec = new Prisma.Decimal(dto.closingCashUsd.toString());
+    } else if (dto.counted && dto.counted.CASH_USD !== undefined) {
+      closingCashUsdDec = new Prisma.Decimal(dto.counted.CASH_USD.toString());
+    }
+
     let totalSalesDec = new Prisma.Decimal(0);
     let totalCashDec = new Prisma.Decimal(0);
+    let totalCashUsdDec = new Prisma.Decimal(0);
     let totalCardDec = new Prisma.Decimal(0);
     let totalTransferDec = new Prisma.Decimal(0);
     let totalOtherDec = new Prisma.Decimal(0);
@@ -273,28 +322,45 @@ export class CashRegisterService {
     for (const s of register.sales) {
       totalSalesDec = totalSalesDec.plus(new Prisma.Decimal(s.total != null ? s.total.toString() : 0));
       const breakdown = getSalePaymentBreakdown(s);
-      totalCashDec = totalCashDec.plus(new Prisma.Decimal(breakdown.cash));
+      totalCashDec = totalCashDec.plus(new Prisma.Decimal(breakdown.cashNio));
+      totalCashUsdDec = totalCashUsdDec.plus(new Prisma.Decimal(breakdown.cashUsd));
       totalCardDec = totalCardDec.plus(new Prisma.Decimal(breakdown.card));
       totalTransferDec = totalTransferDec.plus(new Prisma.Decimal(breakdown.transfer));
       totalOtherDec = totalOtherDec.plus(new Prisma.Decimal(breakdown.other));
       totalCreditDec = totalCreditDec.plus(new Prisma.Decimal(breakdown.credit));
     }
 
-    let movementsInDec = new Prisma.Decimal(0);
-    let movementsOutDec = new Prisma.Decimal(0);
+    let movementsInNioDec = new Prisma.Decimal(0);
+    let movementsOutNioDec = new Prisma.Decimal(0);
+    let movementsInUsdDec = new Prisma.Decimal(0);
+    let movementsOutUsdDec = new Prisma.Decimal(0);
+
     for (const m of register.movements) {
       const amt = new Prisma.Decimal(m.amount != null ? m.amount.toString() : 0);
-      if (m.type === "ENTRADA" || (m as any).type === "IN") {
-        movementsInDec = movementsInDec.plus(amt);
-      }
-      if (m.type === "SALIDA" || (m as any).type === "OUT") {
-        movementsOutDec = movementsOutDec.plus(amt);
+      const isUsd = (m.currency || '').toUpperCase() === 'USD';
+      if (isUsd) {
+        if (m.type === "ENTRADA" || (m as any).type === "IN") {
+          movementsInUsdDec = movementsInUsdDec.plus(amt);
+        }
+        if (m.type === "SALIDA" || (m as any).type === "OUT") {
+          movementsOutUsdDec = movementsOutUsdDec.plus(amt);
+        }
+      } else {
+        if (m.type === "ENTRADA" || (m as any).type === "IN") {
+          movementsInNioDec = movementsInNioDec.plus(amt);
+        }
+        if (m.type === "SALIDA" || (m as any).type === "OUT") {
+          movementsOutNioDec = movementsOutNioDec.plus(amt);
+        }
       }
     }
 
     const openingCashDec = new Prisma.Decimal(register.openingCash != null ? register.openingCash.toString() : 0);
-    const expectedCashDec = openingCashDec.plus(totalCashDec).plus(movementsInDec).minus(movementsOutDec);
+    const expectedCashDec = openingCashDec.plus(totalCashDec).plus(movementsInNioDec).minus(movementsOutNioDec);
     const differenceDec = closingCashDec.minus(expectedCashDec);
+
+    const expectedCashUsdDec = totalCashUsdDec.plus(movementsInUsdDec).minus(movementsOutUsdDec);
+    const differenceUsdDec = closingCashUsdDec != null ? closingCashUsdDec.minus(expectedCashUsdDec) : null;
 
     const tolerance = new Prisma.Decimal(policies.cashDifferenceTolerance != null ? policies.cashDifferenceTolerance.toString() : 0);
     if (differenceDec.abs().greaterThan(tolerance) && !dto.notes && !dto.reason) {
@@ -322,8 +388,12 @@ export class CashRegisterService {
         closingCash: closingCashDec,
         expectedCash: expectedCashDec,
         difference: differenceDec,
+        closingCashUsd: closingCashUsdDec,
+        expectedCashUsd: expectedCashUsdDec,
+        differenceUsd: differenceUsdDec,
         totalSales: totalSalesDec,
         totalCash: totalCashDec,
+        totalCashUsd: totalCashUsdDec,
         totalCard: totalCardDec,
         totalTransfer: totalTransferDec,
         notes: finalNotes,
@@ -402,15 +472,29 @@ export class CashRegisterService {
       throw new BadRequestException({ statusCode: 400, code: 'INVALID_AMOUNT', message: 'El monto debe ser mayor a cero' });
     }
 
-    this.logger.log(`[addMovement] register=${register.id} tipo=${movementType} monto=${amount}`);
+    const currency = (dto.currency || 'NIO').toUpperCase();
+    let exchangeRate = new Prisma.Decimal(1);
+    const amountDec = new Prisma.Decimal(dto.amount.toString());
+    let amountBaseDec = amountDec;
+
+    if (currency === 'USD') {
+      const activeRate = await this.exchangeRateService.getCurrentRate(businessId);
+      exchangeRate = new Prisma.Decimal(activeRate.rate.toString());
+      amountBaseDec = amountDec.times(exchangeRate).toDecimalPlaces(2);
+    }
+
+    this.logger.log(`[addMovement] register=${register.id} tipo=${movementType} monto=${amount} ${currency}`);
     const movement = await this.prisma.cashMovement.create({
       data: {
         businessId,
         cashRegisterId: register.id,
         userId,
         type: movementType,
-        amount,
+        amount: amountDec,
         concept,
+        currency,
+        exchangeRate,
+        amountBase: amountBaseDec,
       },
       include: {
         user: { select: { id: true, name: true } },
@@ -433,6 +517,9 @@ export class CashRegisterService {
       rawType: movement.type,
       reason: movement.concept,
       amount: Number(movement.amount),
+      currency: movement.currency,
+      exchangeRate: Number(new Prisma.Decimal(movement.exchangeRate.toString()).toDecimalPlaces(4)),
+      amountBase: Number(new Prisma.Decimal(movement.amountBase.toString()).toDecimalPlaces(2)),
     };
   }
 
@@ -449,27 +536,41 @@ export class CashRegisterService {
 
     let totalSalesDec = new Prisma.Decimal(0);
     let totalCashDec = new Prisma.Decimal(0);
+    let totalCashUsdDec = new Prisma.Decimal(0);
+    let totalCashUsdBaseDec = new Prisma.Decimal(0);
     let totalCardDec = new Prisma.Decimal(0);
     let totalTransferDec = new Prisma.Decimal(0);
 
     for (const s of register.sales) {
       totalSalesDec = totalSalesDec.plus(new Prisma.Decimal(s.total != null ? s.total.toString() : 0));
       const breakdown = getSalePaymentBreakdown(s);
-      totalCashDec = totalCashDec.plus(new Prisma.Decimal(breakdown.cash));
+      totalCashDec = totalCashDec.plus(new Prisma.Decimal(breakdown.cashNio));
+      totalCashUsdDec = totalCashUsdDec.plus(new Prisma.Decimal(breakdown.cashUsd));
+      totalCashUsdBaseDec = totalCashUsdBaseDec.plus(new Prisma.Decimal(breakdown.cashUsdBase));
       totalCardDec = totalCardDec.plus(new Prisma.Decimal(breakdown.card));
       totalTransferDec = totalTransferDec.plus(new Prisma.Decimal(breakdown.transfer));
     }
 
-    let movementsInDec = new Prisma.Decimal(0);
-    let movementsOutDec = new Prisma.Decimal(0);
+    let movementsInNioDec = new Prisma.Decimal(0);
+    let movementsOutNioDec = new Prisma.Decimal(0);
+    let movementsInUsdDec = new Prisma.Decimal(0);
+    let movementsOutUsdDec = new Prisma.Decimal(0);
+
     for (const m of register.movements) {
       const amt = new Prisma.Decimal(m.amount != null ? m.amount.toString() : 0);
-      if (m.type === "ENTRADA" || (m as any).type === "IN") movementsInDec = movementsInDec.plus(amt);
-      if (m.type === "SALIDA" || (m as any).type === "OUT") movementsOutDec = movementsOutDec.plus(amt);
+      const isUsd = (m.currency || '').toUpperCase() === 'USD';
+      if (isUsd) {
+        if (m.type === "ENTRADA" || (m as any).type === "IN") movementsInUsdDec = movementsInUsdDec.plus(amt);
+        if (m.type === "SALIDA" || (m as any).type === "OUT") movementsOutUsdDec = movementsOutUsdDec.plus(amt);
+      } else {
+        if (m.type === "ENTRADA" || (m as any).type === "IN") movementsInNioDec = movementsInNioDec.plus(amt);
+        if (m.type === "SALIDA" || (m as any).type === "OUT") movementsOutNioDec = movementsOutNioDec.plus(amt);
+      }
     }
 
     const openingCashDec = new Prisma.Decimal(register.openingCash != null ? register.openingCash.toString() : 0);
-    const currentCashDec = openingCashDec.plus(totalCashDec).plus(movementsInDec).minus(movementsOutDec);
+    const currentCashDec = openingCashDec.plus(totalCashDec).plus(movementsInNioDec).minus(movementsOutNioDec);
+    const currentCashUsdDec = totalCashUsdDec.plus(movementsInUsdDec).minus(movementsOutUsdDec);
 
     const formatted = this.formatRegister(register);
 
@@ -478,11 +579,15 @@ export class CashRegisterService {
       summary: {
         totalSales: Number(totalSalesDec.toDecimalPlaces(2)),
         totalCash: Number(totalCashDec.toDecimalPlaces(2)),
+        totalCashUsd: Number(totalCashUsdDec.toDecimalPlaces(2)),
         totalCard: Number(totalCardDec.toDecimalPlaces(2)),
         totalTransfer: Number(totalTransferDec.toDecimalPlaces(2)),
-        movementsIn: Number(movementsInDec.toDecimalPlaces(2)),
-        movementsOut: Number(movementsOutDec.toDecimalPlaces(2)),
+        movementsIn: Number(movementsInNioDec.toDecimalPlaces(2)),
+        movementsOut: Number(movementsOutNioDec.toDecimalPlaces(2)),
+        movementsInUsd: Number(movementsInUsdDec.toDecimalPlaces(2)),
+        movementsOutUsd: Number(movementsOutUsdDec.toDecimalPlaces(2)),
         currentCash: Number(currentCashDec.toDecimalPlaces(2)),
+        currentCashUsd: Number(currentCashUsdDec.toDecimalPlaces(2)),
         salesCount: register.sales.length,
       },
     };

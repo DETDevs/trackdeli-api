@@ -18,4 +18,8 @@ export class CashMovementDto {
   @IsOptional()
   @IsString()
   reason?: string;
+
+  @IsOptional()
+  @IsString()
+  currency?: string;
 }

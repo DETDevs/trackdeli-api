@@ -44,10 +44,11 @@ export class PaymentDto {
   @IsEnum(PosPaymentMethod)
   method: PosPaymentMethod;
 
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
-  amount: number;
+  amount?: number;
 
   @IsOptional()
   @Type(() => Number)
@@ -58,6 +59,15 @@ export class PaymentDto {
   @IsOptional()
   @IsString()
   reference?: string;
+
+  @IsOptional()
+  @IsString()
+  currency?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  exchangeRate?: number;
 }
 
 export class CreateSaleDto {

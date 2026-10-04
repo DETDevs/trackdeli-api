@@ -5,9 +5,10 @@ import { PrismaModule } from '../../../prisma/prisma.module';
 import { PoliciesModule } from '../policies/policies.module';
 import { AuditModule } from '../audit/audit.module';
 import { PosPermissionsModule } from '../permissions/permissions.module';
+import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 
 @Module({
-  imports: [PrismaModule, PoliciesModule, AuditModule, PosPermissionsModule],
+  imports: [PrismaModule, PoliciesModule, AuditModule, PosPermissionsModule, ExchangeRateModule],
   controllers: [CashRegisterController],
   providers: [CashRegisterService],
   exports: [CashRegisterService],

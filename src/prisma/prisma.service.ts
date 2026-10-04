@@ -234,8 +234,54 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             END IF;
           END $$;`
         },
-        
-        
+        {
+          name: 'Tabla pos_exchange_rates',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_exchange_rates" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "base" VARCHAR(10) NOT NULL DEFAULT 'NIO',
+            "quote" VARCHAR(10) NOT NULL DEFAULT 'USD',
+            "rate" NUMERIC(10,4) NOT NULL,
+            "source" VARCHAR(20) NOT NULL DEFAULT 'MANUAL',
+            "effectiveFrom" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "setById" TEXT,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_exchange_rates_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_exchange_rates_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_exchange_rates_setById_fkey" FOREIGN KEY ("setById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE
+          )`
+        },
+        {
+          name: 'Indices pos_exchange_rates',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_exchange_rates_businessId_quote_effectiveFrom_idx') THEN
+              CREATE INDEX "pos_exchange_rates_businessId_quote_effectiveFrom_idx" ON "pos_exchange_rates"("businessId", "quote", "effectiveFrom");
+            END IF;
+          END $$;`
+        },
+        {
+          name: 'Columnas 113c en cash registers y movements',
+          sql: `DO $$ BEGIN
+            ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "expectedCashUsd" NUMERIC(12,2);
+            ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "closingCashUsd" NUMERIC(12,2);
+            ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "differenceUsd" NUMERIC(12,2);
+            ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "totalCashUsd" NUMERIC(12,2);
+
+            ALTER TABLE "pos_cash_movements" ADD COLUMN IF NOT EXISTS "currency" VARCHAR(10) NOT NULL DEFAULT 'NIO';
+            ALTER TABLE "pos_cash_movements" ADD COLUMN IF NOT EXISTS "exchangeRate" NUMERIC(10,4) NOT NULL DEFAULT 1;
+            ALTER TABLE "pos_cash_movements" ADD COLUMN IF NOT EXISTS "amountBase" NUMERIC(12,2) NOT NULL DEFAULT 0;
+
+            ALTER TABLE "pos_payments" ADD COLUMN IF NOT EXISTS "currency" VARCHAR(10) NOT NULL DEFAULT 'NIO';
+            ALTER TABLE "pos_payments" ADD COLUMN IF NOT EXISTS "exchangeRate" NUMERIC(10,4) NOT NULL DEFAULT 1;
+            ALTER TABLE "pos_payments" ADD COLUMN IF NOT EXISTS "amountBase" NUMERIC(12,2) NOT NULL DEFAULT 0;
+            BEGIN
+              ALTER TABLE "pos_payments" ALTER COLUMN "exchangeRate" TYPE NUMERIC(10,4);
+              ALTER TABLE "pos_payments" ALTER COLUMN "amountBase" TYPE NUMERIC(12,2);
+            EXCEPTION WHEN OTHERS THEN
+              NULL;
+            END;
+          END $$;`
+        },
         {
           name: 'Modificaciones en users para Social Login',
           sql: `DO $$ BEGIN

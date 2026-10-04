@@ -5,9 +5,10 @@ import { PrismaModule } from '../../../prisma/prisma.module';
 import { PoliciesModule } from '../policies/policies.module';
 import { PosPermissionsModule } from '../permissions/permissions.module';
 import { AuditModule } from '../audit/audit.module';
+import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 
 @Module({
-  imports: [PrismaModule, PoliciesModule, PosPermissionsModule, AuditModule],
+  imports: [PrismaModule, PoliciesModule, PosPermissionsModule, AuditModule, ExchangeRateModule],
   controllers: [SalesController],
   providers: [SalesService],
   exports: [SalesService],

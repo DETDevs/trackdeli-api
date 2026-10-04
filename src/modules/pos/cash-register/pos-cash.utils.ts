@@ -6,6 +6,9 @@ export interface SalePaymentBreakdown {
   transfer: number;
   other: number;
   credit: number;
+  cashNio: number;
+  cashUsd: number;
+  cashUsdBase: number;
 }
 
 export function getSalePaymentBreakdown(sale: any): SalePaymentBreakdown {
@@ -14,22 +17,63 @@ export function getSalePaymentBreakdown(sale: any): SalePaymentBreakdown {
   let transfer = new Prisma.Decimal(0);
   let other = new Prisma.Decimal(0);
   let credit = new Prisma.Decimal(0);
+  let cashNio = new Prisma.Decimal(0);
+  let cashUsd = new Prisma.Decimal(0);
+  let cashUsdBase = new Prisma.Decimal(0);
 
   if (sale.payments && Array.isArray(sale.payments) && sale.payments.length > 0) {
     for (const p of sale.payments) {
-      const amt = new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0);
-      if (p.method === 'EFECTIVO') cash = cash.plus(amt);
-      else if (p.method === 'TARJETA') card = card.plus(amt);
-      else if (p.method === 'TRANSFERENCIA') transfer = transfer.plus(amt);
-      else if (p.method === 'CREDITO') credit = credit.plus(amt);
-      else other = other.plus(amt);
+      const isUsd = (p.currency || '').toUpperCase() === 'USD';
+      const changeAmt = new Prisma.Decimal(p.change != null ? p.change.toString() : 0);
+
+      if (p.method === 'EFECTIVO') {
+        if (isUsd) {
+          const tenderedUsd = new Prisma.Decimal(
+            p.amountTendered != null ? p.amountTendered.toString() : (p.amount != null ? p.amount.toString() : 0)
+          );
+          const rate = new Prisma.Decimal(p.exchangeRate != null ? p.exchangeRate.toString() : 1);
+          const baseAmt = p.amountBase != null 
+            ? new Prisma.Decimal(p.amountBase.toString()) 
+            : tenderedUsd.times(rate).toDecimalPlaces(2);
+
+          cashUsd = cashUsd.plus(tenderedUsd);
+          cashUsdBase = cashUsdBase.plus(baseAmt);
+          // El vuelto siempre se da en córdobas, restando de la gaveta de NIO
+          cashNio = cashNio.minus(changeAmt);
+          // En NIO neto equivalente, entra baseAmt y sale changeAmt
+          cash = cash.plus(baseAmt.minus(changeAmt));
+        } else {
+          const tenderedNio = new Prisma.Decimal(
+            p.amountTendered != null ? p.amountTendered.toString() : (p.amount != null ? p.amount.toString() : 0)
+          );
+          const netNio = tenderedNio.minus(changeAmt);
+          cashNio = cashNio.plus(netNio);
+          cash = cash.plus(netNio);
+        }
+      } else if (p.method === 'TARJETA') {
+        const amt = new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0);
+        card = card.plus(amt);
+      } else if (p.method === 'TRANSFERENCIA') {
+        const amt = new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0);
+        transfer = transfer.plus(amt);
+      } else if (p.method === 'CREDITO') {
+        const amt = new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0);
+        credit = credit.plus(amt);
+      } else {
+        const amt = new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0);
+        other = other.plus(amt);
+      }
     }
+
     return {
       cash: Number(cash.toDecimalPlaces(2)),
       card: Number(card.toDecimalPlaces(2)),
       transfer: Number(transfer.toDecimalPlaces(2)),
       other: Number(other.toDecimalPlaces(2)),
       credit: Number(credit.toDecimalPlaces(2)),
+      cashNio: Number(cashNio.toDecimalPlaces(2)),
+      cashUsd: Number(cashUsd.toDecimalPlaces(2)),
+      cashUsdBase: Number(cashUsdBase.toDecimalPlaces(2)),
     };
   }
 
@@ -38,6 +82,7 @@ export function getSalePaymentBreakdown(sale: any): SalePaymentBreakdown {
 
   if (sale.paymentMethod === 'EFECTIVO') {
     cash = total;
+    cashNio = total;
   } else if (sale.paymentMethod === 'TARJETA') {
     card = total;
   } else if (sale.paymentMethod === 'TRANSFERENCIA') {
@@ -53,10 +98,12 @@ export function getSalePaymentBreakdown(sale: any): SalePaymentBreakdown {
       const c = new Prisma.Decimal(parseFloat(cashMatch[1]) || 0);
       const k = cardMatch ? new Prisma.Decimal(parseFloat(cardMatch[1]) || 0) : Prisma.Decimal.max(0, total.minus(c));
       cash = c;
+      cashNio = c;
       card = k;
     } else {
       const half = total.dividedBy(2).toDecimalPlaces(2);
       cash = half;
+      cashNio = half;
       card = total.minus(half);
     }
   }
@@ -67,6 +114,8 @@ export function getSalePaymentBreakdown(sale: any): SalePaymentBreakdown {
     transfer: Number(transfer.toDecimalPlaces(2)),
     other: Number(other.toDecimalPlaces(2)),
     credit: Number(credit.toDecimalPlaces(2)),
+    cashNio: Number(cashNio.toDecimalPlaces(2)),
+    cashUsd: 0,
+    cashUsdBase: 0,
   };
 }
-

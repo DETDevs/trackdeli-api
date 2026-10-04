@@ -54,6 +54,26 @@ export class PoliciesService {
         data: updates
       });
 
+      if (updates.multiCurrencyEnabled) {
+        const existingRate = await tx.posExchangeRate.findFirst({
+          where: { businessId, quote: 'USD' }
+        });
+        if (!existingRate) {
+          const { Prisma } = require('@prisma/client');
+          await tx.posExchangeRate.create({
+            data: {
+              businessId,
+              base: 'NIO',
+              quote: 'USD',
+              rate: new Prisma.Decimal('36.6243'),
+              source: 'OFICIAL',
+              effectiveFrom: new Date(),
+              setById: userId,
+            }
+          });
+        }
+      }
+
       await this.auditService.record({
         businessId,
         userId,

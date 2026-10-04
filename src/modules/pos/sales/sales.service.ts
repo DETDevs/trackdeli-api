@@ -8,6 +8,7 @@ import { CreateSaleDto } from "./dto/create-sale.dto";
 import { CancelSaleDto } from "./dto/cancel-sale.dto";
 
 import { PoliciesService } from '../policies/policies.service';
+import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 
 @Injectable()
 export class SalesService {
@@ -17,7 +18,29 @@ export class SalesService {
     private readonly prisma: PrismaService,
     private readonly businessProductsService: BusinessProductsService,
     private readonly policiesService: PoliciesService,
+    private readonly exchangeRateService: ExchangeRateService,
   ) {}
+
+  private formatSale(sale: any) {
+    if (!sale) return null;
+    return {
+      ...sale,
+      subtotal: sale.subtotal != null ? Number(new Prisma.Decimal(sale.subtotal.toString()).toDecimalPlaces(2)) : 0,
+      total: sale.total != null ? Number(new Prisma.Decimal(sale.total.toString()).toDecimalPlaces(2)) : 0,
+      discountAmount: sale.discountAmount != null ? Number(new Prisma.Decimal(sale.discountAmount.toString()).toDecimalPlaces(2)) : 0,
+      taxAmount: sale.taxAmount != null ? Number(new Prisma.Decimal(sale.taxAmount.toString()).toDecimalPlaces(2)) : 0,
+      amountPaid: sale.amountPaid != null ? Number(new Prisma.Decimal(sale.amountPaid.toString()).toDecimalPlaces(2)) : 0,
+      change: sale.change != null ? Number(new Prisma.Decimal(sale.change.toString()).toDecimalPlaces(2)) : 0,
+      payments: (sale.payments || []).map((p: any) => ({
+        ...p,
+        amount: p.amount != null ? Number(new Prisma.Decimal(p.amount.toString()).toDecimalPlaces(2)) : 0,
+        amountTendered: p.amountTendered != null ? Number(new Prisma.Decimal(p.amountTendered.toString()).toDecimalPlaces(2)) : null,
+        change: p.change != null ? Number(new Prisma.Decimal(p.change.toString()).toDecimalPlaces(2)) : 0,
+        exchangeRate: p.exchangeRate != null ? Number(new Prisma.Decimal(p.exchangeRate.toString()).toDecimalPlaces(4)) : 1,
+        amountBase: p.amountBase != null ? Number(new Prisma.Decimal(p.amountBase.toString()).toDecimalPlaces(2)) : 0,
+      })),
+    };
+  }
 
   async create(dto: CreateSaleDto, businessId: string, cashierId: string) {
     return this.prisma.$transaction(async (tx) => {
@@ -327,12 +350,56 @@ export class SalesService {
         }];
       }
 
-      let totalPaymentsDec = new Prisma.Decimal(0);
-      let totalChangeDec = new Prisma.Decimal(0);
+      let totalBaseTenderedDec = new Prisma.Decimal(0);
       let mainMethod = paymentsPayload.length === 1 ? paymentsPayload[0].method : PosPaymentMethod.MIXTO;
 
       const processedPayments = [];
       for (const p of paymentsPayload) {
+        const currency = (p.currency || business.currency || 'NIO').toUpperCase();
+
+        if (currency !== 'NIO') {
+          if (!policies.multiCurrencyEnabled) {
+            throw new BadRequestException({
+              statusCode: 400,
+              error: 'Bad Request',
+              code: 'CURRENCY_NOT_ALLOWED',
+              message: {
+                code: 'CURRENCY_NOT_ALLOWED',
+                message: 'El cobro multimoneda no está habilitado en este negocio',
+              },
+            });
+          }
+          const acceptedList = (policies.acceptedCurrencies || 'NIO')
+            .split(',')
+            .map((c) => c.trim().toUpperCase());
+          if (!acceptedList.includes(currency)) {
+            throw new BadRequestException({
+              statusCode: 400,
+              error: 'Bad Request',
+              code: 'CURRENCY_NOT_ACCEPTED',
+              message: {
+                code: 'CURRENCY_NOT_ACCEPTED',
+                message: `La moneda ${currency} no está aceptada por el negocio`,
+              },
+            });
+          }
+          if (
+            p.method === PosPaymentMethod.TARJETA ||
+            p.method === PosPaymentMethod.TRANSFERENCIA ||
+            p.method === PosPaymentMethod.CREDITO
+          ) {
+            throw new BadRequestException({
+              statusCode: 400,
+              error: 'Bad Request',
+              code: 'CURRENCY_NOT_ALLOWED_FOR_METHOD',
+              message: {
+                code: 'CURRENCY_NOT_ALLOWED_FOR_METHOD',
+                message: `El método de pago ${p.method} solo se acepta en NIO`,
+              },
+            });
+          }
+        }
+
         if (!enabledMethods.includes(p.method) && p.method !== PosPaymentMethod.CREDITO) {
           throw new BadRequestException({
             statusCode: 400,
@@ -340,30 +407,63 @@ export class SalesService {
             code: 'PAYMENT_METHOD_DISABLED',
             message: {
               code: 'PAYMENT_METHOD_DISABLED',
-              message: `El método de pago ${p.method} no está habilitado`
-            }
+              message: `El método de pago ${p.method} no está habilitado`,
+            },
           });
         }
 
-        const pAmtDec = new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0);
-        let pTenderedDec = p.amountTendered !== undefined && p.amountTendered !== null 
-          ? new Prisma.Decimal(p.amountTendered.toString()) 
-          : pAmtDec;
-        let pChangeDec = new Prisma.Decimal(0);
+        let appliedRate = new Prisma.Decimal(1);
+        if (currency === 'USD') {
+          const activeRateData = await this.exchangeRateService.getCurrentRate(businessId);
+          appliedRate = new Prisma.Decimal(activeRateData.rate.toString());
 
-        if (p.method === PosPaymentMethod.EFECTIVO) {
-           pChangeDec = pTenderedDec.minus(pAmtDec);
-           if (pChangeDec.lessThan(0)) {
-              throw new BadRequestException({
-                statusCode: 400,
-                error: 'Bad Request',
-                code: 'PAYMENT_TOTAL_MISMATCH',
-                message: { code: 'PAYMENT_TOTAL_MISMATCH', message: `Monto entregado en efectivo es menor al monto a cobrar` }
-              });
-           }
-        } else {
-           pTenderedDec = pAmtDec;
+          if (p.exchangeRate) {
+            if (dto.isOfflineSync) {
+              const isValidOffline = await this.exchangeRateService.validateOfflineRate(
+                businessId,
+                Number(p.exchangeRate),
+                dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
+              );
+              if (isValidOffline) {
+                appliedRate = new Prisma.Decimal(p.exchangeRate.toString());
+              } else {
+                hasAuditDiscrepancy = true;
+                auditNote += ` [Tasa offline ${p.exchangeRate} recalculada con vigente ${appliedRate.toFixed(4)}]`;
+              }
+            } else {
+              if (!new Prisma.Decimal(p.exchangeRate.toString()).equals(appliedRate)) {
+                hasAuditDiscrepancy = true;
+                auditNote += ` [Tasa online snapshot ignorada. Vigente: ${appliedRate.toFixed(4)}]`;
+              }
+            }
+          }
         }
+
+        let pTenderedDec: Prisma.Decimal;
+        let pAmtDec: Prisma.Decimal;
+
+        if (p.amountTendered !== undefined && p.amountTendered !== null) {
+          pTenderedDec = new Prisma.Decimal(p.amountTendered.toString());
+          pAmtDec = (p.amount !== undefined && p.amount !== null)
+            ? new Prisma.Decimal(p.amount.toString())
+            : pTenderedDec;
+        } else if (p.amount !== undefined && p.amount !== null) {
+          pAmtDec = new Prisma.Decimal(p.amount.toString());
+          pTenderedDec = pAmtDec;
+        } else {
+          pTenderedDec = new Prisma.Decimal(0);
+          pAmtDec = new Prisma.Decimal(0);
+        }
+
+        if (p.method !== PosPaymentMethod.EFECTIVO) {
+          pTenderedDec = pAmtDec;
+        }
+
+        if (currency === 'USD' && pAmtDec.greaterThan(pTenderedDec)) {
+          pAmtDec = pTenderedDec;
+        }
+
+        const amountBaseDec = pTenderedDec.times(appliedRate).toDecimalPlaces(2);
 
         if (p.method === PosPaymentMethod.TARJETA && policies.requireReferenceCard && !p.reference) {
           throw new BadRequestException({ statusCode: 400, error: 'Bad Request', code: 'PAYMENT_REFERENCE_REQUIRED', message: { code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Referencia requerida para pago con tarjeta' } });
@@ -374,34 +474,51 @@ export class SalesService {
 
         const safeReference = p.reference ? p.reference.toString().substring(0, 50).trim() : null;
 
-        totalPaymentsDec = totalPaymentsDec.plus(pAmtDec);
-        totalChangeDec = totalChangeDec.plus(pChangeDec);
+        totalBaseTenderedDec = totalBaseTenderedDec.plus(amountBaseDec);
 
         processedPayments.push({
-           method: p.method,
-           amount: pAmtDec,
-           amountTendered: pTenderedDec,
-           change: pChangeDec,
-           reference: safeReference,
-           currency: business.currency,
-           exchangeRate: 1,
-           amountBase: Number(pAmtDec.toDecimalPlaces(2)),
-           shiftId: cashRegisterId,
-           createdById: cashierId
+          method: p.method,
+          amount: pAmtDec,
+          amountTendered: pTenderedDec,
+          change: new Prisma.Decimal(0),
+          reference: safeReference,
+          currency,
+          exchangeRate: appliedRate,
+          amountBase: amountBaseDec,
+          shiftId: cashRegisterId,
+          createdById: cashierId,
         });
       }
 
       const expectedTotalDec = new Prisma.Decimal(total.toString());
-      if (!totalPaymentsDec.equals(expectedTotalDec)) {
-         throw new BadRequestException({
+      if (totalBaseTenderedDec.lessThan(expectedTotalDec)) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'PAYMENT_TOTAL_MISMATCH',
+          message: {
+            code: 'PAYMENT_TOTAL_MISMATCH',
+            message: `La suma de los pagos (${totalBaseTenderedDec.toFixed(2)}) no coincide con el total de la venta (${expectedTotalDec.toFixed(2)})`,
+          },
+        });
+      }
+
+      const totalChangeDec = totalBaseTenderedDec.minus(expectedTotalDec);
+
+      if (totalChangeDec.greaterThan(0)) {
+        const cashPayments = processedPayments.filter((p) => p.method === PosPaymentMethod.EFECTIVO);
+        if (cashPayments.length === 0) {
+          throw new BadRequestException({
             statusCode: 400,
             error: 'Bad Request',
             code: 'PAYMENT_TOTAL_MISMATCH',
             message: {
-               code: 'PAYMENT_TOTAL_MISMATCH',
-               message: `La suma de los pagos (${totalPaymentsDec.toFixed(2)}) no coincide con el total de la venta (${expectedTotalDec.toFixed(2)})`
-            }
-         });
+              code: 'PAYMENT_TOTAL_MISMATCH',
+              message: 'El vuelto solo se permite si hay pagos en efectivo',
+            },
+          });
+        }
+        cashPayments[cashPayments.length - 1].change = totalChangeDec;
       }
 
       const sale = await tx.sale.create({
@@ -424,7 +541,7 @@ export class SalesService {
           taxAmount,
           total,
           paymentMethod: mainMethod,
-          amountPaid: Number(totalPaymentsDec.plus(totalChangeDec).toDecimalPlaces(2)),
+          amountPaid: Number(totalBaseTenderedDec.toDecimalPlaces(2)),
           change: totalChangeDec,
           reference: dto.reference || null,
           notes: finalNotes || null,
@@ -432,7 +549,6 @@ export class SalesService {
         },
         include: { items: true, payments: true, cashier: { select: { name: true } }, customer: true },
       });
-
 
       if (isCredit && customerId && dueDate) {
         await tx.creditAccount.create({
@@ -474,8 +590,8 @@ export class SalesService {
         }
       }
 
-      this.logger.log(`[create] Venta: ${invoiceNumber} total=${total.toFixed(2)} metodo=${dto.paymentMethod} negocio=${businessId}`);
-      return sale;
+      this.logger.log(`[create] Venta: ${invoiceNumber} total=${total.toFixed(2)} metodo=${mainMethod} negocio=${businessId}`);
+      return this.formatSale(sale);
     });
   }
 
@@ -497,16 +613,18 @@ export class SalesService {
       }
     }
 
-    return this.prisma.sale.findMany({
+    const sales = await this.prisma.sale.findMany({
       where,
       include: {
         items: true,
         cashier: { select: { id: true, name: true } },
         cashRegister: { select: { id: true, openedAt: true } },
+        payments: true,
       },
       orderBy: { createdAt: "desc" },
       take: 200,
     });
+    return sales.map(s => this.formatSale(s));
   }
 
   async findOne(id: string, businessId: string) {
@@ -516,10 +634,11 @@ export class SalesService {
         items: { include: { product: { select: { name: true, barcode: true } } } },
         cashier: { select: { id: true, name: true } },
         cashRegister: { select: { id: true, openedAt: true } },
+        payments: true,
       },
     });
     if (!sale) throw new NotFoundException("Venta no encontrada");
-    return sale;
+    return this.formatSale(sale);
   }
 
   async cancel(id: string, businessId: string, dto: CancelSaleDto) {

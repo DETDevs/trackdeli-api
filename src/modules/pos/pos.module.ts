@@ -20,6 +20,7 @@ import { AuditModule } from './audit/audit.module';
 import { PoliciesModule } from './policies/policies.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { IdempotencyModule } from './idempotency/idempotency.module';
+import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 
 @Module({
   imports: [
@@ -40,9 +41,10 @@ import { IdempotencyModule } from './idempotency/idempotency.module';
     PoliciesModule,
     ApprovalsModule,
     IdempotencyModule,
+    ExchangeRateModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
-  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule],
+  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule],
 })
 export class PosModule {}

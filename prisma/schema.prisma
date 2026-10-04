@@ -289,6 +289,7 @@ model Business {
   inventoryDiscrepancies InventoryDiscrepancy[]
   creditAccounts   CreditAccount[]
   productFieldDefinitions ProductFieldDefinition[]
+  posExchangeRates PosExchangeRate[]
 
   // Subscripciones de Productos y Auditoría
   productSubscriptions BusinessProductSubscription[]
@@ -396,6 +397,7 @@ model User {
   stockMovements StockMovement[] @relation("UserStockMovements")
   receivedCreditPayments CreditPayment[] @relation("CreditPaymentsReceived")
   posPayments    PosPayment[]    @relation("UserPayments")
+  setExchangeRates PosExchangeRate[] @relation("UserSetExchangeRates")
 
   // Password audit relations
   passwordChangesReceived PasswordChangeLog[] @relation("PasswordChangesReceived")
@@ -962,8 +964,8 @@ model PosPayment {
   
   // Future-proofing for 113c
   currency       String           @default("NIO") @db.VarChar(10)
-  exchangeRate   Float            @default(1)
-  amountBase     Float
+  exchangeRate   Decimal          @default(1) @db.Decimal(10,4)
+  amountBase     Decimal          @default(0) @db.Decimal(12,2)
   
   shiftId        String?
   shift          CashRegister?    @relation(fields: [shiftId], references: [id])
@@ -1029,6 +1031,11 @@ model CashRegister {
   expectedCash  Decimal? @db.Decimal(12,2)
   difference    Decimal? @db.Decimal(12,2)
 
+  expectedCashUsd Decimal? @db.Decimal(12,2)
+  closingCashUsd  Decimal? @db.Decimal(12,2)
+  differenceUsd   Decimal? @db.Decimal(12,2)
+  totalCashUsd    Decimal? @db.Decimal(12,2)
+
   totalSales    Decimal? @db.Decimal(12,2)
   totalCash     Decimal? @db.Decimal(12,2)
   totalCard     Decimal? @db.Decimal(12,2)
@@ -1058,10 +1065,30 @@ model CashMovement {
   type           MovementType
   amount         Decimal @db.Decimal(12,2)
   concept        String       @db.VarChar(300)
+  currency       String       @default("NIO") @db.VarChar(10)
+  exchangeRate   Decimal      @default(1) @db.Decimal(10,4)
+  amountBase     Decimal      @default(0) @db.Decimal(12,2)
 
   createdAt      DateTime     @default(now())
 
   @@map("pos_cash_movements")
+}
+
+model PosExchangeRate {
+  id            String   @id @default(uuid())
+  businessId    String
+  business      Business @relation(fields: [businessId], references: [id])
+  base          String   @default("NIO") @db.VarChar(10)
+  quote         String   @default("USD") @db.VarChar(10)
+  rate          Decimal  @db.Decimal(10, 4)
+  source        String   @default("MANUAL") @db.VarChar(20) // OFICIAL | MANUAL
+  effectiveFrom DateTime @default(now())
+  setById       String?
+  setBy         User?    @relation("UserSetExchangeRates", fields: [setById], references: [id])
+  createdAt     DateTime @default(now())
+
+  @@index([businessId, quote, effectiveFrom])
+  @@map("pos_exchange_rates")
 }
 
 model StockMovement {
