@@ -152,6 +152,28 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           END $$;`
         },
         {
+          name: 'Trigger inmutabilidad pos_audit_logs',
+          sql: `
+            CREATE OR REPLACE FUNCTION prevent_pos_audit_log_modification()
+            RETURNS TRIGGER AS $$
+            BEGIN
+              RAISE EXCEPTION 'Updates and Deletes are not allowed on pos_audit_logs';
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DO $$ BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_trigger WHERE tgname = 'trg_prevent_pos_audit_log_modification'
+              ) THEN
+                CREATE TRIGGER trg_prevent_pos_audit_log_modification
+                BEFORE UPDATE OR DELETE ON pos_audit_logs
+                FOR EACH ROW
+                EXECUTE FUNCTION prevent_pos_audit_log_modification();
+              END IF;
+            END $$;
+          `,
+        },
+        {
           name: 'Tabla pos_approval_tokens',
           sql: `CREATE TABLE IF NOT EXISTS "pos_approval_tokens" (
             "id" TEXT NOT NULL,
