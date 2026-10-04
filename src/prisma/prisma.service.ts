@@ -556,6 +556,49 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           END $$;`
         },
         {
+          name: '113h - Ajuste de payments amount y default pos_policies.paymentMethodsEnabled',
+          sql: `DO $$ BEGIN
+            -- 1. Alinear DDL para pos_policies.paymentMethodsEnabled default
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'pos_policies' AND column_name = 'paymentMethodsEnabled') THEN
+              ALTER TABLE "pos_policies" ALTER COLUMN "paymentMethodsEnabled" SET DEFAULT 'EFECTIVO,TARJETA,TRANSFERENCIA,CREDITO,OTRO';
+            END IF;
+
+            -- 2. Corregir pagos existentes donde suma de amount <> total y el pago en efectivo tiene change > 0
+            -- Dejar amount = amount - change (y amountBase = amountBase - change)
+            UPDATE pos_payments p
+            SET 
+              amount = p.amount - p.change,
+              "amountBase" = p."amountBase" - p.change
+            FROM pos_sales s
+            WHERE p."saleId" = s.id
+              AND s.status NOT IN ('CANCELLED', 'VOIDED', 'RETURNED')
+              AND p.method = 'EFECTIVO'
+              AND p.change > 0
+              AND p.amount > p.change
+              AND (
+                SELECT SUM(p2.amount) 
+                FROM pos_payments p2 
+                WHERE p2."saleId" = s.id
+              ) <> s.total;
+
+            -- 3. Para ventas de un solo pago sin change registrado donde amount <> total, amount = total
+            UPDATE pos_payments p
+            SET 
+              amount = s.total,
+              "amountBase" = s.total
+            FROM pos_sales s
+            WHERE p."saleId" = s.id
+              AND s.status NOT IN ('CANCELLED', 'VOIDED', 'RETURNED')
+              AND (
+                SELECT COUNT(*) 
+                FROM pos_payments p2 
+                WHERE p2."saleId" = s.id
+              ) = 1
+              AND (p.change IS NULL OR p.change = 0)
+              AND p.amount <> s.total;
+          END $$;`
+        },
+        {
           name: 'Modificaciones en users para Social Login',
           sql: `DO $$ BEGIN
             ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "authProvider" "AuthProvider" NOT NULL DEFAULT 'EMAIL';

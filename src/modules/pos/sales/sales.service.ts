@@ -398,10 +398,11 @@ export class SalesService {
       let paymentsPayload = dto.payments;
       if (!paymentsPayload || paymentsPayload.length === 0) {
         // Fallback for older clients
+        const tendered = dto.amountPaid != null ? dto.amountPaid : total;
         paymentsPayload = [{
           method: paymentMethod || PosPaymentMethod.EFECTIVO,
-          amount: isCredit ? total : (dto.amountPaid ?? total),
-          amountTendered: dto.amountPaid,
+          amount: total,
+          amountTendered: tendered,
           reference: dto.reference
         }];
       }
@@ -574,7 +575,24 @@ export class SalesService {
             },
           });
         }
-        cashPayments[cashPayments.length - 1].change = totalChangeDec;
+
+        let remainingChange = new Prisma.Decimal(totalChangeDec.toString());
+        for (let i = cashPayments.length - 1; i >= 0 && remainingChange.greaterThan(0); i--) {
+          const cp = cashPayments[i];
+          const cpTenderedBase = cp.amountTendered.times(cp.exchangeRate).toDecimalPlaces(2);
+          const changeForThis = Prisma.Decimal.min(remainingChange, cpTenderedBase);
+
+          cp.change = changeForThis;
+          const appliedBase = cpTenderedBase.minus(changeForThis);
+          cp.amountBase = appliedBase;
+          cp.amount = appliedBase.dividedBy(cp.exchangeRate).toDecimalPlaces(2);
+
+          remainingChange = remainingChange.minus(changeForThis);
+        }
+      } else {
+        for (const p of processedPayments) {
+          p.amountBase = p.amount.times(p.exchangeRate).toDecimalPlaces(2);
+        }
       }
 
       const sale = await tx.sale.create({

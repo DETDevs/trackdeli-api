@@ -203,7 +203,7 @@ export class OfflineService {
         const syncResult = await this.prisma.$transaction(async (tx) => {
           const business = await tx.business.findUnique({
             where: { id: businessId },
-            select: { invoicePrefix: true, invoiceCounter: true, taxRate: true },
+            select: { invoicePrefix: true, invoiceCounter: true, taxRate: true, currency: true },
           });
           if (!business) throw new NotFoundException("Negocio no encontrado");
 
@@ -345,6 +345,22 @@ export class OfflineService {
               customerPhone: saleDto.customerPhone || null,
               customerRuc: saleDto.customerRuc || null,
               items: { create: processedItems },
+              payments: {
+                create: [
+                  {
+                    method: saleDto.paymentMethod,
+                    amount: total,
+                    amountTendered: saleDto.amountPaid,
+                    change,
+                    reference: saleDto.reference || null,
+                    currency: business.currency || 'NIO',
+                    exchangeRate: 1,
+                    amountBase: total,
+                    shiftId: cashRegisterId,
+                    createdById: cashierId,
+                  },
+                ],
+              },
               subtotal,
               discountAmount,
               taxAmount,

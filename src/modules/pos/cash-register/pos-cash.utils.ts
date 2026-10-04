@@ -32,23 +32,28 @@ export function getSalePaymentBreakdown(sale: any): SalePaymentBreakdown {
             p.amountTendered != null ? p.amountTendered.toString() : (p.amount != null ? p.amount.toString() : 0)
           );
           const rate = new Prisma.Decimal(p.exchangeRate != null ? p.exchangeRate.toString() : 1);
-          const baseAmt = p.amountBase != null 
+          let baseAmt = p.amountBase != null 
             ? new Prisma.Decimal(p.amountBase.toString()) 
-            : tenderedUsd.times(rate).toDecimalPlaces(2);
+            : new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0).times(rate).toDecimalPlaces(2);
+
+          // Si baseAmt era de un registro previo que aún sumaba lo entregado (baseAmt == tenderedUsd * rate)
+          if (changeAmt.greaterThan(0) && baseAmt.equals(tenderedUsd.times(rate).toDecimalPlaces(2))) {
+            baseAmt = baseAmt.minus(changeAmt);
+          }
 
           cashUsd = cashUsd.plus(tenderedUsd);
           cashUsdBase = cashUsdBase.plus(baseAmt);
           // El vuelto siempre se da en córdobas, restando de la gaveta de NIO
           cashNio = cashNio.minus(changeAmt);
-          // En NIO neto equivalente, entra baseAmt y sale changeAmt
-          cash = cash.plus(baseAmt.minus(changeAmt));
+          // En NIO neto equivalente, entra baseAmt
+          cash = cash.plus(baseAmt);
         } else {
-          const tenderedNio = new Prisma.Decimal(
-            p.amountTendered != null ? p.amountTendered.toString() : (p.amount != null ? p.amount.toString() : 0)
-          );
-          const netNio = tenderedNio.minus(changeAmt);
-          cashNio = cashNio.plus(netNio);
-          cash = cash.plus(netNio);
+          let amtNio = new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0);
+          if (p.amountTendered != null && changeAmt.greaterThan(0) && amtNio.equals(new Prisma.Decimal(p.amountTendered.toString()))) {
+            amtNio = amtNio.minus(changeAmt);
+          }
+          cashNio = cashNio.plus(amtNio);
+          cash = cash.plus(amtNio);
         }
       } else if (p.method === 'TARJETA') {
         const amt = new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0);
