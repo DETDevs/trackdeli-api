@@ -1,10 +1,46 @@
+# Dependencias y compilación
 node_modules/
 dist/
+coverage/
+
+# Variables de entorno
 .env
-.DS_Store
+.env*
+*.env
+*.env.*
+!.env.example
+
+# Logs y archivos del sistema
 *.log
+.DS_Store
+Thumbs.db
+
+# Pruebas (Alex: no se suben al repo)
+test/
+*.e2e-spec.ts
+jest-e2e.json
+
+# Scripts de apoyo y temporales
 scratch/
+scratch*
 scripts/
+show-*.ts
+create-trigger.js
+generate-modules.ps1
+manual-sync.js
+temp-check.js
+test-socket.js
+test_order.ts
+
+# Dumps, temporales y reportes
+tmp/
+temp/
+dumps/
+*.dump
+*.sql.gz
+*.tar.gz
+reportes/
+capturas/
 
 # Documentos internos — nunca subir al repo
 ROADMAP_INTERNO.md
@@ -13,16 +49,7 @@ TODO_PRIVADO.md
 AUDITORIA_ARQUITECTURA.md
 docs/interno/
 .interno/
- 
-# Variables de entorno
-.env
-.env.local
-.env.production
-.env.*
-*.env
-*.env.*
-!.env.example
- 
+
 # Credenciales y secrets
 *.pem
 *.p8
@@ -38,4 +65,3 @@ google-credentials.json
 *credentials*.json
 *service-account*.json
 *secret*.json
-
