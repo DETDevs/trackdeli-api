@@ -84,7 +84,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'AuthProvider') THEN
               CREATE TYPE "AuthProvider" AS ENUM ('EMAIL', 'GOOGLE', 'APPLE');
             END IF;
-            IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'OFERTADO' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'OrderStatus')) THEN
+            IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'OFERTADO' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'OrderStatus' LIMIT 1)) THEN
               ALTER TYPE "OrderStatus" ADD VALUE 'OFERTADO';
             END IF;
           END $$;`,
@@ -135,10 +135,21 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "approvedById" VARCHAR(100),
             "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT "pos_audit_logs_pkey" PRIMARY KEY ("id")
-          );
-          CREATE INDEX IF NOT EXISTS "pos_audit_logs_businessId_createdAt_idx" ON "pos_audit_logs"("businessId", "createdAt");
-          CREATE INDEX IF NOT EXISTS "pos_audit_logs_userId_idx" ON "pos_audit_logs"("userId");
-          CREATE INDEX IF NOT EXISTS "pos_audit_logs_action_idx" ON "pos_audit_logs"("action");`,
+          );`
+        },
+        {
+          name: 'Indices pos_audit_logs',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_audit_logs_businessId_createdAt_idx') THEN
+              CREATE INDEX "pos_audit_logs_businessId_createdAt_idx" ON "pos_audit_logs"("businessId", "createdAt");
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_audit_logs_userId_idx') THEN
+              CREATE INDEX "pos_audit_logs_userId_idx" ON "pos_audit_logs"("userId");
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_audit_logs_action_idx') THEN
+              CREATE INDEX "pos_audit_logs_action_idx" ON "pos_audit_logs"("action");
+            END IF;
+          END $$;`
         },
         {
           name: 'Tabla pos_approval_tokens',
@@ -155,9 +166,18 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "expiresAt" TIMESTAMP(3) NOT NULL,
             "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT "pos_approval_tokens_pkey" PRIMARY KEY ("id")
-          );
-          CREATE UNIQUE INDEX IF NOT EXISTS "pos_approval_tokens_token_key" ON "pos_approval_tokens"("token");
-          CREATE INDEX IF NOT EXISTS "pos_approval_tokens_businessId_token_idx" ON "pos_approval_tokens"("businessId", "token");`,
+          );`
+        },
+        {
+          name: 'Indices pos_approval_tokens',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_approval_tokens_token_key') THEN
+              CREATE UNIQUE INDEX "pos_approval_tokens_token_key" ON "pos_approval_tokens"("token");
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_approval_tokens_businessId_token_idx') THEN
+              CREATE INDEX "pos_approval_tokens_businessId_token_idx" ON "pos_approval_tokens"("businessId", "token");
+            END IF;
+          END $$;`
         },
         {
           name: 'Tabla idempotency_keys',
@@ -171,8 +191,15 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "expiresAt" TIMESTAMP(3) NOT NULL,
             "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT "idempotency_keys_pkey" PRIMARY KEY ("id")
-          );
-          CREATE UNIQUE INDEX IF NOT EXISTS "idempotency_keys_businessId_key_key" ON "idempotency_keys"("businessId", "key");`,
+          );`
+        },
+        {
+          name: 'Indices idempotency_keys',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'idempotency_keys_businessId_key_key') THEN
+              CREATE UNIQUE INDEX "idempotency_keys_businessId_key_key" ON "idempotency_keys"("businessId", "key");
+            END IF;
+          END $$;`
         },
         {
           name: 'Tabla pos_payments',
@@ -194,9 +221,18 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             CONSTRAINT "pos_payments_saleId_fkey" FOREIGN KEY ("saleId") REFERENCES "pos_sales"("id") ON DELETE CASCADE ON UPDATE CASCADE,
             CONSTRAINT "pos_payments_shiftId_fkey" FOREIGN KEY ("shiftId") REFERENCES "pos_cash_registers"("id") ON DELETE SET NULL ON UPDATE CASCADE,
             CONSTRAINT "pos_payments_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE
-          );
-          CREATE INDEX IF NOT EXISTS "pos_payments_saleId_idx" ON "pos_payments"("saleId");
-          CREATE INDEX IF NOT EXISTS "pos_payments_shiftId_idx" ON "pos_payments"("shiftId");`,
+          );`
+        },
+        {
+          name: 'Indices pos_payments',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_payments_saleId_idx') THEN
+              CREATE INDEX "pos_payments_saleId_idx" ON "pos_payments"("saleId");
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_payments_shiftId_idx') THEN
+              CREATE INDEX "pos_payments_shiftId_idx" ON "pos_payments"("shiftId");
+            END IF;
+          END $$;`
         },
         
         
@@ -2300,17 +2336,19 @@ WHERE a."customerId" = c."id"
       let updatedCount = 0;
       for (const sale of salesWithoutPayments) {
         try {
+          const amountPaid = Number(sale.amountPaid);
+          const change = Number(sale.change);
           await this.posPayment.create({
             data: {
               saleId: sale.id,
               method: sale.paymentMethod,
-              amount: sale.amountPaid - sale.change,
-              amountTendered: sale.amountPaid,
-              change: sale.change,
+              amount: amountPaid - change,
+              amountTendered: amountPaid,
+              change: change,
               reference: sale.reference,
               currency: sale.business?.currency || 'NIO',
               exchangeRate: 1,
-              amountBase: sale.amountPaid - sale.change,
+              amountBase: amountPaid - change,
               shiftId: sale.cashRegisterId,
               createdById: sale.cashierId
             }

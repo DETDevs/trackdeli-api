@@ -16,6 +16,9 @@ import { PosPermissionsGuard } from "../permissions/permissions.guard";
 import { RequirePosAction } from "../permissions/require-action.decorator";
 import { PosAction } from "../permissions/permissions.service";
 
+import { IdempotencyInterceptor } from "../idempotency/idempotency.interceptor";
+import { UseInterceptors } from "@nestjs/common";
+
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard, PosPermissionsGuard)
 @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
@@ -38,6 +41,7 @@ export class SalesController {
 
   @Post()
   @RequirePosAction(PosAction.VENDER_COBRAR)
+  @UseInterceptors(IdempotencyInterceptor)
   create(
     @Body() dto: CreateSaleDto,
     @CurrentUser() user: JwtPayload,
@@ -57,6 +61,7 @@ export class SalesController {
 
   @Post(":id/cancel")
   @RequirePosAction(PosAction.ANULAR_VENTA_COBRADA)
+  @UseInterceptors(IdempotencyInterceptor)
   cancel(
     @Param("id") id: string,
     @Body() dto: CancelSaleDto,

@@ -237,7 +237,7 @@ export class CreditService {
       const now = new Date();
 
       for (const acc of openAccounts) {
-        const totalPaid = acc.payments.reduce((sum, p) => sum + p.amount, 0);
+        const totalPaid = acc.payments.reduce((sum, p) => sum + Number(p.amount), 0);
         const expectedBalance = Math.round((acc.originalAmount - totalPaid) * 100) / 100;
         const currentBalance = Math.round(acc.balance * 100) / 100;
 

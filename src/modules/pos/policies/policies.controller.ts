@@ -32,9 +32,14 @@ export class PoliciesController {
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
   ) {
+    const dataToUpdate: any = { ...dto };
+    if (dto.cashDifferenceTolerance !== undefined) {
+      dataToUpdate.cashDifferenceTolerance = dto.cashDifferenceTolerance;
+    }
+    
     return this.service.update(
       resolveBusinessId(user, qBid),
-      dto,
+      dataToUpdate,
       user.sub,
       user.role,
     );

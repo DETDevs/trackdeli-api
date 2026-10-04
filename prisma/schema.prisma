@@ -141,6 +141,7 @@ enum CreditAccountStatus {
 enum MovementType {
   ENTRADA
   SALIDA
+  DRAWER_OPEN
 }
 
 enum StockMovementType {
@@ -333,7 +334,7 @@ model Membership {
   endDate         DateTime
 
   // Pago
-  amount          Float
+  amount         Decimal @db.Decimal(12,2)
   currency        String           @default("USD")
   paymentMethod   PaymentMethod    @default(TRANSFERENCIA)
   paymentProofUrl String?          @db.VarChar(500)
@@ -590,7 +591,7 @@ model PosPolicies {
   cashierMaxDiscountPercent  Float    @default(10)
   priceOverrideEnabled       Boolean  @default(false)
   
-  paymentMethodsEnabled      String   @default("EFECTIVO,TARJETA,TRANSFERENCIA") // CSV
+  paymentMethodsEnabled      String   @default("EFECTIVO,TARJETA,TRANSFERENCIA,CREDITO") // CSV parsed in code
   requireReferenceCard       Boolean  @default(true)
   requireReferenceTransfer   Boolean  @default(true)
   requireReferenceOther      Boolean  @default(false)
@@ -599,7 +600,7 @@ model PosPolicies {
   acceptedCurrencies         String   @default("NIO") // NIO,USD
 
   blindCashClose             Boolean  @default(true)
-  cashDifferenceTolerance    Float    @default(0)
+  cashDifferenceTolerance    Decimal  @default(0) @db.Decimal(12,2)
   noSaleDrawerOpenAllowed    Boolean  @default(true)
   
   allowNegativeStock         Boolean  @default(false)
@@ -919,7 +920,7 @@ model Sale {
 
   paymentMethod  PosPaymentMethod @default(EFECTIVO)
   amountPaid     Float
-  change         Float            @default(0)
+  change         Decimal @default(0) @db.Decimal(12,2)
   reference      String?          @db.VarChar(100)
 
   status         SaleStatus       @default(COMPLETED)
@@ -954,9 +955,9 @@ model PosPayment {
   saleId         String
   sale           Sale             @relation(fields: [saleId], references: [id], onDelete: Cascade)
   method         PosPaymentMethod
-  amount         Float
-  amountTendered Float?
-  change         Float            @default(0)
+  amount         Decimal @db.Decimal(12,2)
+  amountTendered Decimal? @db.Decimal(12,2)
+  change         Decimal @default(0) @db.Decimal(12,2)
   reference      String?          @db.VarChar(100)
   
   // Future-proofing for 113c
@@ -1001,7 +1002,7 @@ model CreditPayment {
   id               String           @id @default(uuid())
   creditAccountId  String
   creditAccount    CreditAccount    @relation(fields: [creditAccountId], references: [id], onDelete: Restrict)
-  amount           Float
+  amount         Decimal @db.Decimal(12,2)
   paymentMethod    PosPaymentMethod @default(EFECTIVO)
   receivedByUserId String
   receivedByUser   User             @relation("CreditPaymentsReceived", fields: [receivedByUserId], references: [id])
@@ -1023,15 +1024,15 @@ model CashRegister {
   openedAt      DateTime   @default(now())
   closedAt      DateTime?
 
-  openingCash   Float
-  closingCash   Float?
-  expectedCash  Float?
-  difference    Float?
+  openingCash   Decimal @db.Decimal(12,2)
+  closingCash   Decimal? @db.Decimal(12,2)
+  expectedCash  Decimal? @db.Decimal(12,2)
+  difference    Decimal? @db.Decimal(12,2)
 
-  totalSales    Float?
-  totalCash     Float?
-  totalCard     Float?
-  totalTransfer Float?
+  totalSales    Decimal? @db.Decimal(12,2)
+  totalCash     Decimal? @db.Decimal(12,2)
+  totalCard     Decimal? @db.Decimal(12,2)
+  totalTransfer Decimal? @db.Decimal(12,2)
 
   notes         String?
   status        CashStatus @default(OPEN)
@@ -1055,7 +1056,7 @@ model CashMovement {
   user           User         @relation("UserMovements", fields: [userId], references: [id])
 
   type           MovementType
-  amount         Float
+  amount         Decimal @db.Decimal(12,2)
   concept        String       @db.VarChar(300)
 
   createdAt      DateTime     @default(now())

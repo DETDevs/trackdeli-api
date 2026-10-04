@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards, BadRequestException } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, UseGuards, BadRequestException, UseInterceptors } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
+import { IdempotencyInterceptor } from "../idempotency/idempotency.interceptor";
 import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
@@ -29,17 +30,17 @@ export class CashRegisterController {
 
   @Get("history")
   getHistory(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
-    return this.service.findAll(resolveBusinessId(user, qBid));
+    return this.service.findAll(resolveBusinessId(user, qBid), user.role);
   }
 
   @Get("current")
   getCurrent(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
-    return this.service.getCurrent(resolveBusinessId(user, qBid), user.sub);
+    return this.service.getCurrent(resolveBusinessId(user, qBid), user.sub, user.role);
   }
 
   @Get("status")
   async getStatus(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
-    const current = await this.service.getCurrent(resolveBusinessId(user, qBid), user.sub);
+    const current = await this.service.getCurrent(resolveBusinessId(user, qBid), user.sub, user.role);
     return {
       isOpen: !!current,
       shiftId: current?.id ?? null,
@@ -50,7 +51,6 @@ export class CashRegisterController {
   }
 
   @Post("open")
-  @RequirePosAction(PosAction.ABRIR_CAJON_SIN_VENTA)
   open(
     @Body() dto: OpenCashRegisterDto,
     @CurrentUser() user: JwtPayload,
@@ -60,6 +60,7 @@ export class CashRegisterController {
   }
 
   @Post("close")
+  @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_PROPIO)
   closeCurrent(
     @Body() dto: CloseCashRegisterDto,
@@ -70,6 +71,7 @@ export class CashRegisterController {
   }
 
   @Post(":id/close")
+  @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
   close(
     @Param("id") id: string,
@@ -81,6 +83,7 @@ export class CashRegisterController {
   }
 
   @Post(":id/force-close")
+  @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
   forceClose(
     @Param("id") id: string,
@@ -99,27 +102,20 @@ export class CashRegisterController {
   }
 
   @Post("movements")
+  @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.MOVIMIENTO_CAJA)
   addMovementCurrent(
     @Body() dto: CashMovementDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.addMovement(null, dto, resolveBusinessId(user, qBid), user.sub);
+    return this.service.addMovement(null, dto, resolveBusinessId(user, qBid), user.sub, user.role);
   }
 
-  @Post(":id/movement")
-  @RequirePosAction(PosAction.MOVIMIENTO_CAJA)
-  addMovement(
-    @Param("id") id: string,
-    @Body() dto: CashMovementDto,
-    @CurrentUser() user: JwtPayload,
-    @Query("businessId") qBid?: string,
-  ) {
-    return this.service.addMovement(id, dto, resolveBusinessId(user, qBid), user.sub);
-  }
+
 
   @Post(":id/movements")
+  @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.MOVIMIENTO_CAJA)
   addMovementPlural(
     @Param("id") id: string,
@@ -127,7 +123,7 @@ export class CashRegisterController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.addMovement(id, dto, resolveBusinessId(user, qBid), user.sub);
+    return this.service.addMovement(id, dto, resolveBusinessId(user, qBid), user.sub, user.role);
   }
 
   @Get(":id/summary")

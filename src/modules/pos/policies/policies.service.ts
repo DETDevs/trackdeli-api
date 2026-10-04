@@ -9,6 +9,8 @@ export class PoliciesService {
   private readonly logger = new Logger(PoliciesService.name);
   
   // Cache simple en memoria: businessId -> { data: PosPolicies, expiresAt: number }
+  // NOTA: Hay una sola réplica hoy, así que esto funciona bien. 
+  // Con varias réplicas (escalabilidad horizontal) habría que invalidar por Redis o reducir el TTL.
   private cache = new Map<string, { data: PosPolicies, expiresAt: number }>();
   private readonly TTL_MS = 5 * 60 * 1000; // 5 minutos
 

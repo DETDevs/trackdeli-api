@@ -336,8 +336,12 @@ export class SalesService {
         if (!enabledMethods.includes(p.method) && p.method !== PosPaymentMethod.CREDITO) {
           throw new BadRequestException({
             statusCode: 400,
+            error: 'Bad Request',
             code: 'PAYMENT_METHOD_DISABLED',
-            message: `El método de pago ${p.method} no está habilitado`,
+            message: {
+              code: 'PAYMENT_METHOD_DISABLED',
+              message: `El método de pago ${p.method} no está habilitado`
+            }
           });
         }
 
@@ -347,18 +351,25 @@ export class SalesService {
         if (p.method === PosPaymentMethod.EFECTIVO) {
            pChange = pAmountTendered - p.amount;
            if (pChange < 0) {
-              throw new BadRequestException(`Monto entregado en efectivo es menor al monto a cobrar`);
+              throw new BadRequestException({
+                statusCode: 400,
+                error: 'Bad Request',
+                code: 'PAYMENT_TOTAL_MISMATCH',
+                message: { code: 'PAYMENT_TOTAL_MISMATCH', message: `Monto entregado en efectivo es menor al monto a cobrar` }
+              });
            }
         } else {
            pAmountTendered = p.amount;
         }
 
         if (p.method === PosPaymentMethod.TARJETA && policies.requireReferenceCard && !p.reference) {
-          throw new BadRequestException({ statusCode: 400, code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Referencia requerida para pago con tarjeta' });
+          throw new BadRequestException({ statusCode: 400, error: 'Bad Request', code: 'PAYMENT_REFERENCE_REQUIRED', message: { code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Referencia requerida para pago con tarjeta' } });
         }
         if (p.method === PosPaymentMethod.TRANSFERENCIA && policies.requireReferenceTransfer && !p.reference) {
-          throw new BadRequestException({ statusCode: 400, code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Referencia requerida para pago con transferencia' });
+          throw new BadRequestException({ statusCode: 400, error: 'Bad Request', code: 'PAYMENT_REFERENCE_REQUIRED', message: { code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Referencia requerida para pago con transferencia' } });
         }
+
+        const safeReference = p.reference ? p.reference.toString().substring(0, 50).trim() : null;
 
         totalPayments += p.amount;
         totalChange += pChange;
@@ -368,7 +379,7 @@ export class SalesService {
            amount: p.amount,
            amountTendered: pAmountTendered,
            change: pChange,
-           reference: p.reference || null,
+           reference: safeReference,
            currency: business.currency,
            exchangeRate: 1,
            amountBase: p.amount,
@@ -377,11 +388,15 @@ export class SalesService {
         });
       }
 
-      if (Math.abs(totalPayments - total) > 0.05) {
+      if (Math.round(totalPayments * 100) !== Math.round(total * 100)) {
          throw new BadRequestException({
             statusCode: 400,
+            error: 'Bad Request',
             code: 'PAYMENT_TOTAL_MISMATCH',
-            message: `La suma de los pagos (${totalPayments.toFixed(2)}) no coincide con el total de la venta (${total.toFixed(2)})`
+            message: {
+               code: 'PAYMENT_TOTAL_MISMATCH',
+               message: `La suma de los pagos (${totalPayments.toFixed(2)}) no coincide con el total de la venta (${total.toFixed(2)})`
+            }
          });
       }
 
@@ -411,8 +426,9 @@ export class SalesService {
           notes: finalNotes || null,
           status: "COMPLETED",
         },
-        include: { items: true, cashier: { select: { name: true } }, customer: true },
+        include: { items: true, payments: true, cashier: { select: { name: true } }, customer: true },
       });
+
 
       if (isCredit && customerId && dueDate) {
         await tx.creditAccount.create({

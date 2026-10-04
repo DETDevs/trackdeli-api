@@ -12,12 +12,12 @@ import { CreateApprovalDto } from './dto/create-approval.dto';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
+@Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
 @Controller('pos/approvals')
 export class ApprovalsController {
   constructor(private readonly service: ApprovalsService) {}
 
   @Post()
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async createToken(
     @Body() dto: CreateApprovalDto,
     @CurrentUser() user: JwtPayload,
@@ -25,10 +25,9 @@ export class ApprovalsController {
   ) {
     const token = await this.service.createToken(
       resolveBusinessId(user, qBid),
+      dto,
       user.sub,
-      dto.action,
-      dto.entityType,
-      dto.entityId
+      user.role
     );
     return { token };
   }

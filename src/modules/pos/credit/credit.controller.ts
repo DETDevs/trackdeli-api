@@ -19,8 +19,13 @@ import { PosPermissionsGuard } from '../permissions/permissions.guard';
 import { RequirePosAction } from '../permissions/require-action.decorator';
 import { PosAction } from '../permissions/permissions.service';
 
+import { PosGuard } from '../../../common/guards/pos.guard';
+import { Roles } from '../../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
+
 @SkipMembershipCheck()
-@UseGuards(JwtAuthGuard, CarteraCobroGuard, PosPermissionsGuard)
+@UseGuards(JwtAuthGuard, PosGuard, CarteraCobroGuard, PosPermissionsGuard)
+@Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
 @Controller()
 export class CreditController {
   constructor(private readonly service: CreditService) {}

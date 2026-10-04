@@ -5,6 +5,18 @@ export class CreateApprovalDto {
   @IsNotEmpty()
   action: string;
 
+  @IsString()
+  @IsNotEmpty()
+  approverEmail: string;
+
+  @IsString()
+  @IsNotEmpty()
+  approverPassword: string;
+
+  @IsOptional()
+  @IsString()
+  cashRegisterId?: string;
+
   @IsOptional()
   @IsString()
   entityType?: string;

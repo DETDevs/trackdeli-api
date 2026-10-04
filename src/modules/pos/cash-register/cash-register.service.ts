@@ -87,7 +87,26 @@ export class CashRegisterService {
     };
   }
 
-  async getCurrent(businessId: string, cashierId: string) {
+  async obfuscateRegister(registerData: any, businessId: string, userRole?: string) {
+    if (userRole !== 'CAJERO') return registerData;
+    const policies = await this.policiesService.get(businessId);
+    if (policies.blindCashClose) {
+      registerData.expectedCash = null;
+      registerData.expectedAmount = null;
+      registerData.difference = null;
+      registerData.totalCash = null;
+      registerData.totalCard = null;
+      registerData.totalTransfer = null;
+      if ('currentCash' in registerData) registerData.currentCash = null;
+      if ('summary' in registerData && registerData.summary) {
+         registerData.summary.totalCash = null;
+         registerData.summary.currentCash = null;
+      }
+    }
+    return registerData;
+  }
+
+  async getCurrent(businessId: string, cashierId: string, userRole?: string) {
     let register = await this.prisma.cashRegister.findFirst({
       where: { businessId, cashierId, status: "OPEN" },
       include: {
@@ -120,10 +139,11 @@ export class CashRegisterService {
       });
     }
 
-    return this.formatRegister(register);
+    if (!register) return null;
+    return this.obfuscateRegister(this.formatRegister(register), businessId, userRole);
   }
 
-  async findAll(businessId: string) {
+  async findAll(businessId: string, userRole?: string) {
     const registers = await this.prisma.cashRegister.findMany({
       where: { businessId },
       include: {
@@ -139,7 +159,8 @@ export class CashRegisterService {
       orderBy: { openedAt: "desc" },
       take: 100,
     });
-    return registers.map((r) => this.formatRegister(r));
+    const formatted = registers.map((r) => this.formatRegister(r));
+    return Promise.all(formatted.map(f => this.obfuscateRegister(f, businessId, userRole)));
   }
 
   async open(dto: OpenCashRegisterDto, businessId: string, cashierId: string) {
@@ -224,12 +245,15 @@ export class CashRegisterService {
     const expectedCash = register.openingCash + totalCash + movementsIn - movementsOut;
     const difference = closingCash - expectedCash;
 
-    if (Math.abs(difference) > policies.cashDifferenceTolerance && !dto.notes && !dto.reason) {
-      throw new BadRequestException({
+    if (Math.abs(difference) > Number(policies.cashDifferenceTolerance) && !dto.notes && !dto.reason) {
+      throw new (require('@nestjs/common').UnprocessableEntityException)({
         statusCode: 422,
+        error: 'Unprocessable Entity',
         code: 'CASH_DIFFERENCE_NOTE_REQUIRED',
-        message: 'La diferencia de caja supera la tolerancia. Debe incluir una nota.',
-        error: 'Unprocessable Entity'
+        message: {
+          code: 'CASH_DIFFERENCE_NOTE_REQUIRED',
+          message: 'La diferencia de caja supera la tolerancia. Debe incluir una nota.'
+        }
       });
     }
 
@@ -239,8 +263,8 @@ export class CashRegisterService {
 
     const finalNotes = dto.reason ? `[FORZADO: ${dto.reason}] ${dto.notes || ''}`.trim() : (dto.notes || register.notes);
 
-    const updated = await this.prisma.cashRegister.update({
-      where: { id: register.id },
+    const updateResult = await this.prisma.cashRegister.updateMany({
+      where: { id: register.id, status: 'OPEN' },
       data: {
         closedAt: new Date(),
         closingCash,
@@ -253,6 +277,22 @@ export class CashRegisterService {
         notes: finalNotes,
         status: "CLOSED",
       },
+    });
+
+    if (updateResult.count === 0) {
+      throw new (require('@nestjs/common').ConflictException)({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'SHIFT_ALREADY_CLOSED',
+        message: {
+          code: 'SHIFT_ALREADY_CLOSED',
+          message: 'El turno ya se encuentra cerrado (posible doble click).'
+        }
+      });
+    }
+
+    const updated = await this.prisma.cashRegister.findUnique({
+      where: { id: register.id },
       include: {
         cashier: { select: { id: true, name: true } },
         movements: true,
@@ -270,19 +310,17 @@ export class CashRegisterService {
     });
 
     const formatted = this.formatRegister(updated);
-
-    if (policies.blindCashClose && userRole === 'CAJERO') {
-      formatted.expectedCash = null;
-      formatted.expectedAmount = null;
-      formatted.difference = null;
-    }
-
-    return formatted;
+    return this.obfuscateRegister(formatted, businessId, userRole);
   }
 
-  async addMovement(registerId: string | null | undefined, dto: CashMovementDto, businessId: string, userId: string) {
+  async addMovement(registerId: string | null | undefined, dto: CashMovementDto, businessId: string, userId: string, userRole: string) {
     let register;
-    if (registerId && registerId !== 'movements' && registerId !== 'movement' && registerId !== 'current') {
+    const isTargetingOther = registerId && registerId !== 'movements' && registerId !== 'movement' && registerId !== 'current';
+    
+    if (isTargetingOther) {
+      if (userRole === 'CAJERO') {
+         throw new ForbiddenException("Los cajeros solo pueden agregar movimientos a su turno actual.");
+      }
       register = await this.prisma.cashRegister.findFirst({
         where: { id: registerId, businessId, status: "OPEN" },
       });
@@ -302,8 +340,15 @@ export class CashRegisterService {
       movementType = MovementType.ENTRADA;
     }
 
-    const concept = dto.concept || dto.reason || 'Movimiento de caja';
+    const concept = (dto.concept || dto.reason || '').trim();
+    if (!concept) {
+      throw new BadRequestException({ statusCode: 422, code: 'REASON_REQUIRED', message: 'El motivo del movimiento es obligatorio' });
+    }
+
     const amount = Number(dto.amount);
+    if (amount <= 0) {
+      throw new BadRequestException({ statusCode: 400, code: 'INVALID_AMOUNT', message: 'El monto debe ser mayor a cero' });
+    }
 
     this.logger.log(`[addMovement] register=${register.id} tipo=${movementType} monto=${amount}`);
     const movement = await this.prisma.cashMovement.create({
@@ -318,6 +363,16 @@ export class CashRegisterService {
       include: {
         user: { select: { id: true, name: true } },
       },
+    });
+
+    await this.auditService.record({
+      businessId,
+      userId,
+      userRole,
+      action: 'MOVIMIENTO_CAJA',
+      entityType: 'CashMovement',
+      entityId: movement.id,
+      reason: `${movementType === 'ENTRADA' ? 'Entrada' : 'Salida'} por ${amount}: ${concept}`
     });
 
     return {
@@ -355,28 +410,16 @@ export class CashRegisterService {
 
     const movementsIn = register.movements
       .filter((m) => m.type === "ENTRADA")
-      .reduce((sum, m) => sum + m.amount, 0);
+      .reduce((sum, m) => sum + Number(m.amount), 0);
     const movementsOut = register.movements
       .filter((m) => m.type === "SALIDA")
-      .reduce((sum, m) => sum + m.amount, 0);
+      .reduce((sum, m) => sum + Number(m.amount), 0);
 
     const formatted = this.formatRegister(register);
     
-    let currentCash: number | null = register.openingCash + totalCash + movementsIn - movementsOut;
+    let currentCash: number | null = Number(register.openingCash) + totalCash + movementsIn - movementsOut;
 
-    const policies = await this.policiesService.get(businessId);
-    if (policies.blindCashClose && userRole === 'CAJERO' && register.status === 'OPEN') {
-      formatted.expectedCash = null;
-      formatted.expectedAmount = null;
-      formatted.difference = null;
-      formatted.totalCash = null;
-      formatted.totalCard = null;
-      formatted.totalTransfer = null;
-      currentCash = null;
-      totalCash = null as any;
-    }
-
-    return {
+    const result = {
       register: formatted,
       summary: {
         totalSales,
@@ -387,6 +430,9 @@ export class CashRegisterService {
         salesCount: register.sales.length,
       },
     };
+
+    const obfuscated = await this.obfuscateRegister(result, businessId, userRole);
+    return obfuscated;
   }
   async drawerOpen(registerId: string | null | undefined, reason: string, businessId: string, userId: string, userRole: string) {
     let register;
@@ -420,13 +466,13 @@ export class CashRegisterService {
       });
     }
 
-    // Registrar como movimiento de monto 0 para que aparezca en el resumen del turno
+    // Registrar como movimiento especial DRAWER_OPEN
     const movement = await this.prisma.cashMovement.create({
       data: {
         businessId,
         cashRegisterId: register.id,
         userId,
-        type: "SALIDA",
+        type: "DRAWER_OPEN",
         amount: 0,
         concept: `Apertura de cajón: ${reason}`,
       },
