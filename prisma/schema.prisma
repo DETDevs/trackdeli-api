@@ -124,6 +124,9 @@ enum SaleStatus {
   COMPLETED
   CANCELLED
   REFUNDED
+  VOIDED
+  PARTIALLY_RETURNED
+  RETURNED
 }
 
 enum CashStatus {
@@ -290,6 +293,7 @@ model Business {
   creditAccounts   CreditAccount[]
   productFieldDefinitions ProductFieldDefinition[]
   posExchangeRates PosExchangeRate[]
+  saleReturns      SaleReturn[]
 
   // Subscripciones de Productos y Auditoría
   productSubscriptions BusinessProductSubscription[]
@@ -869,6 +873,7 @@ model Product {
   attributes  Json      @default("{}")
 
   saleItems       SaleItem[]
+  saleReturnItems SaleReturnItem[]
   stockMovements  StockMovement[]
   tableOrderItems TableOrderItem[]
   inventoryDiscrepancies InventoryDiscrepancy[]
@@ -926,8 +931,14 @@ model Sale {
   reference      String?          @db.VarChar(100)
 
   status         SaleStatus       @default(COMPLETED)
+  voidedAt       DateTime?
+  voidedById     String?
+  voidReason     String?          @db.VarChar(500)
+  voidApprovedById String?
   notes          String?
   printCount     Int              @default(0)
+
+  returns        SaleReturn[]
 
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
@@ -948,8 +959,59 @@ model SaleItem {
   quantity    Float
   discount    Float    @default(0)
   subtotal    Float
+  returnedQty Float    @default(0)
+
+  returnItems SaleReturnItem[]
 
   @@map("pos_sale_items")
+}
+
+model SaleReturn {
+  id           String           @id @default(uuid())
+  saleId       String
+  sale         Sale             @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  businessId   String
+  business     Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  returnNumber String           @db.VarChar(30)
+  reason       String           @db.VarChar(100)
+  notes        String?          @db.VarChar(500)
+  refundMethod PosPaymentMethod
+  refundAmount Float
+  taxRefunded  Float            @default(0)
+  createdById  String
+  approvedById String?
+  shiftId      String?
+  createdAt    DateTime         @default(now())
+
+  items        SaleReturnItem[]
+
+  @@index([saleId])
+  @@index([businessId, createdAt])
+  @@map("pos_sale_returns")
+}
+
+model SaleReturnItem {
+  id               String      @id @default(uuid())
+  returnId         String
+  saleReturn       SaleReturn  @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  saleItemId       String
+  saleItem         SaleItem    @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+  productId        String?
+  product          Product?    @relation(fields: [productId], references: [id])
+  productName      String      @db.VarChar(200)
+  quantity         Float
+  unitPrice        Float
+  discountProrated Float       @default(0)
+  taxRate          Float       @default(0)
+  taxIncluded      Boolean     @default(false)
+  taxAmount        Float       @default(0)
+  refundAmount     Float
+  restock          Boolean     @default(true)
+  createdAt        DateTime    @default(now())
+
+  @@index([returnId])
+  @@index([saleItemId])
+  @@map("pos_sale_return_items")
 }
 
 model PosPayment {

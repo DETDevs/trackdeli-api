@@ -19,6 +19,9 @@ import { PosAction } from "../permissions/permissions.service";
 import { IdempotencyInterceptor } from "../idempotency/idempotency.interceptor";
 import { UseInterceptors } from "@nestjs/common";
 
+import { VoidSaleDto } from "./dto/void-sale.dto";
+import { CreateReturnDto } from "./dto/create-return.dto";
+
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard, PosPermissionsGuard)
 @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
@@ -59,6 +62,18 @@ export class SalesController {
     return this.service.findOne(id, resolveBusinessId(user, qBid));
   }
 
+  @Post(":id/void")
+  @RequirePosAction(PosAction.ANULAR_VENTA_COBRADA)
+  @UseInterceptors(IdempotencyInterceptor)
+  void(
+    @Param("id") id: string,
+    @Body() dto: VoidSaleDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.voidSale(id, resolveBusinessId(user, qBid), user.sub, user.role, dto);
+  }
+
   @Post(":id/cancel")
   @RequirePosAction(PosAction.ANULAR_VENTA_COBRADA)
   @UseInterceptors(IdempotencyInterceptor)
@@ -68,7 +83,22 @@ export class SalesController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.cancel(id, resolveBusinessId(user, qBid), dto);
+    return this.service.voidSale(id, resolveBusinessId(user, qBid), user.sub, user.role, {
+      reason: dto.reason || 'Cancelación de venta',
+      approvalToken: dto.approvalToken,
+    });
+  }
+
+  @Post(":id/returns")
+  @RequirePosAction(PosAction.DEVOLUCION)
+  @UseInterceptors(IdempotencyInterceptor)
+  createReturn(
+    @Param("id") id: string,
+    @Body() dto: CreateReturnDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.createReturn(id, resolveBusinessId(user, qBid), user.sub, user.role, dto);
   }
 
   @Get(":id/receipt")

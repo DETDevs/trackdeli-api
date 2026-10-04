@@ -6,4 +6,8 @@ export class CancelSaleDto {
   @SanitizeText()
   @IsString()
   reason?: string;
+
+  @IsOptional()
+  @IsString()
+  approvalToken?: string;
 }

@@ -152,7 +152,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           END $$;`
         },
         {
-          name: 'Trigger inmutabilidad pos_audit_logs',
+          name: 'Funcion inmutabilidad pos_audit_logs',
           sql: `
             CREATE OR REPLACE FUNCTION prevent_pos_audit_log_modification()
             RETURNS TRIGGER AS $$
@@ -160,7 +160,11 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
               RAISE EXCEPTION 'Updates and Deletes are not allowed on pos_audit_logs';
             END;
             $$ LANGUAGE plpgsql;
-
+          `,
+        },
+        {
+          name: 'Trigger inmutabilidad pos_audit_logs',
+          sql: `
             DO $$ BEGIN
               IF NOT EXISTS (
                 SELECT 1 FROM pg_trigger WHERE tgname = 'trg_prevent_pos_audit_log_modification'
@@ -302,6 +306,92 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             EXCEPTION WHEN OTHERS THEN
               NULL;
             END;
+          END $$;`
+        },
+        {
+          name: '113d - Estados y columnas de anulaciones y devoluciones',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'VOIDED' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'SaleStatus' LIMIT 1)) THEN
+              ALTER TYPE "SaleStatus" ADD VALUE 'VOIDED';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'PARTIALLY_RETURNED' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'SaleStatus' LIMIT 1)) THEN
+              ALTER TYPE "SaleStatus" ADD VALUE 'PARTIALLY_RETURNED';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'RETURNED' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'SaleStatus' LIMIT 1)) THEN
+              ALTER TYPE "SaleStatus" ADD VALUE 'RETURNED';
+            END IF;
+
+            ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "voidedAt" TIMESTAMP(3);
+            ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "voidedById" TEXT;
+            ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "voidReason" VARCHAR(500);
+            ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "voidApprovedById" TEXT;
+
+            ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "returnedQty" DOUBLE PRECISION NOT NULL DEFAULT 0;
+          END $$;`
+        },
+        {
+          name: '113d - Tabla pos_sale_returns',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_sale_returns" (
+            "id" TEXT NOT NULL,
+            "saleId" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "returnNumber" VARCHAR(30) NOT NULL,
+            "reason" VARCHAR(100) NOT NULL,
+            "notes" VARCHAR(500),
+            "refundMethod" "PosPaymentMethod" NOT NULL,
+            "refundAmount" DOUBLE PRECISION NOT NULL,
+            "taxRefunded" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "createdById" TEXT NOT NULL,
+            "approvedById" TEXT,
+            "shiftId" TEXT,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_sale_returns_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_sale_returns_saleId_fkey" FOREIGN KEY ("saleId") REFERENCES "pos_sales"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_sale_returns_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`
+        },
+        {
+          name: '113d - Indices pos_sale_returns',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_sale_returns_saleId_idx') THEN
+              CREATE INDEX "pos_sale_returns_saleId_idx" ON "pos_sale_returns"("saleId");
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_sale_returns_businessId_createdAt_idx') THEN
+              CREATE INDEX "pos_sale_returns_businessId_createdAt_idx" ON "pos_sale_returns"("businessId", "createdAt");
+            END IF;
+          END $$;`
+        },
+        {
+          name: '113d - Tabla pos_sale_return_items',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_sale_return_items" (
+            "id" TEXT NOT NULL,
+            "returnId" TEXT NOT NULL,
+            "saleItemId" TEXT NOT NULL,
+            "productId" TEXT,
+            "productName" VARCHAR(200) NOT NULL,
+            "quantity" DOUBLE PRECISION NOT NULL,
+            "unitPrice" DOUBLE PRECISION NOT NULL,
+            "discountProrated" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "taxIncluded" BOOLEAN NOT NULL DEFAULT false,
+            "taxAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "refundAmount" DOUBLE PRECISION NOT NULL,
+            "restock" BOOLEAN NOT NULL DEFAULT true,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_sale_return_items_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_sale_return_items_returnId_fkey" FOREIGN KEY ("returnId") REFERENCES "pos_sale_returns"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_sale_return_items_saleItemId_fkey" FOREIGN KEY ("saleItemId") REFERENCES "pos_sale_items"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`
+        },
+        {
+          name: '113d - Indices pos_sale_return_items',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_sale_return_items_returnId_idx') THEN
+              CREATE INDEX "pos_sale_return_items_returnId_idx" ON "pos_sale_return_items"("returnId");
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_sale_return_items_saleItemId_idx') THEN
+              CREATE INDEX "pos_sale_return_items_saleItemId_idx" ON "pos_sale_return_items"("saleItemId");
+            END IF;
           END $$;`
         },
         {

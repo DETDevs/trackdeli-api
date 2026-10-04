@@ -27,9 +27,6 @@ export class PosPermissionsGuard implements CanActivate {
     const user = request.user;
     if (!user) return false;
 
-    // By default SUPERADMIN bypasses early
-    if (user.role === UserRole.SUPERADMIN) return true;
-
     const businessId = request.query.businessId || user.businessId || user.id;
     if (!businessId) {
       throw new ForbiddenException({
@@ -41,9 +38,35 @@ export class PosPermissionsGuard implements CanActivate {
     }
 
     const policies = await this.policiesService.get(businessId);
-    
-    // Almacenamos policies en el request por si el controller las necesita
     request.posPolicies = policies;
+
+    // Regla 113d: Si returnsEnabled=false o voidsCompletedEnabled=false, nadie puede.
+    if (action === PosAction.ANULAR_VENTA_COBRADA && policies?.voidsCompletedEnabled === false) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'VOIDS_DISABLED',
+        message: { code: 'VOIDS_DISABLED', message: 'La anulación de ventas está deshabilitada en este negocio.' }
+      });
+    }
+    if (action === PosAction.DEVOLUCION && policies?.returnsEnabled === false) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'RETURNS_DISABLED',
+        message: { code: 'RETURNS_DISABLED', message: 'Las devoluciones están deshabilitadas en este negocio.' }
+      });
+    }
+
+    // By default SUPERADMIN bypasses early
+    if (user.role === UserRole.SUPERADMIN) return true;
+
+    // Regla 113d: El cajero solicita y el encargado aprueba en esa caja.
+    // Para anular y devolver, se permite el acceso al controller para que el servicio
+    // valide el token de aprobación o permita directo si no se requiere aprobación.
+    if (user.role === UserRole.CAJERO && (action === PosAction.ANULAR_VENTA_COBRADA || action === PosAction.DEVOLUCION)) {
+      return true;
+    }
 
     const allowed = this.permissionsService.can(user.role, action, policies);
 
