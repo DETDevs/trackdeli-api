@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, UseGuards, BadRequestException } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
@@ -11,9 +11,12 @@ import { CashRegisterService } from "./cash-register.service";
 import { OpenCashRegisterDto } from "./dto/open-register.dto";
 import { CloseCashRegisterDto } from "./dto/close-register.dto";
 import { CashMovementDto } from "./dto/cash-movement.dto";
+import { PosPermissionsGuard } from "../permissions/permissions.guard";
+import { RequirePosAction } from "../permissions/require-action.decorator";
+import { PosAction } from "../permissions/permissions.service";
 
 @SkipMembershipCheck()
-@UseGuards(JwtAuthGuard, PosGuard)
+@UseGuards(JwtAuthGuard, PosGuard, PosPermissionsGuard)
 @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
 @Controller("pos/cash-register")
 export class CashRegisterController {
@@ -47,6 +50,7 @@ export class CashRegisterController {
   }
 
   @Post("open")
+  @RequirePosAction(PosAction.ABRIR_CAJON_SIN_VENTA)
   open(
     @Body() dto: OpenCashRegisterDto,
     @CurrentUser() user: JwtPayload,
@@ -56,25 +60,46 @@ export class CashRegisterController {
   }
 
   @Post("close")
+  @RequirePosAction(PosAction.CIERRE_TURNO_PROPIO)
   closeCurrent(
     @Body() dto: CloseCashRegisterDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.close(null, dto, resolveBusinessId(user, qBid), user.sub);
+    return this.service.close(null, dto, resolveBusinessId(user, qBid), user.sub, user.role);
   }
 
   @Post(":id/close")
+  @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
   close(
     @Param("id") id: string,
     @Body() dto: CloseCashRegisterDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub);
+    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub, user.role);
+  }
+
+  @Post(":id/force-close")
+  @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
+  forceClose(
+    @Param("id") id: string,
+    @Body() dto: CloseCashRegisterDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    if (!dto.reason) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: 'REASON_REQUIRED',
+        message: 'El motivo es obligatorio para forzar el cierre del turno'
+      });
+    }
+    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub, user.role);
   }
 
   @Post("movements")
+  @RequirePosAction(PosAction.MOVIMIENTO_CAJA)
   addMovementCurrent(
     @Body() dto: CashMovementDto,
     @CurrentUser() user: JwtPayload,
@@ -84,6 +109,7 @@ export class CashRegisterController {
   }
 
   @Post(":id/movement")
+  @RequirePosAction(PosAction.MOVIMIENTO_CAJA)
   addMovement(
     @Param("id") id: string,
     @Body() dto: CashMovementDto,
@@ -94,6 +120,7 @@ export class CashRegisterController {
   }
 
   @Post(":id/movements")
+  @RequirePosAction(PosAction.MOVIMIENTO_CAJA)
   addMovementPlural(
     @Param("id") id: string,
     @Body() dto: CashMovementDto,
@@ -109,6 +136,27 @@ export class CashRegisterController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.getSummary(id, resolveBusinessId(user, qBid));
+    return this.service.getSummary(id, resolveBusinessId(user, qBid), user.role);
+  }
+
+  @Post(":id/drawer-open")
+  @RequirePosAction(PosAction.ABRIR_CAJON_SIN_VENTA)
+  drawerOpen(
+    @Param("id") id: string,
+    @Body() dto: { reason: string },
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.drawerOpen(id, dto.reason, resolveBusinessId(user, qBid), user.sub, user.role);
+  }
+
+  @Post("drawer-open")
+  @RequirePosAction(PosAction.ABRIR_CAJON_SIN_VENTA)
+  drawerOpenCurrent(
+    @Body() dto: { reason: string },
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.drawerOpen(null, dto.reason, resolveBusinessId(user, qBid), user.sub, user.role);
   }
 }

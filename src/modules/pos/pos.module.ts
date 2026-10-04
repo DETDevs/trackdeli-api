@@ -14,6 +14,13 @@ import { ProductFieldsModule } from './product-fields/product-fields.module';
 import { PosUsersController } from './users/pos-users.controller';
 import { PosUsersService } from './users/pos-users.service';
 
+// Foundation Modules
+import { PosPermissionsModule } from './permissions/permissions.module';
+import { AuditModule } from './audit/audit.module';
+import { PoliciesModule } from './policies/policies.module';
+import { ApprovalsModule } from './approvals/approvals.module';
+import { IdempotencyModule } from './idempotency/idempotency.module';
+
 @Module({
   imports: [
     CategoriesModule,
@@ -28,9 +35,14 @@ import { PosUsersService } from './users/pos-users.service';
     OfflineModule,
     CreditModule,
     WaitersModule,
+    PosPermissionsModule,
+    AuditModule,
+    PoliciesModule,
+    ApprovalsModule,
+    IdempotencyModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
-  exports: [ProductFieldsModule],
+  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule],
 })
 export class PosModule {}

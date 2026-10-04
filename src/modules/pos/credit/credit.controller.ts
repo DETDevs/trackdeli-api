@@ -15,14 +15,18 @@ import { JwtPayload } from '../../../common/types/jwt-payload.interface';
 import { resolveBusinessId } from '../pos.utils';
 import { CreditService } from './credit.service';
 import { RegisterCreditPaymentDto } from './dto/register-payment.dto';
+import { PosPermissionsGuard } from '../permissions/permissions.guard';
+import { RequirePosAction } from '../permissions/require-action.decorator';
+import { PosAction } from '../permissions/permissions.service';
 
 @SkipMembershipCheck()
-@UseGuards(JwtAuthGuard, CarteraCobroGuard)
+@UseGuards(JwtAuthGuard, CarteraCobroGuard, PosPermissionsGuard)
 @Controller()
 export class CreditController {
   constructor(private readonly service: CreditService) {}
 
   @Post(['pos/credit-accounts/:id/payments', 'credit-accounts/:id/payments'])
+  @RequirePosAction(PosAction.ABONAR_CREDITO)
   registerPayment(
     @Param('id') id: string,
     @Body() dto: RegisterCreditPaymentDto,

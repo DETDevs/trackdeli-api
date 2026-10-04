@@ -12,9 +12,12 @@ import { resolveBusinessId } from "../pos.utils";
 import { SalesService } from "./sales.service";
 import { CreateSaleDto } from "./dto/create-sale.dto";
 import { CancelSaleDto } from "./dto/cancel-sale.dto";
+import { PosPermissionsGuard } from "../permissions/permissions.guard";
+import { RequirePosAction } from "../permissions/require-action.decorator";
+import { PosAction } from "../permissions/permissions.service";
 
 @SkipMembershipCheck()
-@UseGuards(JwtAuthGuard, PosGuard)
+@UseGuards(JwtAuthGuard, PosGuard, PosPermissionsGuard)
 @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
 @Controller("pos/sales")
 export class SalesController {
@@ -34,6 +37,7 @@ export class SalesController {
   }
 
   @Post()
+  @RequirePosAction(PosAction.VENDER_COBRAR)
   create(
     @Body() dto: CreateSaleDto,
     @CurrentUser() user: JwtPayload,
@@ -52,6 +56,7 @@ export class SalesController {
   }
 
   @Post(":id/cancel")
+  @RequirePosAction(PosAction.ANULAR_VENTA_COBRADA)
   cancel(
     @Param("id") id: string,
     @Body() dto: CancelSaleDto,

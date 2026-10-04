@@ -7,6 +7,8 @@ import { BusinessProductsService } from "../../business-products/business-produc
 import { CreateSaleDto } from "./dto/create-sale.dto";
 import { CancelSaleDto } from "./dto/cancel-sale.dto";
 
+import { PoliciesService } from '../policies/policies.service';
+
 @Injectable()
 export class SalesService {
   private readonly logger = new Logger(SalesService.name);
@@ -14,6 +16,7 @@ export class SalesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly businessProductsService: BusinessProductsService,
+    private readonly policiesService: PoliciesService,
   ) {}
 
   async create(dto: CreateSaleDto, businessId: string, cashierId: string) {
@@ -310,19 +313,76 @@ export class SalesService {
         }
       }
 
-      let amountPaid = dto.amountPaid ?? 0;
-      let change = 0;
+      const policies = await this.policiesService.get(businessId);
+      const enabledMethods = policies.paymentMethodsEnabled.split(',');
 
-      if (isCredit) {
-        amountPaid = dto.amountPaid ?? 0;
-        change = 0;
-      } else {
-        change = amountPaid - total;
-        if (change < 0) {
-          throw new BadRequestException(
-            `Monto insuficiente. Total: ${total.toFixed(2)}, Pagado: ${amountPaid}`
-          );
+      let paymentsPayload = dto.payments;
+      if (!paymentsPayload || paymentsPayload.length === 0) {
+        // Fallback for older clients
+        paymentsPayload = [{
+          method: paymentMethod || PosPaymentMethod.EFECTIVO,
+          amount: isCredit ? total : (dto.amountPaid ?? total),
+          amountTendered: dto.amountPaid,
+          reference: dto.reference
+        }];
+      }
+
+      let totalPayments = 0;
+      let totalChange = 0;
+      let mainMethod = paymentsPayload.length === 1 ? paymentsPayload[0].method : PosPaymentMethod.MIXTO;
+
+      const processedPayments = [];
+      for (const p of paymentsPayload) {
+        if (!enabledMethods.includes(p.method) && p.method !== PosPaymentMethod.CREDITO) {
+          throw new BadRequestException({
+            statusCode: 400,
+            code: 'PAYMENT_METHOD_DISABLED',
+            message: `El método de pago ${p.method} no está habilitado`,
+          });
         }
+
+        let pChange = 0;
+        let pAmountTendered = p.amountTendered ?? p.amount;
+
+        if (p.method === PosPaymentMethod.EFECTIVO) {
+           pChange = pAmountTendered - p.amount;
+           if (pChange < 0) {
+              throw new BadRequestException(`Monto entregado en efectivo es menor al monto a cobrar`);
+           }
+        } else {
+           pAmountTendered = p.amount;
+        }
+
+        if (p.method === PosPaymentMethod.TARJETA && policies.requireReferenceCard && !p.reference) {
+          throw new BadRequestException({ statusCode: 400, code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Referencia requerida para pago con tarjeta' });
+        }
+        if (p.method === PosPaymentMethod.TRANSFERENCIA && policies.requireReferenceTransfer && !p.reference) {
+          throw new BadRequestException({ statusCode: 400, code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Referencia requerida para pago con transferencia' });
+        }
+
+        totalPayments += p.amount;
+        totalChange += pChange;
+
+        processedPayments.push({
+           method: p.method,
+           amount: p.amount,
+           amountTendered: pAmountTendered,
+           change: pChange,
+           reference: p.reference || null,
+           currency: business.currency,
+           exchangeRate: 1,
+           amountBase: p.amount,
+           shiftId: cashRegisterId,
+           createdById: cashierId
+        });
+      }
+
+      if (Math.abs(totalPayments - total) > 0.05) {
+         throw new BadRequestException({
+            statusCode: 400,
+            code: 'PAYMENT_TOTAL_MISMATCH',
+            message: `La suma de los pagos (${totalPayments.toFixed(2)}) no coincide con el total de la venta (${total.toFixed(2)})`
+         });
       }
 
       const sale = await tx.sale.create({
@@ -336,6 +396,7 @@ export class SalesService {
           customerPhone,
           customerRuc: dto.customerRuc || null,
           items: { create: processedItems },
+          payments: { create: processedPayments },
           subtotal,
           discountAmount,
           taxRate: appliedTaxRate,
@@ -343,9 +404,9 @@ export class SalesService {
           taxIncluded: appliedTaxIncluded,
           taxAmount,
           total,
-          paymentMethod,
-          amountPaid,
-          change,
+          paymentMethod: mainMethod,
+          amountPaid: totalPayments + totalChange,
+          change: totalChange,
           reference: dto.reference || null,
           notes: finalNotes || null,
           status: "COMPLETED",

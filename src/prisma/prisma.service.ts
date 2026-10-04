@@ -89,6 +89,116 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             END IF;
           END $$;`,
         },
+
+        {
+          name: 'Tabla pos_policies',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_policies" (
+            "businessId" TEXT NOT NULL,
+            "returnsEnabled" BOOLEAN NOT NULL DEFAULT true,
+            "returnsRequireApproval" BOOLEAN NOT NULL DEFAULT true,
+            "returnsMaxDays" INTEGER NOT NULL DEFAULT 30,
+            "voidsCompletedEnabled" BOOLEAN NOT NULL DEFAULT true,
+            "voidsRequireApproval" BOOLEAN NOT NULL DEFAULT true,
+            "discountsEnabled" BOOLEAN NOT NULL DEFAULT true,
+            "cashierMaxDiscountPercent" DOUBLE PRECISION NOT NULL DEFAULT 10,
+            "priceOverrideEnabled" BOOLEAN NOT NULL DEFAULT false,
+            "paymentMethodsEnabled" TEXT NOT NULL DEFAULT 'EFECTIVO,TARJETA,TRANSFERENCIA',
+            "requireReferenceCard" BOOLEAN NOT NULL DEFAULT true,
+            "requireReferenceTransfer" BOOLEAN NOT NULL DEFAULT true,
+            "requireReferenceOther" BOOLEAN NOT NULL DEFAULT false,
+            "multiCurrencyEnabled" BOOLEAN NOT NULL DEFAULT false,
+            "acceptedCurrencies" TEXT NOT NULL DEFAULT 'NIO',
+            "blindCashClose" BOOLEAN NOT NULL DEFAULT true,
+            "cashDifferenceTolerance" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "noSaleDrawerOpenAllowed" BOOLEAN NOT NULL DEFAULT true,
+            "allowNegativeStock" BOOLEAN NOT NULL DEFAULT false,
+            "inventoryAdjustRequireApproval" BOOLEAN NOT NULL DEFAULT true,
+            CONSTRAINT "pos_policies_pkey" PRIMARY KEY ("businessId"),
+            CONSTRAINT "pos_policies_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Tabla pos_audit_logs',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_audit_logs" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "userId" TEXT NOT NULL,
+            "userRole" TEXT NOT NULL,
+            "action" VARCHAR(100) NOT NULL,
+            "entityType" VARCHAR(100),
+            "entityId" VARCHAR(100),
+            "before" JSONB,
+            "after" JSONB,
+            "reason" VARCHAR(500),
+            "terminalId" VARCHAR(100),
+            "ipAddress" VARCHAR(100),
+            "approvedById" VARCHAR(100),
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_audit_logs_pkey" PRIMARY KEY ("id")
+          );
+          CREATE INDEX IF NOT EXISTS "pos_audit_logs_businessId_createdAt_idx" ON "pos_audit_logs"("businessId", "createdAt");
+          CREATE INDEX IF NOT EXISTS "pos_audit_logs_userId_idx" ON "pos_audit_logs"("userId");
+          CREATE INDEX IF NOT EXISTS "pos_audit_logs_action_idx" ON "pos_audit_logs"("action");`,
+        },
+        {
+          name: 'Tabla pos_approval_tokens',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_approval_tokens" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "token" VARCHAR(100) NOT NULL,
+            "action" VARCHAR(100) NOT NULL,
+            "entityType" VARCHAR(100),
+            "entityId" VARCHAR(100),
+            "approvedById" TEXT NOT NULL,
+            "terminalId" VARCHAR(100),
+            "isUsed" BOOLEAN NOT NULL DEFAULT false,
+            "expiresAt" TIMESTAMP(3) NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_approval_tokens_pkey" PRIMARY KEY ("id")
+          );
+          CREATE UNIQUE INDEX IF NOT EXISTS "pos_approval_tokens_token_key" ON "pos_approval_tokens"("token");
+          CREATE INDEX IF NOT EXISTS "pos_approval_tokens_businessId_token_idx" ON "pos_approval_tokens"("businessId", "token");`,
+        },
+        {
+          name: 'Tabla idempotency_keys',
+          sql: `CREATE TABLE IF NOT EXISTS "idempotency_keys" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "key" VARCHAR(100) NOT NULL,
+            "requestHash" VARCHAR(100) NOT NULL,
+            "responseBody" JSONB,
+            "statusCode" INTEGER NOT NULL,
+            "expiresAt" TIMESTAMP(3) NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "idempotency_keys_pkey" PRIMARY KEY ("id")
+          );
+          CREATE UNIQUE INDEX IF NOT EXISTS "idempotency_keys_businessId_key_key" ON "idempotency_keys"("businessId", "key");`,
+        },
+        {
+          name: 'Tabla pos_payments',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_payments" (
+            "id" TEXT NOT NULL,
+            "saleId" TEXT NOT NULL,
+            "method" VARCHAR(50) NOT NULL,
+            "amount" DOUBLE PRECISION NOT NULL,
+            "amountTendered" DOUBLE PRECISION,
+            "change" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "reference" VARCHAR(100),
+            "currency" VARCHAR(10) NOT NULL DEFAULT 'NIO',
+            "exchangeRate" DOUBLE PRECISION NOT NULL DEFAULT 1,
+            "amountBase" DOUBLE PRECISION NOT NULL,
+            "shiftId" TEXT,
+            "createdById" TEXT NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_payments_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_payments_saleId_fkey" FOREIGN KEY ("saleId") REFERENCES "pos_sales"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_payments_shiftId_fkey" FOREIGN KEY ("shiftId") REFERENCES "pos_cash_registers"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+            CONSTRAINT "pos_payments_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS "pos_payments_saleId_idx" ON "pos_payments"("saleId");
+          CREATE INDEX IF NOT EXISTS "pos_payments_shiftId_idx" ON "pos_payments"("shiftId");`,
+        },
+        
         
         {
           name: 'Modificaciones en users para Social Login',
@@ -1314,6 +1424,8 @@ WHERE a."customerId" = c."id"
 
       await this.ensureBusinessesMigratedToIndustries();
       await this.ensureTaxConfigurationBackfilled();
+      await this.ensurePosPoliciesBackfilled();
+      await this.ensurePosPaymentsBackfilled();
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia general en auto-sincronización de esquema: ${err.message}`);
     }
@@ -2106,5 +2218,111 @@ WHERE a."customerId" = c."id"
       this.logger.warn(`[PrismaService] ⚠ Advertencia en backfill de impuestos: ${err.message}`);
     }
   }
-}
 
+  private async ensurePosPoliciesBackfilled() {
+    this.logger.log(`[PrismaService] Verificando backfill de políticas POS en negocios...`);
+    try {
+      const businessesWithoutPolicies = await this.business.findMany({
+        where: {
+          posPolicies: {
+            is: null
+          }
+        },
+        select: { id: true }
+      });
+
+      if (businessesWithoutPolicies.length === 0) {
+        this.logger.log(`[PrismaService] ✓ Todos los negocios ya tienen sus políticas POS definidas.`);
+        return;
+      }
+
+      let updatedCount = 0;
+      for (const b of businessesWithoutPolicies) {
+        try {
+          await this.posPolicies.create({
+            data: {
+              businessId: b.id,
+              returnsEnabled: true,
+              returnsRequireApproval: true,
+              returnsMaxDays: 30,
+              voidsCompletedEnabled: true,
+              voidsRequireApproval: true,
+              discountsEnabled: true,
+              cashierMaxDiscountPercent: 10,
+              priceOverrideEnabled: false,
+              paymentMethodsEnabled: "EFECTIVO,TARJETA,TRANSFERENCIA",
+              requireReferenceCard: true,
+              requireReferenceTransfer: true,
+              requireReferenceOther: false,
+              multiCurrencyEnabled: false,
+              acceptedCurrencies: "NIO",
+              blindCashClose: true,
+              cashDifferenceTolerance: 0,
+              noSaleDrawerOpenAllowed: true,
+              allowNegativeStock: false,
+              inventoryAdjustRequireApproval: true
+            }
+          });
+          updatedCount++;
+        } catch (e) {
+          this.logger.warn(`[PrismaService] No se pudo crear posPolicies para ${b.id}: ${e.message}`);
+        }
+      }
+      this.logger.log(`[PrismaService] ✓ Backfill de políticas POS completado: ${updatedCount} negocio(s) actualizados.`);
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ Advertencia en backfill de políticas POS: ${err.message}`);
+    }
+  }
+
+  private async ensurePosPaymentsBackfilled() {
+    this.logger.log(`[PrismaService] Verificando backfill de pagos POS en ventas existentes...`);
+    try {
+      // Find sales without payments
+      const salesWithoutPayments = await this.sale.findMany({
+        where: { payments: { none: {} } },
+        select: {
+          id: true,
+          amountPaid: true,
+          change: true,
+          paymentMethod: true,
+          reference: true,
+          cashRegisterId: true,
+          cashierId: true,
+          business: { select: { currency: true } }
+        }
+      });
+
+      if (salesWithoutPayments.length === 0) {
+        this.logger.log(`[PrismaService] ✓ Todas las ventas existentes ya tienen sus pagos migrados a pos_payments.`);
+        return;
+      }
+
+      let updatedCount = 0;
+      for (const sale of salesWithoutPayments) {
+        try {
+          await this.posPayment.create({
+            data: {
+              saleId: sale.id,
+              method: sale.paymentMethod,
+              amount: sale.amountPaid - sale.change,
+              amountTendered: sale.amountPaid,
+              change: sale.change,
+              reference: sale.reference,
+              currency: sale.business?.currency || 'NIO',
+              exchangeRate: 1,
+              amountBase: sale.amountPaid - sale.change,
+              shiftId: sale.cashRegisterId,
+              createdById: sale.cashierId
+            }
+          });
+          updatedCount++;
+        } catch (e) {
+          this.logger.warn(`[PrismaService] No se pudo crear posPayment para la venta ${sale.id}: ${e.message}`);
+        }
+      }
+      this.logger.log(`[PrismaService] ✓ Backfill de pagos POS completado: ${updatedCount} venta(s) actualizadas.`);
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ Advertencia en backfill de pagos POS: ${err.message}`);
+    }
+  }
+}

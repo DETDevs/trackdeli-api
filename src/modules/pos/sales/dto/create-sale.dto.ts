@@ -40,6 +40,26 @@ export class CreateSaleItemDto {
   discount?: number;
 }
 
+export class PaymentDto {
+  @IsEnum(PosPaymentMethod)
+  method: PosPaymentMethod;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  amount: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  amountTendered?: number;
+
+  @IsOptional()
+  @IsString()
+  reference?: string;
+}
+
 export class CreateSaleDto {
   @IsOptional()
   @IsString()
@@ -71,8 +91,10 @@ export class CreateSaleDto {
   @IsString()
   customerRuc?: string;
 
+  // Legacy fallback fields for backward compatibility
+  @IsOptional()
   @IsEnum(PosPaymentMethod)
-  paymentMethod: PosPaymentMethod;
+  paymentMethod?: PosPaymentMethod;
 
   @IsOptional()
   @Type(() => Number)
@@ -81,14 +103,21 @@ export class CreateSaleDto {
   amountPaid?: number;
 
   @IsOptional()
+  @IsString()
+  reference?: string;
+
+  // New multi-payment structure
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PaymentDto)
+  payments?: PaymentDto[];
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   discountAmount?: number;
-
-  @IsOptional()
-  @IsString()
-  reference?: string;
 
   @IsOptional()
   @SanitizeText()
@@ -120,4 +149,8 @@ export class CreateSaleDto {
   @IsOptional()
   @IsString()
   occurredAt?: string;
+
+  @IsOptional()
+  @IsString()
+  approvalToken?: string;
 }

@@ -248,6 +248,7 @@ model Business {
 
   // Vertical de negocio (POS) y dimensiones del layout de mesas
   posVertical            PosVertical  @default(RETAIL)
+  posPolicies            PosPolicies?
   gridColumns            Int          @default(10)
   gridRows               Int          @default(10)
 
@@ -393,6 +394,7 @@ model User {
   cashMovements  CashMovement[]  @relation("UserMovements")
   stockMovements StockMovement[] @relation("UserStockMovements")
   receivedCreditPayments CreditPayment[] @relation("CreditPaymentsReceived")
+  posPayments    PosPayment[]    @relation("UserPayments")
 
   // Password audit relations
   passwordChangesReceived PasswordChangeLog[] @relation("PasswordChangesReceived")
@@ -571,6 +573,92 @@ model TrackingSession {
   order Order @relation(fields: [orderId], references: [id])
 
   @@map("tracking_sessions")
+}
+
+model PosPolicies {
+  businessId                 String   @id
+  business                   Business @relation(fields: [businessId], references: [id])
+
+  returnsEnabled             Boolean  @default(true)
+  returnsRequireApproval     Boolean  @default(true)
+  returnsMaxDays             Int      @default(30)
+  
+  voidsCompletedEnabled      Boolean  @default(true)
+  voidsRequireApproval       Boolean  @default(true)
+  
+  discountsEnabled           Boolean  @default(true)
+  cashierMaxDiscountPercent  Float    @default(10)
+  priceOverrideEnabled       Boolean  @default(false)
+  
+  paymentMethodsEnabled      String   @default("EFECTIVO,TARJETA,TRANSFERENCIA") // CSV
+  requireReferenceCard       Boolean  @default(true)
+  requireReferenceTransfer   Boolean  @default(true)
+  requireReferenceOther      Boolean  @default(false)
+  
+  multiCurrencyEnabled       Boolean  @default(false)
+  acceptedCurrencies         String   @default("NIO") // NIO,USD
+
+  blindCashClose             Boolean  @default(true)
+  cashDifferenceTolerance    Float    @default(0)
+  noSaleDrawerOpenAllowed    Boolean  @default(true)
+  
+  allowNegativeStock         Boolean  @default(false)
+  inventoryAdjustRequireApproval Boolean @default(true)
+
+  @@map("pos_policies")
+}
+
+model PosAuditLog {
+  id           String   @id @default(uuid())
+  businessId   String
+  userId       String
+  userRole     String
+  action       String   @db.VarChar(100)
+  entityType   String?  @db.VarChar(100)
+  entityId     String?  @db.VarChar(100)
+  before       Json?
+  after        Json?
+  reason       String?  @db.VarChar(500)
+  terminalId   String?  @db.VarChar(100)
+  ipAddress    String?  @db.VarChar(100)
+  approvedById String?  @db.VarChar(100)
+  createdAt    DateTime @default(now())
+
+  @@index([businessId, createdAt])
+  @@index([userId])
+  @@index([action])
+  @@map("pos_audit_logs")
+}
+
+model PosApprovalToken {
+  id           String   @id @default(uuid())
+  businessId   String
+  token        String   @unique @db.VarChar(100)
+  action       String   @db.VarChar(100)
+  entityType   String?  @db.VarChar(100)
+  entityId     String?  @db.VarChar(100)
+  approvedById String
+  terminalId   String?  @db.VarChar(100)
+  isUsed       Boolean  @default(false)
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([businessId, token])
+  @@map("pos_approval_tokens")
+}
+
+model IdempotencyKey {
+  id           String   @id @default(uuid())
+  businessId   String
+  key          String   @db.VarChar(100)
+  requestHash  String   @db.VarChar(100)
+  responseBody Json?
+  statusCode   Int
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@unique([businessId, key])
+  @@map("idempotency_keys")
 }
 
 model Customer {
@@ -819,6 +907,7 @@ model Sale {
   creditAccount  CreditAccount?
   items          SaleItem[]
   inventoryDiscrepancies InventoryDiscrepancy[]
+  payments       PosPayment[]
 
   subtotal       Float
   discountAmount Float            @default(0)
@@ -858,6 +947,32 @@ model SaleItem {
   subtotal    Float
 
   @@map("pos_sale_items")
+}
+
+model PosPayment {
+  id             String           @id @default(uuid())
+  saleId         String
+  sale           Sale             @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  method         PosPaymentMethod
+  amount         Float
+  amountTendered Float?
+  change         Float            @default(0)
+  reference      String?          @db.VarChar(100)
+  
+  // Future-proofing for 113c
+  currency       String           @default("NIO") @db.VarChar(10)
+  exchangeRate   Float            @default(1)
+  amountBase     Float
+  
+  shiftId        String?
+  shift          CashRegister?    @relation(fields: [shiftId], references: [id])
+  createdById    String
+  createdBy      User             @relation("UserPayments", fields: [createdById], references: [id])
+  createdAt      DateTime         @default(now())
+
+  @@index([saleId])
+  @@index([shiftId])
+  @@map("pos_payments")
 }
 
 model CreditAccount {
@@ -923,6 +1038,7 @@ model CashRegister {
 
   sales         Sale[]
   movements     CashMovement[]
+  payments      PosPayment[]
 
   createdAt     DateTime   @default(now())
 
