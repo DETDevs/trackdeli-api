@@ -15,7 +15,7 @@ export class SettingsService {
       select: {
         id: true, name: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true, hasCitas: true,
         posVertical: true, gridColumns: true, gridRows: true,
-        taxRate: true, currency: true, invoicePrefix: true, invoiceCounter: true,
+        taxRate: true, taxEnabled: true, taxIncluded: true, currency: true, invoicePrefix: true, invoiceCounter: true,
         posAddress: true, posPhone: true, posFooter: true,
         productSubscriptions: {
           where: { productType: { in: ['POS', 'CARTERA_COBRO', 'CITAS'] } },
@@ -44,13 +44,13 @@ export class SettingsService {
   async updateSettings(businessId: string, dto: UpdatePosSettingsDto, role: UserRole, userId: string) {
     const business = await this.prisma.business.findUnique({ 
       where: { id: businessId }, 
-      select: { id: true, taxRate: true, invoicePrefix: true, posAddress: true, posPhone: true, posFooter: true } 
+      select: { id: true, taxRate: true, taxEnabled: true, taxIncluded: true, invoicePrefix: true, posAddress: true, posPhone: true, posFooter: true } 
     });
     if (!business) throw new NotFoundException("Negocio no encontrado");
     this.logger.log(`[updateSettings] businessId=${businessId}, role=${role}`);
 
     const businessFields: (keyof UpdatePosSettingsDto)[] = [
-      'taxRate', 'invoicePrefix', 'posAddress', 'posPhone', 'posFooter', 'posVertical', 'gridColumns', 'gridRows'
+      'taxRate', 'taxEnabled', 'taxIncluded', 'invoicePrefix', 'posAddress', 'posPhone', 'posFooter', 'posVertical', 'gridColumns', 'gridRows'
     ];
 
     const hasBusinessFields = businessFields.some(field => dto[field] !== undefined);
@@ -70,7 +70,7 @@ export class SettingsService {
         dataToUpdate[field] = dto[field];
         
         // Audit log para campos sensibles
-        if (['taxRate', 'invoicePrefix', 'posFooter'].includes(field)) {
+        if (['taxRate', 'taxEnabled', 'taxIncluded', 'invoicePrefix', 'posFooter'].includes(field)) {
           const oldVal = (business as any)[field];
           if (oldVal !== dto[field]) {
             this.logger.log(`[AUDIT] Settings cambiado por usuario ${userId}: ${field} cambió de "${oldVal}" a "${dto[field]}"`);

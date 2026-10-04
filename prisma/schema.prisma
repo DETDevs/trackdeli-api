@@ -235,6 +235,8 @@ model Business {
   whatsappDisplay        String?      @db.VarChar(30)
 
   // Configuración del POS
+  taxEnabled             Boolean      @default(false)
+  taxIncluded            Boolean      @default(false)
   taxRate                Float        @default(0)
   currency               String       @default("NIO") @db.VarChar(10)
   invoicePrefix          String       @default("FAC") @db.VarChar(10)
@@ -819,6 +821,9 @@ model Sale {
 
   subtotal       Float
   discountAmount Float            @default(0)
+  taxRate        Float            @default(0)
+  taxEnabled     Boolean          @default(false)
+  taxIncluded    Boolean          @default(false)
   taxAmount      Float            @default(0)
   total          Float
 

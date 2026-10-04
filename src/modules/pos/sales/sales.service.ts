@@ -58,7 +58,7 @@ export class SalesService {
 
       const business = await tx.business.findUnique({
         where: { id: businessId },
-        select: { invoicePrefix: true, invoiceCounter: true, taxRate: true, currency: true, name: true },
+        select: { invoicePrefix: true, invoiceCounter: true, taxRate: true, taxEnabled: true, taxIncluded: true, currency: true, name: true },
       });
       if (!business) throw new NotFoundException("Negocio no encontrado");
 
@@ -99,9 +99,34 @@ export class SalesService {
       }
 
       const discountAmount = dto.discountAmount || 0;
-      const taxableAmount = subtotal - discountAmount;
-      const taxAmount = taxableAmount * (business.taxRate / 100);
-      const total = taxableAmount + taxAmount;
+      const finalSubtotal = subtotal - discountAmount;
+
+      const hasClientSnapshot = dto.clientTotal !== undefined && dto.clientTaxEnabled !== undefined;
+      const appliedTaxEnabled = hasClientSnapshot ? dto.clientTaxEnabled : business.taxEnabled;
+      const appliedTaxIncluded = hasClientSnapshot ? dto.clientTaxIncluded : business.taxIncluded;
+      const appliedTaxRate = hasClientSnapshot ? (dto.clientTaxRate || 0) : business.taxRate;
+
+      let calculatedTaxAmount = 0;
+      let calculatedTotal = finalSubtotal;
+      
+      if (appliedTaxEnabled) {
+        if (appliedTaxIncluded) {
+          calculatedTaxAmount = finalSubtotal - (finalSubtotal / (1 + (appliedTaxRate / 100)));
+        } else {
+          calculatedTaxAmount = finalSubtotal * (appliedTaxRate / 100);
+          calculatedTotal = finalSubtotal + calculatedTaxAmount;
+        }
+      }
+      
+      const taxAmount = Math.round(calculatedTaxAmount * 100) / 100;
+      const total = Math.round(calculatedTotal * 100) / 100;
+
+      if (dto.clientTotal !== undefined) {
+        const diff = Math.abs(dto.clientTotal - total);
+        if (diff > 0.05) {
+          throw new BadRequestException(`Manipulación de totales detectada o desincronización severa. Total enviado: ${dto.clientTotal}, Total calculado en servidor: ${total}`);
+        }
+      }
 
       const isCredit = (dto.paymentMethod as any) === PosPaymentMethod.CREDITO || (dto as any).paymentType === PosPaymentMethod.CREDITO;
       const paymentMethod = isCredit ? PosPaymentMethod.CREDITO : dto.paymentMethod;
@@ -245,6 +270,9 @@ export class SalesService {
           items: { create: processedItems },
           subtotal,
           discountAmount,
+          taxRate: appliedTaxRate,
+          taxEnabled: appliedTaxEnabled,
+          taxIncluded: appliedTaxIncluded,
           taxAmount,
           total,
           paymentMethod,

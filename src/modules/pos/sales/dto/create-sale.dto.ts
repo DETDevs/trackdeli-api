@@ -88,4 +88,23 @@ export class CreateSaleDto {
   @SanitizeText()
   @IsString()
   notes?: string;
+
+  // Snapshot del cliente (offline o offline/online sync tolerante)
+  @IsOptional()
+  @IsNumber()
+  clientTaxRate?: number;
+
+  @IsOptional()
+  clientTaxEnabled?: boolean;
+
+  @IsOptional()
+  clientTaxIncluded?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  clientTaxAmount?: number;
+
+  @IsOptional()
+  @IsNumber()
+  clientTotal?: number;
 }

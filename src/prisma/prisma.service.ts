@@ -1270,6 +1270,16 @@ WHERE a."customerId" = c."id"
           END $$;`,
         },
         {
+          name: 'Columnas de configuración de impuestos en businesses y pos_sales',
+          sql: `
+            ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "taxEnabled" BOOLEAN NOT NULL DEFAULT false;
+            ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "taxIncluded" BOOLEAN NOT NULL DEFAULT false;
+            ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 0;
+            ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "taxEnabled" BOOLEAN NOT NULL DEFAULT false;
+            ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "taxIncluded" BOOLEAN NOT NULL DEFAULT false;
+          `,
+        },
+        {
           name: 'Columna pos_products.attributes e índice GIN',
           sql: `DO $$ BEGIN
             ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "attributes" JSONB NOT NULL DEFAULT '{}';
