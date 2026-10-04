@@ -6,6 +6,7 @@ import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { TraceInterceptor } from './common/interceptors/trace.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 
 async function bootstrap() {
@@ -45,7 +46,7 @@ async function bootstrap() {
     }),
   );
 
-  app.useGlobalInterceptors(new LoggingInterceptor());
+  app.useGlobalInterceptors(new TraceInterceptor(), new LoggingInterceptor());
   app.useGlobalFilters(new AllExceptionsFilter());
 
   app.use((req: any, res: any, next: any) => { res.setHeader('Content-Type', 'application/json; charset=utf-8'); next(); });

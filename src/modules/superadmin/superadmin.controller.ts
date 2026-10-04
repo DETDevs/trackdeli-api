@@ -26,6 +26,8 @@ import { CommissionsService } from '../commissions/commissions.service';
 import { BusinessesService } from '../businesses/businesses.service';
 import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
 
+import { LatencyDiagnosticsService } from './latency-diagnostics.service';
+
 @Controller('superadmin')
 @UseGuards(SuperAdminGuard)
 export class SuperAdminController {
@@ -33,7 +35,13 @@ export class SuperAdminController {
     private readonly superAdminService: SuperAdminService,
     private readonly commissionsService: CommissionsService,
     private readonly businessesService: BusinessesService,
+    private readonly latencyDiagnosticsService: LatencyDiagnosticsService,
   ) {}
+
+  @Get('diagnostics/latency')
+  async getLatencyDiagnostics() {
+    return this.latencyDiagnosticsService.getDiagnostics();
+  }
 
   @Get('businesses')
   async getBusinesses() {

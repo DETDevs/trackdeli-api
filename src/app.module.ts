@@ -29,6 +29,7 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { MembershipGuard } from './common/guards/membership.guard';
+import { HealthController } from './health.controller';
 
 @Module({
   imports: [
@@ -92,6 +93,7 @@ import { MembershipGuard } from './common/guards/membership.guard';
     BookingModule,
     IndustriesModule,
   ],
+  controllers: [HealthController],
   providers: [
     {
       provide: APP_GUARD,

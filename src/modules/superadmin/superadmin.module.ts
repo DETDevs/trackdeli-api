@@ -5,11 +5,12 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { UploadModule } from '../upload/upload.module';
 import { CommissionsModule } from '../commissions/commissions.module';
 import { BusinessesModule } from '../businesses/businesses.module';
+import { LatencyDiagnosticsService } from './latency-diagnostics.service';
 
 @Module({
   imports: [PrismaModule, UploadModule, CommissionsModule, BusinessesModule],
   controllers: [SuperAdminController],
-  providers: [SuperAdminService],
+  providers: [SuperAdminService, LatencyDiagnosticsService],
   exports: [SuperAdminService],
 })
 export class SuperAdminModule {}

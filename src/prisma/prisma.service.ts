@@ -10,6 +10,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { slugify } from '../common/utils/slug.util';
+import { traceContext } from '../common/trace-context';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
@@ -37,7 +38,17 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
     await this.$connect();
 
     (this as any).$on('query', (e: any) => {
-      if (e.duration > 500) {
+      const trace = traceContext.getStore();
+      if (trace) {
+        trace.queryCount++;
+        trace.queryTimeMs += e.duration;
+      }
+
+      if (e.duration > 200 && process.env.TRACE_ENABLED === 'true') {
+        const shortQuery = e.query.length > 200 ? e.query.substring(0, 200) + '...' : e.query;
+        this.logger.warn(`[SLOW QUERY] (${e.duration}ms): ${shortQuery}`);
+      } else if (e.duration > 500) {
+        // Fallback original behavior if trace not enabled
         this.logger.warn(`Query lenta (${e.duration}ms): ${e.query}`);
       }
     });
