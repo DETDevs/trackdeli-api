@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TraceInterceptor } from './common/interceptors/trace.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import * as compression from 'compression';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -46,6 +47,7 @@ async function bootstrap() {
     }),
   );
 
+  app.use(compression({ threshold: 1024 }));
   app.useGlobalInterceptors(new TraceInterceptor(), new LoggingInterceptor());
   app.useGlobalFilters(new AllExceptionsFilter());
 

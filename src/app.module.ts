@@ -31,6 +31,8 @@ import { RolesGuard } from './common/guards/roles.guard';
 import { MembershipGuard } from './common/guards/membership.guard';
 import { HealthController } from './health.controller';
 
+import { CustomThrottlerGuard } from './common/guards/custom-throttler.guard';
+
 @Module({
   imports: [
     SentryModule.forRoot(),
@@ -97,7 +99,7 @@ import { HealthController } from './health.controller';
   providers: [
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: CustomThrottlerGuard,
     },
     {
       provide: APP_GUARD,
