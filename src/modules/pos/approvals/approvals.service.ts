@@ -21,22 +21,27 @@ export class ApprovalsService {
     cashierId: string,
     cashierRole: string
   ): Promise<string> {
-    // Rate limiting: 5 failed attempts in 15 mins by terminal/email
+    // Rate limiting: 5 failed attempts in 15 mins by cashier OR by target approver
     const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const approverHash = createHash('sha256').update(dto.approverEmail ? dto.approverEmail.trim().toLowerCase() : '').digest('hex').substring(0, 16);
+
+    const [userPart, domainPart] = (dto.approverEmail || '').split('@');
+    const maskedEmail = userPart && domainPart 
+      ? (userPart.length <= 2 ? `${userPart[0]}*@${domainPart}` : `${userPart[0]}***${userPart[userPart.length - 1]}@${domainPart}`)
+      : '***';
+
     const recentFailures = await this.prisma.posAuditLog.count({
       where: {
         businessId,
         action: 'APPROVAL_ATTEMPT_FAILED',
-        entityId: dto.cashRegisterId,
         createdAt: { gte: fifteenMinsAgo },
         OR: [
           { userId: cashierId },
-          { reason: { contains: dto.approverEmail } }
+          { reason: { contains: approverHash } }
         ]
       }
     });
 
-    console.log(`APPROVAL_ATTEMPT: recentFailures=${recentFailures}`);
     if (recentFailures >= 5) {
       this.throwError('APPROVAL_LOCKED', 'Demasiados intentos fallidos. Intente más tarde.');
     }
@@ -58,7 +63,7 @@ export class ApprovalsService {
         action: 'APPROVAL_ATTEMPT_FAILED',
         entityType: 'User',
         entityId: dto.cashRegisterId,
-        reason: `Usuario de aprobación no encontrado o sin permisos: ${dto.approverEmail}`,
+        reason: `Usuario de aprobación no encontrado o sin permisos [target: ${maskedEmail}#${approverHash}]`,
       });
       this.throwError('APPROVAL_DENIED', 'Credenciales incorrectas o usuario no autorizado.');
     }
@@ -73,7 +78,7 @@ export class ApprovalsService {
         action: 'APPROVAL_ATTEMPT_FAILED',
         entityType: 'CashRegister',
         entityId: dto.cashRegisterId,
-        reason: `Contraseña incorrecta para ${dto.action} (email: ${dto.approverEmail})`,
+        reason: `Contraseña incorrecta para ${dto.action} [target: ${maskedEmail}#${approverHash}]`,
       });
       this.throwError('APPROVAL_DENIED', 'Credenciales incorrectas o usuario no autorizado.');
     }

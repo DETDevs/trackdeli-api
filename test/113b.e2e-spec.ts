@@ -285,6 +285,7 @@ describe('113b - E2E Tests (Control y Dinero)', () => {
     expect(res.body.summary).not.toHaveProperty('movementsIn');
     expect(res.body.register).not.toHaveProperty('movements');
     expect(res.body.register).not.toHaveProperty('difference');
+    console.log('JSON_CIERRE_CAJERO:', JSON.stringify(res.body, null, 2));
   });
 
   it('12. Cierre ciego: ENCARGADO ve números', async () => {
@@ -293,7 +294,14 @@ describe('113b - E2E Tests (Control y Dinero)', () => {
       .set('Authorization', `Bearer ${encargadoToken}`);
     expect(res.status).toBe(200);
     console.log('JSON_CIERRE_ENCARGADO:', JSON.stringify(res.body, null, 2));
-    expect(res.body.totalSales).not.toBeNull();
+    expect(res.body.summary.totalSales).toBe(655.5);
+    expect(res.body.summary.totalCash).toBe(318.5);
+    expect(res.body.summary.totalCard).toBe(118.5);
+    expect(res.body.summary.totalTransfer).toBe(218.5);
+    expect(res.body.summary.currentCash).toBe(418.5);
+    expect(typeof res.body.summary.totalCash).toBe('number');
+    expect(typeof res.body.summary.currentCash).toBe('number');
+    expect(res.body.register.closedBy).toBeNull();
   });
 
   it('13. Diferencia fuera de tolerancia sin nota -> 422', async () => {
@@ -433,5 +441,102 @@ describe('113b - E2E Tests (Control y Dinero)', () => {
       expect(e.message).toContain('Updates and Deletes are not allowed on pos_audit_logs');
     }
     expect(failed).toBe(true);
+  });
+
+  it('20. Verificación estricta de aritmética y tipos en esperado de caja (113b-5)', async () => {
+    // 1. Abrir nuevo turno con apertura 100
+    const openRes = await request(app.getHttpServer())
+      .post('/pos/cash-register/open')
+      .set('Authorization', `Bearer ${cajeroToken}`)
+      .send({ openingCash: 100 });
+    expect(openRes.status).toBe(201);
+    const newShiftId = openRes.body.id;
+
+    // 2. Venta efectivo C$ 218.50 pagada con C$ 250 (vuelto 31.50)
+    const sale1Res = await request(app.getHttpServer())
+      .post('/pos/sales')
+      .set('Authorization', `Bearer ${cajeroToken}`)
+      .set('Idempotency-Key', 'test20-venta-efectivo')
+      .send({
+        cashRegisterId: newShiftId,
+        customerId,
+        items: [{ productId, productName: 'Item 1', quantity: 1, unitPrice: 218.50, subtotal: 218.50 }],
+        subtotal: 218.50, taxAmount: 0, total: 218.50, amountPaid: 218.50, change: 0,
+        payments: [{ method: 'EFECTIVO', amount: 218.50, amountTendered: 250 }]
+      });
+    expect(sale1Res.status).toBe(201);
+    expect(Number(sale1Res.body.payments[0].change)).toBe(31.50);
+
+    // 3. Venta tarjeta 118.50
+    const sale2Res = await request(app.getHttpServer())
+      .post('/pos/sales')
+      .set('Authorization', `Bearer ${cajeroToken}`)
+      .set('Idempotency-Key', 'test20-venta-tarjeta')
+      .send({
+        cashRegisterId: newShiftId,
+        customerId,
+        items: [{ productId, productName: 'Item 2', quantity: 1, unitPrice: 118.50, subtotal: 118.50 }],
+        subtotal: 118.50, taxAmount: 0, total: 118.50, amountPaid: 118.50, change: 0,
+        payments: [{ method: 'TARJETA', amount: 118.50, reference: 'CARD-TX-999' }]
+      });
+    expect(sale2Res.status).toBe(201);
+
+    // 4. Movimiento IN 50
+    const inRes = await request(app.getHttpServer())
+      .post(`/pos/cash-register/${newShiftId}/movements`)
+      .set('Authorization', `Bearer ${encargadoToken}`)
+      .send({ type: 'ENTRADA', amount: 50, reason: 'Cambio inicial' });
+    expect(inRes.status).toBe(201);
+
+    // 5. Movimiento OUT 20
+    const outRes = await request(app.getHttpServer())
+      .post(`/pos/cash-register/${newShiftId}/movements`)
+      .set('Authorization', `Bearer ${encargadoToken}`)
+      .send({ type: 'SALIDA', amount: 20, reason: 'Pago hielo' });
+    expect(outRes.status).toBe(201);
+
+    // 6. ENCARGADO consulta summary
+    const summaryRes = await request(app.getHttpServer())
+      .get(`/pos/cash-register/${newShiftId}/summary`)
+      .set('Authorization', `Bearer ${encargadoToken}`);
+    expect(summaryRes.status).toBe(200);
+
+    console.log('JSON_ENCARGADO_TEST20:', JSON.stringify(summaryRes.body, null, 2));
+
+    const s = summaryRes.body.summary;
+    const r = summaryRes.body.register;
+
+    // ENCARGADO ve expectedCash === 348.5 (100 + 218.5 + 50 - 20)
+    expect(s.currentCash).toBe(348.5);
+    expect(r.expectedCash).toBe(348.5);
+    expect(r.expectedAmount).toBe(348.5);
+    expect(s.totalCash).toBe(218.5);
+    expect(r.totalCash).toBe(218.5);
+    expect(s.totalCard).toBe(118.5);
+    expect(r.totalCard).toBe(118.5);
+
+    // Verificación estricta de tipos number
+    expect(typeof s.currentCash).toBe('number');
+    expect(typeof r.expectedCash).toBe('number');
+    expect(typeof s.totalCash).toBe('number');
+    expect(typeof r.totalCash).toBe('number');
+    expect(typeof s.totalCard).toBe('number');
+    expect(typeof r.totalCard).toBe('number');
+
+    // Turno OPEN -> closedBy debe ser null
+    expect(r.closedBy).toBeNull();
+
+    // 7. En el cierre: contado 348.5 -> difference === 0
+    const closeRes = await request(app.getHttpServer())
+      .post(`/pos/cash-register/${newShiftId}/close`)
+      .set('Authorization', `Bearer ${encargadoToken}`)
+      .send({ cashRegisterId: newShiftId, closingCash: 348.5, counted: { CASH: 348.5 } });
+    expect(closeRes.status).toBe(201);
+
+    expect(closeRes.body.difference).toBe(0);
+    expect(typeof closeRes.body.difference).toBe('number');
+    expect(closeRes.body.expectedCash).toBe(348.5);
+    expect(typeof closeRes.body.expectedCash).toBe('number');
+    expect(closeRes.body.closedBy).not.toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 import {
   Injectable, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Logger,
 } from "@nestjs/common";
-import { BusinessProductType, CreditAccountStatus, PosPaymentMethod } from "@prisma/client";
+import { BusinessProductType, CreditAccountStatus, PosPaymentMethod, Prisma } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { BusinessProductsService } from "../../business-products/business-products.service";
 import { CreateSaleDto } from "./dto/create-sale.dto";
@@ -327,8 +327,8 @@ export class SalesService {
         }];
       }
 
-      let totalPayments = 0;
-      let totalChange = 0;
+      let totalPaymentsDec = new Prisma.Decimal(0);
+      let totalChangeDec = new Prisma.Decimal(0);
       let mainMethod = paymentsPayload.length === 1 ? paymentsPayload[0].method : PosPaymentMethod.MIXTO;
 
       const processedPayments = [];
@@ -345,12 +345,15 @@ export class SalesService {
           });
         }
 
-        let pChange = 0;
-        let pAmountTendered = p.amountTendered ?? p.amount;
+        const pAmtDec = new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0);
+        let pTenderedDec = p.amountTendered !== undefined && p.amountTendered !== null 
+          ? new Prisma.Decimal(p.amountTendered.toString()) 
+          : pAmtDec;
+        let pChangeDec = new Prisma.Decimal(0);
 
         if (p.method === PosPaymentMethod.EFECTIVO) {
-           pChange = pAmountTendered - p.amount;
-           if (pChange < 0) {
+           pChangeDec = pTenderedDec.minus(pAmtDec);
+           if (pChangeDec.lessThan(0)) {
               throw new BadRequestException({
                 statusCode: 400,
                 error: 'Bad Request',
@@ -359,7 +362,7 @@ export class SalesService {
               });
            }
         } else {
-           pAmountTendered = p.amount;
+           pTenderedDec = pAmtDec;
         }
 
         if (p.method === PosPaymentMethod.TARJETA && policies.requireReferenceCard && !p.reference) {
@@ -371,31 +374,32 @@ export class SalesService {
 
         const safeReference = p.reference ? p.reference.toString().substring(0, 50).trim() : null;
 
-        totalPayments += p.amount;
-        totalChange += pChange;
+        totalPaymentsDec = totalPaymentsDec.plus(pAmtDec);
+        totalChangeDec = totalChangeDec.plus(pChangeDec);
 
         processedPayments.push({
            method: p.method,
-           amount: p.amount,
-           amountTendered: pAmountTendered,
-           change: pChange,
+           amount: pAmtDec,
+           amountTendered: pTenderedDec,
+           change: pChangeDec,
            reference: safeReference,
            currency: business.currency,
            exchangeRate: 1,
-           amountBase: p.amount,
+           amountBase: Number(pAmtDec.toDecimalPlaces(2)),
            shiftId: cashRegisterId,
            createdById: cashierId
         });
       }
 
-      if (Math.round(totalPayments * 100) !== Math.round(total * 100)) {
+      const expectedTotalDec = new Prisma.Decimal(total.toString());
+      if (!totalPaymentsDec.equals(expectedTotalDec)) {
          throw new BadRequestException({
             statusCode: 400,
             error: 'Bad Request',
             code: 'PAYMENT_TOTAL_MISMATCH',
             message: {
                code: 'PAYMENT_TOTAL_MISMATCH',
-               message: `La suma de los pagos (${totalPayments.toFixed(2)}) no coincide con el total de la venta (${total.toFixed(2)})`
+               message: `La suma de los pagos (${totalPaymentsDec.toFixed(2)}) no coincide con el total de la venta (${expectedTotalDec.toFixed(2)})`
             }
          });
       }
@@ -420,8 +424,8 @@ export class SalesService {
           taxAmount,
           total,
           paymentMethod: mainMethod,
-          amountPaid: totalPayments + totalChange,
-          change: totalChange,
+          amountPaid: Number(totalPaymentsDec.plus(totalChangeDec).toDecimalPlaces(2)),
+          change: totalChangeDec,
           reference: dto.reference || null,
           notes: finalNotes || null,
           status: "COMPLETED",

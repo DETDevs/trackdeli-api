@@ -591,7 +591,7 @@ model PosPolicies {
   cashierMaxDiscountPercent  Float    @default(10)
   priceOverrideEnabled       Boolean  @default(false)
   
-  paymentMethodsEnabled      String   @default("EFECTIVO,TARJETA,TRANSFERENCIA,CREDITO") // CSV parsed in code
+  paymentMethodsEnabled      String   @default("EFECTIVO,TARJETA,TRANSFERENCIA,CREDITO,OTRO") // CSV parsed in code
   requireReferenceCard       Boolean  @default(true)
   requireReferenceTransfer   Boolean  @default(true)
   requireReferenceOther      Boolean  @default(false)
