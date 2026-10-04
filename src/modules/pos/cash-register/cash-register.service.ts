@@ -91,16 +91,41 @@ export class CashRegisterService {
     if (userRole !== 'CAJERO') return registerData;
     const policies = await this.policiesService.get(businessId);
     if (policies.blindCashClose) {
-      registerData.expectedCash = null;
-      registerData.expectedAmount = null;
-      registerData.difference = null;
-      registerData.totalCash = null;
-      registerData.totalCard = null;
-      registerData.totalTransfer = null;
-      if ('currentCash' in registerData) registerData.currentCash = null;
-      if ('summary' in registerData && registerData.summary) {
-         registerData.summary.totalCash = null;
-         registerData.summary.currentCash = null;
+      delete registerData.expectedCash;
+      delete registerData.expectedAmount;
+      delete registerData.difference;
+      delete registerData.totalCash;
+      delete registerData.totalCard;
+      delete registerData.totalTransfer;
+      delete registerData.totalSales;
+      delete registerData.movementsIn;
+      delete registerData.movementsOut;
+      delete registerData.movements;
+      delete registerData.sales;
+      delete registerData.currentCash;
+      delete registerData.salesDetails;
+      
+      if (registerData.register) {
+        delete registerData.register.expectedCash;
+        delete registerData.register.expectedAmount;
+        delete registerData.register.difference;
+        delete registerData.register.totalCash;
+        delete registerData.register.totalCard;
+        delete registerData.register.totalTransfer;
+        delete registerData.register.totalSales;
+        delete registerData.register.movementsIn;
+        delete registerData.register.movementsOut;
+        delete registerData.register.movements;
+        delete registerData.register.sales;
+        delete registerData.register.currentCash;
+        delete registerData.register.salesDetails;
+      }
+      if (registerData.summary) {
+        delete registerData.summary.totalCash;
+        delete registerData.summary.currentCash;
+        delete registerData.summary.totalSales;
+        delete registerData.summary.movementsIn;
+        delete registerData.summary.movementsOut;
       }
     }
     return registerData;

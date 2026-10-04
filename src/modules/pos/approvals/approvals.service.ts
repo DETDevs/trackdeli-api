@@ -36,10 +36,10 @@ export class ApprovalsService {
       }
     });
 
+    console.log(`APPROVAL_ATTEMPT: recentFailures=${recentFailures}`);
     if (recentFailures >= 5) {
       this.throwError('APPROVAL_LOCKED', 'Demasiados intentos fallidos. Intente más tarde.');
     }
-
 
     const approver = await this.prisma.user.findFirst({
       where: {
@@ -68,16 +68,19 @@ export class ApprovalsService {
     if (!isPasswordValid) {
       await this.auditService.record({
         businessId,
-        userId: approver.id,
-        userRole: approver.role,
+        userId: cashierId,
+        userRole: cashierRole,
         action: 'APPROVAL_ATTEMPT_FAILED',
         entityType: 'CashRegister',
         entityId: dto.cashRegisterId,
-        reason: `Contraseña incorrecta para ${dto.action}`,
+        reason: `Contraseña incorrecta para ${dto.action} (email: ${dto.approverEmail})`,
       });
       this.throwError('APPROVAL_DENIED', 'Credenciales incorrectas o usuario no autorizado.');
     }
 
+    // El contador es atómico si la DB lo maneja, pero en NodeJS secuencial (o E2E)
+    // los fallos ya fueron persistidos porque no hay rollback aquí.
+    
     await this.auditService.record({
       businessId,
       userId: approver.id,

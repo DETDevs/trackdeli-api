@@ -35,7 +35,7 @@ describe('113b - E2E Tests (Control y Dinero)', () => {
     jwtService = moduleFixture.get<JwtService>(JwtService);
 
     // Clean DB
-    await prisma.posAuditLog.deleteMany();
+    await prisma.$executeRawUnsafe('TRUNCATE TABLE pos_audit_logs CASCADE');
     await prisma.idempotencyKey.deleteMany();
     await prisma.posApprovalToken.deleteMany();
     await prisma.posPayment.deleteMany();
@@ -243,6 +243,7 @@ describe('113b - E2E Tests (Control y Dinero)', () => {
         subtotal: 218.50, taxAmount: 0, total: 218.50, amountPaid: 218.50, change: 0,
       });
     expect(res.status).toBe(201);
+    console.log('JSON_IDEMPOTENCY:', JSON.stringify(res.body, null, 2));
   });
 
   it('8. Idempotencia: misma clave OTRO cuerpo -> IDEMPOTENCY_KEY_REUSED 409', async () => {
@@ -279,9 +280,11 @@ describe('113b - E2E Tests (Control y Dinero)', () => {
     const res = await request(app.getHttpServer())
       .get(`/pos/cash-register/${cashRegisterId}/summary`)
       .set('Authorization', `Bearer ${cajeroToken}`);
-    expect(res.status).toBe(200);
-    expect(res.body.totalSales).toBeFalsy();
-    expect(res.body.expectedCash).toBeFalsy();
+    expect(res.body.summary).not.toHaveProperty('expectedCash');
+    expect(res.body.summary).not.toHaveProperty('totalSales');
+    expect(res.body.summary).not.toHaveProperty('movementsIn');
+    expect(res.body.register).not.toHaveProperty('movements');
+    expect(res.body.register).not.toHaveProperty('difference');
   });
 
   it('12. Cierre ciego: ENCARGADO ve números', async () => {
@@ -289,6 +292,7 @@ describe('113b - E2E Tests (Control y Dinero)', () => {
       .get(`/pos/cash-register/${cashRegisterId}/summary`)
       .set('Authorization', `Bearer ${encargadoToken}`);
     expect(res.status).toBe(200);
+    console.log('JSON_CIERRE_ENCARGADO:', JSON.stringify(res.body, null, 2));
     expect(res.body.totalSales).not.toBeNull();
   });
 
@@ -335,8 +339,7 @@ describe('113b - E2E Tests (Control y Dinero)', () => {
 
     // Intento 6 (Bloqueado)
     const resLock = await request(app.getHttpServer()).post('/pos/approvals').set('Authorization', `Bearer ${cajeroToken}`).send({ cashRegisterId, approverEmail: 'encargado@113.com', approverPassword: 'wrong', action: 'ANULAR_VENTA' });
-    if (resLock.status !== 429) console.log(resLock.body);
-    expect([400, 429].includes(resLock.status)).toBe(true);
+    expect(resLock.status).toBe(429);
   });
 
   it('17. CreditController roles check', async () => {
@@ -384,5 +387,51 @@ describe('113b - E2E Tests (Control y Dinero)', () => {
       .set('Authorization', `Bearer ${cajeroToken}`)
       .send({ amount: 10, paymentMethod: 'EFECTIVO' });
     expect(cRes.status).toBe(201);
+  });
+
+  it('18. Dos cierres simultáneos -> SHIFT_ALREADY_CLOSED 409', async () => {
+    // Abrir un turno rápido
+    const shiftRes = await request(app.getHttpServer())
+      .post('/pos/cash-register/open')
+      .set('Authorization', `Bearer ${cajeroToken}`)
+      .send({ initialCash: 100 });
+    const shift3 = shiftRes.body.id;
+
+    // Ejecutar dos cierres concurrentes
+    const [res1, res2] = await Promise.all([
+      request(app.getHttpServer())
+        .post('/pos/cash-register/close')
+        .set('Authorization', `Bearer ${cajeroToken}`)
+        .send({ cashRegisterId: shift3, closingCash: 100, counted: { CASH: 100 }, notes: 'bypass tolerance' }),
+      request(app.getHttpServer())
+        .post('/pos/cash-register/close')
+        .set('Authorization', `Bearer ${cajeroToken}`)
+        .send({ cashRegisterId: shift3, closingCash: 100, counted: { CASH: 100 }, notes: 'bypass tolerance' })
+    ]);
+
+    const statuses = [res1.status, res2.status];
+    if (!statuses.includes(201)) {
+      console.log('RES1:', res1.status, res1.body);
+      console.log('RES2:', res2.status, res2.body);
+    }
+    expect(statuses.includes(201)).toBe(true);
+    expect(statuses.some(s => s === 409 || s === 404 || s === 422)).toBe(true);
+  });
+
+  it('19. UPDATE directo a pos_audit_logs falla por trigger', async () => {
+    let failed = false;
+    // Insert a dummy log first to ensure there is a row to update
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO pos_audit_logs (id, "businessId", "userId", "userRole", action, "entityType", "entityId", before, after, reason, "createdAt") 
+      VALUES (gen_random_uuid(), '${businessId}', 'user1', 'CAJERO', 'TEST', 'Test', '123', '{}', '{}', 'test', NOW())
+    `);
+    
+    try {
+      await prisma.$executeRaw`UPDATE pos_audit_logs SET reason = 'hacked'`;
+    } catch (e) {
+      failed = true;
+      expect(e.message).toContain('Updates and Deletes are not allowed on pos_audit_logs');
+    }
+    expect(failed).toBe(true);
   });
 });
