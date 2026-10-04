@@ -320,6 +320,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'RETURNED' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'SaleStatus' LIMIT 1)) THEN
               ALTER TYPE "SaleStatus" ADD VALUE 'RETURNED';
             END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'CANCELLED' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'CreditAccountStatus' LIMIT 1)) THEN
+              ALTER TYPE "CreditAccountStatus" ADD VALUE 'CANCELLED';
+            END IF;
 
             ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "voidedAt" TIMESTAMP(3);
             ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "voidedById" TEXT;

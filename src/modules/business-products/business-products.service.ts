@@ -759,7 +759,7 @@ export class BusinessProductsService {
           const pendingCreditAccountsCount = await tx.creditAccount.count({
             where: {
               businessId,
-              status: { not: CreditAccountStatus.PAID },
+              status: { notIn: [CreditAccountStatus.PAID, CreditAccountStatus.CANCELLED] },
             },
           });
 

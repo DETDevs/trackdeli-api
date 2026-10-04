@@ -617,7 +617,13 @@ export class SalesService {
     filters?: { from?: string; to?: string; status?: string; paymentMethod?: string; cashRegisterId?: string }
   ) {
     const where: any = { businessId };
-    if (filters?.status) where.status = filters.status;
+    if (filters?.status) {
+      if (filters.status === 'CANCELLED' || filters.status === 'VOIDED') {
+        where.status = { in: ['CANCELLED', 'VOIDED'] };
+      } else {
+        where.status = filters.status;
+      }
+    }
     if (filters?.paymentMethod) where.paymentMethod = filters.paymentMethod;
     if (filters?.cashRegisterId) where.cashRegisterId = filters.cashRegisterId;
     if (filters?.from || filters?.to) {
@@ -637,6 +643,10 @@ export class SalesService {
         cashier: { select: { id: true, name: true } },
         cashRegister: { select: { id: true, openedAt: true } },
         payments: true,
+        returns: {
+          include: { items: true },
+          orderBy: { createdAt: 'desc' },
+        },
       },
       orderBy: { createdAt: "desc" },
       take: 200,
@@ -690,30 +700,32 @@ export class SalesService {
       });
     }
 
-    let approvedById: string | null = null;
-    if (policies.voidsRequireApproval) {
-      if (userRole === UserRole.CAJERO) {
-        approvedById = await this.approvalsService.consumeToken(
-          businessId,
-          PosAction.ANULAR_VENTA_COBRADA,
-          dto.approvalToken,
-        );
-      } else {
-        approvedById = dto.approvalToken
-          ? await this.approvalsService.consumeToken(
-              businessId,
-              PosAction.ANULAR_VENTA_COBRADA,
-              dto.approvalToken,
-            )
-          : userId;
-      }
-    } else {
-      approvedById = userId;
-    }
-
     return await this.prisma.$transaction(async (tx) => {
       // 1. Lock sale row
       await tx.$queryRaw`SELECT id FROM pos_sales WHERE id = ${id} FOR UPDATE`;
+
+      let approvedById: string | null = null;
+      if (policies.voidsRequireApproval) {
+        if (userRole === UserRole.CAJERO) {
+          approvedById = await this.approvalsService.consumeToken(
+            businessId,
+            PosAction.ANULAR_VENTA_COBRADA,
+            dto.approvalToken,
+            tx,
+          );
+        } else {
+          approvedById = dto.approvalToken
+            ? await this.approvalsService.consumeToken(
+                businessId,
+                PosAction.ANULAR_VENTA_COBRADA,
+                dto.approvalToken,
+                tx,
+              )
+            : userId;
+        }
+      } else {
+        approvedById = userId;
+      }
 
       const sale = await tx.sale.findFirst({
         where: { id, businessId },
@@ -780,21 +792,28 @@ export class SalesService {
 
       // 3. Cash / Payments reversal
       let netCashPaidDec = new Prisma.Decimal(0);
-      for (const p of sale.payments) {
-        if (p.method === PosPaymentMethod.EFECTIVO) {
-          const tendered = new Prisma.Decimal(p.amountTendered != null ? p.amountTendered.toString() : p.amount.toString());
-          const change = new Prisma.Decimal(p.change != null ? p.change.toString() : 0);
-          const isUsd = (p.currency || '').toUpperCase() === 'USD';
-          if (isUsd) {
-            const rate = new Prisma.Decimal(p.exchangeRate != null ? p.exchangeRate.toString() : 1);
-            const baseTendered = tendered.times(rate).toDecimalPlaces(2);
-            netCashPaidDec = netCashPaidDec.plus(baseTendered.minus(change));
-          } else {
-            netCashPaidDec = netCashPaidDec.plus(tendered.minus(change));
+      if (sale.payments && sale.payments.length > 0) {
+        for (const p of sale.payments) {
+          if (p.method === PosPaymentMethod.EFECTIVO) {
+            const tendered = new Prisma.Decimal(p.amountTendered != null ? p.amountTendered.toString() : p.amount.toString());
+            const change = new Prisma.Decimal(p.change != null ? p.change.toString() : 0);
+            const isUsd = (p.currency || '').toUpperCase() === 'USD';
+            if (isUsd) {
+              const rate = new Prisma.Decimal(p.exchangeRate != null ? p.exchangeRate.toString() : 1);
+              const baseTendered = p.amountBase != null 
+                ? new Prisma.Decimal(p.amountBase.toString())
+                : tendered.times(rate).toDecimalPlaces(2);
+              netCashPaidDec = netCashPaidDec.plus(baseTendered.minus(change));
+            } else {
+              netCashPaidDec = netCashPaidDec.plus(tendered.minus(change));
+            }
           }
         }
+      } else if (sale.paymentMethod === PosPaymentMethod.EFECTIVO) {
+        netCashPaidDec = new Prisma.Decimal(sale.total != null ? sale.total.toString() : 0);
       }
 
+      let cashRefundMovement: any = null;
       if (netCashPaidDec.greaterThan(0)) {
         let openShift = await tx.cashRegister.findFirst({
           where: { businessId, cashierId: userId, status: 'OPEN' },
@@ -819,7 +838,7 @@ export class SalesService {
           });
         }
 
-        await tx.cashMovement.create({
+        cashRefundMovement = await tx.cashMovement.create({
           data: {
             businessId,
             cashRegisterId: openShift.id,
@@ -835,12 +854,61 @@ export class SalesService {
       }
 
       // 4. Credit account reversal
+      let creditRefundMovement: any = null;
       if (sale.creditAccount) {
+        const creditPayments = await tx.creditPayment.findMany({
+          where: { creditAccountId: sale.creditAccount.id },
+        });
+        const totalAbonosPaidDec = creditPayments.reduce(
+          (sum: Prisma.Decimal, cp: any) => sum.plus(new Prisma.Decimal(cp.amount != null ? cp.amount.toString() : 0)),
+          new Prisma.Decimal(0),
+        );
+
+        // Si el cliente ya hizo abonos, se le deben reembolsar en efectivo en el turno abierto actual
+        if (totalAbonosPaidDec.greaterThan(0)) {
+          let openShift = await tx.cashRegister.findFirst({
+            where: { businessId, cashierId: userId, status: 'OPEN' },
+            select: { id: true },
+          });
+          if (!openShift) {
+            openShift = await tx.cashRegister.findFirst({
+              where: { businessId, status: 'OPEN' },
+              orderBy: { openedAt: 'desc' },
+              select: { id: true },
+            });
+          }
+          if (!openShift) {
+            throw new UnprocessableEntityException({
+              statusCode: 422,
+              error: 'Unprocessable Entity',
+              code: 'NO_OPEN_SHIFT',
+              message: {
+                code: 'NO_OPEN_SHIFT',
+                message: 'No hay turno abierto para registrar el reembolso en efectivo de los abonos ya pagados del crédito.',
+              },
+            });
+          }
+
+          creditRefundMovement = await tx.cashMovement.create({
+            data: {
+              businessId,
+              cashRegisterId: openShift.id,
+              userId,
+              type: 'SALIDA',
+              amount: totalAbonosPaidDec,
+              concept: `Reembolso abonos cliente por anulación crédito venta ${sale.invoiceNumber}`,
+              currency: 'NIO',
+              exchangeRate: new Prisma.Decimal(1),
+              amountBase: totalAbonosPaidDec,
+            },
+          });
+        }
+
         await tx.creditAccount.update({
           where: { id: sale.creditAccount.id },
           data: {
             balance: 0,
-            status: CreditAccountStatus.PAID,
+            status: CreditAccountStatus.CANCELLED,
           },
         });
       }
@@ -849,7 +917,7 @@ export class SalesService {
       const updatedSale = await tx.sale.update({
         where: { id: sale.id },
         data: {
-          status: 'VOIDED',
+          status: 'CANCELLED',
           voidedAt: new Date(),
           voidedById: userId,
           voidReason: dto.reason.trim(),
@@ -875,7 +943,7 @@ export class SalesService {
           entityType: 'Sale',
           entityId: sale.id,
           before: { status: sale.status },
-          after: { status: 'VOIDED', reason: dto.reason.trim() },
+          after: { status: 'CANCELLED', reason: dto.reason.trim() },
           reason: dto.reason.trim(),
           approvedById: approvedById || undefined,
         },
@@ -883,7 +951,29 @@ export class SalesService {
       );
 
       this.logger.log(`[voidSale] Venta anulada: ${sale.invoiceNumber} businessId=${businessId}`);
-      return this.formatSale(updatedSale);
+      const formatted = this.formatSale(updatedSale);
+      if (cashRefundMovement) {
+        (formatted as any).cashRefundMovement = {
+          id: cashRefundMovement.id,
+          cashRegisterId: cashRefundMovement.cashRegisterId,
+          type: cashRefundMovement.type,
+          amount: Number(cashRefundMovement.amount),
+          currency: cashRefundMovement.currency,
+          amountBase: Number(cashRefundMovement.amountBase),
+          concept: cashRefundMovement.concept,
+        };
+      } else if (creditRefundMovement) {
+        (formatted as any).cashRefundMovement = {
+          id: creditRefundMovement.id,
+          cashRegisterId: creditRefundMovement.cashRegisterId,
+          type: creditRefundMovement.type,
+          amount: Number(creditRefundMovement.amount),
+          currency: creditRefundMovement.currency,
+          amountBase: Number(creditRefundMovement.amountBase),
+          concept: creditRefundMovement.concept,
+        };
+      }
+      return formatted;
     });
   }
 
@@ -959,9 +1049,9 @@ export class SalesService {
       const saleAgeDays = (Date.now() - sale.createdAt.getTime()) / (1000 * 60 * 60 * 24);
       const isExpiredWindow = policies.returnsMaxDays > 0 && saleAgeDays > policies.returnsMaxDays;
       if (isExpiredWindow && !dto.approvalToken) {
-        throw new BadRequestException({
-          statusCode: 400,
-          error: 'Bad Request',
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          error: 'Unprocessable Entity',
           code: 'RETURN_WINDOW_EXPIRED',
           message: {
             code: 'RETURN_WINDOW_EXPIRED',
@@ -978,6 +1068,7 @@ export class SalesService {
             businessId,
             PosAction.DEVOLUCION,
             dto.approvalToken,
+            tx,
           );
         } else {
           approvedById = dto.approvalToken
@@ -985,6 +1076,7 @@ export class SalesService {
                 businessId,
                 PosAction.DEVOLUCION,
                 dto.approvalToken,
+                tx,
               )
             : userId;
         }
@@ -1148,6 +1240,9 @@ export class SalesService {
 
       // Handle Cash Movement in current open shift if refundMethod === EFECTIVO
       let openShiftId: string | null = null;
+      let returnCashMovement: any = null;
+      let excessCashMovement: any = null;
+
       if (refundMethod === PosPaymentMethod.EFECTIVO && totalReturnRefundDec.greaterThan(0)) {
         let openShift = await tx.cashRegister.findFirst({
           where: { businessId, cashierId: userId, status: 'OPEN' },
@@ -1172,8 +1267,7 @@ export class SalesService {
           });
         }
         openShiftId = openShift.id;
-
-        await tx.cashMovement.create({
+        returnCashMovement = await tx.cashMovement.create({
           data: {
             businessId,
             cashRegisterId: openShift.id,
@@ -1191,14 +1285,67 @@ export class SalesService {
       // Handle Credit Account if refundMethod === CREDITO
       if (refundMethod === PosPaymentMethod.CREDITO && sale.creditAccount) {
         const currentBalDec = new Prisma.Decimal(sale.creditAccount.balance.toString());
-        const newBalDec = Prisma.Decimal.max(0, currentBalDec.minus(totalReturnRefundDec));
-        await tx.creditAccount.update({
-          where: { id: sale.creditAccount.id },
-          data: {
-            balance: Number(newBalDec),
-            status: newBalDec.equals(0) ? CreditAccountStatus.PAID : CreditAccountStatus.PARTIALLY_PAID,
-          },
-        });
+        if (totalReturnRefundDec.greaterThan(currentBalDec)) {
+          // El refund supera el saldo pendiente (el cliente ya pagó parte).
+          // El excedente se reembolsa al cliente en efectivo en el turno abierto actual.
+          const excessRefundDec = totalReturnRefundDec.minus(currentBalDec);
+
+          let openShift = await tx.cashRegister.findFirst({
+            where: { businessId, cashierId: userId, status: 'OPEN' },
+            select: { id: true },
+          });
+          if (!openShift) {
+            openShift = await tx.cashRegister.findFirst({
+              where: { businessId, status: 'OPEN' },
+              orderBy: { openedAt: 'desc' },
+              select: { id: true },
+            });
+          }
+          if (!openShift) {
+            throw new UnprocessableEntityException({
+              statusCode: 422,
+              error: 'Unprocessable Entity',
+              code: 'NO_OPEN_SHIFT',
+              message: {
+                code: 'NO_OPEN_SHIFT',
+                message: 'No hay turno abierto para registrar el reembolso en efectivo del excedente sobre el crédito.',
+              },
+            });
+          }
+          if (!openShiftId) openShiftId = openShift.id;
+
+          excessCashMovement = await tx.cashMovement.create({
+            data: {
+              businessId,
+              cashRegisterId: openShift.id,
+              userId,
+              type: 'SALIDA',
+              amount: excessRefundDec,
+              concept: `Reembolso excedente crédito en efectivo venta ${sale.invoiceNumber}`,
+              currency: 'NIO',
+              exchangeRate: new Prisma.Decimal(1),
+              amountBase: excessRefundDec,
+            },
+          });
+
+          await tx.creditAccount.update({
+            where: { id: sale.creditAccount.id },
+            data: {
+              balance: 0,
+              status: CreditAccountStatus.CANCELLED,
+            },
+          });
+        } else {
+          // El refund es menor o igual al saldo pendiente
+          const newBalDec = currentBalDec.minus(totalReturnRefundDec);
+          await tx.creditAccount.update({
+            where: { id: sale.creditAccount.id },
+            data: {
+              balance: Number(newBalDec),
+              status: newBalDec.equals(0) ? CreditAccountStatus.PAID : CreditAccountStatus.PARTIALLY_PAID,
+            },
+          });
+        }
       }
 
       // Restock and Stock Movements
@@ -1314,7 +1461,29 @@ export class SalesService {
       );
 
       this.logger.log(`[createReturn] Devolución ${returnNumber} registrada para venta ${sale.invoiceNumber} (monto: ${totalReturnRefundDec.toFixed(2)})`);
-      return returnRecord;
+      return {
+        ...returnRecord,
+        ...(returnCashMovement ? {
+          cashMovement: {
+            id: returnCashMovement.id,
+            cashRegisterId: returnCashMovement.cashRegisterId,
+            type: returnCashMovement.type,
+            amount: Number(returnCashMovement.amount),
+            currency: returnCashMovement.currency,
+            concept: returnCashMovement.concept,
+          },
+        } : {}),
+        ...(excessCashMovement ? {
+          cashMovement: {
+            id: excessCashMovement.id,
+            cashRegisterId: excessCashMovement.cashRegisterId,
+            type: excessCashMovement.type,
+            amount: Number(excessCashMovement.amount),
+            currency: excessCashMovement.currency,
+            concept: excessCashMovement.concept,
+          },
+        } : {}),
+      };
     });
   }
 

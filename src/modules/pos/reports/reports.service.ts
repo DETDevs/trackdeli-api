@@ -34,20 +34,36 @@ export class ReportsService {
   }
 
   async getSalesSummary(businessId: string, from?: string, to?: string) {
-    const where: any = { businessId, status: "COMPLETED" };
+    const where: any = {
+      businessId,
+      status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
+    };
     const dateRange = this.buildDateRange(from, to);
     if (Object.keys(dateRange).length) where.createdAt = dateRange;
 
-    const sales = await this.prisma.sale.findMany({ where, include: { items: true } });
+    const sales = await this.prisma.sale.findMany({
+      where,
+      include: { items: true, returns: true },
+    });
 
     const totalSales = sales.length;
-    const totalRevenue = sales.reduce((sum, s) => sum + s.total, 0);
+    // Las ventas VOIDED y CANCELLED NO suman como venta (excluidas en where).
+    // PARTIALLY_RETURNED y RETURNED suman neto (venta menos reembolsos), no el bruto.
+    const totalRevenue = sales.reduce((sum, s) => {
+      const refundsTotal = (s.returns || []).reduce((rSum: number, r: any) => rSum + r.refundAmount, 0);
+      return sum + Math.max(0, s.total - refundsTotal);
+    }, 0);
     const totalDiscount = sales.reduce((sum, s) => sum + s.discountAmount, 0);
-    const totalTax = sales.reduce((sum, s) => sum + s.taxAmount, 0);
+    const totalTax = sales.reduce((sum, s) => {
+      const taxRefunded = (s.returns || []).reduce((rSum: number, r: any) => rSum + (r.taxRefunded || 0), 0);
+      return sum + Math.max(0, s.taxAmount - taxRefunded);
+    }, 0);
 
     const byPaymentMethod: Record<string, number> = {};
     for (const sale of sales) {
-      byPaymentMethod[sale.paymentMethod] = (byPaymentMethod[sale.paymentMethod] || 0) + sale.total;
+      const refundsTotal = (sale.returns || []).reduce((rSum: number, r: any) => rSum + r.refundAmount, 0);
+      const netSaleTotal = Math.max(0, sale.total - refundsTotal);
+      byPaymentMethod[sale.paymentMethod] = (byPaymentMethod[sale.paymentMethod] || 0) + netSaleTotal;
     }
 
     const byDay = this.groupByDay(sales);
@@ -57,11 +73,11 @@ export class ReportsService {
     return {
       period: { from, to },
       totalSales,
-      totalRevenue,
-      totalDiscount,
-      totalTax,
-      netRevenue: totalRevenue - totalDiscount,
-      averageTicket: totalSales > 0 ? totalRevenue / totalSales : 0,
+      totalRevenue: Math.round(totalRevenue * 100) / 100,
+      totalDiscount: Math.round(totalDiscount * 100) / 100,
+      totalTax: Math.round(totalTax * 100) / 100,
+      netRevenue: Math.round((totalRevenue - totalDiscount) * 100) / 100,
+      averageTicket: totalSales > 0 ? Math.round((totalRevenue / totalSales) * 100) / 100 : 0,
       byPaymentMethod,
       byDay,
     };
@@ -70,19 +86,24 @@ export class ReportsService {
   private groupByDay(sales: any[]) {
     const map = new Map<string, { count: number; revenue: number }>();
     for (const sale of sales) {
+      const refundsTotal = (sale.returns || []).reduce((rSum: number, r: any) => rSum + r.refundAmount, 0);
+      const netSaleTotal = Math.max(0, sale.total - refundsTotal);
       const day = sale.createdAt.toISOString().split("T")[0];
       const existing = map.get(day) || { count: 0, revenue: 0 };
       existing.count += 1;
-      existing.revenue += sale.total;
+      existing.revenue += netSaleTotal;
       map.set(day, existing);
     }
     return Array.from(map.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([date, data]) => ({ date, ...data }));
+      .map(([date, data]) => ({ date, count: data.count, revenue: Math.round(data.revenue * 100) / 100 }));
   }
 
   async getTopProducts(businessId: string, from?: string, to?: string, limit = 10) {
-    const saleWhere: any = { businessId, status: "COMPLETED" };
+    const saleWhere: any = {
+      businessId,
+      status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
+    };
     const dateRange = this.buildDateRange(from, to);
     if (Object.keys(dateRange).length) saleWhere.createdAt = dateRange;
 
@@ -93,21 +114,26 @@ export class ReportsService {
 
     const productMap = new Map<string, { name: string; category: string; quantity: number; revenue: number; times: number }>();
     for (const item of items) {
+      const netQty = Math.max(0, item.quantity - (item.returnedQty || 0));
+      if (netQty <= 0) continue;
+
       const key = item.productName;
       const existing = productMap.get(key) || {
         name: item.productName,
         category: item.product?.category?.name || "Sin categoría",
         quantity: 0, revenue: 0, times: 0,
       };
-      existing.quantity += item.quantity;
-      existing.revenue += item.subtotal;
+      existing.quantity += netQty;
+      const unitEffective = item.quantity > 0 ? (item.subtotal / item.quantity) : item.unitPrice;
+      existing.revenue += unitEffective * netQty;
       existing.times += 1;
       productMap.set(key, existing);
     }
 
     return Array.from(productMap.values())
       .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, limit);
+      .slice(0, limit)
+      .map(p => ({ ...p, revenue: Math.round(p.revenue * 100) / 100 }));
   }
 
   async getDaily(businessId: string) {
@@ -117,7 +143,12 @@ export class ReportsService {
     end.setHours(23, 59, 59, 999);
 
     const sales = await this.prisma.sale.findMany({
-      where: { businessId, status: "COMPLETED", createdAt: { gte: start, lte: end } },
+      where: {
+        businessId,
+        status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
+        createdAt: { gte: start, lte: end },
+      },
+      include: { returns: true },
     });
 
     const byHour = new Map<number, { count: number; revenue: number }>();
@@ -126,11 +157,17 @@ export class ReportsService {
     for (const sale of sales) {
       const hour = sale.createdAt.getHours();
       const existing = byHour.get(hour)!;
+      const refundsTotal = (sale.returns || []).reduce((rSum: number, r: any) => rSum + r.refundAmount, 0);
+      const netSaleTotal = Math.max(0, sale.total - refundsTotal);
       existing.count += 1;
-      existing.revenue += sale.total;
+      existing.revenue += netSaleTotal;
     }
 
-    return Array.from(byHour.entries()).map(([hour, data]) => ({ hour, ...data }));
+    return Array.from(byHour.entries()).map(([hour, data]) => ({
+      hour,
+      count: data.count,
+      revenue: Math.round(data.revenue * 100) / 100,
+    }));
   }
 
   async getStockAlerts(businessId: string) {
@@ -222,7 +259,7 @@ export class ReportsService {
     const accounts = await this.prisma.creditAccount.findMany({
       where: {
         businessId,
-        status: { not: CreditAccountStatus.PAID },
+        status: { notIn: [CreditAccountStatus.PAID, CreditAccountStatus.CANCELLED] },
         dueDate: { lt: now },
       },
       include: {
@@ -295,7 +332,7 @@ export class ReportsService {
     const accounts = await this.prisma.creditAccount.findMany({
       where: {
         businessId,
-        status: { not: CreditAccountStatus.PAID },
+        status: { notIn: [CreditAccountStatus.PAID, CreditAccountStatus.CANCELLED] },
       },
       include: {
         customer: true,
@@ -436,7 +473,7 @@ export class ReportsService {
     const where: any = {
       businessId,
       paymentMethod: PosPaymentMethod.CREDITO,
-      status: 'COMPLETED',
+      status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
     };
     if (Object.keys(dateRange).length > 0) {
       where.createdAt = dateRange;
@@ -458,10 +495,14 @@ export class ReportsService {
 
     for (const sale of sales) {
       for (const item of sale.items) {
+        const netQty = Math.max(0, item.quantity - (item.returnedQty || 0));
+        if (netQty <= 0) continue;
+
         const key = item.productId || item.productName;
-        const itemRevenue = item.subtotal;
+        const unitEffective = item.quantity > 0 ? (item.subtotal / item.quantity) : item.unitPrice;
+        const itemRevenue = unitEffective * netQty;
         totalRevenue += itemRevenue;
-        totalQuantity += item.quantity;
+        totalQuantity += netQty;
 
         if (!productMap.has(key)) {
           productMap.set(key, {
@@ -475,7 +516,7 @@ export class ReportsService {
         }
 
         const prodEntry = productMap.get(key)!;
-        prodEntry.quantity = Math.round((prodEntry.quantity + item.quantity) * 100) / 100;
+        prodEntry.quantity = Math.round((prodEntry.quantity + netQty) * 100) / 100;
         prodEntry.revenue = Math.round((prodEntry.revenue + itemRevenue) * 100) / 100;
         prodEntry.salesCount++;
       }

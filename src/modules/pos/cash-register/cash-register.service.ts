@@ -34,7 +34,12 @@ export class CashRegisterService {
       amountBase: m.amountBase != null ? Number(new Prisma.Decimal(m.amountBase.toString()).toDecimalPlaces(2)) : 0,
     }));
 
-    const completedSales = (register.sales || []).filter((s: any) => s.status === 'COMPLETED');
+    // Ventas para totalSales (ingresos netos):
+    // COMPLETED, PARTIALLY_RETURNED y RETURNED suman neto (total menos reembolsos).
+    // CANCELLED y VOIDED suman 0.
+    const activeSales = (register.sales || []).filter((s: any) => 
+      s.status === 'COMPLETED' || s.status === 'PARTIALLY_RETURNED' || s.status === 'RETURNED'
+    );
     let decCalculatedSales = new Prisma.Decimal(0);
     let decCalculatedCashNio = new Prisma.Decimal(0);
     let decCalculatedCashUsd = new Prisma.Decimal(0);
@@ -42,14 +47,32 @@ export class CashRegisterService {
     let decCalculatedCard = new Prisma.Decimal(0);
     let decCalculatedTransfer = new Prisma.Decimal(0);
 
-    for (const s of completedSales) {
-      decCalculatedSales = decCalculatedSales.plus(new Prisma.Decimal(s.total != null ? s.total.toString() : 0));
+    for (const s of activeSales) {
+      const refundsTotal = (s.returns || []).reduce(
+        (sum: Prisma.Decimal, r: any) => sum.plus(new Prisma.Decimal(r.refundAmount != null ? r.refundAmount.toString() : 0)),
+        new Prisma.Decimal(0),
+      );
+      const netSaleTotal = Prisma.Decimal.max(0, new Prisma.Decimal(s.total != null ? s.total.toString() : 0).minus(refundsTotal));
+      decCalculatedSales = decCalculatedSales.plus(netSaleTotal);
+    }
+
+    for (const s of (register.sales || [])) {
       const breakdown = getSalePaymentBreakdown(s);
       decCalculatedCashNio = decCalculatedCashNio.plus(new Prisma.Decimal(breakdown.cashNio));
       decCalculatedCashUsd = decCalculatedCashUsd.plus(new Prisma.Decimal(breakdown.cashUsd));
       decCalculatedCashUsdBase = decCalculatedCashUsdBase.plus(new Prisma.Decimal(breakdown.cashUsdBase));
-      decCalculatedCard = decCalculatedCard.plus(new Prisma.Decimal(breakdown.card));
-      decCalculatedTransfer = decCalculatedTransfer.plus(new Prisma.Decimal(breakdown.transfer));
+
+      if (s.status !== 'CANCELLED' && s.status !== 'VOIDED') {
+        const cardRefunds = (s.returns || [])
+          .filter((r: any) => r.refundMethod === 'TARJETA')
+          .reduce((sum: Prisma.Decimal, r: any) => sum.plus(new Prisma.Decimal(r.refundAmount != null ? r.refundAmount.toString() : 0)), new Prisma.Decimal(0));
+        const transferRefunds = (s.returns || [])
+          .filter((r: any) => r.refundMethod === 'TRANSFERENCIA')
+          .reduce((sum: Prisma.Decimal, r: any) => sum.plus(new Prisma.Decimal(r.refundAmount != null ? r.refundAmount.toString() : 0)), new Prisma.Decimal(0));
+
+        decCalculatedCard = decCalculatedCard.plus(Prisma.Decimal.max(0, new Prisma.Decimal(breakdown.card).minus(cardRefunds)));
+        decCalculatedTransfer = decCalculatedTransfer.plus(Prisma.Decimal.max(0, new Prisma.Decimal(breakdown.transfer).minus(transferRefunds)));
+      }
     }
 
     let decMovementsInNio = new Prisma.Decimal(0);
@@ -146,12 +169,12 @@ export class CashRegisterService {
       movementsOut,
       movementsInUsd,
       movementsOutUsd,
-      salesCount: completedSales.length || register._count?.sales || 0,
+      salesCount: activeSales.length || register._count?.sales || 0,
       openedById: register.cashierId || register.openedById,
       openedBy: cashierInfo,
       closedBy,
       movements,
-      sales: completedSales,
+      sales: register.sales || [],
     };
   }
 
@@ -199,9 +222,8 @@ export class CashRegisterService {
         cashier: { select: { id: true, name: true } },
         movements: true,
         sales: {
-          where: { status: "COMPLETED" },
           orderBy: { createdAt: "desc" },
-          include: { payments: true },
+          include: { payments: true, returns: { include: { items: true } } },
         },
         _count: { select: { sales: true } },
       },
@@ -215,9 +237,8 @@ export class CashRegisterService {
           cashier: { select: { id: true, name: true } },
           movements: true,
           sales: {
-            where: { status: "COMPLETED" },
             orderBy: { createdAt: "desc" },
-            include: { payments: true },
+            include: { payments: true, returns: { include: { items: true } } },
           },
           _count: { select: { sales: true } },
         },
@@ -236,9 +257,8 @@ export class CashRegisterService {
         cashier: { select: { id: true, name: true } },
         movements: true,
         sales: {
-          where: { status: "COMPLETED" },
           orderBy: { createdAt: "desc" },
-          include: { payments: true },
+          include: { payments: true, returns: { include: { items: true } } },
         },
         _count: { select: { sales: true } },
       },
@@ -264,7 +284,7 @@ export class CashRegisterService {
       include: {
         cashier: { select: { id: true, name: true } },
         movements: true,
-        sales: { where: { status: "COMPLETED" }, include: { payments: true } },
+        sales: { include: { payments: true, returns: { include: { items: true } } } },
       },
     });
     return this.formatRegister(created);
@@ -277,7 +297,7 @@ export class CashRegisterService {
         where: { id: registerId, businessId, status: "OPEN" },
         include: {
           cashier: { select: { id: true, name: true } },
-          sales: { where: { status: "COMPLETED" }, include: { payments: true } },
+          sales: { include: { payments: true, returns: { include: { items: true } } } },
           movements: true,
         },
       });
@@ -286,7 +306,7 @@ export class CashRegisterService {
         where: { businessId, ...(cashierId ? { cashierId } : {}), status: "OPEN" },
         include: {
           cashier: { select: { id: true, name: true } },
-          sales: { where: { status: "COMPLETED" }, include: { payments: true } },
+          sales: { include: { payments: true, returns: { include: { items: true } } } },
           movements: true,
         },
         orderBy: { openedAt: "desc" },
@@ -320,14 +340,31 @@ export class CashRegisterService {
     let totalCreditDec = new Prisma.Decimal(0);
 
     for (const s of register.sales) {
-      totalSalesDec = totalSalesDec.plus(new Prisma.Decimal(s.total != null ? s.total.toString() : 0));
+      if (s.status !== 'CANCELLED' && s.status !== 'VOIDED') {
+        const refundsTotal = (s.returns || []).reduce(
+          (sum: Prisma.Decimal, r: any) => sum.plus(new Prisma.Decimal(r.refundAmount != null ? r.refundAmount.toString() : 0)),
+          new Prisma.Decimal(0),
+        );
+        const netSale = Prisma.Decimal.max(0, new Prisma.Decimal(s.total != null ? s.total.toString() : 0).minus(refundsTotal));
+        totalSalesDec = totalSalesDec.plus(netSale);
+
+        const cardRefunds = (s.returns || [])
+          .filter((r: any) => r.refundMethod === 'TARJETA')
+          .reduce((sum: Prisma.Decimal, r: any) => sum.plus(new Prisma.Decimal(r.refundAmount != null ? r.refundAmount.toString() : 0)), new Prisma.Decimal(0));
+        const transferRefunds = (s.returns || [])
+          .filter((r: any) => r.refundMethod === 'TRANSFERENCIA')
+          .reduce((sum: Prisma.Decimal, r: any) => sum.plus(new Prisma.Decimal(r.refundAmount != null ? r.refundAmount.toString() : 0)), new Prisma.Decimal(0));
+
+        const breakdown = getSalePaymentBreakdown(s);
+        totalCardDec = totalCardDec.plus(Prisma.Decimal.max(0, new Prisma.Decimal(breakdown.card).minus(cardRefunds)));
+        totalTransferDec = totalTransferDec.plus(Prisma.Decimal.max(0, new Prisma.Decimal(breakdown.transfer).minus(transferRefunds)));
+        totalOtherDec = totalOtherDec.plus(new Prisma.Decimal(breakdown.other));
+        totalCreditDec = totalCreditDec.plus(new Prisma.Decimal(breakdown.credit));
+      }
+
       const breakdown = getSalePaymentBreakdown(s);
       totalCashDec = totalCashDec.plus(new Prisma.Decimal(breakdown.cashNio));
       totalCashUsdDec = totalCashUsdDec.plus(new Prisma.Decimal(breakdown.cashUsd));
-      totalCardDec = totalCardDec.plus(new Prisma.Decimal(breakdown.card));
-      totalTransferDec = totalTransferDec.plus(new Prisma.Decimal(breakdown.transfer));
-      totalOtherDec = totalOtherDec.plus(new Prisma.Decimal(breakdown.other));
-      totalCreditDec = totalCreditDec.plus(new Prisma.Decimal(breakdown.credit));
     }
 
     let movementsInNioDec = new Prisma.Decimal(0);
@@ -528,7 +565,7 @@ export class CashRegisterService {
       where: { id: registerId, businessId },
       include: {
         cashier: { select: { id: true, name: true } },
-        sales: { where: { status: "COMPLETED" }, include: { payments: true } },
+        sales: { include: { payments: true, returns: { include: { items: true } } } },
         movements: true,
       },
     });
@@ -542,13 +579,30 @@ export class CashRegisterService {
     let totalTransferDec = new Prisma.Decimal(0);
 
     for (const s of register.sales) {
-      totalSalesDec = totalSalesDec.plus(new Prisma.Decimal(s.total != null ? s.total.toString() : 0));
+      if (s.status !== 'CANCELLED' && s.status !== 'VOIDED') {
+        const refundsTotal = (s.returns || []).reduce(
+          (sum: Prisma.Decimal, r: any) => sum.plus(new Prisma.Decimal(r.refundAmount != null ? r.refundAmount.toString() : 0)),
+          new Prisma.Decimal(0),
+        );
+        const netSale = Prisma.Decimal.max(0, new Prisma.Decimal(s.total != null ? s.total.toString() : 0).minus(refundsTotal));
+        totalSalesDec = totalSalesDec.plus(netSale);
+
+        const cardRefunds = (s.returns || [])
+          .filter((r: any) => r.refundMethod === 'TARJETA')
+          .reduce((sum: Prisma.Decimal, r: any) => sum.plus(new Prisma.Decimal(r.refundAmount != null ? r.refundAmount.toString() : 0)), new Prisma.Decimal(0));
+        const transferRefunds = (s.returns || [])
+          .filter((r: any) => r.refundMethod === 'TRANSFERENCIA')
+          .reduce((sum: Prisma.Decimal, r: any) => sum.plus(new Prisma.Decimal(r.refundAmount != null ? r.refundAmount.toString() : 0)), new Prisma.Decimal(0));
+
+        const breakdown = getSalePaymentBreakdown(s);
+        totalCardDec = totalCardDec.plus(Prisma.Decimal.max(0, new Prisma.Decimal(breakdown.card).minus(cardRefunds)));
+        totalTransferDec = totalTransferDec.plus(Prisma.Decimal.max(0, new Prisma.Decimal(breakdown.transfer).minus(transferRefunds)));
+      }
+
       const breakdown = getSalePaymentBreakdown(s);
       totalCashDec = totalCashDec.plus(new Prisma.Decimal(breakdown.cashNio));
       totalCashUsdDec = totalCashUsdDec.plus(new Prisma.Decimal(breakdown.cashUsd));
       totalCashUsdBaseDec = totalCashUsdBaseDec.plus(new Prisma.Decimal(breakdown.cashUsdBase));
-      totalCardDec = totalCardDec.plus(new Prisma.Decimal(breakdown.card));
-      totalTransferDec = totalTransferDec.plus(new Prisma.Decimal(breakdown.transfer));
     }
 
     let movementsInNioDec = new Prisma.Decimal(0);

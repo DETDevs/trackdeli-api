@@ -49,8 +49,8 @@ export class CreditService {
         throw new NotFoundException('Cuenta por cobrar no encontrada');
       }
 
-      if (account.status === CreditAccountStatus.PAID || account.balance <= 0) {
-        throw new BadRequestException('Esta cuenta por cobrar ya se encuentra completamente liquidada');
+      if (account.status === CreditAccountStatus.PAID || account.status === CreditAccountStatus.CANCELLED || account.balance <= 0) {
+        throw new BadRequestException('Esta cuenta por cobrar ya se encuentra liquidada o cancelada');
       }
 
       const amountToDeduct = Math.round(dto.amount * 100) / 100;
@@ -164,7 +164,7 @@ export class CreditService {
     let paidAccountsCount = 0;
 
     for (const acc of accounts) {
-      if (acc.status === CreditAccountStatus.PAID || acc.balance <= 0) {
+      if (acc.status === CreditAccountStatus.PAID || acc.status === CreditAccountStatus.CANCELLED || acc.balance <= 0) {
         paidAccountsCount++;
       } else {
         activeAccountsCount++;
@@ -227,7 +227,7 @@ export class CreditService {
   async reconcileCreditAccounts(): Promise<void> {
     try {
       const openAccounts = await this.prisma.creditAccount.findMany({
-        where: { status: { not: CreditAccountStatus.PAID } },
+        where: { status: { notIn: [CreditAccountStatus.PAID, CreditAccountStatus.CANCELLED] } },
         include: {
           payments: true,
           business: { select: { id: true, name: true } },

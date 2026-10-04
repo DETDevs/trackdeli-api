@@ -139,6 +139,7 @@ enum CreditAccountStatus {
   PARTIALLY_PAID
   PAID
   OVERDUE
+  CANCELLED
 }
 
 enum MovementType {

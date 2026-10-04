@@ -122,14 +122,15 @@ export class ApprovalsService {
    * Format requested by user:
    * { statusCode: 400, code: 'APPROVAL_INVALID', message: { code: 'APPROVAL_INVALID', message: '...' } }
    */
-  async consumeToken(businessId: string, action: string, tokenString?: string): Promise<string> {
+  async consumeToken(businessId: string, action: string, tokenString?: string, tx?: any): Promise<string> {
     if (!tokenString) {
       this.throwError('APPROVAL_REQUIRED', `La acción ${action} requiere aprobación de un encargado.`);
     }
 
+    const db = tx || this.prisma;
     const hashedToken = createHash('sha256').update(tokenString).digest('hex');
 
-    const token = await this.prisma.posApprovalToken.findUnique({
+    const token = await db.posApprovalToken.findUnique({
       where: { token: hashedToken }
     });
 
@@ -154,7 +155,7 @@ export class ApprovalsService {
     }
 
     // Mark as used
-    await this.prisma.posApprovalToken.update({
+    await db.posApprovalToken.update({
       where: { id: token.id },
       data: { isUsed: true }
     });
