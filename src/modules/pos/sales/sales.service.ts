@@ -28,7 +28,7 @@ export class SalesService {
     private readonly approvalsService: ApprovalsService,
   ) {}
 
-  private formatSale(sale: any) {
+  private formatSale(sale: any, userRole?: string) {
     if (!sale) return null;
     return {
       ...sale,
@@ -38,11 +38,24 @@ export class SalesService {
       taxAmount: sale.taxAmount != null ? Number(new Prisma.Decimal(sale.taxAmount.toString()).toDecimalPlaces(2)) : 0,
       amountPaid: sale.amountPaid != null ? Number(new Prisma.Decimal(sale.amountPaid.toString()).toDecimalPlaces(2)) : 0,
       change: sale.change != null ? Number(new Prisma.Decimal(sale.change.toString()).toDecimalPlaces(2)) : 0,
-      items: (sale.items || []).map((i: any) => ({
-        ...i,
-        returnedQty: i.returnedQty != null ? Number(new Prisma.Decimal(i.returnedQty.toString()).toDecimalPlaces(2)) : 0,
-        returnableQty: Math.max(0, (i.quantity || 0) - (i.returnedQty || 0)),
-      })),
+      items: (sale.items || []).map((i: any) => {
+        const itemCopy = {
+          ...i,
+          returnedQty: i.returnedQty != null ? Number(new Prisma.Decimal(i.returnedQty.toString()).toDecimalPlaces(2)) : 0,
+          returnableQty: Math.max(0, (i.quantity || 0) - (i.returnedQty || 0)),
+        };
+        if (itemCopy.product) {
+          if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
+            delete itemCopy.product.cost;
+            delete itemCopy.product.costAtTime;
+          }
+        }
+        if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
+          delete itemCopy.cost;
+          delete itemCopy.costAtTime;
+        }
+        return itemCopy;
+      }),
       returns: (sale.returns || []).map((r: any) => ({
         ...r,
         refundAmount: r.refundAmount != null ? Number(new Prisma.Decimal(r.refundAmount.toString()).toDecimalPlaces(2)) : 0,
@@ -59,7 +72,7 @@ export class SalesService {
     };
   }
 
-  async create(dto: CreateSaleDto, businessId: string, cashierId: string) {
+  async create(dto: CreateSaleDto, businessId: string, cashierId: string, userRole?: string) {
     return this.prisma.$transaction(async (tx) => {
       let cashRegisterId: string;
       if (dto.cashRegisterId) {
@@ -652,13 +665,14 @@ export class SalesService {
       }
 
       this.logger.log(`[create] Venta: ${invoiceNumber} total=${total.toFixed(2)} metodo=${mainMethod} negocio=${businessId}`);
-      return this.formatSale(sale);
+      return this.formatSale(sale, userRole);
     });
   }
 
   async findAll(
     businessId: string,
-    filters?: { from?: string; to?: string; status?: string; paymentMethod?: string; cashRegisterId?: string }
+    filters?: { from?: string; to?: string; status?: string; paymentMethod?: string; cashRegisterId?: string },
+    userRole?: string,
   ) {
     const where: any = { businessId };
     if (filters?.status) {
@@ -695,14 +709,25 @@ export class SalesService {
       orderBy: { createdAt: "desc" },
       take: 200,
     });
-    return sales.map(s => this.formatSale(s));
+    return sales.map(s => this.formatSale(s, userRole));
   }
 
-  async findOne(id: string, businessId: string) {
+  async findOne(id: string, businessId: string, userRole?: string) {
     const sale = await this.prisma.sale.findFirst({
       where: { id, businessId },
       include: {
-        items: { include: { product: { select: { name: true, barcode: true } } } },
+        items: {
+          include: {
+            product: {
+              select: {
+                id: true,
+                name: true,
+                price: true,
+                barcode: true,
+              },
+            },
+          },
+        },
         cashier: { select: { id: true, name: true } },
         cashRegister: { select: { id: true, openedAt: true } },
         payments: true,
@@ -715,7 +740,7 @@ export class SalesService {
       },
     });
     if (!sale) throw new NotFoundException("Venta no encontrada");
-    return this.formatSale(sale);
+    return this.formatSale(sale, userRole);
   }
 
   private async findOpenShiftForRefund(
@@ -795,7 +820,19 @@ export class SalesService {
       const sale = await tx.sale.findFirst({
         where: { id, businessId },
         include: {
-          items: { include: { product: true } },
+          items: {
+            include: {
+              product: {
+                select: {
+                  id: true,
+                  name: true,
+                  price: true,
+                  barcode: true,
+                  trackStock: true,
+                },
+              },
+            },
+          },
           payments: true,
           returns: true,
           creditAccount: true,
@@ -970,7 +1007,18 @@ export class SalesService {
           notes: dto.reason.trim() ? `${sale.notes ? sale.notes + '. ' : ''}[ANULADA: ${dto.reason.trim()}]` : sale.notes,
         },
         include: {
-          items: { include: { product: true } },
+          items: {
+            include: {
+              product: {
+                select: {
+                  id: true,
+                  name: true,
+                  price: true,
+                  barcode: true,
+                },
+              },
+            },
+          },
           payments: true,
           returns: { include: { items: true } },
           cashier: { select: { id: true, name: true } },
@@ -996,7 +1044,7 @@ export class SalesService {
       );
 
       this.logger.log(`[voidSale] Venta anulada: ${sale.invoiceNumber} businessId=${businessId}`);
-      const formatted = this.formatSale(updatedSale);
+      const formatted = this.formatSale(updatedSale, userRole);
       if (cashRefundMovement) {
         (formatted as any).cashRefundMovement = {
           id: cashRefundMovement.id,
@@ -1063,7 +1111,19 @@ export class SalesService {
       const sale = await tx.sale.findFirst({
         where: { id, businessId },
         include: {
-          items: { include: { product: true } },
+          items: {
+            include: {
+              product: {
+                select: {
+                  id: true,
+                  name: true,
+                  price: true,
+                  barcode: true,
+                  trackStock: true,
+                },
+              },
+            },
+          },
           payments: true,
           returns: { include: { items: true } },
           creditAccount: true,

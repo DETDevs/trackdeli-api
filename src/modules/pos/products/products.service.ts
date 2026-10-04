@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
   Logger,
 } from "@nestjs/common";
-import { BusinessProductType, PosVertical, Prisma, ProductFieldDataType, StockMovementType } from "@prisma/client";
+import { BusinessProductType, PosVertical, Prisma, ProductFieldDataType, StockMovementType, UserRole } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
@@ -26,7 +26,7 @@ export class ProductsService {
     };
   }
 
-  private filterActiveAttributes(product: any, activeKeys: Set<string>) {
+  private filterActiveAttributes(product: any, activeKeys: Set<string>, userRole?: string) {
     if (!product) return product;
     const rawAttrs =
       product.attributes && typeof product.attributes === 'object' && !Array.isArray(product.attributes)
@@ -40,10 +40,16 @@ export class ProductsService {
       }
     }
 
-    return {
+    const mapped = {
       ...this.mapProductWithInventory(product),
       attributes: filteredAttrs,
     };
+
+    if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
+      delete mapped.cost;
+    }
+
+    return mapped;
   }
 
   private async validateAttributes(
@@ -187,7 +193,8 @@ export class ProductsService {
       categoryId?: string;
       lowStock?: boolean;
       isActive?: boolean;
-    }
+    },
+    userRole?: string,
   ) {
     const where: any = { businessId };
 
@@ -235,13 +242,13 @@ export class ProductsService {
     if (filters?.lowStock) {
       return products
         .filter((p) => p.trackStock && p.stock <= p.minStock)
-        .map((p) => this.filterActiveAttributes(p, activeKeys));
+        .map((p) => this.filterActiveAttributes(p, activeKeys, userRole));
     }
 
-    return products.map((p) => this.filterActiveAttributes(p, activeKeys));
+    return products.map((p) => this.filterActiveAttributes(p, activeKeys, userRole));
   }
 
-  async findOne(id: string, businessId: string) {
+  async findOne(id: string, businessId: string, userRole?: string) {
     const product = await this.prisma.product.findFirst({
       where: { id, businessId },
       include: { category: true, supplier: true },
@@ -254,10 +261,10 @@ export class ProductsService {
     });
     const activeKeys = new Set(activeFields.map((f) => f.key));
 
-    return this.filterActiveAttributes(product, activeKeys);
+    return this.filterActiveAttributes(product, activeKeys, userRole);
   }
 
-  async findByBarcode(businessId: string, barcode: string) {
+  async findByBarcode(businessId: string, barcode: string, userRole?: string) {
     this.logger.log(`[findByBarcode] barcode=${barcode} businessId=${businessId}`);
     const product = await this.prisma.product.findFirst({
       where: { businessId, barcode, isActive: true },
@@ -271,7 +278,7 @@ export class ProductsService {
     });
     const activeKeys = new Set(activeFields.map((f) => f.key));
 
-    return this.filterActiveAttributes(product, activeKeys);
+    return this.filterActiveAttributes(product, activeKeys, userRole);
   }
 
   async create(dto: CreateProductDto, businessId: string, userId?: string) {

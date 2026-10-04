@@ -39,7 +39,7 @@ export class SalesController {
     @Query("paymentMethod") paymentMethod?: string,
     @Query("cashRegisterId") cashRegisterId?: string,
   ) {
-    return this.service.findAll(resolveBusinessId(user, qBid), { from, to, status, paymentMethod, cashRegisterId });
+    return this.service.findAll(resolveBusinessId(user, qBid), { from, to, status, paymentMethod, cashRegisterId }, user.role);
   }
 
   @Post()
@@ -50,7 +50,7 @@ export class SalesController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.create(dto, resolveBusinessId(user, qBid), user.sub);
+    return this.service.create(dto, resolveBusinessId(user, qBid), user.sub, user.role);
   }
 
   @Get(":id")
@@ -59,7 +59,7 @@ export class SalesController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.findOne(id, resolveBusinessId(user, qBid));
+    return this.service.findOne(id, resolveBusinessId(user, qBid), user.role);
   }
 
   @Post(":id/void")

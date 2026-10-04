@@ -226,6 +226,16 @@ export class InventoryService {
         tx as any,
       );
 
+      if (userRole === UserRole.CAJERO) {
+        const copy: any = { ...adjustment };
+        delete copy.costAtTime;
+        return {
+          ...copy,
+          stockBefore,
+          stockAfter,
+        };
+      }
+
       return {
         ...adjustment,
         stockBefore,

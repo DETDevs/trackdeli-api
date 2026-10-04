@@ -29,11 +29,15 @@ export class ProductsController {
     @Query("categoryId") categoryId?: string,
     @Query("lowStock") lowStock?: string,
   ) {
-    return this.service.findAll(resolveBusinessId(user, qBid), {
-      search,
-      categoryId,
-      lowStock: lowStock === "true",
-    });
+    return this.service.findAll(
+      resolveBusinessId(user, qBid),
+      {
+        search,
+        categoryId,
+        lowStock: lowStock === "true",
+      },
+      user.role,
+    );
   }
 
   @Get("barcode/:barcode")
@@ -43,7 +47,7 @@ export class ProductsController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.findByBarcode(resolveBusinessId(user, qBid), barcode);
+    return this.service.findByBarcode(resolveBusinessId(user, qBid), barcode, user.role);
   }
 
   @Get(":id")
@@ -53,7 +57,7 @@ export class ProductsController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.findOne(id, resolveBusinessId(user, qBid));
+    return this.service.findOne(id, resolveBusinessId(user, qBid), user.role);
   }
 
   @Post()
