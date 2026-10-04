@@ -43,5 +43,28 @@ export class UpdatePosSettingsDto {
   @IsString()
   @MaxLength(200)
   posFooter?: string;
+
+  /**
+   * DEPRECATED: Configuración de estación (impresora)
+   * Estos campos ahora viven localmente en cada caja.
+   * Se mantienen temporalmente por compatibilidad con clientes viejos.
+   */
+  @IsOptional()
+  printerIp?: string;
+
+  @IsOptional()
+  printerPort?: string | number;
+
+  @IsOptional()
+  printerCopies?: number;
+
+  @IsOptional()
+  openDrawer?: boolean;
+
+  @IsOptional()
+  autoPrint?: boolean;
+
+  @IsOptional()
+  paperWidth?: string | number;
 }
 

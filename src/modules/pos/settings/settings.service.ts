@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, Logger } from "@nestjs/common";
+import { Injectable, NotFoundException, Logger, ForbiddenException } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { UpdatePosSettingsDto } from "./dto/update-pos-settings.dto";
+import { UserRole } from "@prisma/client";
 
 @Injectable()
 export class SettingsService {
@@ -40,34 +41,66 @@ export class SettingsService {
     };
   }
 
-  async updateSettings(businessId: string, dto: UpdatePosSettingsDto) {
-    const business = await this.prisma.business.findUnique({ where: { id: businessId }, select: { id: true } });
+  async updateSettings(businessId: string, dto: UpdatePosSettingsDto, role: UserRole, userId: string) {
+    const business = await this.prisma.business.findUnique({ 
+      where: { id: businessId }, 
+      select: { id: true, taxRate: true, invoicePrefix: true, posAddress: true, posPhone: true, posFooter: true } 
+    });
     if (!business) throw new NotFoundException("Negocio no encontrado");
-    this.logger.log(`[updateSettings] businessId=${businessId}`);
+    this.logger.log(`[updateSettings] businessId=${businessId}, role=${role}`);
 
-    if (dto.posVertical !== undefined) {
-      await this.prisma.$transaction(async (tx) => {
+    const businessFields: (keyof UpdatePosSettingsDto)[] = [
+      'taxRate', 'invoicePrefix', 'posAddress', 'posPhone', 'posFooter', 'posVertical', 'gridColumns', 'gridRows'
+    ];
 
-        await tx.business.update({
+    const hasBusinessFields = businessFields.some(field => dto[field] !== undefined);
+
+    if (hasBusinessFields && role !== UserRole.ENCARGADO && role !== UserRole.SUPERADMIN) {
+      throw new ForbiddenException("No tienes permisos para modificar la configuración global del negocio. Solo el Encargado puede hacerlo.");
+    }
+
+    if (Object.keys(dto).length === 0) {
+      return this.getSettings(businessId);
+    }
+
+    // Actualización parcial y Auditoría
+    const dataToUpdate: any = {};
+    for (const field of businessFields) {
+      if (dto[field] !== undefined) {
+        dataToUpdate[field] = dto[field];
+        
+        // Audit log para campos sensibles
+        if (['taxRate', 'invoicePrefix', 'posFooter'].includes(field)) {
+          const oldVal = (business as any)[field];
+          if (oldVal !== dto[field]) {
+            this.logger.log(`[AUDIT] Settings cambiado por usuario ${userId}: ${field} cambió de "${oldVal}" a "${dto[field]}"`);
+          }
+        }
+      }
+    }
+
+    if (Object.keys(dataToUpdate).length > 0) {
+      if (dataToUpdate.posVertical !== undefined) {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.business.update({
+            where: { id: businessId },
+            data: dataToUpdate,
+            select: { id: true },
+          });
+
+          await tx.businessProductSubscription.updateMany({
+            where: { businessId, productType: 'POS' },
+            data: { posVertical: dataToUpdate.posVertical },
+          });
+        });
+        this.logger.log(`[updateSettings] posVertical actualizado en business y suscripción POS: ${dataToUpdate.posVertical}`);
+      } else {
+        await this.prisma.business.update({
           where: { id: businessId },
-          data: dto,
+          data: dataToUpdate,
           select: { id: true },
         });
-
-        await tx.businessProductSubscription.updateMany({
-          where: { businessId, productType: 'POS' },
-          data: { posVertical: dto.posVertical },
-        });
-      });
-
-      this.logger.log(`[updateSettings] posVertical actualizado en business y suscripción POS: ${dto.posVertical}`);
-    } else {
-
-      await this.prisma.business.update({
-        where: { id: businessId },
-        data: dto,
-        select: { id: true },
-      });
+      }
     }
 
     return this.getSettings(businessId);

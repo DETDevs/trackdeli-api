@@ -23,23 +23,23 @@ export class SettingsController {
   }
 
   @Patch()
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.CAJERO)
   updateSettings(
     @Body() dto: UpdatePosSettingsDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.updateSettings(resolveBusinessId(user, qBid), dto);
+    return this.service.updateSettings(resolveBusinessId(user, qBid), dto, user.role, user.sub);
   }
 
   @Put()
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.CAJERO)
   updateSettingsPut(
     @Body() dto: UpdatePosSettingsDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.updateSettings(resolveBusinessId(user, qBid), dto);
+    return this.service.updateSettings(resolveBusinessId(user, qBid), dto, user.role, user.sub);
   }
 }
 
