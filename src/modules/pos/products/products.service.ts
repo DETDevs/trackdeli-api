@@ -16,7 +16,7 @@ import { AdjustStockDto } from "./dto/adjust-stock.dto";
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   private mapProductWithInventory(product: any) {
     if (!product) return product;

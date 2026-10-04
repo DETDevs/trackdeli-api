@@ -103,15 +103,19 @@ describe('SalesService - Tax Calculation', () => {
       clientTaxEnabled: true,
       clientTaxIncluded: false,
       clientTaxRate: 15, // La venta se hizo al 15%
-      clientTotal: 253 // Snapshot calculado correctamente por el cliente offline
+      clientTotal: 253, // Snapshot calculado correctamente por el cliente offline
+      isOfflineSync: true,
+      occurredAt: new Date().toISOString()
     };
     
     await service.create(offlineDto as any, 'biz-1', 'user-1');
     
     const createCall = mockPrisma.sale.create.mock.calls[0][0];
-    expect(createCall.data.taxRate).toBe(15); // Se guardó con la tasa vieja del snapshot!
-    expect(createCall.data.taxAmount).toBe(33);
-    expect(createCall.data.total).toBe(253);
+    expect(createCall.data.taxRate).toBe(0); // Fue recalculado con la vigente (0%)
+    expect(createCall.data.taxAmount).toBe(0);
+    expect(createCall.data.total).toBe(220); // Subtotal sin impuesto
+    expect(createCall.data.notes).toContain('[AUDIT: Venta OFFLINE recalculada con impuesto vigente.');
+    expect(createCall.data.notes).toContain('Diferencia en total. Cliente exigía: C$ 253. Servidor guardó: C$ 220.');
   });
 
   it('6. Total manipulado por el cliente es detectado y rechazado', async () => {

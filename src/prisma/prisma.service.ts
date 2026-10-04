@@ -1271,13 +1271,14 @@ WHERE a."customerId" = c."id"
         },
         {
           name: 'Columnas de configuración de impuestos en businesses y pos_sales',
-          sql: `
+          sql: `DO $$ BEGIN
+            ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "taxConfiguredAt" TIMESTAMP(3);
             ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "taxEnabled" BOOLEAN NOT NULL DEFAULT false;
             ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "taxIncluded" BOOLEAN NOT NULL DEFAULT false;
             ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 0;
             ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "taxEnabled" BOOLEAN NOT NULL DEFAULT false;
             ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "taxIncluded" BOOLEAN NOT NULL DEFAULT false;
-          `,
+          END $$;`,
         },
         {
           name: 'Columna pos_products.attributes e índice GIN',
@@ -1312,6 +1313,7 @@ WHERE a."customerId" = c."id"
       await this.ensureIndustriesAndFieldTemplatesSeeded();
 
       await this.ensureBusinessesMigratedToIndustries();
+      await this.ensureTaxConfigurationBackfilled();
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia general en auto-sincronización de esquema: ${err.message}`);
     }
@@ -2062,6 +2064,46 @@ WHERE a."customerId" = c."id"
       this.logger.log('[103a Migration] ✓ Migración de negocios existentes a industrias completada.');
     } catch (err: any) {
       this.logger.warn(`[103a Migration] ⚠ Advertencia en migración de negocios a industrias: ${err.message}`);
+    }
+  }
+
+  private async ensureTaxConfigurationBackfilled() {
+    try {
+      this.logger.log('[PrismaService] Verificando backfill de configuración de impuestos en negocios...');
+      
+      const unconfiguredBusinesses = await this.business.findMany({
+        where: { taxConfiguredAt: null },
+        select: { id: true, name: true, taxRate: true, taxEnabled: true, taxIncluded: true }
+      });
+
+      if (unconfiguredBusinesses.length === 0) {
+        this.logger.log('[PrismaService] ✓ Todos los negocios ya tienen su configuración de impuestos definida explícitamente.');
+        return;
+      }
+
+      let updatedCount = 0;
+      for (const b of unconfiguredBusinesses) {
+        // Regla: si taxRate > 0, entonces taxEnabled = true; si taxRate = 0, taxEnabled = false
+        // taxIncluded debe ser false para preservar compatibilidad con como funcionaba antes (sumaba encima).
+        const shouldBeEnabled = b.taxRate > 0;
+        
+        await this.business.update({
+          where: { id: b.id },
+          data: {
+            taxEnabled: shouldBeEnabled,
+            taxIncluded: false,
+            taxConfiguredAt: new Date()
+          }
+        });
+        
+        this.logger.log(
+          `[PrismaService] ✓ Backfill impuestos: Negocio "${b.name}" (${b.id}) -> Rate: ${b.taxRate}%, Enabled: ${shouldBeEnabled}, Included: false`
+        );
+        updatedCount++;
+      }
+      this.logger.log(`[PrismaService] ✓ Backfill de configuración de impuestos completado: ${updatedCount} negocio(s) actualizados.`);
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ Advertencia en backfill de impuestos: ${err.message}`);
     }
   }
 }

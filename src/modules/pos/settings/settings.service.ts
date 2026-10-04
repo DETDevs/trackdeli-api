@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Logger, ForbiddenException } from "@nestjs/common";
+import { Injectable, NotFoundException, Logger, ForbiddenException, BadRequestException } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { UpdatePosSettingsDto } from "./dto/update-pos-settings.dto";
 import { UserRole } from "@prisma/client";
@@ -47,6 +47,11 @@ export class SettingsService {
       select: { id: true, taxRate: true, taxEnabled: true, taxIncluded: true, invoicePrefix: true, posAddress: true, posPhone: true, posFooter: true } 
     });
     if (!business) throw new NotFoundException("Negocio no encontrado");
+    
+    if (dto.taxRate !== undefined && dto.taxRate > 0 && dto.taxRate < 1) {
+      throw new BadRequestException("El taxRate debe ser un porcentaje (ej. 15), no una fracción (0.15)");
+    }
+
     this.logger.log(`[updateSettings] businessId=${businessId}, role=${role}`);
 
     const businessFields: (keyof UpdatePosSettingsDto)[] = [

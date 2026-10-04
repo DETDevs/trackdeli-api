@@ -23,7 +23,7 @@ export class SettingsController {
   }
 
   @Patch()
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.CAJERO)
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   updateSettings(
     @Body() dto: UpdatePosSettingsDto,
     @CurrentUser() user: JwtPayload,
@@ -33,7 +33,7 @@ export class SettingsController {
   }
 
   @Put()
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.CAJERO)
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   updateSettingsPut(
     @Body() dto: UpdatePosSettingsDto,
     @CurrentUser() user: JwtPayload,

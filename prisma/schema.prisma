@@ -235,6 +235,7 @@ model Business {
   whatsappDisplay        String?      @db.VarChar(30)
 
   // Configuración del POS
+  taxConfiguredAt        DateTime?
   taxEnabled             Boolean      @default(false)
   taxIncluded            Boolean      @default(false)
   taxRate                Float        @default(0)

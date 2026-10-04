@@ -101,10 +101,66 @@ export class SalesService {
       const discountAmount = dto.discountAmount || 0;
       const finalSubtotal = subtotal - discountAmount;
 
+      /* ==============================================================================
+       * REGLAS SEMÁNTICAS DE CÁLCULO DE IMPUESTOS Y SUBTOTAL (TrackDeli API)
+       * ==============================================================================
+       * 1. `subtotal` = Suma de (item.unitPrice * item.quantity).
+       * 2. `finalSubtotal` = `subtotal` - `dto.discountAmount`.
+       * 3. Dependencia de "taxIncluded":
+       *    - Si `taxIncluded === true`: Los `unitPrice` enviados por el cliente YA traen 
+       *      el impuesto sumado. Por lo tanto, `total = finalSubtotal`. 
+       *      El `taxAmount` se extrae hacia atrás: `finalSubtotal - (finalSubtotal / 1.15)`.
+       *    - Si `taxIncluded === false`: Los `unitPrice` enviados NO traen impuesto. 
+       *      El `taxAmount` se calcula hacia adelante: `finalSubtotal * 0.15`.
+       *      El `total` será `finalSubtotal + taxAmount`.
+       * 
+       * NOTA: `isOfflineSync` permite relajar el rechazo por discrepancias, pero
+       * el servidor sigue forzando este estándar de cálculo final en la BD.
+       * ============================================================================== */
+
+      let appliedTaxEnabled = business.taxEnabled;
+      let appliedTaxIncluded = business.taxIncluded;
+      let appliedTaxRate = business.taxRate;
+      let hasAuditDiscrepancy = false;
+      let auditNote = "";
+
       const hasClientSnapshot = dto.clientTotal !== undefined && dto.clientTaxEnabled !== undefined;
-      const appliedTaxEnabled = hasClientSnapshot ? dto.clientTaxEnabled : business.taxEnabled;
-      const appliedTaxIncluded = hasClientSnapshot ? dto.clientTaxIncluded : business.taxIncluded;
-      const appliedTaxRate = hasClientSnapshot ? (dto.clientTaxRate || 0) : business.taxRate;
+
+      if (hasClientSnapshot) {
+        if (!dto.isOfflineSync) {
+          // Venta online normal: Se ignora el snapshot del cliente si difiere y se audita
+          if (
+            dto.clientTaxEnabled !== business.taxEnabled ||
+            dto.clientTaxIncluded !== business.taxIncluded ||
+            (dto.clientTaxRate || 0) !== business.taxRate
+          ) {
+            hasAuditDiscrepancy = true;
+            auditNote = `Venta ONLINE ignoró snapshot cliente (Rate: ${dto.clientTaxRate}, Enabled: ${dto.clientTaxEnabled}). Se usó vigente.`;
+          }
+        } else {
+          // Venta offline (sincronización diferida)
+          const occurredAtDate = dto.occurredAt ? new Date(dto.occurredAt) : new Date();
+          const msIn7Days = 7 * 24 * 60 * 60 * 1000;
+          const isWithinWindow = (Date.now() - occurredAtDate.getTime()) <= msIn7Days;
+          
+          const perfectlyMatchesCurrent = 
+            dto.clientTaxEnabled === business.taxEnabled && 
+            dto.clientTaxIncluded === business.taxIncluded && 
+            (dto.clientTaxRate || 0) === business.taxRate;
+
+          if (isWithinWindow && perfectlyMatchesCurrent) {
+            // Snapshot válido, coincide con la actual.
+            appliedTaxEnabled = dto.clientTaxEnabled!;
+            appliedTaxIncluded = dto.clientTaxIncluded!;
+            appliedTaxRate = dto.clientTaxRate || 0;
+          } else {
+            // Fuera de ventana, o no coincide. Como no tenemos tabla de historial, 
+            // recalculamos con la vigente y dejamos registro.
+            hasAuditDiscrepancy = true;
+            auditNote = `Venta OFFLINE recalculada con impuesto vigente. Snapshot cliente: Rate: ${dto.clientTaxRate}, Enabled: ${dto.clientTaxEnabled}, Total: ${dto.clientTotal}. Motivo: ${!isWithinWindow ? 'Fuera de ventana de 7 días.' : 'Discrepancia con configuración actual.'}`;
+          }
+        }
+      }
 
       let calculatedTaxAmount = 0;
       let calculatedTotal = finalSubtotal;
@@ -121,12 +177,24 @@ export class SalesService {
       const taxAmount = Math.round(calculatedTaxAmount * 100) / 100;
       const total = Math.round(calculatedTotal * 100) / 100;
 
-      if (dto.clientTotal !== undefined) {
-        const diff = Math.abs(dto.clientTotal - total);
+      if (hasClientSnapshot && !dto.isOfflineSync) {
+        // En ventas online (tiempo real), SIEMPRE rechazamos si el cliente 
+        // manda un total distinto al que el servidor calcula con la vigente.
+        const diff = Math.abs(dto.clientTotal! - total);
         if (diff > 0.05) {
-          throw new BadRequestException(`Manipulación de totales detectada o desincronización severa. Total enviado: ${dto.clientTotal}, Total calculado en servidor: ${total}`);
+          throw new BadRequestException(`El cliente envió un total manipulado o desactualizado. Total enviado: ${dto.clientTotal}, Total calculado en servidor: C$ ${total}. ${hasAuditDiscrepancy ? auditNote : ''}`);
+        }
+      } else if (hasClientSnapshot && dto.isOfflineSync) {
+        // En offline, si el total difiere del calculado, NO fallamos, solo lo registramos
+        // para que la venta no se pierda. Se usa el 'total' del servidor.
+        const diff = Math.abs(dto.clientTotal! - total);
+        if (diff > 0.05) {
+          hasAuditDiscrepancy = true;
+          auditNote += ` Diferencia en total. Cliente exigía: C$ ${dto.clientTotal}. Servidor guardó: C$ ${total}.`;
         }
       }
+
+      const finalNotes = hasAuditDiscrepancy ? `${dto.notes ? dto.notes + '. ' : ''}[AUDIT: ${auditNote.trim()}]` : dto.notes;
 
       const isCredit = (dto.paymentMethod as any) === PosPaymentMethod.CREDITO || (dto as any).paymentType === PosPaymentMethod.CREDITO;
       const paymentMethod = isCredit ? PosPaymentMethod.CREDITO : dto.paymentMethod;
@@ -279,7 +347,7 @@ export class SalesService {
           amountPaid,
           change,
           reference: dto.reference || null,
-          notes: dto.notes || null,
+          notes: finalNotes || null,
           status: "COMPLETED",
         },
         include: { items: true, cashier: { select: { name: true } }, customer: true },

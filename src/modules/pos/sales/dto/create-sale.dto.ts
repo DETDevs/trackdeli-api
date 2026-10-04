@@ -17,6 +17,12 @@ export class CreateSaleItemDto {
   @IsString()
   barcode?: string;
 
+  /**
+   * Precio unitario enviado por el cliente.
+   * Regla de impuestos:
+   * - Si el negocio tiene 'taxIncluded = true', este precio YA DEBE traer el impuesto sumado.
+   * - Si el negocio tiene 'taxIncluded = false', este precio NO DEBE traer el impuesto.
+   */
   @Type(() => Number)
   @IsNumber()
   @Min(0)
@@ -107,4 +113,11 @@ export class CreateSaleDto {
   @IsOptional()
   @IsNumber()
   clientTotal?: number;
+
+  @IsOptional()
+  isOfflineSync?: boolean;
+
+  @IsOptional()
+  @IsString()
+  occurredAt?: string;
 }

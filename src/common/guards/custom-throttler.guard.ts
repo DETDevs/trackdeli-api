@@ -10,7 +10,8 @@ export class CustomThrottlerGuard extends ThrottlerGuard {
     return req.ips?.length ? req.ips[0] : req.ip;
   }
 
-  protected async handleRequest(context: ExecutionContext, limit: number, ttl: number, throttler: any): Promise<boolean> {
+  protected async handleRequest(requestProps: any): Promise<boolean> {
+    const { context, limit } = requestProps;
     const req = context.switchToHttp().getRequest();
     const route = req.route ? req.route.path : req.url;
 
@@ -25,7 +26,8 @@ export class CustomThrottlerGuard extends ThrottlerGuard {
       actualLimit = 600;
     }
 
-    return super.handleRequest(context, actualLimit, ttl, throttler);
+    requestProps.limit = actualLimit;
+    return super.handleRequest(requestProps);
   }
 
   protected async throwThrottlingException(context: ExecutionContext, throttlerLimitDetail: any): Promise<void> {
