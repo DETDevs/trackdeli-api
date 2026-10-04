@@ -1219,7 +1219,7 @@ model PurchaseItem {
   productId  String
   product    Product  @relation(fields: [productId], references: [id])
   quantity   Int
-  unitCost   Decimal  @db.Decimal(12, 2)
+  unitCost   Decimal  @db.Decimal(12, 4)
   subtotal   Decimal  @db.Decimal(12, 2)
   createdAt  DateTime @default(now())
 
@@ -1232,8 +1232,8 @@ model ProductCostHistory {
   businessId String
   productId  String
   product    Product   @relation(fields: [productId], references: [id])
-  oldCost    Float?
-  newCost    Float
+  oldCost    Decimal?  @db.Decimal(12, 4)
+  newCost    Decimal   @db.Decimal(12, 4)
   purchaseId String?
   purchase   Purchase? @relation(fields: [purchaseId], references: [id])
   date       DateTime  @default(now())
@@ -1257,7 +1257,7 @@ model InventoryAdjustment {
   user        User                    @relation("UserAdjustments", fields: [userId], references: [id])
   approvedById String?
   approvedBy  User?                   @relation("UserApprovedAdjustments", fields: [approvedById], references: [id])
-  costAtTime  Float?
+  costAtTime  Decimal?                @db.Decimal(12, 4)
   createdAt   DateTime                @default(now())
 
   @@index([businessId, productId])
@@ -1277,7 +1277,7 @@ model StockMovement {
   quantity    Int
   stockBefore Int
   stockAfter  Int
-  cost        Float?
+  cost        Decimal?          @db.Decimal(12, 4)
   concept     String            @db.VarChar(300)
   reference   String?           @db.VarChar(100)
 

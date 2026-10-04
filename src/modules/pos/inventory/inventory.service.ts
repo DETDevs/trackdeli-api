@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
   Logger,
 } from '@nestjs/common';
-import { InventoryAdjustmentType, StockMovementType, UserRole } from '@prisma/client';
+import { InventoryAdjustmentType, Prisma, StockMovementType, UserRole } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { PoliciesService } from '../policies/policies.service';
 import { ApprovalsService } from '../approvals/approvals.service';
@@ -54,7 +54,10 @@ export class InventoryService {
         statusCode: 400,
         error: 'Bad Request',
         code: 'ADJUSTMENT_REASON_REQUIRED',
-        message: 'El motivo del ajuste es obligatorio.',
+        message: {
+          code: 'ADJUSTMENT_REASON_REQUIRED',
+          message: 'El motivo del ajuste es obligatorio.',
+        },
       });
     }
 
@@ -79,7 +82,10 @@ export class InventoryService {
           statusCode: 404,
           error: 'Not Found',
           code: 'PRODUCT_NOT_FOUND',
-          message: 'Producto no encontrado.',
+          message: {
+            code: 'PRODUCT_NOT_FOUND',
+            message: 'Producto no encontrado.',
+          },
         });
       }
 
@@ -88,7 +94,10 @@ export class InventoryService {
           statusCode: 422,
           error: 'Unprocessable Entity',
           code: 'PRODUCT_DOES_NOT_TRACK_STOCK',
-          message: `El producto "${product.name}" no tiene activado el control de inventario (trackStock).`,
+          message: {
+            code: 'PRODUCT_DOES_NOT_TRACK_STOCK',
+            message: `El producto "${product.name}" no tiene activado el control de inventario (trackStock).`,
+          },
         });
       }
 
@@ -99,7 +108,10 @@ export class InventoryService {
             statusCode: 400,
             error: 'Bad Request',
             code: 'COUNTED_QTY_REQUIRED',
-            message: 'countedQty es requerido para ajustes tipo COUNT.',
+            message: {
+              code: 'COUNTED_QTY_REQUIRED',
+              message: 'countedQty es requerido para ajustes tipo COUNT.',
+            },
           });
         }
         qtyDelta = dto.countedQty - product.stock;
@@ -109,7 +121,10 @@ export class InventoryService {
             statusCode: 400,
             error: 'Bad Request',
             code: 'QTY_DELTA_REQUIRED',
-            message: 'qtyDelta es requerido para este tipo de ajuste.',
+            message: {
+              code: 'QTY_DELTA_REQUIRED',
+              message: 'qtyDelta es requerido para este tipo de ajuste.',
+            },
           });
         }
         qtyDelta = dto.qtyDelta;
@@ -132,6 +147,13 @@ export class InventoryService {
             requested: Math.abs(qtyDelta),
             resultingStock: stockAfter,
           },
+          details: {
+            productId: product.id,
+            productName: product.name,
+            available: stockBefore,
+            requested: Math.abs(qtyDelta),
+            resultingStock: stockAfter,
+          },
         });
       }
 
@@ -139,6 +161,11 @@ export class InventoryService {
         where: { id: product.id },
         data: { stock: stockAfter },
       });
+
+      const costAtTimeDec = product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null;
+      const costImpactDec = costAtTimeDec != null
+        ? new Prisma.Decimal(qtyDelta).times(costAtTimeDec)
+        : new Prisma.Decimal(0);
 
       const adjustment = await tx.inventoryAdjustment.create({
         data: {
@@ -150,7 +177,7 @@ export class InventoryService {
           notes: dto.notes ? dto.notes.trim() : null,
           userId,
           approvedById: approvedById || null,
-          costAtTime: product.cost,
+          costAtTime: costAtTimeDec,
         },
         include: {
           product: { select: { id: true, name: true, barcode: true, sku: true, stock: true } },
@@ -168,13 +195,13 @@ export class InventoryService {
           quantity: qtyDelta,
           stockBefore,
           stockAfter,
-          cost: product.cost,
+          cost: costAtTimeDec,
           concept: `Ajuste ${dto.type}: ${dto.reason.trim()}`,
           reference: adjustment.id,
         },
       });
 
-      const costImpact = Math.round(qtyDelta * (product.cost || 0) * 100) / 100;
+      const costImpact = Number(costImpactDec.toDecimalPlaces(2));
 
       await this.auditService.record(
         {
@@ -222,7 +249,10 @@ export class InventoryService {
         statusCode: 400,
         error: 'Bad Request',
         code: 'BATCH_LINES_REQUIRED',
-        message: 'Debe incluir al menos una línea en el conteo físico.',
+        message: {
+          code: 'BATCH_LINES_REQUIRED',
+          message: 'Debe incluir al menos una línea en el conteo físico.',
+        },
       });
     }
 
@@ -231,7 +261,10 @@ export class InventoryService {
         statusCode: 400,
         error: 'Bad Request',
         code: 'BATCH_SIZE_EXCEEDED',
-        message: 'El conteo por lotes no puede exceder las 200 líneas.',
+        message: {
+          code: 'BATCH_SIZE_EXCEEDED',
+          message: 'El conteo por lotes no puede exceder las 200 líneas.',
+        },
       });
     }
 
@@ -242,7 +275,7 @@ export class InventoryService {
 
     const result = await this.prisma.$transaction(async (tx) => {
       const processedAdjustments: any[] = [];
-      let totalCostImpact = 0;
+      let totalCostImpactDec = new Prisma.Decimal(0);
 
       for (const line of sortedLines) {
         await tx.$queryRaw`SELECT id FROM pos_products WHERE id = ${line.productId} FOR UPDATE`;
@@ -255,7 +288,10 @@ export class InventoryService {
             statusCode: 404,
             error: 'Not Found',
             code: 'PRODUCT_NOT_FOUND',
-            message: `Producto con ID "${line.productId}" no encontrado.`,
+            message: {
+              code: 'PRODUCT_NOT_FOUND',
+              message: `Producto con ID "${line.productId}" no encontrado.`,
+            },
           });
         }
 
@@ -272,7 +308,20 @@ export class InventoryService {
             statusCode: 422,
             error: 'Unprocessable Entity',
             code: 'INSUFFICIENT_STOCK',
-            message: `El conteo para "${product.name}" no puede ser negativo (${stockAfter}).`,
+            message: {
+              code: 'INSUFFICIENT_STOCK',
+              message: `El conteo para "${product.name}" no puede ser negativo (${stockAfter}).`,
+              productId: product.id,
+              productName: product.name,
+              available: stockBefore,
+              resultingStock: stockAfter,
+            },
+            details: {
+              productId: product.id,
+              productName: product.name,
+              available: stockBefore,
+              resultingStock: stockAfter,
+            },
           });
         }
 
@@ -280,6 +329,13 @@ export class InventoryService {
           where: { id: product.id },
           data: { stock: stockAfter },
         });
+
+        const costAtTimeDec = product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null;
+        const costImpactDec = costAtTimeDec != null
+          ? new Prisma.Decimal(qtyDelta).times(costAtTimeDec)
+          : new Prisma.Decimal(0);
+
+        totalCostImpactDec = totalCostImpactDec.plus(costImpactDec);
 
         const adjustment = await tx.inventoryAdjustment.create({
           data: {
@@ -290,7 +346,7 @@ export class InventoryService {
             reason: dto.reason.trim(),
             notes: `Conteo por lotes (${dto.lines.length} productos)`,
             userId,
-            costAtTime: product.cost,
+            costAtTime: costAtTimeDec,
           },
         });
 
@@ -303,14 +359,13 @@ export class InventoryService {
             quantity: qtyDelta,
             stockBefore,
             stockAfter,
-            cost: product.cost,
+            cost: costAtTimeDec,
             concept: `Conteo físico: ${dto.reason.trim()}`,
             reference: adjustment.id,
           },
         });
 
-        const costImpact = Math.round(qtyDelta * (product.cost || 0) * 100) / 100;
-        totalCostImpact += costImpact;
+        const costImpact = Number(costImpactDec.toDecimalPlaces(2));
 
         processedAdjustments.push({
           adjustmentId: adjustment.id,
@@ -323,6 +378,8 @@ export class InventoryService {
         });
       }
 
+      const totalCostImpact = Number(totalCostImpactDec.toDecimalPlaces(2));
+
       await this.auditService.record(
         {
           businessId,
@@ -334,7 +391,7 @@ export class InventoryService {
           reason: dto.reason.trim(),
           after: {
             linesCount: processedAdjustments.length,
-            totalCostImpact: Math.round(totalCostImpact * 100) / 100,
+            totalCostImpact,
           },
         },
         tx as any,
@@ -342,7 +399,7 @@ export class InventoryService {
 
       return {
         processedCount: processedAdjustments.length,
-        totalCostImpact: Math.round(totalCostImpact * 100) / 100,
+        totalCostImpact,
         adjustments: processedAdjustments,
       };
     });

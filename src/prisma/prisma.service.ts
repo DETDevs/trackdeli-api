@@ -463,7 +463,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "purchaseId" TEXT NOT NULL,
             "productId" TEXT NOT NULL,
             "quantity" INTEGER NOT NULL,
-            "unitCost" NUMERIC(12,2) NOT NULL,
+            "unitCost" NUMERIC(12,4) NOT NULL,
             "subtotal" NUMERIC(12,2) NOT NULL,
             "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT "pos_purchase_items_pkey" PRIMARY KEY ("id"),
@@ -485,8 +485,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "id" TEXT NOT NULL,
             "businessId" TEXT NOT NULL,
             "productId" TEXT NOT NULL,
-            "oldCost" DOUBLE PRECISION,
-            "newCost" DOUBLE PRECISION NOT NULL,
+            "oldCost" NUMERIC(12,4),
+            "newCost" NUMERIC(12,4) NOT NULL,
             "purchaseId" TEXT,
             "date" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             "reason" VARCHAR(200),
@@ -515,7 +515,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "notes" TEXT,
             "userId" TEXT NOT NULL,
             "approvedById" TEXT,
-            "costAtTime" DOUBLE PRECISION,
+            "costAtTime" NUMERIC(12,4),
             "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT "pos_inventory_adjustments_pkey" PRIMARY KEY ("id"),
             CONSTRAINT "pos_inventory_adjustments_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
@@ -532,6 +532,26 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             END IF;
             IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_inventory_adjustments_businessId_createdAt_idx') THEN
               CREATE INDEX "pos_inventory_adjustments_businessId_createdAt_idx" ON "pos_inventory_adjustments"("businessId", "createdAt");
+            END IF;
+          END $$;`
+        },
+        {
+          name: '113f - Conversion de costos a NUMERIC(12,4)',
+          sql: `DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'pos_purchase_items' AND column_name = 'unitCost') THEN
+              ALTER TABLE "pos_purchase_items" ALTER COLUMN "unitCost" TYPE NUMERIC(12,4);
+            END IF;
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'pos_product_cost_history' AND column_name = 'oldCost') THEN
+              ALTER TABLE "pos_product_cost_history" ALTER COLUMN "oldCost" TYPE NUMERIC(12,4);
+            END IF;
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'pos_product_cost_history' AND column_name = 'newCost') THEN
+              ALTER TABLE "pos_product_cost_history" ALTER COLUMN "newCost" TYPE NUMERIC(12,4);
+            END IF;
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'pos_inventory_adjustments' AND column_name = 'costAtTime') THEN
+              ALTER TABLE "pos_inventory_adjustments" ALTER COLUMN "costAtTime" TYPE NUMERIC(12,4);
+            END IF;
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'pos_stock_movements' AND column_name = 'cost') THEN
+              ALTER TABLE "pos_stock_movements" ALTER COLUMN "cost" TYPE NUMERIC(12,4);
             END IF;
           END $$;`
         },

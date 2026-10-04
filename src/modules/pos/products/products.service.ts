@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
   Logger,
 } from "@nestjs/common";
-import { BusinessProductType, PosVertical, ProductFieldDataType, StockMovementType } from "@prisma/client";
+import { BusinessProductType, PosVertical, Prisma, ProductFieldDataType, StockMovementType } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
@@ -343,7 +343,7 @@ export class ProductsService {
           quantity: product.stock,
           stockBefore: 0,
           stockAfter: product.stock,
-          cost: product.cost,
+          cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
           concept: 'Stock inicial',
         },
       });
@@ -419,7 +419,7 @@ export class ProductsService {
           quantity: stockDiff,
           stockBefore: product.stock,
           stockAfter: dto.stock,
-          cost: product.cost,
+          cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
           concept: 'Edición manual de producto',
         },
       });
@@ -464,7 +464,7 @@ export class ProductsService {
           quantity: dto.quantity,
           stockBefore: product.stock,
           stockAfter,
-          cost: dto.cost,
+          cost: dto.cost != null ? new Prisma.Decimal(dto.cost.toString()) : null,
           concept: dto.concept,
           reference: dto.reference,
         },

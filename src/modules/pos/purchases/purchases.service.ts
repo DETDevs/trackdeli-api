@@ -29,7 +29,10 @@ export class PurchasesService {
         statusCode: 400,
         error: 'Bad Request',
         code: 'PURCHASE_ITEMS_REQUIRED',
-        message: 'La compra debe contener al menos un ítem.',
+        message: {
+          code: 'PURCHASE_ITEMS_REQUIRED',
+          message: 'La compra debe contener al menos un ítem.',
+        },
       });
     }
 
@@ -42,7 +45,10 @@ export class PurchasesService {
           statusCode: 404,
           error: 'Not Found',
           code: 'SUPPLIER_NOT_FOUND',
-          message: 'Proveedor no encontrado en este negocio.',
+          message: {
+            code: 'SUPPLIER_NOT_FOUND',
+            message: 'Proveedor no encontrado en este negocio.',
+          },
         });
       }
     }
@@ -103,32 +109,36 @@ export class PurchasesService {
             statusCode: 404,
             error: 'Not Found',
             code: 'PRODUCT_NOT_FOUND',
-            message: `Producto con ID "${item.productId}" no encontrado.`,
+            message: {
+              code: 'PRODUCT_NOT_FOUND',
+              message: `Producto con ID "${item.productId}" no encontrado.`,
+            },
           });
         }
 
-        const itemSubtotal = new Prisma.Decimal(item.quantity).times(new Prisma.Decimal(item.unitCost));
+        const unitCostDec = new Prisma.Decimal(item.unitCost);
+        const itemSubtotal = new Prisma.Decimal(item.quantity).times(unitCostDec);
         await tx.purchaseItem.create({
           data: {
             purchaseId: purchase.id,
             productId: product.id,
             quantity: item.quantity,
-            unitCost: new Prisma.Decimal(item.unitCost),
+            unitCost: unitCostDec,
             subtotal: itemSubtotal,
           },
         });
 
         const stockBefore = product.stock;
         const stockAfter = stockBefore + item.quantity;
-        const oldCost = product.cost;
-        const newCost = item.unitCost;
+        const oldCostDec = product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null;
+        const newCostNum = Number(unitCostDec);
 
         if (product.trackStock) {
           await tx.product.update({
             where: { id: product.id },
             data: {
               stock: { increment: item.quantity },
-              cost: newCost,
+              cost: newCostNum,
             },
           });
 
@@ -141,7 +151,7 @@ export class PurchasesService {
               quantity: item.quantity,
               stockBefore,
               stockAfter,
-              cost: newCost,
+              cost: unitCostDec,
               concept: `Compra factura ${trimmedInvoice || 'S/N'}`,
               reference: purchase.id,
             },
@@ -149,7 +159,7 @@ export class PurchasesService {
         } else {
           await tx.product.update({
             where: { id: product.id },
-            data: { cost: newCost },
+            data: { cost: newCostNum },
           });
         }
 
@@ -157,8 +167,8 @@ export class PurchasesService {
           data: {
             businessId,
             productId: product.id,
-            oldCost,
-            newCost,
+            oldCost: oldCostDec,
+            newCost: unitCostDec,
             purchaseId: purchase.id,
             reason: `Compra factura ${trimmedInvoice || 'S/N'}`,
           },
@@ -203,7 +213,10 @@ export class PurchasesService {
         statusCode: 400,
         error: 'Bad Request',
         code: 'VOID_REASON_REQUIRED',
-        message: 'El motivo de anulación es obligatorio.',
+        message: {
+          code: 'VOID_REASON_REQUIRED',
+          message: 'El motivo de anulación es obligatorio.',
+        },
       });
     }
 
@@ -224,7 +237,10 @@ export class PurchasesService {
           statusCode: 404,
           error: 'Not Found',
           code: 'PURCHASE_NOT_FOUND',
-          message: 'Compra no encontrada.',
+          message: {
+            code: 'PURCHASE_NOT_FOUND',
+            message: 'Compra no encontrada.',
+          },
         });
       }
 
@@ -233,7 +249,10 @@ export class PurchasesService {
           statusCode: 422,
           error: 'Unprocessable Entity',
           code: 'PURCHASE_ALREADY_VOIDED',
-          message: 'Esta compra ya fue anulada previamente.',
+          message: {
+            code: 'PURCHASE_ALREADY_VOIDED',
+            message: 'Esta compra ya fue anulada previamente.',
+          },
         });
       }
 
@@ -284,7 +303,7 @@ export class PurchasesService {
               quantity: -item.quantity,
               stockBefore,
               stockAfter,
-              cost: product.cost,
+              cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
               concept: `Anulación compra ${purchase.invoiceNumber || purchase.id}: ${dto.reason.trim()}`,
               reference: purchase.id,
             },
@@ -300,7 +319,7 @@ export class PurchasesService {
         if (lastCostHistory && lastCostHistory.purchaseId === purchase.id && lastCostHistory.oldCost !== null) {
           await tx.product.update({
             where: { id: product.id },
-            data: { cost: lastCostHistory.oldCost },
+            data: { cost: Number(lastCostHistory.oldCost) },
           });
 
           await tx.productCostHistory.create({
@@ -422,7 +441,15 @@ export class PurchasesService {
     });
 
     if (!purchase) {
-      throw new NotFoundException('Compra no encontrada');
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        code: 'PURCHASE_NOT_FOUND',
+        message: {
+          code: 'PURCHASE_NOT_FOUND',
+          message: 'Compra no encontrada.',
+        },
+      });
     }
 
     return this.formatPurchase(purchase);

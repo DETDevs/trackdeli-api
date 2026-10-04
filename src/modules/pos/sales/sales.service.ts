@@ -128,8 +128,18 @@ export class SalesService {
               if (!policies.allowNegativeStock && !dto.isOfflineSync) {
                 throw new UnprocessableEntityException({
                   statusCode: 422,
+                  error: 'Unprocessable Entity',
                   code: 'INSUFFICIENT_STOCK',
-                  message: `Stock insuficiente para "${product.name}". Disponible: ${product.stock}, solicitado: ${requestedQty}`,
+                  message: {
+                    code: 'INSUFFICIENT_STOCK',
+                    message: `Stock insuficiente para "${product.name}". Disponible: ${product.stock}, solicitado: ${requestedQty}`,
+                    details: {
+                      productId: product.id,
+                      productName: product.name,
+                      available: product.stock,
+                      requested: requestedQty,
+                    },
+                  },
                   details: {
                     productId: product.id,
                     productName: product.name,
