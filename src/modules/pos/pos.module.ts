@@ -21,6 +21,8 @@ import { PoliciesModule } from './policies/policies.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { IdempotencyModule } from './idempotency/idempotency.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
+import { PurchasesModule } from './purchases/purchases.module';
+import { InventoryModule } from './inventory/inventory.module';
 
 @Module({
   imports: [
@@ -36,6 +38,8 @@ import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
     OfflineModule,
     CreditModule,
     WaitersModule,
+    PurchasesModule,
+    InventoryModule,
     PosPermissionsModule,
     AuditModule,
     PoliciesModule,

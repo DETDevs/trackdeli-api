@@ -1,4 +1,4 @@
-﻿import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
@@ -12,9 +12,18 @@ export class SuppliersService {
   async findAll(businessId: string) {
     return this.prisma.supplier.findMany({
       where: { businessId, isActive: true },
-      include: { _count: { select: { products: true } } },
+      include: { _count: { select: { products: true, purchases: true } } },
       orderBy: { name: 'asc' },
     });
+  }
+
+  async findOne(id: string, businessId: string) {
+    const supplier = await this.prisma.supplier.findFirst({
+      where: { id, businessId },
+      include: { _count: { select: { products: true, purchases: true } } },
+    });
+    if (!supplier) throw new NotFoundException('Proveedor no encontrado');
+    return supplier;
   }
 
   async create(dto: CreateSupplierDto, businessId: string) {

@@ -53,6 +53,10 @@ export class UpdateProductDto {
 
   @IsOptional()
   @IsInt()
+  stock?: number;
+
+  @IsOptional()
+  @IsInt()
   @Min(0)
   minStock?: number;
 

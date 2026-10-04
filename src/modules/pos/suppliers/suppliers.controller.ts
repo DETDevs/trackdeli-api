@@ -23,6 +23,11 @@ export class SuppliersController {
     return this.service.findAll(resolveBusinessId(user, qBid));
   }
 
+  @Get(':id')
+  findOne(@Param('id') id: string, @CurrentUser() user: JwtPayload, @Query('businessId') qBid?: string) {
+    return this.service.findOne(id, resolveBusinessId(user, qBid));
+  }
+
   @Post()
   create(@Body() dto: CreateSupplierDto, @CurrentUser() user: JwtPayload, @Query('businessId') qBid?: string) {
     return this.service.create(dto, resolveBusinessId(user, qBid));

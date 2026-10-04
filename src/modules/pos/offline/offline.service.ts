@@ -338,6 +338,7 @@ export class OfflineService {
               syncedAt: new Date(),
               isOffline: true,
               soldWithoutOpenShift,
+              hasNegativeStock: discrepancies.length > 0,
               clientGeneratedId: saleDto.clientGeneratedId,
               posTerminalId: terminal?.id || null,
               customerName: saleDto.customerName || null,
@@ -366,6 +367,21 @@ export class OfflineService {
                 expectedStock: disc.expectedStock,
                 resultingStock: disc.resultingStock,
                 notes: `Venta offline ${invoiceNumber}: stock insuficiente (disponible: ${disc.expectedStock}, requerido: ${disc.expectedStock - disc.resultingStock})`,
+              },
+            });
+          }
+
+          if (discrepancies.length > 0) {
+            await tx.posAuditLog.create({
+              data: {
+                businessId,
+                userId: cashierId,
+                userRole: 'CAJERO',
+                action: 'VENTA_OFFLINE_STOCK_NEGATIVO',
+                entityType: 'Sale',
+                entityId: createdSale.id,
+                reason: `Venta offline cobrada previamente generó stock negativo en ${discrepancies.length} producto(s)`,
+                after: { invoiceNumber, discrepancies },
               },
             });
           }

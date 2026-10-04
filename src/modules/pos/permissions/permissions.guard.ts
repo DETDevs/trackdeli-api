@@ -64,7 +64,7 @@ export class PosPermissionsGuard implements CanActivate {
     // Regla 113d: El cajero solicita y el encargado aprueba en esa caja.
     // Para anular y devolver, se permite el acceso al controller para que el servicio
     // valide el token de aprobación o permita directo si no se requiere aprobación.
-    if (user.role === UserRole.CAJERO && (action === PosAction.ANULAR_VENTA_COBRADA || action === PosAction.DEVOLUCION)) {
+    if (user.role === UserRole.CAJERO && (action === PosAction.ANULAR_VENTA_COBRADA || action === PosAction.DEVOLUCION || action === PosAction.AJUSTE_INVENTARIO)) {
       return true;
     }
 

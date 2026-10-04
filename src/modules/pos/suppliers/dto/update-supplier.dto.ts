@@ -28,4 +28,8 @@ export class UpdateSupplierDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
+  taxId?: string;
 }

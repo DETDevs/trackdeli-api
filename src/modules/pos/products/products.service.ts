@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
   Logger,
 } from "@nestjs/common";
-import { BusinessProductType, PosVertical, ProductFieldDataType } from "@prisma/client";
+import { BusinessProductType, PosVertical, ProductFieldDataType, StockMovementType } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
@@ -274,7 +274,7 @@ export class ProductsService {
     return this.filterActiveAttributes(product, activeKeys);
   }
 
-  async create(dto: CreateProductDto, businessId: string) {
+  async create(dto: CreateProductDto, businessId: string, userId?: string) {
     this.logger.log(`[create] producto="${dto.name}" businessId=${businessId}`);
 
     if (dto.barcode) {
@@ -333,6 +333,22 @@ export class ProductsService {
       include: { category: true, supplier: { select: { id: true, name: true } } },
     });
 
+    if (product.trackStock && product.stock > 0) {
+      await this.prisma.stockMovement.create({
+        data: {
+          businessId,
+          productId: product.id,
+          userId: userId || 'system',
+          type: StockMovementType.INITIAL,
+          quantity: product.stock,
+          stockBefore: 0,
+          stockAfter: product.stock,
+          cost: product.cost,
+          concept: 'Stock inicial',
+        },
+      });
+    }
+
     const activeFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: true },
       select: { key: true },
@@ -342,7 +358,7 @@ export class ProductsService {
     return this.filterActiveAttributes(product, activeKeys);
   }
 
-  async update(id: string, dto: UpdateProductDto, businessId: string) {
+  async update(id: string, dto: UpdateProductDto, businessId: string, userId?: string) {
     const product = await this.prisma.product.findFirst({ where: { id, businessId } });
     if (!product) throw new NotFoundException("Producto no encontrado");
 
@@ -391,6 +407,23 @@ export class ProductsService {
       data: updateData,
       include: { category: true, supplier: { select: { id: true, name: true } } },
     });
+
+    if (dto.stock !== undefined && dto.stock !== product.stock && (trackStock ?? product.trackStock)) {
+      const stockDiff = dto.stock - product.stock;
+      await this.prisma.stockMovement.create({
+        data: {
+          businessId,
+          productId: product.id,
+          userId: userId || 'system',
+          type: StockMovementType.AJUSTE,
+          quantity: stockDiff,
+          stockBefore: product.stock,
+          stockAfter: dto.stock,
+          cost: product.cost,
+          concept: 'Edición manual de producto',
+        },
+      });
+    }
 
     const activeFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: true },
@@ -445,16 +478,57 @@ export class ProductsService {
     });
   }
 
-  async getStockMovements(productId: string, businessId: string) {
+  async getStockMovements(
+    productId: string,
+    businessId: string,
+    filters?: {
+      type?: string;
+      from?: string;
+      to?: string;
+      page?: number;
+      limit?: number;
+    },
+  ) {
     const product = await this.prisma.product.findFirst({ where: { id: productId, businessId } });
     if (!product) throw new NotFoundException("Producto no encontrado");
 
-    return this.prisma.stockMovement.findMany({
-      where: { productId },
-      include: { user: { select: { id: true, name: true } } },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    });
+    const where: any = { productId, businessId };
+    if (filters?.type) where.type = filters.type;
+    if (filters?.from || filters?.to) {
+      where.createdAt = {};
+      if (filters.from) {
+        where.createdAt.gte = filters.from.includes('T') ? new Date(filters.from) : new Date(`${filters.from}T00:00:00.000Z`);
+      }
+      if (filters.to) {
+        where.createdAt.lte = filters.to.includes('T') ? new Date(filters.to) : new Date(`${filters.to}T23:59:59.999Z`);
+      }
+    }
+
+    const page = Math.max(1, Number(filters?.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(filters?.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const [total, data] = await Promise.all([
+      this.prisma.stockMovement.count({ where }),
+      this.prisma.stockMovement.findMany({
+        where,
+        include: { user: { select: { id: true, name: true, email: true } } },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    return {
+      product: { id: product.id, name: product.name, currentStock: product.stock, trackStock: product.trackStock },
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 }
 

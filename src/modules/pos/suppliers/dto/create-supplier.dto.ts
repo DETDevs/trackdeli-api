@@ -23,4 +23,8 @@ export class CreateSupplierDto {
   @SanitizeText()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  taxId?: string;
 }

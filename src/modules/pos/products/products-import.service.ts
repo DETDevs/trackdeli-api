@@ -522,20 +522,17 @@ export class ProductsImportService {
                  businessId,
                  productId: p.id,
                  userId,
-                 type: StockMovementType.AJUSTE,
+                 type: StockMovementType.INITIAL,
                  quantity: p.stock,
                  stockBefore: 0,
                  stockAfter: p.stock,
-                 concept: 'Importación de catálogo',
+                 concept: 'Importación de catálogo (inicial)',
                }
              });
           }
           result.created++;
         }
         for (const item of toUpdate) {
-          // Simplistic unchanged check
-          // const oldPr = existingProducts.find(p => p.id === item.id);
-          // compare item.data and oldPr, omitting. We'll just increment updated for simplicity or if actually changed.
           const p = await tx.product.update({ where: { id: item.id }, data: item.data });
           if (item.stockDiff !== 0) {
              await tx.stockMovement.create({
@@ -547,7 +544,7 @@ export class ProductsImportService {
                  quantity: item.stockDiff,
                  stockBefore: item.oldStock,
                  stockAfter: p.stock,
-                 concept: 'Importación de catálogo',
+                 concept: 'Importación de catálogo (edición manual)',
                }
              });
           }

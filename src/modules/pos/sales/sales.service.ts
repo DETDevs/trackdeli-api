@@ -112,17 +112,34 @@ export class SalesService {
         data: { invoiceCounter: { increment: 1 } },
       });
 
+      const policies = await this.policiesService.get(businessId);
+
       let subtotal = 0;
+      let hasNegativeStock = false;
       const processedItems: any[] = [];
 
       for (const item of dto.items) {
         if (item.productId) {
           const product = await tx.product.findFirst({ where: { id: item.productId, businessId } });
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
-          if (product.trackStock === true && product.stock < item.quantity) {
-            throw new BadRequestException(
-              `Stock insuficiente para "${product.name}". Disponible: ${product.stock}`
-            );
+          if (product.trackStock === true) {
+            const requestedQty = Math.ceil(item.quantity);
+            if (product.stock < requestedQty) {
+              if (!policies.allowNegativeStock && !dto.isOfflineSync) {
+                throw new UnprocessableEntityException({
+                  statusCode: 422,
+                  code: 'INSUFFICIENT_STOCK',
+                  message: `Stock insuficiente para "${product.name}". Disponible: ${product.stock}, solicitado: ${requestedQty}`,
+                  details: {
+                    productId: product.id,
+                    productName: product.name,
+                    available: product.stock,
+                    requested: requestedQty,
+                  },
+                });
+              }
+              hasNegativeStock = true;
+            }
           }
         }
 
@@ -353,7 +370,6 @@ export class SalesService {
         }
       }
 
-      const policies = await this.policiesService.get(businessId);
       const enabledMethods = policies.paymentMethodsEnabled.split(',');
 
       let paymentsPayload = dto.payments;
@@ -562,10 +578,26 @@ export class SalesService {
           change: totalChangeDec,
           reference: dto.reference || null,
           notes: finalNotes || null,
+          hasNegativeStock,
           status: "COMPLETED",
         },
         include: { items: true, payments: true, cashier: { select: { name: true } }, customer: true },
       });
+
+      if (hasNegativeStock) {
+        await tx.posAuditLog.create({
+          data: {
+            businessId,
+            userId: cashierId,
+            userRole: 'CAJERO',
+            action: 'VENTA_STOCK_NEGATIVO',
+            entityType: 'Sale',
+            entityId: sale.id,
+            reason: 'Venta realizada con stock negativo permitido por política',
+            after: { invoiceNumber, total, items: processedItems },
+          },
+        });
+      }
 
       if (isCredit && customerId && dueDate) {
         await tx.creditAccount.create({
@@ -586,6 +618,8 @@ export class SalesService {
           const product = await tx.product.findUnique({ where: { id: item.productId } });
           if (product?.trackStock) {
             const qty = Math.ceil(item.quantity);
+            const stockBefore = product.stock;
+            const stockAfter = product.stock - qty;
             await tx.product.update({
               where: { id: item.productId },
               data: { stock: { decrement: qty } },
@@ -597,9 +631,9 @@ export class SalesService {
                 userId: cashierId,
                 type: "VENTA",
                 quantity: -qty,
-                stockBefore: product.stock,
-                stockAfter: product.stock - qty,
-                concept: `Venta ${invoiceNumber}`,
+                stockBefore,
+                stockAfter,
+                concept: stockAfter < 0 ? `Venta ${invoiceNumber} (Stock Negativo)` : `Venta ${invoiceNumber}`,
                 reference: sale.id,
               },
             });
@@ -672,6 +706,27 @@ export class SalesService {
     });
     if (!sale) throw new NotFoundException("Venta no encontrada");
     return this.formatSale(sale);
+  }
+
+  private async findOpenShiftForRefund(
+    tx: any,
+    businessId: string,
+    executorUserId: string,
+    approvedById?: string | null,
+  ) {
+    // 1. Turno abierto del usuario que ejecuta
+    let openShift = await tx.cashRegister.findFirst({
+      where: { businessId, cashierId: executorUserId, status: 'OPEN' },
+      select: { id: true },
+    });
+    // 2. Si no tiene, el del encargado que aprobó (si existe y tiene uno abierto)
+    if (!openShift && approvedById) {
+      openShift = await tx.cashRegister.findFirst({
+        where: { businessId, cashierId: approvedById, status: 'OPEN' },
+        select: { id: true },
+      });
+    }
+    return openShift;
   }
 
   async voidSale(
@@ -815,17 +870,7 @@ export class SalesService {
 
       let cashRefundMovement: any = null;
       if (netCashPaidDec.greaterThan(0)) {
-        let openShift = await tx.cashRegister.findFirst({
-          where: { businessId, cashierId: userId, status: 'OPEN' },
-          select: { id: true },
-        });
-        if (!openShift) {
-          openShift = await tx.cashRegister.findFirst({
-            where: { businessId, status: 'OPEN' },
-            orderBy: { openedAt: 'desc' },
-            select: { id: true },
-          });
-        }
+        const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById);
         if (!openShift) {
           throw new UnprocessableEntityException({
             statusCode: 422,
@@ -833,7 +878,7 @@ export class SalesService {
             code: 'NO_OPEN_SHIFT',
             message: {
               code: 'NO_OPEN_SHIFT',
-              message: 'No hay turno abierto para registrar la salida de efectivo de la anulación.',
+              message: 'No hay turno abierto del cajero ni del aprobador para registrar la salida de efectivo de la anulación.',
             },
           });
         }
@@ -866,17 +911,7 @@ export class SalesService {
 
         // Si el cliente ya hizo abonos, se le deben reembolsar en efectivo en el turno abierto actual
         if (totalAbonosPaidDec.greaterThan(0)) {
-          let openShift = await tx.cashRegister.findFirst({
-            where: { businessId, cashierId: userId, status: 'OPEN' },
-            select: { id: true },
-          });
-          if (!openShift) {
-            openShift = await tx.cashRegister.findFirst({
-              where: { businessId, status: 'OPEN' },
-              orderBy: { openedAt: 'desc' },
-              select: { id: true },
-            });
-          }
+          const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById);
           if (!openShift) {
             throw new UnprocessableEntityException({
               statusCode: 422,
@@ -884,7 +919,7 @@ export class SalesService {
               code: 'NO_OPEN_SHIFT',
               message: {
                 code: 'NO_OPEN_SHIFT',
-                message: 'No hay turno abierto para registrar el reembolso en efectivo de los abonos ya pagados del crédito.',
+                message: 'No hay turno abierto del cajero ni del aprobador para registrar el reembolso en efectivo de los abonos ya pagados del crédito.',
               },
             });
           }
@@ -1244,17 +1279,7 @@ export class SalesService {
       let excessCashMovement: any = null;
 
       if (refundMethod === PosPaymentMethod.EFECTIVO && totalReturnRefundDec.greaterThan(0)) {
-        let openShift = await tx.cashRegister.findFirst({
-          where: { businessId, cashierId: userId, status: 'OPEN' },
-          select: { id: true },
-        });
-        if (!openShift) {
-          openShift = await tx.cashRegister.findFirst({
-            where: { businessId, status: 'OPEN' },
-            orderBy: { openedAt: 'desc' },
-            select: { id: true },
-          });
-        }
+        const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById);
         if (!openShift) {
           throw new UnprocessableEntityException({
             statusCode: 422,
@@ -1262,7 +1287,7 @@ export class SalesService {
             code: 'NO_OPEN_SHIFT',
             message: {
               code: 'NO_OPEN_SHIFT',
-              message: 'No hay turno abierto para registrar la salida de efectivo de la devolución.',
+              message: 'No hay turno abierto del cajero ni del aprobador para registrar la salida de efectivo de la devolución.',
             },
           });
         }
@@ -1290,17 +1315,7 @@ export class SalesService {
           // El excedente se reembolsa al cliente en efectivo en el turno abierto actual.
           const excessRefundDec = totalReturnRefundDec.minus(currentBalDec);
 
-          let openShift = await tx.cashRegister.findFirst({
-            where: { businessId, cashierId: userId, status: 'OPEN' },
-            select: { id: true },
-          });
-          if (!openShift) {
-            openShift = await tx.cashRegister.findFirst({
-              where: { businessId, status: 'OPEN' },
-              orderBy: { openedAt: 'desc' },
-              select: { id: true },
-            });
-          }
+          const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById);
           if (!openShift) {
             throw new UnprocessableEntityException({
               statusCode: 422,
@@ -1308,7 +1323,7 @@ export class SalesService {
               code: 'NO_OPEN_SHIFT',
               message: {
                 code: 'NO_OPEN_SHIFT',
-                message: 'No hay turno abierto para registrar el reembolso en efectivo del excedente sobre el crédito.',
+                message: 'No hay turno abierto del cajero ni del aprobador para registrar el reembolso en efectivo del excedente sobre el crédito.',
               },
             });
           }

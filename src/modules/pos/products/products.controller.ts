@@ -109,13 +109,45 @@ export class ProductsController {
     return this.service.adjustStock(id, dto, user.sub, resolveBusinessId(user, qBid));
   }
 
+  @Get(":id/stock-movements")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  getStockMovements(
+    @Param("id") id: string,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+    @Query("type") type?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.service.getStockMovements(id, resolveBusinessId(user, qBid), {
+      type,
+      from,
+      to,
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
+
   @Get(":id/movements")
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   getMovements(
     @Param("id") id: string,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Query("type") type?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
   ) {
-    return this.service.getStockMovements(id, resolveBusinessId(user, qBid));
+    return this.service.getStockMovements(id, resolveBusinessId(user, qBid), {
+      type,
+      from,
+      to,
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
   }
 }

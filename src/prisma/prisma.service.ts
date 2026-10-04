@@ -398,6 +398,144 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           END $$;`
         },
         {
+          name: '113e - Enums y columnas de stock y proveedores',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'INITIAL' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'StockMovementType' LIMIT 1)) THEN
+              ALTER TYPE "StockMovementType" ADD VALUE 'INITIAL';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'PURCHASE' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'StockMovementType' LIMIT 1)) THEN
+              ALTER TYPE "StockMovementType" ADD VALUE 'PURCHASE';
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'PurchaseStatus') THEN
+              CREATE TYPE "PurchaseStatus" AS ENUM ('RECEIVED', 'VOIDED');
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'InventoryAdjustmentType') THEN
+              CREATE TYPE "InventoryAdjustmentType" AS ENUM ('COUNT', 'SHRINKAGE', 'DAMAGE', 'EXPIRED', 'THEFT', 'CORRECTION', 'INITIAL');
+            END IF;
+
+            ALTER TABLE "pos_suppliers" ADD COLUMN IF NOT EXISTS "taxId" VARCHAR(50);
+            ALTER TABLE "pos_suppliers" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+            ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "hasNegativeStock" BOOLEAN NOT NULL DEFAULT false;
+          END $$;`
+        },
+        {
+          name: '113e - Tabla pos_purchases',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_purchases" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "supplierId" TEXT,
+            "invoiceNumber" VARCHAR(100),
+            "purchaseDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "notes" TEXT,
+            "status" "PurchaseStatus" NOT NULL DEFAULT 'RECEIVED',
+            "total" NUMERIC(12,2) NOT NULL,
+            "createdById" TEXT NOT NULL,
+            "voidedAt" TIMESTAMP(3),
+            "voidedById" TEXT,
+            "voidReason" VARCHAR(500),
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_purchases_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_purchases_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_purchases_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "pos_suppliers"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+            CONSTRAINT "pos_purchases_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+            CONSTRAINT "pos_purchases_voidedById_fkey" FOREIGN KEY ("voidedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE
+          );`
+        },
+        {
+          name: '113e - Indices pos_purchases',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_purchases_businessId_purchaseDate_idx') THEN
+              CREATE INDEX "pos_purchases_businessId_purchaseDate_idx" ON "pos_purchases"("businessId", "purchaseDate");
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_purchases_businessId_supplierId_idx') THEN
+              CREATE INDEX "pos_purchases_businessId_supplierId_idx" ON "pos_purchases"("businessId", "supplierId");
+            END IF;
+          END $$;`
+        },
+        {
+          name: '113e - Tabla pos_purchase_items',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_purchase_items" (
+            "id" TEXT NOT NULL,
+            "purchaseId" TEXT NOT NULL,
+            "productId" TEXT NOT NULL,
+            "quantity" INTEGER NOT NULL,
+            "unitCost" NUMERIC(12,2) NOT NULL,
+            "subtotal" NUMERIC(12,2) NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_purchase_items_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_purchase_items_purchaseId_fkey" FOREIGN KEY ("purchaseId") REFERENCES "pos_purchases"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_purchase_items_productId_fkey" FOREIGN KEY ("productId") REFERENCES "pos_products"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+          );`
+        },
+        {
+          name: '113e - Indices pos_purchase_items',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_purchase_items_purchaseId_idx') THEN
+              CREATE INDEX "pos_purchase_items_purchaseId_idx" ON "pos_purchase_items"("purchaseId");
+            END IF;
+          END $$;`
+        },
+        {
+          name: '113e - Tabla pos_product_cost_history',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_product_cost_history" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "productId" TEXT NOT NULL,
+            "oldCost" DOUBLE PRECISION,
+            "newCost" DOUBLE PRECISION NOT NULL,
+            "purchaseId" TEXT,
+            "date" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "reason" VARCHAR(200),
+            CONSTRAINT "pos_product_cost_history_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_product_cost_history_productId_fkey" FOREIGN KEY ("productId") REFERENCES "pos_products"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_product_cost_history_purchaseId_fkey" FOREIGN KEY ("purchaseId") REFERENCES "pos_purchases"("id") ON DELETE SET NULL ON UPDATE CASCADE
+          );`
+        },
+        {
+          name: '113e - Indices pos_product_cost_history',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_product_cost_history_productId_date_idx') THEN
+              CREATE INDEX "pos_product_cost_history_productId_date_idx" ON "pos_product_cost_history"("productId", "date");
+            END IF;
+          END $$;`
+        },
+        {
+          name: '113e - Tabla pos_inventory_adjustments',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_inventory_adjustments" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "productId" TEXT NOT NULL,
+            "type" "InventoryAdjustmentType" NOT NULL,
+            "qtyDelta" INTEGER NOT NULL,
+            "reason" VARCHAR(500) NOT NULL,
+            "notes" TEXT,
+            "userId" TEXT NOT NULL,
+            "approvedById" TEXT,
+            "costAtTime" DOUBLE PRECISION,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_inventory_adjustments_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_inventory_adjustments_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_inventory_adjustments_productId_fkey" FOREIGN KEY ("productId") REFERENCES "pos_products"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_inventory_adjustments_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+            CONSTRAINT "pos_inventory_adjustments_approvedById_fkey" FOREIGN KEY ("approvedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE
+          );`
+        },
+        {
+          name: '113e - Indices pos_inventory_adjustments',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_inventory_adjustments_businessId_productId_idx') THEN
+              CREATE INDEX "pos_inventory_adjustments_businessId_productId_idx" ON "pos_inventory_adjustments"("businessId", "productId");
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pos_inventory_adjustments_businessId_createdAt_idx') THEN
+              CREATE INDEX "pos_inventory_adjustments_businessId_createdAt_idx" ON "pos_inventory_adjustments"("businessId", "createdAt");
+            END IF;
+          END $$;`
+        },
+        {
           name: 'Modificaciones en users para Social Login',
           sql: `DO $$ BEGIN
             ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "authProvider" "AuthProvider" NOT NULL DEFAULT 'EMAIL';
