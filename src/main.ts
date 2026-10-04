@@ -7,6 +7,7 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TraceInterceptor } from './common/interceptors/trace.interceptor';
+import { DecimalToNumberInterceptor } from './common/interceptors/decimal-to-number.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import compression = require('compression');
 
@@ -48,7 +49,7 @@ async function bootstrap() {
   );
 
   app.use(compression({ threshold: 1024 }));
-  app.useGlobalInterceptors(new TraceInterceptor(), new LoggingInterceptor());
+  app.useGlobalInterceptors(new TraceInterceptor(), new LoggingInterceptor(), new DecimalToNumberInterceptor());
   app.useGlobalFilters(new AllExceptionsFilter());
 
   app.use((req: any, res: any, next: any) => { res.setHeader('Content-Type', 'application/json; charset=utf-8'); next(); });
