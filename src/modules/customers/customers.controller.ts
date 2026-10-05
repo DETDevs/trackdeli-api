@@ -36,14 +36,18 @@ export class CustomersController {
   @Get([
     'businesses/:businessId/customers',
     'businesses/me/customers',
+    'pos/customers',
     'customers',
   ])
   @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async findAll(
     @CurrentUser() user: JwtPayload,
+    @Query('search') search?: string,
     @Query('q') query?: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query('groupId') groupId?: string,
+    @Query('page') page?: string | number,
+    @Query('limit') limit?: string | number,
+    @Query('onlyWithBalance') onlyWithBalance?: string | boolean,
     @Param('businessId') paramBusinessId?: string,
   ) {
     const businessId =
@@ -54,7 +58,47 @@ export class CustomersController {
       throw new ForbiddenException('Negocio no especificado');
     }
     this.checkBusinessAccess(user, businessId);
-    return this.customersService.findAll(businessId, { q: query, page, limit });
+    return this.customersService.findAll(businessId, {
+      search,
+      q: query,
+      groupId,
+      page,
+      limit,
+      onlyWithBalance,
+    });
+  }
+
+  @Get([
+    'pos/credit/groups/:groupId/customers',
+    'credit/groups/:groupId/customers',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async findByGroup(
+    @CurrentUser() user: JwtPayload,
+    @Param('groupId') groupId: string,
+    @Query('search') search?: string,
+    @Query('q') query?: string,
+    @Query('page') page?: string | number,
+    @Query('limit') limit?: string | number,
+    @Query('onlyWithBalance') onlyWithBalance?: string | boolean,
+    @Query('businessId') qBid?: string,
+  ) {
+    const businessId =
+      user.role === UserRole.SUPERADMIN && qBid
+        ? qBid
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.findAll(businessId, {
+      search,
+      q: query,
+      groupId,
+      page,
+      limit,
+      onlyWithBalance,
+    });
   }
 
   @Get([
@@ -65,8 +109,10 @@ export class CustomersController {
   ])
   @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async search(
-    @Query('q') query: string,
     @CurrentUser() user: JwtPayload,
+    @Query('search') search?: string,
+    @Query('q') query?: string,
+    @Query('groupId') groupId?: string,
     @Param('businessId') paramBusinessId?: string,
   ) {
     const businessId =
@@ -77,7 +123,8 @@ export class CustomersController {
       throw new ForbiddenException('Negocio no especificado');
     }
     this.checkBusinessAccess(user, businessId);
-    return this.customersService.search(businessId, query);
+    const searchTerm = search ?? query ?? '';
+    return this.customersService.search(businessId, searchTerm, groupId);
   }
 
   @Get([

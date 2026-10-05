@@ -69,6 +69,7 @@ export class CustomersService {
   async search(
     businessId: string,
     query: string,
+    groupId?: string,
   ): Promise<CustomerSearchResultDto[]> {
     const trimmed = (query || '').trim();
     if (!trimmed) {
@@ -81,15 +82,19 @@ export class CustomersService {
     });
     const maxDays = business?.customerLocationMaxDays ?? 30;
 
+    const where: Prisma.CustomerWhereInput = {
+      businessId,
+      ...(groupId && groupId.trim() ? { groupId: groupId.trim() } : {}),
+      OR: [
+        { name: { contains: trimmed, mode: 'insensitive' } },
+        { phone: { contains: trimmed, mode: 'insensitive' } },
+        { externalCode: { contains: trimmed, mode: 'insensitive' } },
+        { ruc: { contains: trimmed, mode: 'insensitive' } },
+      ],
+    };
+
     const customers = await this.prisma.customer.findMany({
-      where: {
-        businessId,
-        OR: [
-          { name: { contains: trimmed, mode: 'insensitive' } },
-          { phone: { contains: trimmed, mode: 'insensitive' } },
-          { externalCode: { contains: trimmed, mode: 'insensitive' } },
-        ],
-      },
+      where,
       take: 10,
       orderBy: [{ lastConfirmedAt: 'desc' }, { updatedAt: 'desc' }],
     });
@@ -729,37 +734,136 @@ export class CustomersService {
 
   async findAll(
     businessId: string,
-    options: { q?: string; page?: number; limit?: number } = {},
+    options: {
+      search?: string;
+      q?: string;
+      groupId?: string;
+      page?: number | string;
+      limit?: number | string;
+      onlyWithBalance?: boolean | string;
+    } = {},
   ) {
-    const trimmed = (options.q || '').trim();
-    const page = Math.max(1, Number(options.page) || 1);
-    const limit = Math.min(100, Math.max(1, Number(options.limit) || 50));
+    // 1. Validar límite (default 50, máx 100)
+    let limit = 50;
+    if (options.limit !== undefined && options.limit !== null && options.limit !== '') {
+      const numLimit = Number(options.limit);
+      if (isNaN(numLimit) || numLimit < 1) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'INVALID_LIMIT',
+          message: 'El parámetro "limit" debe ser un número entero mayor a 0',
+        });
+      }
+      if (numLimit > 100) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'INVALID_LIMIT',
+          message: 'El parámetro "limit" no puede ser mayor a 100 (máximo permitido: 100)',
+        });
+      }
+      limit = Math.floor(numLimit);
+    }
+
+    // 2. Validar página
+    let page = 1;
+    if (options.page !== undefined && options.page !== null && options.page !== '') {
+      const numPage = Number(options.page);
+      if (isNaN(numPage) || numPage < 1) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'INVALID_PAGE',
+          message: 'El parámetro "page" debe ser un número entero mayor a 0',
+        });
+      }
+      page = Math.floor(numPage);
+    }
+
     const skip = (page - 1) * limit;
 
+    // 3. Término de búsqueda (search oficial, q retrocompatible)
+    const searchTerm = (options.search ?? options.q ?? '').trim();
+
+    // 4. Construcción del filtro where
     const where: Prisma.CustomerWhereInput = {
       businessId,
-      ...(trimmed
-        ? {
-            OR: [
-              { name: { contains: trimmed, mode: 'insensitive' } },
-              { phone: { contains: trimmed, mode: 'insensitive' } },
-              { email: { contains: trimmed, mode: 'insensitive' } },
-              { ruc: { contains: trimmed, mode: 'insensitive' } },
-              { externalCode: { contains: trimmed, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
     };
 
-    const [items, total] = await Promise.all([
+    // Filtro por groupId si viene especificado
+    if (options.groupId && options.groupId.trim()) {
+      const targetGroupId = options.groupId.trim();
+      const group = await this.prisma.creditGroup.findFirst({
+        where: { id: targetGroupId, businessId },
+      });
+      if (!group) {
+        throw new NotFoundException({
+          statusCode: 404,
+          error: 'Not Found',
+          code: 'GROUP_NOT_FOUND',
+          message: 'Empresa o grupo de crédito no encontrado',
+        });
+      }
+      where.groupId = targetGroupId;
+    }
+
+    // Filtro de búsqueda textual
+    if (searchTerm) {
+      where.OR = [
+        { name: { contains: searchTerm, mode: 'insensitive' } },
+        { phone: { contains: searchTerm, mode: 'insensitive' } },
+        { email: { contains: searchTerm, mode: 'insensitive' } },
+        { ruc: { contains: searchTerm, mode: 'insensitive' } },
+        { externalCode: { contains: searchTerm, mode: 'insensitive' } },
+      ];
+    }
+
+    // Filtro por saldo pendiente (onlyWithBalance)
+    const isOnlyWithBalance =
+      options.onlyWithBalance === true ||
+      options.onlyWithBalance === 'true' ||
+      options.onlyWithBalance === '1';
+
+    if (isOnlyWithBalance) {
+      where.creditAccounts = {
+        some: {
+          status: {
+            in: [
+              CreditAccountStatus.PENDING,
+              CreditAccountStatus.PARTIALLY_PAID,
+              CreditAccountStatus.OVERDUE,
+            ],
+          },
+          balance: { gt: 0 },
+        },
+      };
+    }
+
+    const [customers, total] = await Promise.all([
       this.prisma.customer.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { name: 'asc' },
+        orderBy: [{ name: 'asc' }, { createdAt: 'desc' }],
         include: {
           group: {
             select: { id: true, name: true, taxId: true },
+          },
+          creditAccounts: {
+            where: {
+              status: {
+                in: [
+                  CreditAccountStatus.PENDING,
+                  CreditAccountStatus.PARTIALLY_PAID,
+                  CreditAccountStatus.OVERDUE,
+                ],
+              },
+              balance: { gt: 0 },
+            },
+            select: {
+              balance: true,
+            },
           },
           _count: {
             select: {
@@ -772,6 +876,38 @@ export class CustomersService {
       }),
       this.prisma.customer.count({ where }),
     ]);
+
+    const items = customers.map((c) => {
+      const currentBalance = (c.creditAccounts || []).reduce(
+        (sum, ca) => sum + (Number(ca.balance) || 0),
+        0,
+      );
+      const roundedBalance = Math.round(currentBalance * 100) / 100;
+      return {
+        id: c.id,
+        businessId: c.businessId,
+        name: c.name,
+        phone: c.phone,
+        email: c.email ?? null,
+        notes: c.notes ?? null,
+        ruc: c.ruc ?? null,
+        creditLimit:
+          c.creditLimit !== null && c.creditLimit !== undefined
+            ? Number(c.creditLimit)
+            : null,
+        groupId: c.groupId ?? null,
+        externalCode: c.externalCode ?? null,
+        group: c.group ?? null,
+        isBlocked: c.isBlocked,
+        consecutiveNoShows: c.consecutiveNoShows,
+        lastAddressText: c.lastAddressText ?? null,
+        currentBalance: roundedBalance,
+        balance: roundedBalance,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+        _count: c._count,
+      };
+    });
 
     return {
       items,
