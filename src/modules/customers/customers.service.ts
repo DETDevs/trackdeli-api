@@ -742,6 +742,7 @@ export class CustomersService {
       limit?: number | string;
       onlyWithBalance?: boolean | string;
     } = {},
+    userRole?: UserRole,
   ) {
     // 1. Validar límite (default 50, máx 100)
     let limit = 50;
@@ -877,6 +878,7 @@ export class CustomersService {
       this.prisma.customer.count({ where }),
     ]);
 
+    const isCajero = userRole === UserRole.CAJERO;
     const items = customers.map((c) => {
       const currentBalance = (c.creditAccounts || []).reduce(
         (sum, ca) => sum + (Number(ca.balance) || 0),
@@ -890,11 +892,12 @@ export class CustomersService {
         phone: c.phone,
         email: c.email ?? null,
         notes: c.notes ?? null,
-        ruc: c.ruc ?? null,
-        creditLimit:
-          c.creditLimit !== null && c.creditLimit !== undefined
-            ? Number(c.creditLimit)
-            : null,
+        ruc: isCajero ? null : (c.ruc ?? null),
+        creditLimit: isCajero
+          ? null
+          : c.creditLimit !== null && c.creditLimit !== undefined
+          ? Number(c.creditLimit)
+          : null,
         groupId: c.groupId ?? null,
         externalCode: c.externalCode ?? null,
         group: c.group ?? null,

@@ -65,14 +65,14 @@ export class CustomersController {
       page,
       limit,
       onlyWithBalance,
-    });
+    }, user.role);
   }
 
   @Get([
     'pos/credit/groups/:groupId/customers',
     'credit/groups/:groupId/customers',
   ])
-  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   async findByGroup(
     @CurrentUser() user: JwtPayload,
     @Param('groupId') groupId: string,
@@ -98,7 +98,7 @@ export class CustomersController {
       page,
       limit,
       onlyWithBalance,
-    });
+    }, user.role);
   }
 
   @Get([
