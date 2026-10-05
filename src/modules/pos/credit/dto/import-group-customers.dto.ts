@@ -1,31 +1,32 @@
 import {
   IsArray,
   IsBoolean,
-  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
-  Min,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ImportCustomerRowDto {
-  @IsString()
-  @IsNotEmpty({ message: 'El código de carnet (externalCode) es requerido' })
-  externalCode: string;
-
-  @IsString()
-  @IsNotEmpty({ message: 'El nombre del empleado es requerido' })
-  name: string;
+  @IsOptional()
+  @IsString({ message: 'El código de carnet (externalCode) debe ser un texto' })
+  externalCode?: string;
 
   @IsOptional()
-  @IsString()
+  @IsString({ message: 'El nombre del empleado debe ser un texto' })
+  name?: string;
+
+  @IsOptional()
+  @IsString({ message: 'La identificación (identification) debe ser un texto' })
+  identification?: string;
+
+  @IsOptional()
+  @IsString({ message: 'El teléfono debe ser un texto' })
   phone?: string;
 
   @IsOptional()
   @IsNumber({}, { message: 'El límite de crédito debe ser un número' })
-  @Min(0, { message: 'El límite de crédito no puede ser negativo' })
   creditLimit?: number;
 }
 

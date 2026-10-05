@@ -705,10 +705,13 @@ export class CreditService {
     const dryRun = Boolean(dto.dryRun);
 
     const seenCodesInBatch = new Set<string>();
+    const seenIdentificationsInBatch = new Map<string, string>(); // identification -> externalCode
+
     type EvaluatedRow = {
       index: number;
       externalCode: string;
       name: string;
+      identification: string;
       phone?: string | null;
       creditLimit?: number | null;
       status?: 'CREATED' | 'UPDATED' | 'REJECTED';
@@ -717,34 +720,33 @@ export class CreditService {
 
     const evaluated: EvaluatedRow[] = [];
     const validCodes: string[] = [];
+    const validIdentifications: string[] = [];
 
     for (let i = 0; i < dto.rows.length; i++) {
-      const row = dto.rows[i];
-      const code = (row.externalCode || '').trim();
-      const name = (row.name || '').trim();
+      const row = dto.rows[i] as any;
+      const code = typeof row?.externalCode === 'string' ? row.externalCode.trim() : '';
+      const name = typeof row?.name === 'string' ? row.name.trim() : '';
+      const identification =
+        typeof row?.identification === 'string'
+          ? row.identification.trim()
+          : typeof row?.ruc === 'string'
+          ? row.ruc.trim()
+          : '';
 
-      if (!code) {
+      // 1. Los tres primeros son obligatorios (fila sin alguno -> MISSING_FIELD)
+      if (!code || !name || !identification) {
         evaluated.push({
           index: i,
-          externalCode: code,
+          externalCode: code || (row?.externalCode ? String(row.externalCode) : ''),
           name,
+          identification,
           status: 'REJECTED',
-          reason: 'EMPTY_EXTERNAL_CODE',
+          reason: 'MISSING_FIELD',
         });
         continue;
       }
 
-      if (!name) {
-        evaluated.push({
-          index: i,
-          externalCode: code,
-          name,
-          status: 'REJECTED',
-          reason: 'EMPTY_NAME',
-        });
-        continue;
-      }
-
+      // 2. Límite de crédito opcional >= 0
       if (row.creditLimit !== undefined && row.creditLimit !== null) {
         const lim = Number(row.creditLimit);
         if (isNaN(lim) || lim < 0) {
@@ -752,6 +754,7 @@ export class CreditService {
             index: i,
             externalCode: code,
             name,
+            identification,
             status: 'REJECTED',
             reason: 'INVALID_CREDIT_LIMIT',
           });
@@ -759,24 +762,42 @@ export class CreditService {
         }
       }
 
+      // 3. Duplicados dentro del mismo lote (código)
       if (seenCodesInBatch.has(code)) {
         evaluated.push({
           index: i,
           externalCode: code,
           name,
+          identification,
           status: 'REJECTED',
           reason: 'DUPLICATE_IN_BATCH',
         });
         continue;
       }
 
+      // 4. Duplicados dentro del mismo lote (identificación)
+      if (seenIdentificationsInBatch.has(identification)) {
+        evaluated.push({
+          index: i,
+          externalCode: code,
+          name,
+          identification,
+          status: 'REJECTED',
+          reason: 'DUPLICATE_IDENTIFICATION',
+        });
+        continue;
+      }
+
       seenCodesInBatch.add(code);
+      seenIdentificationsInBatch.set(identification, code);
       validCodes.push(code);
+      validIdentifications.push(identification);
 
       evaluated.push({
         index: i,
         externalCode: code,
         name,
+        identification,
         phone: row.phone?.trim() || null,
         creditLimit:
           row.creditLimit !== undefined && row.creditLimit !== null
@@ -785,18 +806,33 @@ export class CreditService {
       });
     }
 
-    // Consultar clientes existentes por externalCode en este negocio
-    const existingCustomers = await this.prisma.customer.findMany({
-      where: {
-        businessId,
-        externalCode: { in: validCodes },
-      },
-    });
+    // Consultar clientes existentes por externalCode y por identificación (ruc) en este negocio
+    const [existingCustomers, existingWithIdentification] = await Promise.all([
+      this.prisma.customer.findMany({
+        where: {
+          businessId,
+          externalCode: { in: validCodes },
+        },
+      }),
+      this.prisma.customer.findMany({
+        where: {
+          businessId,
+          ruc: { in: validIdentifications },
+        },
+      }),
+    ]);
 
     const existingMap = new Map<string, typeof existingCustomers[0]>();
     for (const ec of existingCustomers) {
       if (ec.externalCode) {
         existingMap.set(ec.externalCode, ec);
+      }
+    }
+
+    const idMap = new Map<string, typeof existingWithIdentification[0]>();
+    for (const ic of existingWithIdentification) {
+      if (ic.ruc) {
+        idMap.set(ic.ruc, ic);
       }
     }
 
@@ -811,6 +847,7 @@ export class CreditService {
       businessId: string;
       groupId: string;
       name: string;
+      ruc: string;
       phone: string;
       externalCode: string;
       creditLimit: number | null;
@@ -819,6 +856,7 @@ export class CreditService {
     const toUpdate: Array<{
       id: string;
       name: string;
+      ruc: string;
       phone?: string;
       creditLimit?: number | null;
     }> = [];
@@ -839,6 +877,19 @@ export class CreditService {
         continue;
       }
 
+      // Si ya existe otro cliente del mismo negocio con la misma identificación y distinto código -> DUPLICATE_IDENTIFICATION
+      const existingWithSameId = idMap.get(ev.identification);
+      if (existingWithSameId && existingWithSameId.externalCode !== ev.externalCode) {
+        rejectedCount++;
+        rowResults.push({
+          index: ev.index,
+          externalCode: ev.externalCode,
+          status: 'REJECTED',
+          reason: 'DUPLICATE_IDENTIFICATION',
+        });
+        continue;
+      }
+
       const existing = existingMap.get(ev.externalCode);
       if (existing) {
         if (existing.groupId === groupId) {
@@ -851,6 +902,7 @@ export class CreditService {
           toUpdate.push({
             id: existing.id,
             name: ev.name,
+            ruc: ev.identification,
             phone: ev.phone !== null ? ev.phone : undefined,
             creditLimit: ev.creditLimit !== null ? ev.creditLimit : undefined,
           });
@@ -874,6 +926,7 @@ export class CreditService {
           businessId,
           groupId,
           name: ev.name,
+          ruc: ev.identification,
           phone: ev.phone || ev.externalCode,
           externalCode: ev.externalCode,
           creditLimit: ev.creditLimit,
@@ -894,6 +947,7 @@ export class CreditService {
             where: { id: item.id },
             data: {
               name: item.name,
+              ruc: item.ruc,
               ...(item.phone !== undefined && { phone: item.phone }),
               ...(item.creditLimit !== undefined && { creditLimit: item.creditLimit }),
             },
