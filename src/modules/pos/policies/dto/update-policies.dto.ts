@@ -26,4 +26,5 @@ export class UpdatePosPoliciesDto {
 
   @IsOptional() @IsBoolean() allowNegativeStock?: boolean;
   @IsOptional() @IsBoolean() inventoryAdjustRequireApproval?: boolean;
+  @IsOptional() @IsBoolean() creditLimitOverrideRequiresApproval?: boolean;
 }

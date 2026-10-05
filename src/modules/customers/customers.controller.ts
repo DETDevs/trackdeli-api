@@ -104,6 +104,29 @@ export class CustomersController {
   }
 
   @Get([
+    'businesses/:businessId/customers/by-code/:code',
+    'businesses/me/customers/by-code/:code',
+    'pos/customers/by-code/:code',
+    'customers/by-code/:code',
+  ])
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async getByCode(
+    @Param('code') code: string,
+    @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.getByCode(businessId, code);
+  }
+
+  @Get([
     'businesses/:businessId/customers/:id/history',
     'businesses/me/customers/:id/history',
     'customers/:id/history',

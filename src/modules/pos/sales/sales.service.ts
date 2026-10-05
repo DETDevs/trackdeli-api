@@ -338,20 +338,127 @@ export class SalesService {
         if (!customerName) customerName = customer.name;
         if (!customerPhone) customerPhone = customer.phone;
 
+        // Candado de fila en cliente y empresa (convenio) para Cartera de Cobro
+        await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customer.id} FOR UPDATE`;
+        if (customer.groupId) {
+          await tx.$queryRaw`SELECT id FROM pos_credit_groups WHERE id = ${customer.groupId} FOR UPDATE`;
+        }
+
+        const saleTotalDecimal = new Prisma.Decimal(total);
+
+        // 1. Deuda activa del cliente
+        const customerDebtAgg = await tx.creditAccount.aggregate({
+          where: {
+            customerId: customer.id,
+            status: { in: [CreditAccountStatus.PENDING, CreditAccountStatus.PARTIALLY_PAID, CreditAccountStatus.OVERDUE] },
+          },
+          _sum: { balance: true },
+        });
+        const customerDebt = customerDebtAgg._sum.balance ? Math.round(Number(customerDebtAgg._sum.balance) * 100) / 100 : 0;
+        const customerDebtDecimal = new Prisma.Decimal(customerDebt);
+
+        let isLimitExceeded = false;
+        let exceededLimit = 0;
+        let exceededBalance = 0;
+        let isGroupExceeded = false;
+
         if (customer.creditLimit !== null && customer.creditLimit !== undefined) {
-          const activeDebtAgg = await tx.creditAccount.aggregate({
-            where: {
-              customerId: customer.id,
-              status: { in: [CreditAccountStatus.PENDING, CreditAccountStatus.PARTIALLY_PAID, CreditAccountStatus.OVERDUE] },
-            },
-            _sum: { balance: true },
-          });
-          const currentDebt = activeDebtAgg._sum.balance || 0;
-          if (currentDebt + total > customer.creditLimit) {
-            throw new BadRequestException(
-              `Límite de crédito excedido. Límite: ${customer.creditLimit.toFixed(2)}, Deuda actual: ${currentDebt.toFixed(2)}, Intentando cargar: ${total.toFixed(2)}`
-            );
+          const customerLimitDecimal = new Prisma.Decimal(customer.creditLimit);
+          if (customerDebtDecimal.add(saleTotalDecimal).greaterThan(customerLimitDecimal)) {
+            isLimitExceeded = true;
+            exceededLimit = Number(customer.creditLimit);
+            exceededBalance = customerDebt;
+            isGroupExceeded = false;
           }
+        }
+
+        // 2. Deuda activa de la empresa (si el cliente pertenece a una con límite)
+        if (!isLimitExceeded && customer.groupId) {
+          const group = await tx.creditGroup.findFirst({
+            where: { id: customer.groupId, businessId },
+          });
+          if (group && group.creditLimit !== null && group.creditLimit !== undefined) {
+            const groupDebtAgg = await tx.creditAccount.aggregate({
+              where: {
+                customer: { groupId: customer.groupId },
+                businessId,
+                status: { in: [CreditAccountStatus.PENDING, CreditAccountStatus.PARTIALLY_PAID, CreditAccountStatus.OVERDUE] },
+              },
+              _sum: { balance: true },
+            });
+            const groupDebt = groupDebtAgg._sum.balance ? Math.round(Number(groupDebtAgg._sum.balance) * 100) / 100 : 0;
+            const groupDebtDecimal = new Prisma.Decimal(groupDebt);
+            const groupLimitDecimal = new Prisma.Decimal(group.creditLimit);
+
+            if (groupDebtDecimal.add(saleTotalDecimal).greaterThan(groupLimitDecimal)) {
+              isLimitExceeded = true;
+              exceededLimit = Number(group.creditLimit);
+              exceededBalance = groupDebt;
+              isGroupExceeded = true;
+            }
+          }
+        }
+
+        if (isLimitExceeded) {
+          const requiresApproval = policies.creditLimitOverrideRequiresApproval ?? true;
+          let overrideApprovedById: string | null = null;
+
+          if (requiresApproval) {
+            if (userRole === UserRole.CAJERO || !dto.approvalToken) {
+              if (dto.approvalToken) {
+                overrideApprovedById = await this.approvalsService.consumeToken(
+                  businessId,
+                  PosAction.CREDIT_LIMIT_OVERRIDE,
+                  dto.approvalToken,
+                  tx,
+                );
+              } else {
+                throw new UnprocessableEntityException({
+                  statusCode: 422,
+                  error: 'Unprocessable Entity',
+                  code: 'CREDIT_LIMIT_EXCEEDED',
+                  message: {
+                    code: 'CREDIT_LIMIT_EXCEEDED',
+                    message: `Límite de crédito excedido (${isGroupExceeded ? 'empresa' : 'cliente'}). Límite: ${exceededLimit.toFixed(2)}, Deuda actual: ${exceededBalance.toFixed(2)}, Intentando cargar: ${total.toFixed(2)}`,
+                    details: {
+                      limit: exceededLimit,
+                      balance: exceededBalance,
+                      requested: total,
+                      entity: isGroupExceeded ? 'GROUP' : 'CUSTOMER',
+                      entityId: isGroupExceeded ? customer.groupId : customer.id,
+                    },
+                  },
+                  limit: exceededLimit,
+                  balance: exceededBalance,
+                  requested: total,
+                });
+              }
+            } else {
+              overrideApprovedById = dto.approvalToken
+                ? await this.approvalsService.consumeToken(
+                    businessId,
+                    PosAction.CREDIT_LIMIT_OVERRIDE,
+                    dto.approvalToken,
+                    tx,
+                  )
+                : cashierId;
+            }
+          } else {
+            overrideApprovedById = cashierId;
+          }
+
+          await this.auditService.record(
+            {
+              businessId,
+              userId: overrideApprovedById || cashierId,
+              userRole,
+              action: PosAction.CREDIT_LIMIT_OVERRIDE,
+              entityType: isGroupExceeded ? 'CreditGroup' : 'Customer',
+              entityId: isGroupExceeded ? customer.groupId : customer.id,
+              reason: `Venta a crédito autorizada sobrepasando límite de ${isGroupExceeded ? 'empresa' : 'cliente'} (${exceededLimit.toFixed(2)}). Solicitado: ${total.toFixed(2)}, Deuda previa: ${exceededBalance.toFixed(2)}`,
+            },
+            tx,
+          );
         }
 
         if (dto.creditDueDate) {
@@ -621,6 +728,7 @@ export class SalesService {
           notes: finalNotes || null,
           hasNegativeStock,
           status: "COMPLETED",
+          occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
         },
         include: { items: true, payments: true, cashier: { select: { name: true } }, customer: true },
       });
@@ -858,6 +966,26 @@ export class SalesService {
       });
 
       if (!sale) throw new NotFoundException('Venta no encontrada');
+
+      // Bloqueo si la venta pertenece a un corte congelado o liquidado
+      const statementItem = await tx.creditStatementItem.findFirst({
+        where: { saleId: id },
+        include: { statement: true },
+      });
+      if (
+        statementItem &&
+        ['OPEN', 'PARTIALLY_SETTLED', 'SETTLED'].includes(statementItem.statement.status)
+      ) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'STATEMENT_CLOSED',
+          message: {
+            code: 'STATEMENT_CLOSED',
+            message: `La venta pertenece al corte "${statementItem.statement.statementNumber || statementItem.statement.id}" (${statementItem.statement.status}) y no puede anularse sin reabrir el corte`,
+          },
+        });
+      }
 
       if (sale.status === 'VOIDED' || sale.status === 'CANCELLED') {
         throw new UnprocessableEntityException({
@@ -1149,6 +1277,26 @@ export class SalesService {
       });
 
       if (!sale) throw new NotFoundException('Venta no encontrada');
+
+      // Bloqueo si la venta pertenece a un corte congelado o liquidado
+      const statementItem = await tx.creditStatementItem.findFirst({
+        where: { saleId: id },
+        include: { statement: true },
+      });
+      if (
+        statementItem &&
+        ['OPEN', 'PARTIALLY_SETTLED', 'SETTLED'].includes(statementItem.statement.status)
+      ) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'STATEMENT_CLOSED',
+          message: {
+            code: 'STATEMENT_CLOSED',
+            message: `La venta pertenece al corte "${statementItem.statement.statementNumber || statementItem.statement.id}" (${statementItem.statement.status}) y no puede devolverse sin reabrir el corte`,
+          },
+        });
+      }
 
       if (sale.status === 'VOIDED' || sale.status === 'CANCELLED') {
         throw new UnprocessableEntityException({

@@ -59,5 +59,13 @@ export class UpdateCustomerDto {
   @IsOptional()
   @IsBoolean({ message: 'isBlocked debe ser un booleano' })
   isBlocked?: boolean;
+
+  @IsOptional()
+  @IsString({ message: 'El ID de la empresa debe ser una cadena de texto' })
+  groupId?: string | null;
+
+  @IsOptional()
+  @IsString({ message: 'El código de empleado/carnet debe ser una cadena de texto' })
+  externalCode?: string | null;
 }
 

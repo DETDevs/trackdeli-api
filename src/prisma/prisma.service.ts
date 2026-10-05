@@ -599,6 +599,84 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           END $$;`
         },
         {
+          name: '116a - Cuentas de empresa (convenios) en Cartera de Cobro y cortes',
+          sql: `DO $$ BEGIN
+            -- 1. Tabla de empresas (convenios)
+            CREATE TABLE IF NOT EXISTS "pos_credit_groups" (
+              "id" TEXT NOT NULL PRIMARY KEY,
+              "businessId" TEXT NOT NULL REFERENCES "businesses"("id") ON DELETE CASCADE,
+              "name" VARCHAR(150) NOT NULL,
+              "taxId" VARCHAR(50),
+              "contactName" VARCHAR(150),
+              "contactPhone" VARCHAR(50),
+              "contactEmail" VARCHAR(255),
+              "billingCycle" VARCHAR(30) NOT NULL DEFAULT 'BIWEEKLY',
+              "cutDay1" INTEGER,
+              "cutDay2" INTEGER,
+              "payDayOffset" INTEGER DEFAULT 0,
+              "creditLimit" DECIMAL(12, 2),
+              "isActive" BOOLEAN NOT NULL DEFAULT true,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS "pos_credit_groups_businessId_idx" ON "pos_credit_groups"("businessId");
+            CREATE INDEX IF NOT EXISTS "pos_credit_groups_businessId_isActive_idx" ON "pos_credit_groups"("businessId", "isActive");
+
+            -- 2. Tabla de cortes congelados
+            CREATE TABLE IF NOT EXISTS "pos_credit_statements" (
+              "id" TEXT NOT NULL PRIMARY KEY,
+              "businessId" TEXT NOT NULL REFERENCES "businesses"("id") ON DELETE CASCADE,
+              "groupId" TEXT NOT NULL REFERENCES "pos_credit_groups"("id") ON DELETE RESTRICT,
+              "statementNumber" VARCHAR(50),
+              "periodFrom" TIMESTAMP(3) NOT NULL,
+              "periodTo" TIMESTAMP(3) NOT NULL,
+              "cutDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "payDueDate" TIMESTAMP(3),
+              "status" VARCHAR(30) NOT NULL DEFAULT 'OPEN',
+              "totalAmount" DECIMAL(12, 2) NOT NULL DEFAULT 0,
+              "settledAmount" DECIMAL(12, 2) NOT NULL DEFAULT 0,
+              "notes" TEXT,
+              "createdById" TEXT NOT NULL,
+              "settledById" TEXT,
+              "settledAt" TIMESTAMP(3),
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS "pos_credit_statements_businessId_groupId_idx" ON "pos_credit_statements"("businessId", "groupId");
+            CREATE INDEX IF NOT EXISTS "pos_credit_statements_groupId_status_idx" ON "pos_credit_statements"("groupId", "status");
+
+            -- 3. Tabla de ítems de cortes
+            CREATE TABLE IF NOT EXISTS "pos_credit_statement_items" (
+              "id" TEXT NOT NULL PRIMARY KEY,
+              "statementId" TEXT NOT NULL REFERENCES "pos_credit_statements"("id") ON DELETE CASCADE,
+              "saleId" TEXT NOT NULL UNIQUE REFERENCES "pos_sales"("id") ON DELETE RESTRICT,
+              "customerId" TEXT NOT NULL REFERENCES "customers"("id") ON DELETE RESTRICT,
+              "amount" DECIMAL(12, 2) NOT NULL DEFAULT 0,
+              "settledAmount" DECIMAL(12, 2) NOT NULL DEFAULT 0,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS "pos_credit_statement_items_statementId_idx" ON "pos_credit_statement_items"("statementId");
+            CREATE INDEX IF NOT EXISTS "pos_credit_statement_items_customerId_idx" ON "pos_credit_statement_items"("customerId");
+
+            -- 4. Columnas en customers
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'customers' AND column_name = 'groupId') THEN
+              ALTER TABLE "customers" ADD COLUMN "groupId" TEXT REFERENCES "pos_credit_groups"("id") ON DELETE SET NULL;
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'customers' AND column_name = 'externalCode') THEN
+              ALTER TABLE "customers" ADD COLUMN "externalCode" VARCHAR(50);
+            END IF;
+
+            CREATE UNIQUE INDEX IF NOT EXISTS "customers_businessId_externalCode_key" ON "customers" ("businessId", "externalCode") WHERE "externalCode" IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS "customers_businessId_groupId_idx" ON "customers"("businessId", "groupId");
+
+            -- 5. Columna en pos_policies
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'pos_policies' AND column_name = 'creditLimitOverrideRequiresApproval') THEN
+              ALTER TABLE "pos_policies" ADD COLUMN "creditLimitOverrideRequiresApproval" BOOLEAN NOT NULL DEFAULT true;
+            END IF;
+          END $$;`
+        },
+        {
           name: 'Modificaciones en users para Social Login',
           sql: `DO $$ BEGIN
             ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "authProvider" "AuthProvider" NOT NULL DEFAULT 'EMAIL';

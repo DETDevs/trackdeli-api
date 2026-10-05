@@ -328,6 +328,8 @@ model Business {
   professions           Profession[]
   purchases             Purchase[]
   inventoryAdjustments  InventoryAdjustment[]
+  creditGroups          CreditGroup[]
+  creditStatements      CreditStatement[]
 
   @@map("businesses")
 }
@@ -636,6 +638,7 @@ model PosPolicies {
   
   allowNegativeStock         Boolean  @default(false)
   inventoryAdjustRequireApproval Boolean @default(true)
+  creditLimitOverrideRequiresApproval Boolean @default(true)
 
   @@map("pos_policies")
 }
@@ -711,15 +714,21 @@ model Customer {
   ruc             String?                   @db.VarChar(30)
   isBlocked       Boolean                   @default(false)
   consecutiveNoShows Int                    @default(0)
+  groupId         String?
+  group           CreditGroup?              @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  externalCode    String?                   @db.VarChar(50)
 
   locationSessions CustomerLocationSession[]
   sales            Sale[]
   creditAccounts   CreditAccount[]
   appointments     Appointment[]
+  statementItems   CreditStatementItem[]
 
   @@unique([businessId, phone])
   @@index([businessId, phone])
   @@index([businessId, name])
+  @@index([businessId, externalCode])
+  @@index([businessId, groupId])
   @@map("customers")
 }
 
@@ -970,7 +979,8 @@ model Sale {
   notes          String?
   printCount     Int              @default(0)
 
-  returns        SaleReturn[]
+  returns             SaleReturn[]
+  creditStatementItem CreditStatementItem?
 
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
@@ -1108,6 +1118,77 @@ model CreditPayment {
 
   @@index([creditAccountId])
   @@map("pos_credit_payments")
+}
+
+model CreditGroup {
+  id           String            @id @default(uuid())
+  businessId   String
+  business     Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name         String            @db.VarChar(150)
+  taxId        String?           @db.VarChar(50)
+  contactName  String?           @db.VarChar(150)
+  contactPhone String?           @db.VarChar(50)
+  contactEmail String?           @db.VarChar(255)
+  billingCycle String            @default("BIWEEKLY") @db.VarChar(30)
+  cutDay1      Int?
+  cutDay2      Int?
+  payDayOffset Int?              @default(0)
+  creditLimit  Decimal?          @db.Decimal(12, 2)
+  isActive     Boolean           @default(true)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  customers    Customer[]
+  statements   CreditStatement[]
+
+  @@index([businessId])
+  @@index([businessId, isActive])
+  @@map("pos_credit_groups")
+}
+
+model CreditStatement {
+  id              String                @id @default(uuid())
+  businessId      String
+  business        Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  groupId         String
+  group           CreditGroup           @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  statementNumber String?               @db.VarChar(50)
+  periodFrom      DateTime
+  periodTo        DateTime
+  cutDate         DateTime              @default(now())
+  payDueDate      DateTime?
+  status          String                @default("OPEN") @db.VarChar(30)
+  totalAmount     Decimal               @default(0) @db.Decimal(12, 2)
+  settledAmount   Decimal               @default(0) @db.Decimal(12, 2)
+  notes           String?
+  createdById     String
+  settledById     String?
+  settledAt       DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  items           CreditStatementItem[]
+
+  @@index([businessId, groupId])
+  @@index([groupId, status])
+  @@map("pos_credit_statements")
+}
+
+model CreditStatementItem {
+  id            String          @id @default(uuid())
+  statementId   String
+  statement     CreditStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  saleId        String          @unique
+  sale          Sale            @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  customerId    String
+  customer      Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  amount        Decimal         @default(0) @db.Decimal(12, 2)
+  settledAmount Decimal         @default(0) @db.Decimal(12, 2)
+  createdAt     DateTime        @default(now())
+
+  @@index([statementId])
+  @@index([customerId])
+  @@map("pos_credit_statement_items")
 }
 
 model CashRegister {

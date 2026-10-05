@@ -17,7 +17,11 @@ export enum PosAction {
   VER_AUDITORIA = 'VER_AUDITORIA',
   CAMBIAR_POLITICAS = 'CAMBIAR_POLITICAS',
   CAMBIAR_TASA_DOLAR = 'CAMBIAR_TASA_DOLAR',
-  ABONAR_CREDITO = 'ABONAR_CREDITO'
+  ABONAR_CREDITO = 'ABONAR_CREDITO',
+  GROUP_MANAGE = 'GROUP_MANAGE',
+  GROUP_STATEMENT = 'GROUP_STATEMENT',
+  GROUP_SETTLE = 'GROUP_SETTLE',
+  CREDIT_LIMIT_OVERRIDE = 'CREDIT_LIMIT_OVERRIDE',
 }
 
 @Injectable()
@@ -64,6 +68,11 @@ export class PosPermissionsService {
         case PosAction.CAMBIAR_POLITICAS:
           return false;
         case PosAction.CAMBIAR_TASA_DOLAR:
+          return false;
+        case PosAction.GROUP_MANAGE:
+        case PosAction.GROUP_STATEMENT:
+        case PosAction.GROUP_SETTLE:
+        case PosAction.CREDIT_LIMIT_OVERRIDE:
           return false;
         default:
           return false;

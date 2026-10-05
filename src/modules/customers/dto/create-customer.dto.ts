@@ -39,4 +39,12 @@ export class CreateCustomerDto {
   @SanitizeText()
   @IsString({ message: 'Las notas deben ser una cadena de texto' })
   notes?: string;
+
+  @IsOptional()
+  @IsString({ message: 'El ID de la empresa debe ser una cadena de texto' })
+  groupId?: string;
+
+  @IsOptional()
+  @IsString({ message: 'El código de empleado/carnet debe ser una cadena de texto' })
+  externalCode?: string;
 }

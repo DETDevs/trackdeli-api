@@ -5,6 +5,9 @@ export class CustomerResponseDto {
   phone: string;
   ruc?: string | null;
   creditLimit?: number | null;
+  groupId?: string | null;
+  group?: { id: string; name: string; taxId?: string | null } | null;
+  externalCode?: string | null;
   lastLatitude: number | null;
   lastLongitude: number | null;
   lastAddressText: string | null;
@@ -20,6 +23,8 @@ export class CustomerSearchResultDto {
   phone: string;
   ruc?: string | null;
   creditLimit?: number | null;
+  groupId?: string | null;
+  externalCode?: string | null;
   lastLatitude: number | null;
   lastLongitude: number | null;
   lastAddressText: string | null;

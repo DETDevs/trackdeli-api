@@ -18,7 +18,7 @@ import {
   CustomerSearchResultDto,
 } from './dto/customer-response.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
-import { BusinessProductType, NotificationChannel, NotificationLogStatus, Prisma, UserRole } from '@prisma/client';
+import { BusinessProductType, CreditAccountStatus, NotificationChannel, NotificationLogStatus, Prisma, UserRole } from '@prisma/client';
 import { BusinessProductsService } from '../business-products/business-products.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { generateShortCode, normalizeShortCode } from '../../common/utils/short-code.util';
@@ -87,6 +87,7 @@ export class CustomersService {
         OR: [
           { name: { contains: trimmed, mode: 'insensitive' } },
           { phone: { contains: trimmed, mode: 'insensitive' } },
+          { externalCode: { contains: trimmed, mode: 'insensitive' } },
         ],
       },
       take: 10,
@@ -99,6 +100,8 @@ export class CustomersService {
       phone: c.phone,
       ruc: c.ruc ?? null,
       creditLimit: c.creditLimit ?? null,
+      groupId: c.groupId ?? null,
+      externalCode: c.externalCode ?? null,
       lastLatitude: c.lastLatitude,
       lastLongitude: c.lastLongitude,
       lastAddressText: c.lastAddressText,
@@ -143,6 +146,8 @@ export class CustomersService {
       phone: customer.phone,
       ruc: customer.ruc ?? null,
       creditLimit: customer.creditLimit ?? null,
+      groupId: customer.groupId ?? null,
+      externalCode: customer.externalCode ?? null,
       lastLatitude: customer.lastLatitude,
       lastLongitude: customer.lastLongitude,
       lastAddressText: customer.lastAddressText,
@@ -186,6 +191,29 @@ export class CustomersService {
       );
     }
 
+    if (dto.externalCode && dto.externalCode.trim()) {
+      const existingCode = await this.prisma.customer.findFirst({
+        where: {
+          businessId,
+          externalCode: dto.externalCode.trim(),
+        },
+      });
+      if (existingCode) {
+        throw new ConflictException(
+          `Ya existe un cliente con el código ${dto.externalCode.trim()} (${existingCode.name})`,
+        );
+      }
+    }
+
+    if (dto.groupId) {
+      const group = await this.prisma.creditGroup.findFirst({
+        where: { id: dto.groupId, businessId },
+      });
+      if (!group) {
+        throw new BadRequestException('La empresa/convenio especificada no existe');
+      }
+    }
+
     const customer = await this.prisma.customer.create({
       data: {
         businessId,
@@ -195,7 +223,14 @@ export class CustomersService {
         notes: dto.notes?.trim() || null,
         ruc: dto.ruc?.trim() || null,
         creditLimit: dto.creditLimit !== undefined ? dto.creditLimit : null,
+        groupId: dto.groupId || null,
+        externalCode: dto.externalCode?.trim() || null,
         lastAddressText: dto.address?.trim() || null,
+      },
+      include: {
+        group: {
+          select: { id: true, name: true, taxId: true },
+        },
       },
     });
 
@@ -206,6 +241,9 @@ export class CustomersService {
       phone: customer.phone,
       ruc: customer.ruc ?? null,
       creditLimit: customer.creditLimit ?? null,
+      groupId: customer.groupId ?? null,
+      group: customer.group ?? null,
+      externalCode: customer.externalCode ?? null,
       lastLatitude: customer.lastLatitude,
       lastLongitude: customer.lastLongitude,
       lastAddressText: customer.lastAddressText,
@@ -707,6 +745,7 @@ export class CustomersService {
               { phone: { contains: trimmed, mode: 'insensitive' } },
               { email: { contains: trimmed, mode: 'insensitive' } },
               { ruc: { contains: trimmed, mode: 'insensitive' } },
+              { externalCode: { contains: trimmed, mode: 'insensitive' } },
             ],
           }
         : {}),
@@ -719,6 +758,9 @@ export class CustomersService {
         take: limit,
         orderBy: { name: 'asc' },
         include: {
+          group: {
+            select: { id: true, name: true, taxId: true },
+          },
           _count: {
             select: {
               appointments: true,
@@ -1020,6 +1062,32 @@ export class CustomersService {
       }
     }
 
+    if (dto.externalCode !== undefined) {
+      const cleanCode = dto.externalCode?.trim() || null;
+      if (cleanCode && cleanCode !== customer.externalCode) {
+        const existing = await this.prisma.customer.findFirst({
+          where: {
+            businessId,
+            externalCode: cleanCode,
+          },
+        });
+        if (existing && existing.id !== id) {
+          throw new ConflictException(
+            `Ya existe otro cliente con el código ${cleanCode} (${existing.name})`,
+          );
+        }
+      }
+    }
+
+    if (dto.groupId !== undefined && dto.groupId) {
+      const group = await this.prisma.creditGroup.findFirst({
+        where: { id: dto.groupId, businessId },
+      });
+      if (!group) {
+        throw new BadRequestException('La empresa/convenio especificada no existe');
+      }
+    }
+
     const hasNewCoords = dto.latitude != null && dto.longitude != null;
     const now = new Date();
 
@@ -1034,6 +1102,8 @@ export class CustomersService {
         ...(dto.creditLimit !== undefined && {
           creditLimit: dto.creditLimit,
         }),
+        ...(dto.groupId !== undefined && { groupId: dto.groupId || null }),
+        ...(dto.externalCode !== undefined && { externalCode: dto.externalCode?.trim() || null }),
         ...(dto.address !== undefined && {
           lastAddressText: dto.address?.trim() || null,
         }),
@@ -1046,7 +1116,122 @@ export class CustomersService {
         ...(hasNewCoords && { lastConfirmedAt: now }),
         ...(dto.isBlocked !== undefined && { isBlocked: dto.isBlocked }),
       },
+      include: {
+        group: {
+          select: { id: true, name: true, taxId: true },
+        },
+      },
     });
+  }
+
+  async getByCode(businessId: string, code: string) {
+    const cleanCode = (code || '').trim();
+    if (!cleanCode) {
+      throw new BadRequestException('El código es requerido');
+    }
+
+    const customer = await this.prisma.customer.findFirst({
+      where: {
+        businessId,
+        externalCode: cleanCode,
+      },
+      include: {
+        group: {
+          select: {
+            id: true,
+            name: true,
+            taxId: true,
+            billingCycle: true,
+            creditLimit: true,
+            isActive: true,
+          },
+        },
+      },
+    });
+
+    if (!customer) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        code: 'CUSTOMER_NOT_FOUND',
+        message: {
+          code: 'CUSTOMER_NOT_FOUND',
+          message: `Cliente con código "${cleanCode}" no encontrado`,
+        },
+      });
+    }
+
+    // Saldo actual del cliente en cuentas activas de crédito
+    const debtAgg = await this.prisma.creditAccount.aggregate({
+      where: {
+        customerId: customer.id,
+        businessId,
+        status: { in: [CreditAccountStatus.PENDING, CreditAccountStatus.PARTIALLY_PAID, CreditAccountStatus.OVERDUE] },
+      },
+      _sum: { balance: true },
+    });
+    const balance = debtAgg._sum.balance ? Math.round(Number(debtAgg._sum.balance) * 100) / 100 : 0;
+
+    let availableCredit: number | null = null;
+    if (customer.creditLimit !== null && customer.creditLimit !== undefined) {
+      availableCredit = Math.max(0, Math.round((Number(customer.creditLimit) - balance) * 100) / 100);
+    }
+
+    let groupInfo: any = null;
+    if (customer.group) {
+      const groupLimit = customer.group.creditLimit !== null && customer.group.creditLimit !== undefined
+        ? Number(customer.group.creditLimit)
+        : null;
+
+      let groupBalance = 0;
+      let groupAvailable: number | null = null;
+
+      if (groupLimit !== null) {
+        const groupDebtAgg = await this.prisma.creditAccount.aggregate({
+          where: {
+            customer: { groupId: customer.group.id },
+            businessId,
+            status: { in: [CreditAccountStatus.PENDING, CreditAccountStatus.PARTIALLY_PAID, CreditAccountStatus.OVERDUE] },
+          },
+          _sum: { balance: true },
+        });
+        groupBalance = groupDebtAgg._sum.balance ? Math.round(Number(groupDebtAgg._sum.balance) * 100) / 100 : 0;
+        groupAvailable = Math.max(0, Math.round((groupLimit - groupBalance) * 100) / 100);
+
+        if (availableCredit !== null) {
+          availableCredit = Math.min(availableCredit, groupAvailable);
+        } else {
+          availableCredit = groupAvailable;
+        }
+      }
+
+      groupInfo = {
+        id: customer.group.id,
+        name: customer.group.name,
+        taxId: customer.group.taxId ?? null,
+        billingCycle: customer.group.billingCycle,
+        creditLimit: groupLimit,
+        balance: groupBalance,
+        availableCredit: groupAvailable,
+        isActive: customer.group.isActive,
+      };
+    }
+
+    return {
+      id: customer.id,
+      businessId: customer.businessId,
+      name: customer.name,
+      phone: customer.phone,
+      ruc: customer.ruc ?? null,
+      externalCode: customer.externalCode ?? null,
+      creditLimit: customer.creditLimit !== null && customer.creditLimit !== undefined ? Number(customer.creditLimit) : null,
+      balance,
+      availableCredit,
+      groupId: customer.groupId ?? null,
+      group: groupInfo,
+      createdAt: customer.createdAt,
+      updatedAt: customer.updatedAt,
+    };
   }
 }
 
