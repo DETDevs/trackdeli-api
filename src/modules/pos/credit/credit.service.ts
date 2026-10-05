@@ -19,6 +19,8 @@ import { CreateCreditGroupDto } from './dto/create-credit-group.dto';
 import { UpdateCreditGroupDto } from './dto/update-credit-group.dto';
 import { CreateCreditStatementDto } from './dto/create-statement.dto';
 import { SettleCreditStatementDto } from './dto/settle-statement.dto';
+import { ImportGroupCustomersDto } from './dto/import-group-customers.dto';
+import { CancelCreditStatementDto } from './dto/cancel-statement.dto';
 
 @Injectable()
 export class CreditService {
@@ -668,6 +670,265 @@ export class CreditService {
     return this.calculateNextCut(group, lastStatement);
   }
 
+  async importCustomers(
+    businessId: string,
+    groupId: string,
+    dto: ImportGroupCustomersDto,
+    userId: string,
+    userRole: string,
+  ) {
+    await this.ensureCarteraActive(businessId);
+
+    const group = await this.prisma.creditGroup.findFirst({
+      where: { id: groupId, businessId },
+    });
+    if (!group) {
+      throw new NotFoundException('Empresa no encontrada');
+    }
+
+    if (!dto.rows || !Array.isArray(dto.rows)) {
+      throw new BadRequestException('El cuerpo debe contener un arreglo de filas (rows)');
+    }
+
+    if (dto.rows.length > 500) {
+      throw new UnprocessableEntityException({
+        statusCode: 422,
+        error: 'Unprocessable Entity',
+        code: 'MAX_ROWS_EXCEEDED',
+        message: {
+          code: 'MAX_ROWS_EXCEEDED',
+          message: 'El lote supera el máximo permitido de 500 filas por llamada',
+        },
+      });
+    }
+
+    const dryRun = Boolean(dto.dryRun);
+
+    const seenCodesInBatch = new Set<string>();
+    type EvaluatedRow = {
+      index: number;
+      externalCode: string;
+      name: string;
+      phone?: string | null;
+      creditLimit?: number | null;
+      status?: 'CREATED' | 'UPDATED' | 'REJECTED';
+      reason?: string;
+    };
+
+    const evaluated: EvaluatedRow[] = [];
+    const validCodes: string[] = [];
+
+    for (let i = 0; i < dto.rows.length; i++) {
+      const row = dto.rows[i];
+      const code = (row.externalCode || '').trim();
+      const name = (row.name || '').trim();
+
+      if (!code) {
+        evaluated.push({
+          index: i,
+          externalCode: code,
+          name,
+          status: 'REJECTED',
+          reason: 'EMPTY_EXTERNAL_CODE',
+        });
+        continue;
+      }
+
+      if (!name) {
+        evaluated.push({
+          index: i,
+          externalCode: code,
+          name,
+          status: 'REJECTED',
+          reason: 'EMPTY_NAME',
+        });
+        continue;
+      }
+
+      if (row.creditLimit !== undefined && row.creditLimit !== null) {
+        const lim = Number(row.creditLimit);
+        if (isNaN(lim) || lim < 0) {
+          evaluated.push({
+            index: i,
+            externalCode: code,
+            name,
+            status: 'REJECTED',
+            reason: 'INVALID_CREDIT_LIMIT',
+          });
+          continue;
+        }
+      }
+
+      if (seenCodesInBatch.has(code)) {
+        evaluated.push({
+          index: i,
+          externalCode: code,
+          name,
+          status: 'REJECTED',
+          reason: 'DUPLICATE_IN_BATCH',
+        });
+        continue;
+      }
+
+      seenCodesInBatch.add(code);
+      validCodes.push(code);
+
+      evaluated.push({
+        index: i,
+        externalCode: code,
+        name,
+        phone: row.phone?.trim() || null,
+        creditLimit:
+          row.creditLimit !== undefined && row.creditLimit !== null
+            ? Number(row.creditLimit)
+            : null,
+      });
+    }
+
+    // Consultar clientes existentes por externalCode en este negocio
+    const existingCustomers = await this.prisma.customer.findMany({
+      where: {
+        businessId,
+        externalCode: { in: validCodes },
+      },
+    });
+
+    const existingMap = new Map<string, typeof existingCustomers[0]>();
+    for (const ec of existingCustomers) {
+      if (ec.externalCode) {
+        existingMap.set(ec.externalCode, ec);
+      }
+    }
+
+    const rowResults: Array<{
+      index: number;
+      externalCode: string;
+      status: 'CREATED' | 'UPDATED' | 'REJECTED';
+      reason?: string;
+    }> = [];
+
+    const toCreate: Array<{
+      businessId: string;
+      groupId: string;
+      name: string;
+      phone: string;
+      externalCode: string;
+      creditLimit: number | null;
+    }> = [];
+
+    const toUpdate: Array<{
+      id: string;
+      name: string;
+      phone?: string;
+      creditLimit?: number | null;
+    }> = [];
+
+    let createdCount = 0;
+    let updatedCount = 0;
+    let rejectedCount = 0;
+
+    for (const ev of evaluated) {
+      if (ev.status === 'REJECTED') {
+        rejectedCount++;
+        rowResults.push({
+          index: ev.index,
+          externalCode: ev.externalCode,
+          status: 'REJECTED',
+          reason: ev.reason,
+        });
+        continue;
+      }
+
+      const existing = existingMap.get(ev.externalCode);
+      if (existing) {
+        if (existing.groupId === groupId) {
+          updatedCount++;
+          rowResults.push({
+            index: ev.index,
+            externalCode: ev.externalCode,
+            status: 'UPDATED',
+          });
+          toUpdate.push({
+            id: existing.id,
+            name: ev.name,
+            phone: ev.phone !== null ? ev.phone : undefined,
+            creditLimit: ev.creditLimit !== null ? ev.creditLimit : undefined,
+          });
+        } else {
+          rejectedCount++;
+          rowResults.push({
+            index: ev.index,
+            externalCode: ev.externalCode,
+            status: 'REJECTED',
+            reason: 'CODE_IN_OTHER_GROUP',
+          });
+        }
+      } else {
+        createdCount++;
+        rowResults.push({
+          index: ev.index,
+          externalCode: ev.externalCode,
+          status: 'CREATED',
+        });
+        toCreate.push({
+          businessId,
+          groupId,
+          name: ev.name,
+          phone: ev.phone || ev.externalCode,
+          externalCode: ev.externalCode,
+          creditLimit: ev.creditLimit,
+        });
+      }
+    }
+
+    if (!dryRun) {
+      await this.prisma.$transaction(async (tx) => {
+        for (const item of toCreate) {
+          await tx.customer.create({
+            data: item,
+          });
+        }
+
+        for (const item of toUpdate) {
+          await tx.customer.update({
+            where: { id: item.id },
+            data: {
+              name: item.name,
+              ...(item.phone !== undefined && { phone: item.phone }),
+              ...(item.creditLimit !== undefined && { creditLimit: item.creditLimit }),
+            },
+          });
+        }
+
+        await this.auditService.record(
+          {
+            businessId,
+            userId,
+            userRole,
+            action: PosAction.GROUP_MANAGE,
+            entityType: 'CreditGroup',
+            entityId: groupId,
+            reason: `Importación masiva de empleados: ${createdCount} creados, ${updatedCount} actualizados, ${rejectedCount} rechazados (Total: ${dto.rows.length})`,
+            after: {
+              created: createdCount,
+              updated: updatedCount,
+              rejected: rejectedCount,
+              total: dto.rows.length,
+            },
+          },
+          tx,
+        );
+      });
+    }
+
+    return {
+      created: createdCount,
+      updated: updatedCount,
+      rejected: rejectedCount,
+      rows: rowResults,
+    };
+  }
+
   async getGroupStatementReport(
     businessId: string,
     groupId: string,
@@ -854,18 +1115,14 @@ export class CreditService {
 
       for (const cr of customerReports) {
         if (cr.sales.length === 0) {
-          csv += `"${cr.customer.externalCode || ''}"${sep}"${cr.customer.name.replace(/"/g, '""')}"${sep}Sin consumos${sep}${sep}${sep}0.00${sep}${cr.previousBalance.toFixed(2)}${sep}${cr.subtotalPayments.toFixed(2)}${sep}${cr.currentBalance.toFixed(2)}\r\n`;
+          csv += `"${cr.customer.externalCode || ''}"${sep}"${cr.customer.name.replace(/"/g, '""')} (SUBTOTAL)"${sep}Sin consumos${sep}${sep}${sep}0.00${sep}${cr.previousBalance.toFixed(2)}${sep}${cr.subtotalPayments.toFixed(2)}${sep}${cr.currentBalance.toFixed(2)}\r\n`;
         } else {
           for (let i = 0; i < cr.sales.length; i++) {
             const s = cr.sales[i];
             const dateStr = new Date(s.date).toISOString().replace('T', ' ').substring(0, 19);
-            const isFirst = i === 0;
-            const isLast = i === cr.sales.length - 1;
-            csv += `"${cr.customer.externalCode || ''}"${sep}"${cr.customer.name.replace(/"/g, '""')}"${sep}"${s.invoiceNumber}"${sep}"${dateStr}"${sep}"${s.itemsSummary.replace(/"/g, '""')}"${sep}${s.netAmount.toFixed(2)}${sep}${isFirst ? cr.previousBalance.toFixed(2) : ''}${sep}${isLast ? cr.subtotalPayments.toFixed(2) : ''}${sep}${isLast ? cr.currentBalance.toFixed(2) : ''}\r\n`;
+            csv += `"${cr.customer.externalCode || ''}"${sep}"${cr.customer.name.replace(/"/g, '""')}"${sep}"${s.invoiceNumber}"${sep}"${dateStr}"${sep}"${s.itemsSummary.replace(/"/g, '""')}"${sep}${s.netAmount.toFixed(2)}${sep}${sep}${sep}\r\n`;
           }
-          if (cr.sales.length > 1) {
-            csv += `"${cr.customer.externalCode || ''}"${sep}"${cr.customer.name.replace(/"/g, '""')} (SUBTOTAL)"${sep}${sep}${sep}${sep}${cr.subtotalSales.toFixed(2)}${sep}${cr.previousBalance.toFixed(2)}${sep}${cr.subtotalPayments.toFixed(2)}${sep}${cr.currentBalance.toFixed(2)}\r\n`;
-          }
+          csv += `"${cr.customer.externalCode || ''}"${sep}"${cr.customer.name.replace(/"/g, '""')} (SUBTOTAL)"${sep}${sep}${sep}${sep}${cr.subtotalSales.toFixed(2)}${sep}${cr.previousBalance.toFixed(2)}${sep}${cr.subtotalPayments.toFixed(2)}${sep}${cr.currentBalance.toFixed(2)}\r\n`;
         }
       }
 
@@ -957,9 +1214,18 @@ export class CreditService {
         throw new BadRequestException('No se encontraron ventas a crédito sin cortar para este período');
       }
 
-      const count = await tx.creditStatement.count({ where: { businessId } });
-      const yearMonth = `${fromDate.getFullYear()}${String(fromDate.getMonth() + 1).padStart(2, '0')}`;
-      const statementNumber = `CORTE-${yearMonth}-${String(count + 1).padStart(3, '0')}`;
+      const fromMatch = dto.from.match(/^(\d{4})-(\d{2})/);
+      const yearMonth = fromMatch
+        ? `${fromMatch[1]}${fromMatch[2]}`
+        : `${fromDate.getUTCFullYear()}${String(fromDate.getUTCMonth() + 1).padStart(2, '0')}`;
+
+      const monthlyCount = await tx.creditStatement.count({
+        where: {
+          businessId,
+          statementNumber: { startsWith: `CORTE-${yearMonth}-` },
+        },
+      });
+      const statementNumber = `CORTE-${yearMonth}-${String(monthlyCount + 1).padStart(3, '0')}`;
 
       const totalAmount = eligibleSales.reduce((sum, s) => {
         const bal = s.creditAccount ? s.creditAccount.balance : Number(s.total);
@@ -1050,18 +1316,171 @@ export class CreditService {
       throw new NotFoundException('Corte no encontrado');
     }
 
-    return statement;
+    const customerMap = new Map<
+      string,
+      {
+        customer: {
+          id: string;
+          name: string;
+          phone: string | null;
+          externalCode: string | null;
+          ruc: string | null;
+        };
+        sales: Array<{
+          saleId: string;
+          invoiceNumber: string;
+          date: Date;
+          itemsSummary: string;
+          amount: number;
+          settledAmount: number;
+        }>;
+        subtotalAmount: number;
+        subtotalSettled: number;
+      }
+    >();
+
+    for (const item of statement.items) {
+      const cust = item.customer;
+      if (!customerMap.has(cust.id)) {
+        customerMap.set(cust.id, {
+          customer: {
+            id: cust.id,
+            name: cust.name,
+            phone: cust.phone,
+            externalCode: cust.externalCode ?? null,
+            ruc: cust.ruc ?? null,
+          },
+          sales: [],
+          subtotalAmount: 0,
+          subtotalSettled: 0,
+        });
+      }
+
+      const custEntry = customerMap.get(cust.id)!;
+      const sale = item.sale;
+      const itemsSummary =
+        (sale?.items || [])
+          .map((it) => `${it.quantity}x ${it.productName || 'Producto'}`)
+          .join(', ') || 'Consumo a crédito';
+
+      const itemAmount = Math.round(Number(item.amount) * 100) / 100;
+      const itemSettled = Math.round(Number(item.settledAmount) * 100) / 100;
+
+      custEntry.sales.push({
+        saleId: item.saleId,
+        invoiceNumber: sale?.invoiceNumber || item.saleId.substring(0, 8),
+        date: sale?.occurredAt || sale?.createdAt || item.createdAt,
+        itemsSummary,
+        amount: itemAmount,
+        settledAmount: itemSettled,
+      });
+
+      custEntry.subtotalAmount = Math.round((custEntry.subtotalAmount + itemAmount) * 100) / 100;
+      custEntry.subtotalSettled = Math.round((custEntry.subtotalSettled + itemSettled) * 100) / 100;
+    }
+
+    const totalAmount = Math.round(Number(statement.totalAmount) * 100) / 100;
+    const settledAmount = Math.round(Number(statement.settledAmount) * 100) / 100;
+
+    return {
+      statement: {
+        id: statement.id,
+        statementNumber: statement.statementNumber,
+        periodFrom: statement.periodFrom,
+        periodTo: statement.periodTo,
+        cutDate: statement.cutDate,
+        payDueDate: statement.payDueDate,
+        status: statement.status,
+        totalAmount,
+        settledAmount,
+        notes: statement.notes,
+        createdAt: statement.createdAt,
+        group: {
+          id: statement.group.id,
+          name: statement.group.name,
+          taxId: statement.group.taxId,
+          billingCycle: statement.group.billingCycle,
+        },
+      },
+      totals: {
+        totalAmount,
+        settledAmount,
+        remainingAmount: Math.max(0, Math.round((totalAmount - settledAmount) * 100) / 100),
+        customerCount: customerMap.size,
+        salesCount: statement.items.length,
+      },
+      customers: Array.from(customerMap.values()),
+      items: statement.items.map((it) => ({
+        id: it.id,
+        saleId: it.saleId,
+        customerId: it.customerId,
+        amount: Number(it.amount),
+        settledAmount: Number(it.settledAmount),
+        customer: it.customer,
+        sale: it.sale
+          ? {
+              id: it.sale.id,
+              invoiceNumber: it.sale.invoiceNumber,
+              total: Number(it.sale.total),
+              occurredAt: it.sale.occurredAt,
+            }
+          : null,
+      })),
+    };
   }
 
-  async findStatementsByGroup(businessId: string, groupId: string) {
+  async findStatementsByGroup(
+    businessId: string,
+    groupId: string,
+    page: number = 1,
+    limit: number = 20,
+  ) {
     await this.ensureCarteraActive(businessId);
-    return this.prisma.creditStatement.findMany({
-      where: { businessId, groupId },
-      orderBy: { cutDate: 'desc' },
-      include: {
-        _count: { select: { items: true } },
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
+    const skip = (safePage - 1) * safeLimit;
+
+    const [total, statements] = await Promise.all([
+      this.prisma.creditStatement.count({
+        where: { businessId, groupId },
+      }),
+      this.prisma.creditStatement.findMany({
+        where: { businessId, groupId },
+        orderBy: { cutDate: 'desc' },
+        skip,
+        take: safeLimit,
+        include: {
+          _count: { select: { items: true } },
+          group: { select: { id: true, name: true, taxId: true } },
+        },
+      }),
+    ]);
+
+    const data = statements.map((st) => ({
+      id: st.id,
+      statementNumber: st.statementNumber,
+      periodFrom: st.periodFrom,
+      periodTo: st.periodTo,
+      cutDate: st.cutDate,
+      payDueDate: st.payDueDate,
+      status: st.status,
+      totalAmount: Number(st.totalAmount),
+      settledAmount: Number(st.settledAmount),
+      itemsCount: st._count.items,
+      notes: st.notes,
+      createdAt: st.createdAt,
+      group: st.group,
+    }));
+
+    return {
+      data,
+      pagination: {
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: Math.ceil(total / safeLimit),
       },
-    });
+    };
   }
 
   async settleStatement(
@@ -1243,19 +1662,62 @@ export class CreditService {
     });
   }
 
-  async cancelStatement(businessId: string, statementId: string, userId: string, userRole: string) {
+  async cancelStatement(
+    businessId: string,
+    statementId: string,
+    dto: CancelCreditStatementDto,
+    userId: string,
+    userRole: string,
+  ) {
     await this.ensureCarteraActive(businessId);
+    const reason = (dto?.reason || '').trim();
+    if (!reason) {
+      throw new BadRequestException('El motivo de cancelación es obligatorio');
+    }
+
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM pos_credit_statements WHERE id = ${statementId} FOR UPDATE`;
+
       const statement = await tx.creditStatement.findFirst({
         where: { id: statementId, businessId },
       });
       if (!statement) throw new NotFoundException('Corte no encontrado');
-      if (statement.status === 'SETTLED') {
-        throw new BadRequestException('No se puede cancelar un corte ya liquidado');
+
+      if (
+        statement.status === 'SETTLED' ||
+        statement.status === 'PARTIALLY_SETTLED' ||
+        Number(statement.settledAmount) > 0
+      ) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'STATEMENT_HAS_PAYMENTS',
+          message: {
+            code: 'STATEMENT_HAS_PAYMENTS',
+            message: 'No se puede cancelar el corte porque tiene pagos aplicados o ya está liquidado',
+          },
+        });
       }
 
-      if (Number(statement.settledAmount) > 0) {
-        throw new BadRequestException('No se puede cancelar un corte con liquidación parcial. Revierta los abonos primero');
+      if (statement.status !== 'OPEN') {
+        throw new BadRequestException(
+          `Solo se pueden cancelar cortes en estado OPEN (estado actual: ${statement.status})`,
+        );
+      }
+
+      const settledItemsCount = await tx.creditStatementItem.count({
+        where: { statementId, settledAmount: { gt: 0 } },
+      });
+      if (settledItemsCount > 0) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'STATEMENT_HAS_PAYMENTS',
+          message: {
+            code: 'STATEMENT_HAS_PAYMENTS',
+            message: 'No se puede cancelar el corte porque contiene ítems con pagos aplicados',
+          },
+        });
       }
 
       await tx.creditStatementItem.deleteMany({
@@ -1272,15 +1734,30 @@ export class CreditService {
           businessId,
           userId,
           userRole,
-          action: PosAction.GROUP_STATEMENT,
+          action: PosAction.GROUP_SETTLE,
           entityType: 'CreditStatement',
           entityId: statementId,
-          reason: `Cancelación/reapertura de corte ${statement.statementNumber}`,
+          before: { status: statement.status, settledAmount: statement.settledAmount },
+          after: { status: updated.status, settledAmount: updated.settledAmount },
+          reason: `Cancelación de corte ${statement.statementNumber}: ${reason}`,
         },
         tx,
       );
 
-      return { message: 'Corte cancelado y ventas liberadas exitosamente', statement: updated };
+      return {
+        message: 'Corte cancelado y ventas liberadas exitosamente',
+        statement: {
+          id: updated.id,
+          statementNumber: updated.statementNumber,
+          status: updated.status,
+          totalAmount: Number(updated.totalAmount),
+          settledAmount: Number(updated.settledAmount),
+          periodFrom: updated.periodFrom,
+          periodTo: updated.periodTo,
+          cutDate: updated.cutDate,
+          updatedAt: updated.updatedAt,
+        },
+      };
     });
   }
 }

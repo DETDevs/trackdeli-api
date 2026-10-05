@@ -1124,13 +1124,14 @@ export class CustomersService {
     });
   }
 
-  async getByCode(businessId: string, code: string) {
+  async getByCode(businessId: string, code: string, userRole?: string) {
     const cleanCode = (code || '').trim();
     if (!cleanCode) {
       throw new BadRequestException('El código es requerido');
     }
 
-    const customer = await this.prisma.customer.findFirst({
+    // 1. Prioridad absoluta: búsqueda por externalCode exacto
+    let customer = await this.prisma.customer.findFirst({
       where: {
         businessId,
         externalCode: cleanCode,
@@ -1148,6 +1149,48 @@ export class CustomersService {
         },
       },
     });
+
+    // 2. Búsqueda secundaria por ruc/teléfono solo si no hubo coincidencia por código exacto
+    if (!customer) {
+      const candidates = await this.prisma.customer.findMany({
+        where: {
+          businessId,
+          OR: [
+            { phone: cleanCode },
+            { ruc: cleanCode },
+          ],
+        },
+        include: {
+          group: {
+            select: {
+              id: true,
+              name: true,
+              taxId: true,
+              billingCycle: true,
+              creditLimit: true,
+              isActive: true,
+            },
+          },
+        },
+        take: 2,
+      });
+
+      if (candidates.length > 1) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'AMBIGUOUS_CODE',
+          message: {
+            code: 'AMBIGUOUS_CODE',
+            message: `El código "${cleanCode}" coincide con múltiples clientes por teléfono o RUC. Especifique el carnet exacto`,
+          },
+        });
+      }
+
+      if (candidates.length === 1) {
+        customer = candidates[0];
+      }
+    }
 
     if (!customer) {
       throw new NotFoundException({
@@ -1217,17 +1260,40 @@ export class CustomersService {
       };
     }
 
+    // Privacidad para rol CAJERO: solo lo indispensable para cobrar
+    if (userRole === UserRole.CAJERO) {
+      return {
+        id: customer.id,
+        name: customer.name,
+        externalCode: customer.externalCode ?? null,
+        currentBalance: balance,
+        availableCredit,
+        creditLimit: customer.creditLimit !== null && customer.creditLimit !== undefined ? Number(customer.creditLimit) : null,
+        creditGroup: customer.group
+          ? {
+              id: customer.group.id,
+              name: customer.group.name,
+            }
+          : null,
+      };
+    }
+
+    // Para ENCARGADO / SUPERADMIN: respuesta completa
     return {
       id: customer.id,
       businessId: customer.businessId,
       name: customer.name,
       phone: customer.phone,
+      email: customer.email ?? null,
+      address: customer.lastAddressText ?? null,
       ruc: customer.ruc ?? null,
       externalCode: customer.externalCode ?? null,
       creditLimit: customer.creditLimit !== null && customer.creditLimit !== undefined ? Number(customer.creditLimit) : null,
       balance,
+      currentBalance: balance,
       availableCredit,
       groupId: customer.groupId ?? null,
+      creditGroup: groupInfo,
       group: groupInfo,
       createdAt: customer.createdAt,
       updatedAt: customer.updatedAt,

@@ -26,6 +26,8 @@ import { CreateCreditGroupDto } from './dto/create-credit-group.dto';
 import { UpdateCreditGroupDto } from './dto/update-credit-group.dto';
 import { CreateCreditStatementDto } from './dto/create-statement.dto';
 import { SettleCreditStatementDto } from './dto/settle-statement.dto';
+import { ImportGroupCustomersDto } from './dto/import-group-customers.dto';
+import { CancelCreditStatementDto } from './dto/cancel-statement.dto';
 import { PosPermissionsGuard } from '../permissions/permissions.guard';
 import { RequirePosAction } from '../permissions/require-action.decorator';
 import { PosAction } from '../permissions/permissions.service';
@@ -167,6 +169,23 @@ export class CreditController {
     );
   }
 
+  @Post(['pos/credit/groups/:id/customers/import', 'credit/groups/:id/customers/import'])
+  @RequirePosAction(PosAction.GROUP_MANAGE)
+  importGroupCustomers(
+    @Param('id') id: string,
+    @Body() dto: ImportGroupCustomersDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.importCustomers(
+      resolveBusinessId(user, qBid),
+      id,
+      dto,
+      user.sub,
+      user.role,
+    );
+  }
+
   // -------------------------------------------------------------
   // REPORTE DE DEDUCCIÓN POR EMPRESA
   // -------------------------------------------------------------
@@ -227,12 +246,16 @@ export class CreditController {
   @RequirePosAction(PosAction.GROUP_STATEMENT)
   findStatementsByGroup(
     @Param('id') groupId: string,
+    @Query('page') page: number = 1,
+    @Query('limit') limit: number = 20,
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
   ) {
     return this.service.findStatementsByGroup(
       resolveBusinessId(user, qBid),
       groupId,
+      page,
+      limit,
     );
   }
 
@@ -273,16 +296,26 @@ export class CreditController {
     );
   }
 
+  @Post(['pos/credit/statements/:id/cancel', 'credit/statements/:id/cancel'])
   @Patch(['pos/credit/statements/:id/cancel', 'credit/statements/:id/cancel'])
-  @RequirePosAction(PosAction.GROUP_STATEMENT)
+  @RequirePosAction(PosAction.GROUP_SETTLE)
+  @UseInterceptors(IdempotencyInterceptor)
   cancelStatement(
     @Param('id') id: string,
+    @Body() dto: CancelCreditStatementDto,
+    @Headers() headers: Record<string, string>,
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
   ) {
+    const idempKey = headers['idempotency-key'] || headers['Idempotency-Key'];
+    if (!idempKey) {
+      throw new BadRequestException('El encabezado Idempotency-Key es obligatorio para cancelar cortes');
+    }
+
     return this.service.cancelStatement(
       resolveBusinessId(user, qBid),
       id,
+      dto,
       user.sub,
       user.role,
     );

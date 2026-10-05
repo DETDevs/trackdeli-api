@@ -123,7 +123,7 @@ export class CustomersController {
       throw new ForbiddenException('Negocio no especificado');
     }
     this.checkBusinessAccess(user, businessId);
-    return this.customersService.getByCode(businessId, code);
+    return this.customersService.getByCode(businessId, code, user.role);
   }
 
   @Get([
