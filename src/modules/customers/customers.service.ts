@@ -1152,13 +1152,18 @@ export class CustomersService {
 
     // 2. Búsqueda secundaria por ruc/teléfono solo si no hubo coincidencia por código exacto
     if (!customer) {
+      const orConditions: any[] = [{ ruc: cleanCode }];
+      if (cleanCode) {
+        orConditions.push({
+          phone: cleanCode,
+          NOT: [{ phone: null }, { phone: '' }],
+        });
+      }
+
       const candidates = await this.prisma.customer.findMany({
         where: {
           businessId,
-          OR: [
-            { phone: cleanCode },
-            { ruc: cleanCode },
-          ],
+          OR: orConditions,
         },
         include: {
           group: {

@@ -21,6 +21,16 @@ import { CreateCreditStatementDto } from './dto/create-statement.dto';
 import { SettleCreditStatementDto } from './dto/settle-statement.dto';
 import { ImportGroupCustomersDto } from './dto/import-group-customers.dto';
 import { CancelCreditStatementDto } from './dto/cancel-statement.dto';
+import {
+  DEFAULT_BUSINESS_TIMEZONE,
+  getStartOfDayInTimezone,
+  getEndOfDayInTimezone,
+  formatDateInTimezone,
+  getDaysInMonth,
+  addDaysToDateStr,
+  getNextMonth,
+  formatYearMonthDay,
+} from '../../../common/utils/date.util';
 
 @Injectable()
 export class CreditService {
@@ -282,39 +292,32 @@ export class CreditService {
       payDayOffset: number | null;
     },
     lastStatement?: { periodTo: Date } | null,
+    timeZone: string = DEFAULT_BUSINESS_TIMEZONE,
   ) {
-    const now = new Date();
-    let fromDate: Date;
-
+    let fromDateStr: string;
     if (lastStatement && lastStatement.periodTo) {
-      fromDate = new Date(lastStatement.periodTo.getTime() + 24 * 60 * 60 * 1000);
-      fromDate.setHours(0, 0, 0, 0);
+      const lastToLocal = formatDateInTimezone(lastStatement.periodTo, timeZone);
+      fromDateStr = addDaysToDateStr(lastToLocal, 1);
     } else {
-      fromDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+      const todayLocal = formatDateInTimezone(new Date(), timeZone);
+      fromDateStr = todayLocal.substring(0, 7) + '-01';
     }
 
-    const year = fromDate.getFullYear();
-    const month = fromDate.getMonth();
-
-    const getDaysInMonth = (y: number, m: number) => new Date(y, m + 1, 0).getDate();
-
-    let toDate: Date;
+    const [year, month, fromDay] = fromDateStr.split('-').map(Number);
+    let toDateStr: string;
 
     if (group.billingCycle === 'MONTHLY') {
       const targetDay = group.cutDay1 || 30;
       const daysInThisMonth = getDaysInMonth(year, month);
       const actualCutDayThisMonth = Math.min(targetDay, daysInThisMonth);
-      const candidateThisMonth = new Date(year, month, actualCutDayThisMonth, 23, 59, 59, 999);
 
-      if (fromDate.getTime() <= candidateThisMonth.getTime()) {
-        toDate = candidateThisMonth;
+      if (fromDay <= actualCutDayThisMonth) {
+        toDateStr = formatYearMonthDay(year, month, actualCutDayThisMonth);
       } else {
-        const nextMonth = month + 1;
-        const nextMonthYear = year + Math.floor(nextMonth / 12);
-        const normNextMonth = nextMonth % 12;
-        const daysInNextMonth = getDaysInMonth(nextMonthYear, normNextMonth);
+        const [nextYear, nextMonth] = getNextMonth(year, month);
+        const daysInNextMonth = getDaysInMonth(nextYear, nextMonth);
         const actualCutDayNext = Math.min(targetDay, daysInNextMonth);
-        toDate = new Date(nextMonthYear, normNextMonth, actualCutDayNext, 23, 59, 59, 999);
+        toDateStr = formatYearMonthDay(nextYear, nextMonth, actualCutDayNext);
       }
     } else if (group.billingCycle === 'BIWEEKLY') {
       let day1 = group.cutDay1 || 15;
@@ -329,44 +332,33 @@ export class CreditService {
       const actualDay1 = Math.min(day1, daysInThisMonth);
       const actualDay2 = Math.min(day2, daysInThisMonth);
 
-      const candidate1 = new Date(year, month, actualDay1, 23, 59, 59, 999);
-      const candidate2 = new Date(year, month, actualDay2, 23, 59, 59, 999);
-
-      if (fromDate.getTime() <= candidate1.getTime()) {
-        toDate = candidate1;
-      } else if (fromDate.getTime() <= candidate2.getTime()) {
-        toDate = candidate2;
+      if (fromDay <= actualDay1) {
+        toDateStr = formatYearMonthDay(year, month, actualDay1);
+      } else if (fromDay <= actualDay2) {
+        toDateStr = formatYearMonthDay(year, month, actualDay2);
       } else {
-        const nextMonth = month + 1;
-        const nextMonthYear = year + Math.floor(nextMonth / 12);
-        const normNextMonth = nextMonth % 12;
-        const daysInNextMonth = getDaysInMonth(nextMonthYear, normNextMonth);
+        const [nextYear, nextMonth] = getNextMonth(year, month);
+        const daysInNextMonth = getDaysInMonth(nextYear, nextMonth);
         const actualNextDay1 = Math.min(day1, daysInNextMonth);
-        toDate = new Date(nextMonthYear, normNextMonth, actualNextDay1, 23, 59, 59, 999);
+        toDateStr = formatYearMonthDay(nextYear, nextMonth, actualNextDay1);
       }
     } else if (group.billingCycle === 'WEEKLY') {
-      toDate = new Date(fromDate.getTime() + 6 * 24 * 60 * 60 * 1000);
-      toDate.setHours(23, 59, 59, 999);
+      toDateStr = addDaysToDateStr(fromDateStr, 6);
     } else {
-      toDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-      if (toDate < fromDate) {
-        toDate = new Date(fromDate.getTime() + 24 * 60 * 60 * 1000);
+      const todayLocal = formatDateInTimezone(new Date(), timeZone);
+      toDateStr = todayLocal;
+      if (toDateStr < fromDateStr) {
+        toDateStr = addDaysToDateStr(fromDateStr, 1);
       }
     }
 
-    let payDueDate: Date | null = null;
     const offset = group.payDayOffset ?? 0;
-    if (offset > 0) {
-      payDueDate = new Date(toDate.getTime() + offset * 24 * 60 * 60 * 1000);
-      payDueDate.setHours(23, 59, 59, 999);
-    }
-
-    const formatDateStr = (d: Date) => d.toISOString().split('T')[0];
+    const payDueDateStr = offset > 0 ? addDaysToDateStr(toDateStr, offset) : null;
 
     return {
-      from: formatDateStr(fromDate),
-      to: formatDateStr(toDate),
-      payDueDate: payDueDate ? formatDateStr(payDueDate) : null,
+      from: fromDateStr,
+      to: toDateStr,
+      payDueDate: payDueDateStr,
       payDayOffset: offset,
     };
   }
@@ -798,7 +790,12 @@ export class CreditService {
         externalCode: code,
         name,
         identification,
-        phone: row.phone?.trim() || null,
+        phone:
+          row.phone !== undefined
+            ? typeof row.phone === 'string' && row.phone.trim()
+              ? row.phone.trim()
+              : null
+            : undefined,
         creditLimit:
           row.creditLimit !== undefined && row.creditLimit !== null
             ? Number(row.creditLimit)
@@ -848,7 +845,7 @@ export class CreditService {
       groupId: string;
       name: string;
       ruc: string;
-      phone: string;
+      phone: string | null;
       externalCode: string;
       creditLimit: number | null;
     }> = [];
@@ -857,7 +854,7 @@ export class CreditService {
       id: string;
       name: string;
       ruc: string;
-      phone?: string;
+      phone?: string | null;
       creditLimit?: number | null;
     }> = [];
 
@@ -903,7 +900,7 @@ export class CreditService {
             id: existing.id,
             name: ev.name,
             ruc: ev.identification,
-            phone: ev.phone !== null ? ev.phone : undefined,
+            phone: ev.phone !== undefined ? ev.phone : undefined,
             creditLimit: ev.creditLimit !== null ? ev.creditLimit : undefined,
           });
         } else {
@@ -927,7 +924,7 @@ export class CreditService {
           groupId,
           name: ev.name,
           ruc: ev.identification,
-          phone: ev.phone || ev.externalCode,
+          phone: ev.phone ?? null,
           externalCode: ev.externalCode,
           creditLimit: ev.creditLimit,
         });
@@ -1004,8 +1001,8 @@ export class CreditService {
       throw new BadRequestException('Parámetros "from" y "to" son requeridos');
     }
 
-    const fromDate = fromStr.includes('T') ? new Date(fromStr) : new Date(`${fromStr}T00:00:00.000Z`);
-    const toDate = toStr.includes('T') ? new Date(toStr) : new Date(`${toStr}T23:59:59.999Z`);
+    const fromDate = getStartOfDayInTimezone(fromStr, DEFAULT_BUSINESS_TIMEZONE);
+    const toDate = getEndOfDayInTimezone(toStr, DEFAULT_BUSINESS_TIMEZONE);
 
     if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
       throw new BadRequestException('Formato de fecha inválido en "from" o "to"');
@@ -1202,6 +1199,10 @@ export class CreditService {
       period: {
         from: fromStr,
         to: toStr,
+        periodFrom: fromDate.toISOString(),
+        periodTo: toDate.toISOString(),
+        periodFromLocal: formatDateInTimezone(fromDate, DEFAULT_BUSINESS_TIMEZONE),
+        periodToLocal: formatDateInTimezone(toDate, DEFAULT_BUSINESS_TIMEZONE),
       },
       pagination: {
         totalCustomers: totalCustomersCount,
@@ -1234,8 +1235,8 @@ export class CreditService {
     });
     if (!group) throw new NotFoundException('Empresa no encontrada');
 
-    const fromDate = dto.from.includes('T') ? new Date(dto.from) : new Date(`${dto.from}T00:00:00.000Z`);
-    const toDate = dto.to.includes('T') ? new Date(dto.to) : new Date(`${dto.to}T23:59:59.999Z`);
+    const fromDate = getStartOfDayInTimezone(dto.from, DEFAULT_BUSINESS_TIMEZONE);
+    const toDate = getEndOfDayInTimezone(dto.to, DEFAULT_BUSINESS_TIMEZONE);
 
     if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
       throw new BadRequestException('Fechas de período inválidas');
@@ -1268,7 +1269,8 @@ export class CreditService {
         throw new BadRequestException('No se encontraron ventas a crédito sin cortar para este período');
       }
 
-      const fromMatch = dto.from.match(/^(\d{4})-(\d{2})/);
+      const fromLocalStr = formatDateInTimezone(fromDate, DEFAULT_BUSINESS_TIMEZONE);
+      const fromMatch = fromLocalStr.match(/^(\d{4})-(\d{2})/);
       const yearMonth = fromMatch
         ? `${fromMatch[1]}${fromMatch[2]}`
         : `${fromDate.getUTCFullYear()}${String(fromDate.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -1340,7 +1342,11 @@ export class CreditService {
         tx,
       );
 
-      return statement;
+      return {
+        ...statement,
+        periodFromLocal: formatDateInTimezone(statement.periodFrom, DEFAULT_BUSINESS_TIMEZONE),
+        periodToLocal: formatDateInTimezone(statement.periodTo, DEFAULT_BUSINESS_TIMEZONE),
+      };
     });
   }
 
@@ -1442,6 +1448,8 @@ export class CreditService {
         statementNumber: statement.statementNumber,
         periodFrom: statement.periodFrom,
         periodTo: statement.periodTo,
+        periodFromLocal: formatDateInTimezone(statement.periodFrom, DEFAULT_BUSINESS_TIMEZONE),
+        periodToLocal: formatDateInTimezone(statement.periodTo, DEFAULT_BUSINESS_TIMEZONE),
         cutDate: statement.cutDate,
         payDueDate: statement.payDueDate,
         status: statement.status,
@@ -1515,6 +1523,8 @@ export class CreditService {
       statementNumber: st.statementNumber,
       periodFrom: st.periodFrom,
       periodTo: st.periodTo,
+      periodFromLocal: formatDateInTimezone(st.periodFrom, DEFAULT_BUSINESS_TIMEZONE),
+      periodToLocal: formatDateInTimezone(st.periodTo, DEFAULT_BUSINESS_TIMEZONE),
       cutDate: st.cutDate,
       payDueDate: st.payDueDate,
       status: st.status,
@@ -1703,7 +1713,11 @@ export class CreditService {
       );
 
       return {
-        statement: updatedStatement,
+        statement: {
+          ...updatedStatement,
+          periodFromLocal: formatDateInTimezone(updatedStatement.periodFrom, DEFAULT_BUSINESS_TIMEZONE),
+          periodToLocal: formatDateInTimezone(updatedStatement.periodTo, DEFAULT_BUSINESS_TIMEZONE),
+        },
         settlement: {
           amountSettledInThisTx: totalActuallySettled,
           totalSettled: newStatementSettledTotal,
@@ -1808,6 +1822,8 @@ export class CreditService {
           settledAmount: Number(updated.settledAmount),
           periodFrom: updated.periodFrom,
           periodTo: updated.periodTo,
+          periodFromLocal: formatDateInTimezone(updated.periodFrom, DEFAULT_BUSINESS_TIMEZONE),
+          periodToLocal: formatDateInTimezone(updated.periodTo, DEFAULT_BUSINESS_TIMEZONE),
           cutDate: updated.cutDate,
           updatedAt: updated.updatedAt,
         },

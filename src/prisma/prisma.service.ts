@@ -674,7 +674,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'pos_policies' AND column_name = 'creditLimitOverrideRequiresApproval') THEN
               ALTER TABLE "pos_policies" ADD COLUMN "creditLimitOverrideRequiresApproval" BOOLEAN NOT NULL DEFAULT true;
             END IF;
-          END $$;`
+          END $$;`,
+        },
+        {
+          name: 'Clientes phone nullable y limpieza de phone = externalCode (116d)',
+          sql: `DO $$ BEGIN
+            ALTER TABLE "customers" ALTER COLUMN "phone" DROP NOT NULL;
+            UPDATE "customers" SET "phone" = NULL WHERE "phone" = "externalCode" AND "externalCode" IS NOT NULL;
+          END $$;`,
         },
         {
           name: 'Modificaciones en users para Social Login',

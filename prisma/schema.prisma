@@ -700,7 +700,7 @@ model Customer {
   id              String                    @id @default(uuid())
   businessId      String
   business        Business                  @relation(fields: [businessId], references: [id])
-  phone           String                    @db.VarChar(30)
+  phone           String?                   @db.VarChar(30)
   name            String                    @db.VarChar(100)
   email           String?                   @db.VarChar(255)
   notes           String?
