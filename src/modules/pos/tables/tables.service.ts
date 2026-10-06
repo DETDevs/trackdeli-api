@@ -487,6 +487,8 @@ export class TablesService {
       customerRuc: dto.customerRuc,
       cashRegisterId: dto.cashRegisterId,
       notes: dto.notes ? `${dto.notes} (Mesa ${order.table.number})` : `Mesa ${order.table.number}`,
+      reference: dto.reference || dto.paymentReference,
+      payments: dto.payments,
       items: order.items.map((i) => ({
         productId: i.productId,
         productName: i.productName,
