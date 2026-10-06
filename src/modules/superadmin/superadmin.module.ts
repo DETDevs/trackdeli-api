@@ -6,9 +6,10 @@ import { UploadModule } from '../upload/upload.module';
 import { CommissionsModule } from '../commissions/commissions.module';
 import { BusinessesModule } from '../businesses/businesses.module';
 import { LatencyDiagnosticsService } from './latency-diagnostics.service';
+import { ClientVersionModule } from '../client-version/client-version.module';
 
 @Module({
-  imports: [PrismaModule, UploadModule, CommissionsModule, BusinessesModule],
+  imports: [PrismaModule, UploadModule, CommissionsModule, BusinessesModule, ClientVersionModule],
   controllers: [SuperAdminController],
   providers: [SuperAdminService, LatencyDiagnosticsService],
   exports: [SuperAdminService],

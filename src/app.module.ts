@@ -25,6 +25,8 @@ import { CustomersModule } from './modules/customers/customers.module';
 import { BusinessProductsModule } from './modules/business-products/business-products.module';
 import { BookingModule } from './modules/booking/booking.module';
 import { IndustriesModule } from './modules/industries/industries.module';
+import { ClientVersionModule } from './modules/client-version/client-version.module';
+import { ClientVersionGuard } from './modules/client-version/client-version.guard';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -94,12 +96,17 @@ import { CustomThrottlerGuard } from './common/guards/custom-throttler.guard';
     BusinessProductsModule,
     BookingModule,
     IndustriesModule,
+    ClientVersionModule,
   ],
   controllers: [HealthController],
   providers: [
     {
       provide: APP_GUARD,
       useClass: CustomThrottlerGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: ClientVersionGuard,
     },
     {
       provide: APP_GUARD,

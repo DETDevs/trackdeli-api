@@ -7,6 +7,7 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -27,6 +28,10 @@ import { BusinessesService } from '../businesses/businesses.service';
 import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
 
 import { LatencyDiagnosticsService } from './latency-diagnostics.service';
+import { ClientVersionService } from '../client-version/client-version.service';
+import { UpdateClientVersionDto } from '../client-version/dto/update-client-version.dto';
+import { GetClientVersionQueryDto } from '../client-version/dto/get-client-version.dto';
+import { DEFAULT_PLATFORM } from '../client-version/client-version.constants';
 
 @Controller('superadmin')
 @UseGuards(SuperAdminGuard)
@@ -36,6 +41,7 @@ export class SuperAdminController {
     private readonly commissionsService: CommissionsService,
     private readonly businessesService: BusinessesService,
     private readonly latencyDiagnosticsService: LatencyDiagnosticsService,
+    private readonly clientVersionService: ClientVersionService,
   ) {}
 
   @Get('diagnostics/latency')
@@ -199,6 +205,40 @@ export class SuperAdminController {
   @Patch('businesses/:id/user-quota')
   async updateUserQuota(@Param('id') id: string, @Body() dto: { extraUserSlots: number }) {
     return this.superAdminService.updateUserQuota(id, dto.extraUserSlots);
+  }
+
+  @Get('client-version')
+  async getClientVersion(@Query() query: GetClientVersionQueryDto) {
+    const platform = query?.platform || DEFAULT_PLATFORM;
+    return this.clientVersionService.getSettingDetails(platform);
+  }
+
+  @Patch('client-version')
+  async updateClientVersion(
+    @Body() dto: UpdateClientVersionDto,
+    @CurrentUser() user: JwtPayload,
+    @Req() req: any,
+  ) {
+    const platform = dto.platform || DEFAULT_PLATFORM;
+    const ipAddress = req?.ip || req?.connection?.remoteAddress;
+    return this.clientVersionService.setMinVersion({
+      platform,
+      minVersion: dto.minVersion,
+      userId: user.sub,
+      userRole: user.role,
+      businessId: user.businessId,
+      reason: dto.reason,
+      ipAddress,
+    });
+  }
+
+  @Put('client-version')
+  async updateClientVersionPut(
+    @Body() dto: UpdateClientVersionDto,
+    @CurrentUser() user: JwtPayload,
+    @Req() req: any,
+  ) {
+    return this.updateClientVersion(dto, user, req);
   }
 }
 

@@ -1880,6 +1880,17 @@ WHERE a."customerId" = c."id"
             CREATE INDEX IF NOT EXISTS "idx_pos_products_attributes" ON "pos_products" USING GIN ("attributes");
           END $$;`,
         },
+        {
+          name: 'Tabla platform_settings',
+          sql: `CREATE TABLE IF NOT EXISTS "platform_settings" (
+            "key" VARCHAR(100) NOT NULL,
+            "value" TEXT NOT NULL,
+            "description" VARCHAR(255),
+            "updatedByUserId" VARCHAR(100),
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "platform_settings_pkey" PRIMARY KEY ("key")
+          );`,
+        },
       ];
 
       for (const step of ddlStatements) {
