@@ -4,7 +4,7 @@ import { Queue } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FirebaseMultipleSendResult, FirebaseService } from './firebase.service';
 import { NotificationChannel, NotificationLogStatus, NotificationLog } from '@prisma/client';
-import { NotificationsProcessor } from './processors/notifications.processor';
+import { NotificationExecutionService } from './services/notification-execution.service';
 import { NotificationVariables } from './templates/notification-template.registry';
 
 export interface DispatchNotificationDto {
@@ -25,7 +25,7 @@ export class NotificationsService implements OnModuleInit {
   constructor(
     private prisma: PrismaService,
     private firebase: FirebaseService,
-    private processor: NotificationsProcessor,
+    private executionService: NotificationExecutionService,
     @Optional()
     @InjectQueue('notifications')
     private readonly notificationsQueue?: Queue,
@@ -344,7 +344,7 @@ export class NotificationsService implements OnModuleInit {
           setTimeout(() => resolve('TIMEOUT'), 3500),
         );
         const result = await Promise.race([
-          this.processor.processNotification(log.id, false),
+          this.executionService.processNotification(log.id, false),
           timeoutPromise,
         ]);
 
@@ -364,23 +364,30 @@ export class NotificationsService implements OnModuleInit {
       return updatedLog || log;
     }
 
-    // 2. Intentar encolar en Bull / Redis
+    // 2. Intentar encolar en Bull / Redis con timeout para no congelar la petición si Redis falla
     let enqueued = false;
     try {
       if (this.notificationsQueue) {
-        await this.notificationsQueue.add(
-          'send',
-          { logId: log.id },
-          {
-            attempts: 3,
-            backoff: {
-              type: 'exponential',
-              delay: 2000,
-            },
-            removeOnComplete: true,
-            removeOnFail: false,
-          },
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout de espera de Redis (2500ms)')), 2500),
         );
+
+        await Promise.race([
+          this.notificationsQueue.add(
+            'send',
+            { logId: log.id },
+            {
+              attempts: 3,
+              backoff: {
+                type: 'exponential',
+                delay: 2000,
+              },
+              removeOnComplete: true,
+              removeOnFail: false,
+            },
+          ),
+          timeoutPromise,
+        ]);
         enqueued = true;
       }
     } catch (err: any) {
@@ -393,7 +400,7 @@ export class NotificationsService implements OnModuleInit {
     if (!enqueued) {
       setImmediate(async () => {
         try {
-          await this.processor.processNotification(log.id, false);
+          await this.executionService.processNotification(log.id, false);
         } catch (procErr: any) {
           this.logger.error(
             `[NotificationsService] Error en procesamiento en segundo plano (fallback): ${procErr.message}`,

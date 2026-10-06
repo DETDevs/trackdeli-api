@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, Logger } from '@nestjs/common';
+import Redis from 'ioredis';
 import { SentryModule } from '@sentry/nestjs/setup';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bull';
@@ -44,8 +45,9 @@ import { CustomThrottlerGuard } from './common/guards/custom-throttler.guard';
     }),
     BullModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        redis: {
+      useFactory: (configService: ConfigService) => {
+        const logger = new Logger('BullModule');
+        const redisOpts = {
           host: configService.get<string>('REDIS_HOST', 'localhost'),
           port: configService.get<number>('REDIS_PORT', 6379),
           password: configService.get<string>('REDIS_PASSWORD') || undefined,
@@ -53,19 +55,96 @@ import { CustomThrottlerGuard } from './common/guards/custom-throttler.guard';
           maxRetriesPerRequest: null,
           enableReadyCheck: false,
           retryStrategy: (times: number) => {
-            return Math.min(times * 500, 10000);
+            if (times > 50) return 30000;
+            return Math.min(times * 1000, 30000);
           },
-        },
-        defaultJobOptions: {
-          attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 2000,
+        };
+
+        let sharedClient: any = null;
+        let sharedSubscriber: any = null;
+
+        const getOrCreateSharedClient = (type: 'client' | 'subscriber') => {
+          if (type === 'client') {
+            if (!sharedClient) {
+              sharedClient = new Redis(redisOpts);
+              sharedClient.on('error', (err: any) => {
+                logger.warn(`[Bull client] Advertencia de conexión Redis: ${err.message}`);
+              });
+            }
+            return sharedClient;
+          }
+          if (type === 'subscriber') {
+            if (!sharedSubscriber) {
+              sharedSubscriber = new Redis(redisOpts);
+              sharedSubscriber.on('error', (err: any) => {
+                logger.warn(`[Bull subscriber] Advertencia de conexión Redis: ${err.message}`);
+              });
+            }
+            return sharedSubscriber;
+          }
+          return null;
+        };
+
+        const drainDelay = Number(configService.get<number>('BULL_DRAIN_DELAY', 30));
+        const guardInterval = Number(configService.get<number>('BULL_GUARD_INTERVAL', 60000));
+        const stalledInterval = Number(configService.get<number>('BULL_STALLED_INTERVAL', 60000));
+        const lockDuration = Number(configService.get<number>('BULL_LOCK_DURATION', 60000));
+
+        logger.log(
+          `[BullModule] Configuración optimizada de colas: drainDelay=${drainDelay}s, guardInterval=${guardInterval}ms, stalledInterval=${stalledInterval}ms, lockDuration=${lockDuration}ms`,
+        );
+
+        return {
+          redis: redisOpts,
+          createClient: (type: string, opts: any) => {
+            switch (type) {
+              case 'client':
+                return getOrCreateSharedClient('client');
+              case 'subscriber':
+                return getOrCreateSharedClient('subscriber');
+              case 'bclient': {
+                const bclient = new Redis({
+                  ...opts,
+                  maxRetriesPerRequest: null,
+                  enableReadyCheck: false,
+                  retryStrategy: (times: number) => {
+                    if (times > 50) return 30000;
+                    return Math.min(times * 1000, 30000);
+                  },
+                });
+                bclient.on('error', (err: any) => {
+                  logger.warn(`[Bull bclient] Advertencia de conexión Redis: ${err.message}`);
+                });
+                return bclient;
+              }
+              default: {
+                const fallbackClient = new Redis(opts);
+                fallbackClient.on('error', (err: any) => {
+                  logger.warn(`[Bull ${type}] Advertencia de conexión Redis: ${err.message}`);
+                });
+                return fallbackClient;
+              }
+            }
           },
-          removeOnComplete: true,
-          removeOnFail: false,
-        },
-      }),
+          settings: {
+            lockDuration,
+            stalledInterval,
+            maxStalledCount: 1,
+            guardInterval,
+            retryProcessDelay: 10000,
+            drainDelay,
+          },
+          defaultJobOptions: {
+            attempts: 3,
+            backoff: {
+              type: 'exponential',
+              delay: 2000,
+            },
+            removeOnComplete: true,
+            removeOnFail: false,
+          },
+        };
+      },
       inject: [ConfigService],
     }),
     ScheduleModule.forRoot(),

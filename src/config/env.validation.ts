@@ -32,5 +32,10 @@ export const envValidationSchema = Joi.object({
   WHATSAPP_PHONE_NUMBER_ID: Joi.string().optional().allow(''),
   WHATSAPP_API_VERSION: Joi.string().optional().allow('').default('v21.0'),
   SENTRY_DSN: Joi.string().optional().allow(''),
+  ENABLE_QUEUE_WORKERS: Joi.string().valid('true', 'false').default('true'),
+  BULL_DRAIN_DELAY: Joi.number().optional().default(30),
+  BULL_GUARD_INTERVAL: Joi.number().optional().default(60000),
+  BULL_STALLED_INTERVAL: Joi.number().optional().default(60000),
+  BULL_LOCK_DURATION: Joi.number().optional().default(60000),
 });
 

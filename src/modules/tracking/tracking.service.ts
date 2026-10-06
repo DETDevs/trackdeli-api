@@ -15,10 +15,20 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     this.redis = new Redis({
-      host: this.config.get<string>('REDIS_HOST'),
+      host: this.config.get<string>('REDIS_HOST', 'localhost'),
       port: parseInt(this.config.get<string>('REDIS_PORT') || '6379'),
       password: this.config.get<string>('REDIS_PASSWORD'),
       tls: this.config.get<string>('REDIS_TLS') === 'true' ? {} : undefined,
+      enableReadyCheck: false,
+      maxRetriesPerRequest: 1,
+      retryStrategy: (times: number) => {
+        if (times > 50) return 30000;
+        return Math.min(times * 1000, 30000);
+      },
+    });
+
+    this.redis.on('error', (err) => {
+      this.logger.warn(`[TrackingService] Advertencia de conexión Redis: ${err.message}`);
     });
   }
 
@@ -29,16 +39,24 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   }
 
   async saveLastPosition(orderId: string, lat: number, lng: number, speed?: number): Promise<void> {
-    const key = `last_position:${orderId}`;
-    const value = JSON.stringify({ lat, lng, speed, timestamp: new Date().toISOString() });
-
-    await this.redis.setex(key, 7200, value);
+    try {
+      const key = `last_position:${orderId}`;
+      const value = JSON.stringify({ lat, lng, speed, timestamp: new Date().toISOString() });
+      await this.redis.setex(key, 7200, value);
+    } catch (err: any) {
+      this.logger.warn(`[TrackingService] No se pudo guardar última posición en Redis para orden ${orderId}: ${err.message}`);
+    }
   }
 
   async getLastPosition(orderId: string): Promise<{ lat: number; lng: number; speed?: number; timestamp: string } | null> {
-    const key = `last_position:${orderId}`;
-    const value = await this.redis.get(key);
-    return value ? JSON.parse(value) : null;
+    try {
+      const key = `last_position:${orderId}`;
+      const value = await this.redis.get(key);
+      return value ? JSON.parse(value) : null;
+    } catch (err: any) {
+      this.logger.warn(`[TrackingService] No se pudo obtener última posición de Redis para orden ${orderId}: ${err.message}`);
+      return null;
+    }
   }
 
   async saveSnapshotIfNeeded(
@@ -49,15 +67,26 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     speed?: number,
     isMock?: boolean,
   ): Promise<void> {
-    const snapshotKey = `last_snapshot:${orderId}`;
-    const lastSnapshot = await this.redis.get(snapshotKey);
     const now = Date.now();
+    let shouldSave = true;
 
-    if (!lastSnapshot || now - parseInt(lastSnapshot) >= 30000) {
+    try {
+      const snapshotKey = `last_snapshot:${orderId}`;
+      const lastSnapshot = await this.redis.get(snapshotKey);
+
+      if (lastSnapshot && now - parseInt(lastSnapshot) < 30000) {
+        shouldSave = false;
+      } else {
+        await this.redis.setex(snapshotKey, 60, now.toString());
+      }
+    } catch (err: any) {
+      this.logger.warn(`[TrackingService] Error en snapshot de Redis (${err.message}). Continuando con guardado en BD.`);
+    }
+
+    if (shouldSave) {
       await this.prisma.locationSnapshot.create({
         data: { orderId, userId, lat, lng, speed, isMock: isMock || false },
       });
-      await this.redis.setex(snapshotKey, 60, now.toString());
     }
   }
 
@@ -184,13 +213,17 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     bizLng: number | null;
   } | null> {
     const key = `geofence_meta:${orderId}`;
-    const cached = await this.redis.get(key);
-    if (cached) {
-      try {
-        return JSON.parse(cached);
-      } catch (err) {
-        this.logger.warn(`[getGeofenceMeta] Error parseando JSON de caché para orderId=${orderId}`);
+    try {
+      const cached = await this.redis.get(key);
+      if (cached) {
+        try {
+          return JSON.parse(cached);
+        } catch (err) {
+          this.logger.warn(`[getGeofenceMeta] Error parseando JSON de caché para orderId=${orderId}`);
+        }
       }
+    } catch (err: any) {
+      this.logger.warn(`[TrackingService] Error al leer geofence_meta en Redis: ${err.message}`);
     }
 
     const order = await this.prisma.order.findUnique({
@@ -219,13 +252,21 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       bizLng: order.business?.longitude ? Number(order.business.longitude) : null,
     };
 
-    await this.redis.setex(key, 7200, JSON.stringify(meta));
+    try {
+      await this.redis.setex(key, 7200, JSON.stringify(meta));
+    } catch (err: any) {
+      // Ignorar fallo de escritura en caché
+    }
     return meta;
   }
 
   async setGeofenceMeta(orderId: string, meta: any): Promise<void> {
-    const key = `geofence_meta:${orderId}`;
-    await this.redis.setex(key, 7200, JSON.stringify(meta));
+    try {
+      const key = `geofence_meta:${orderId}`;
+      await this.redis.setex(key, 7200, JSON.stringify(meta));
+    } catch (err: any) {
+      this.logger.warn(`[TrackingService] Error al guardar geofence_meta en Redis: ${err.message}`);
+    }
   }
 
   async updateGeofenceMetaStatus(orderId: string, status: string): Promise<void> {
@@ -237,7 +278,11 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   }
 
   async invalidateGeofenceMeta(orderId: string): Promise<void> {
-    await this.redis.del(`geofence_meta:${orderId}`);
+    try {
+      await this.redis.del(`geofence_meta:${orderId}`);
+    } catch (err: any) {
+      this.logger.warn(`[TrackingService] Error al invalidar geofence_meta: ${err.message}`);
+    }
   }
 
   async checkGeofenceAndTransition(
@@ -252,7 +297,12 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
 
     if (meta.status === 'EN_CAMINO_AL_NEGOCIO' && meta.bizLat && meta.bizLng) {
       const geofenceBizKey = `geofence_biz_triggered:${orderId}`;
-      const alreadyTriggeredBiz = await this.redis.get(geofenceBizKey);
+      let alreadyTriggeredBiz = null;
+      try {
+        alreadyTriggeredBiz = await this.redis.get(geofenceBizKey);
+      } catch (err: any) {
+        this.logger.warn(`[TrackingService] Error leyendo geofenceBizKey: ${err.message}`);
+      }
 
       if (!alreadyTriggeredBiz) {
         const isNearBiz = this.isNearDestination(
@@ -264,7 +314,10 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
         );
 
         if (isNearBiz) {
-          await this.redis.setex(geofenceBizKey, 3600, '1');
+          try {
+            await this.redis.setex(geofenceBizKey, 3600, '1');
+          } catch (err: any) {}
+
           await this.prisma.order.update({
             where: { id: orderId },
             data: {
@@ -287,7 +340,12 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     if (!meta.destinationLat || !meta.destinationLng) return;
 
     const geofenceKey = `geofence_triggered:${orderId}`;
-    const alreadyTriggered = await this.redis.get(geofenceKey);
+    let alreadyTriggered = null;
+    try {
+      alreadyTriggered = await this.redis.get(geofenceKey);
+    } catch (err: any) {
+      this.logger.warn(`[TrackingService] Error leyendo geofenceKey: ${err.message}`);
+    }
     if (alreadyTriggered) return;
 
     const isNear = this.isNearDestination(
@@ -300,7 +358,9 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
 
     if (!isNear) return;
 
-    await this.redis.setex(geofenceKey, 3600, '1');
+    try {
+      await this.redis.setex(geofenceKey, 3600, '1');
+    } catch (err: any) {}
 
     await this.prisma.order.update({
       where: { id: orderId },
@@ -322,24 +382,44 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   }
 
   async cleanupGeofenceFlag(orderId: string): Promise<void> {
-    await this.redis.del(`geofence_triggered:${orderId}`);
+    try {
+      await this.redis.del(`geofence_triggered:${orderId}`);
+    } catch (err: any) {
+      this.logger.warn(`[TrackingService] Error al limpiar geofence_triggered: ${err.message}`);
+    }
   }
 
   async cleanupOrderRedisKeys(orderId: string): Promise<void> {
-    await this.redis.del(`last_position:${orderId}`);
-    await this.redis.del(`last_snapshot:${orderId}`);
-    await this.redis.del(`geofence_triggered:${orderId}`);
-    await this.redis.del(`geofence_biz_triggered:${orderId}`);
-    await this.redis.del(`geofence_meta:${orderId}`);
+    try {
+      await this.redis.del(
+        `last_position:${orderId}`,
+        `last_snapshot:${orderId}`,
+        `geofence_triggered:${orderId}`,
+        `geofence_biz_triggered:${orderId}`,
+        `geofence_meta:${orderId}`,
+      );
+    } catch (err: any) {
+      this.logger.warn(`[TrackingService] Error al limpiar llaves de orden ${orderId} en Redis: ${err.message}`);
+    }
   }
 
   async updateUserLocation(userId: string, lat: number, lng: number): Promise<void> {
-
-    const lastUpdateKey = `last_user_loc_update:${userId}`;
-    const lastUpdate = await this.redis.get(lastUpdateKey);
     const now = Date.now();
+    let shouldUpdateDb = true;
 
-    if (!lastUpdate || now - parseInt(lastUpdate) >= 10000) {
+    try {
+      const lastUpdateKey = `last_user_loc_update:${userId}`;
+      const lastUpdate = await this.redis.get(lastUpdateKey);
+      if (lastUpdate && now - parseInt(lastUpdate) < 10000) {
+        shouldUpdateDb = false;
+      } else {
+        await this.redis.setex(lastUpdateKey, 10, now.toString());
+      }
+    } catch (err: any) {
+      // Si Redis falla, procedemos a actualizar directamente en Postgres
+    }
+
+    if (shouldUpdateDb) {
       await this.prisma.user.update({
         where: { id: userId },
         data: {
@@ -348,7 +428,6 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
           lastLocationAt: new Date(),
         },
       });
-      await this.redis.setex(lastUpdateKey, 10, now.toString());
     }
   }
 }

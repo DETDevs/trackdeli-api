@@ -35,22 +35,39 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
   ) { }
 
   async afterInit(server: Server) {
-    const redisOptions = {
-      host: this.config.get<string>('REDIS_HOST'),
-      port: parseInt(this.config.get<string>('REDIS_PORT') || '6379'),
-      password: this.config.get<string>('REDIS_PASSWORD'),
-      tls: this.config.get<string>('REDIS_TLS') === 'true' ? {} : undefined,
-    };
+    try {
+      const redisOptions = {
+        host: this.config.get<string>('REDIS_HOST', 'localhost'),
+        port: parseInt(this.config.get<string>('REDIS_PORT') || '6379'),
+        password: this.config.get<string>('REDIS_PASSWORD'),
+        tls: this.config.get<string>('REDIS_TLS') === 'true' ? {} : undefined,
+        enableReadyCheck: false,
+        maxRetriesPerRequest: 1,
+        retryStrategy: (times: number) => {
+          if (times > 50) return 30000;
+          return Math.min(times * 1000, 30000);
+        },
+      };
 
-    const pubClient = new Redis(redisOptions);
-    const subClient = pubClient.duplicate();
+      const pubClient = new Redis(redisOptions);
+      const subClient = pubClient.duplicate();
 
-    const ioServer = (server as any).server || server;
-    if (typeof ioServer.adapter === 'function') {
-      ioServer.adapter(createAdapter(pubClient, subClient));
-      this.logger.log('[TrackingGateway] Gateway inicializado con Redis adapter');
-    } else {
-      this.logger.error('Cannot configure Redis adapter: adapter() method not found on server');
+      pubClient.on('error', (err: any) => {
+        this.logger.warn(`[TrackingGateway] Advertencia Redis pubClient: ${err.message}`);
+      });
+      subClient.on('error', (err: any) => {
+        this.logger.warn(`[TrackingGateway] Advertencia Redis subClient: ${err.message}`);
+      });
+
+      const ioServer = (server as any).server || server;
+      if (typeof ioServer.adapter === 'function') {
+        ioServer.adapter(createAdapter(pubClient, subClient));
+        this.logger.log('[TrackingGateway] Gateway inicializado con Redis adapter');
+      } else {
+        this.logger.error('Cannot configure Redis adapter: adapter() method not found on server');
+      }
+    } catch (err: any) {
+      this.logger.error(`[TrackingGateway] Error inicializando Redis adapter: ${err.message}. Continuando con memoria local.`);
     }
   }
 
