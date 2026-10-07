@@ -35,6 +35,8 @@ function generateBusinessCredentials(businessName: string): {
   return { email, password };
 }
 
+export const DEFAULT_POS_MONTHLY_FEE = 40.00;
+
 const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.PENDIENTE,
   OrderStatus.ACEPTADO,
@@ -581,7 +583,7 @@ export class SuperAdminService {
       if (hasPOS) {
         const posFee = dto.posMonthlyFee !== undefined && dto.posMonthlyFee !== null
           ? Number(dto.posMonthlyFee)
-          : 25.00;
+          : DEFAULT_POS_MONTHLY_FEE;
         const posVertical = resolvedPosVertical;
 
         const posSub = await tx.businessProductSubscription.create({
