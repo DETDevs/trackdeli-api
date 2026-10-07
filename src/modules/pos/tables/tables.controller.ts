@@ -38,8 +38,9 @@ export class TablesController {
   findAll(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
+    @Query('zoneId') zoneId?: string,
   ) {
-    return this.service.findAllTables(resolveBusinessId(user, qBid));
+    return this.service.findAllTables(resolveBusinessId(user, qBid), zoneId);
   }
 
   @Post()
@@ -49,7 +50,7 @@ export class TablesController {
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
   ) {
-    return this.service.createTable(resolveBusinessId(user, qBid), dto);
+    return this.service.createTable(resolveBusinessId(user, qBid), dto, user);
   }
 
   @Get('status')
@@ -57,8 +58,9 @@ export class TablesController {
   getTablesStatus(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
+    @Query('zoneId') zoneId?: string,
   ) {
-    return this.service.getTablesStatus(resolveBusinessId(user, qBid));
+    return this.service.getTablesStatus(resolveBusinessId(user, qBid), zoneId);
   }
 
   @Patch(':id')
@@ -69,7 +71,7 @@ export class TablesController {
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
   ) {
-    return this.service.updateTable(resolveBusinessId(user, qBid), id, dto);
+    return this.service.updateTable(resolveBusinessId(user, qBid), id, dto, user);
   }
 
   @Delete(':id')
@@ -79,7 +81,7 @@ export class TablesController {
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
   ) {
-    return this.service.deleteTable(resolveBusinessId(user, qBid), id);
+    return this.service.deleteTable(resolveBusinessId(user, qBid), id, user);
   }
 
   @Post(':id/open-order')

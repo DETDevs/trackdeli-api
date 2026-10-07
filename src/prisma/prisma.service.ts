@@ -1,4 +1,5 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import {
   PrismaClient,
   BusinessProductType,
@@ -1891,6 +1892,48 @@ WHERE a."customerId" = c."id"
             CONSTRAINT "platform_settings_pkey" PRIMARY KEY ("key")
           );`,
         },
+        {
+          name: '125a - Tabla pos_salon_zones',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_salon_zones" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "name" VARCHAR(50) NOT NULL,
+            "sortOrder" INTEGER NOT NULL DEFAULT 0,
+            "isActive" BOOLEAN NOT NULL DEFAULT true,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_salon_zones_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_salon_zones_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: '125a - Índice pos_salon_zones.businessId_isActive',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_salon_zones_businessId_isActive_idx" ON "pos_salon_zones"("businessId", "isActive");`,
+        },
+        {
+          name: '125a - Índice único pos_salon_zones por businessId y name en minúsculas',
+          sql: `CREATE UNIQUE INDEX IF NOT EXISTS "pos_salon_zones_business_name_lower_idx" ON "pos_salon_zones" ("businessId", LOWER("name")) WHERE "isActive" = true;`,
+        },
+        {
+          name: '125a - Columna pos_restaurant_tables.zoneId',
+          sql: `ALTER TABLE "pos_restaurant_tables" ADD COLUMN IF NOT EXISTS "zoneId" TEXT;`,
+        },
+        {
+          name: '125a - Constraint pos_restaurant_tables.zoneId foreign key',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'pos_restaurant_tables_zoneId_fkey'
+            ) THEN
+              ALTER TABLE "pos_restaurant_tables"
+                ADD CONSTRAINT "pos_restaurant_tables_zoneId_fkey"
+                FOREIGN KEY ("zoneId") REFERENCES "pos_salon_zones"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;`,
+        },
+        {
+          name: '125a - Índice pos_restaurant_tables.zoneId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_restaurant_tables_zoneId_idx" ON "pos_restaurant_tables"("zoneId");`,
+        },
       ];
 
       for (const step of ddlStatements) {
@@ -1920,6 +1963,7 @@ WHERE a."customerId" = c."id"
       await this.ensureTaxConfigurationBackfilled();
       await this.ensurePosPoliciesBackfilled();
       await this.ensurePosPaymentsBackfilled();
+      await this.ensureSalonZonesBackfilled();
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia general en auto-sincronización de esquema: ${err.message}`);
     }
@@ -2819,6 +2863,64 @@ WHERE a."customerId" = c."id"
       this.logger.log(`[PrismaService] ✓ Backfill de pagos POS completado: ${updatedCount} venta(s) actualizadas.`);
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ Advertencia en backfill de pagos POS: ${err.message}`);
+    }
+  }
+
+  private async ensureSalonZonesBackfilled(): Promise<void> {
+    try {
+      const businessesWithTablesWithoutZone = await this.$queryRaw<Array<{ businessId: string }>>`
+        SELECT DISTINCT "businessId"
+        FROM "pos_restaurant_tables"
+        WHERE "zoneId" IS NULL
+      `;
+
+      if (!businessesWithTablesWithoutZone || businessesWithTablesWithoutZone.length === 0) {
+        return;
+      }
+
+      this.logger.log(
+        `[PrismaService] Migrando mesas existentes a 'Salón principal' para ${businessesWithTablesWithoutZone.length} negocio(s)...`,
+      );
+
+      for (const row of businessesWithTablesWithoutZone) {
+        const businessId = row.businessId;
+
+        const mainZone = await this.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "pos_salon_zones"
+          WHERE "businessId" = ${businessId} AND LOWER("name") = LOWER('Salón principal') AND "isActive" = true
+          LIMIT 1
+        `;
+
+        let zoneId: string;
+        if (mainZone && mainZone.length > 0) {
+          zoneId = mainZone[0].id;
+        } else {
+          const newZoneId = randomUUID();
+          await this.$executeRawUnsafe(
+            `INSERT INTO "pos_salon_zones" ("id", "businessId", "name", "sortOrder", "isActive", "createdAt", "updatedAt")
+             VALUES ($1, $2, $3, $4, true, NOW(), NOW())`,
+            newZoneId,
+            businessId,
+            'Salón principal',
+            0,
+          );
+          zoneId = newZoneId;
+        }
+
+        const updated = await this.$executeRawUnsafe(
+          `UPDATE "pos_restaurant_tables"
+           SET "zoneId" = $1, "updatedAt" = NOW()
+           WHERE "businessId" = $2 AND "zoneId" IS NULL`,
+          zoneId,
+          businessId,
+        );
+
+        this.logger.log(
+          `[PrismaService] Negocio ${businessId}: ${updated} mesa(s) asignadas a zona 'Salón principal' (${zoneId}).`,
+        );
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] Advertencia en ensureSalonZonesBackfilled: ${err.message}`);
     }
   }
 }

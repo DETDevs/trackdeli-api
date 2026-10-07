@@ -9,6 +9,7 @@ import { PosPaymentMethod, TableOrderStatus, TableShape, UserRole } from '@prism
 import { PrismaService } from '../../../prisma/prisma.service';
 import { JwtPayload } from '../../../common/types/jwt-payload.interface';
 import { SalesService } from '../sales/sales.service';
+import { AuditService } from '../audit/audit.service';
 import { CreateSaleDto } from '../sales/dto/create-sale.dto';
 import { CreateTableDto } from './dto/create-table.dto';
 import { UpdateTableDto } from './dto/update-table.dto';
@@ -24,22 +25,65 @@ export class TablesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly salesService: SalesService,
+    private readonly auditService: AuditService,
   ) {}
 
-  async findAllTables(businessId: string) {
-    return this.prisma.restaurantTable.findMany({
-      where: { businessId, isActive: true },
+  async findAllTables(businessId: string, zoneId?: string) {
+    const where: any = { businessId, isActive: true };
+    if (zoneId) {
+      if (zoneId === 'null' || zoneId === 'none' || zoneId === 'sin-zona') {
+        where.zoneId = null;
+      } else {
+        where.zoneId = zoneId;
+      }
+    }
+
+    const tables = await this.prisma.restaurantTable.findMany({
+      where,
+      include: {
+        zone: {
+          select: { id: true, name: true },
+        },
+      },
       orderBy: [{ gridY: 'asc' }, { gridX: 'asc' }, { number: 'asc' }],
+    });
+
+    return tables.map((t) => {
+      const { zone, ...rest } = t;
+      return {
+        ...rest,
+        zoneId: t.zoneId || null,
+        zoneName: zone?.name || 'Sin zona',
+      };
     });
   }
 
-  async createTable(businessId: string, dto: CreateTableDto) {
+  async createTable(businessId: string, dto: CreateTableDto, user?: JwtPayload) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
       select: { id: true, gridColumns: true, gridRows: true },
     });
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
+    }
+
+    if (!dto.zoneId || !dto.zoneId.trim()) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'ZONE_REQUIRED',
+      });
+    }
+
+    const zone = await this.prisma.salonZone.findFirst({
+      where: { id: dto.zoneId.trim(), businessId, isActive: true },
+    });
+    if (!zone) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'ZONE_NOT_FOUND',
+      });
     }
 
     if (
@@ -67,6 +111,7 @@ export class TablesService {
     const existingPosition = await this.prisma.restaurantTable.findFirst({
       where: {
         businessId,
+        zoneId: zone.id,
         gridX: dto.gridX,
         gridY: dto.gridY,
         isActive: true,
@@ -74,28 +119,62 @@ export class TablesService {
     });
     if (existingPosition) {
       throw new ConflictException(
-        `La celda (${dto.gridX}, ${dto.gridY}) ya está ocupada por la mesa "${existingPosition.number}"`,
+        `La celda (${dto.gridX}, ${dto.gridY}) ya está ocupada por la mesa "${existingPosition.number}" en esta zona`,
       );
     }
 
     const table = await this.prisma.restaurantTable.create({
       data: {
         businessId,
+        zoneId: zone.id,
         number: dto.number.trim(),
         capacity: dto.capacity,
         shape: dto.shape || TableShape.SQUARE,
         gridX: dto.gridX,
         gridY: dto.gridY,
       },
+      include: {
+        zone: {
+          select: { id: true, name: true },
+        },
+      },
     });
 
-    this.logger.log(`[createTable] Mesa creada: id=${table.id} (${table.number}) en businessId=${businessId}`);
-    return table;
+    await this.auditService.record({
+      businessId,
+      userId: user?.sub || 'system',
+      userRole: user?.role || 'ENCARGADO',
+      action: 'TABLE_CREATED',
+      entityType: 'RestaurantTable',
+      entityId: table.id,
+      after: {
+        number: table.number,
+        zoneId: table.zoneId,
+        zoneName: table.zone?.name || 'Sin zona',
+        capacity: table.capacity,
+        shape: table.shape,
+        gridX: table.gridX,
+        gridY: table.gridY,
+      },
+    });
+
+    this.logger.log(`[createTable] Mesa creada: id=${table.id} (${table.number}) en zona "${zone.name}" en businessId=${businessId}`);
+    const { zone: zoneData, ...rest } = table;
+    return {
+      ...rest,
+      zoneId: table.zoneId || null,
+      zoneName: zoneData?.name || 'Sin zona',
+    };
   }
 
-  async updateTable(businessId: string, tableId: string, dto: UpdateTableDto) {
+  async updateTable(businessId: string, tableId: string, dto: UpdateTableDto, user?: JwtPayload) {
     const table = await this.prisma.restaurantTable.findFirst({
       where: { id: tableId, businessId, isActive: true },
+      include: {
+        zone: {
+          select: { id: true, name: true },
+        },
+      },
     });
     if (!table) {
       throw new NotFoundException('Mesa no encontrada');
@@ -107,6 +186,35 @@ export class TablesService {
     });
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
+    }
+
+    let targetZoneId = table.zoneId;
+    let targetZoneName = table.zone?.name || 'Sin zona';
+    let isMovingZone = false;
+
+    if (dto.zoneId !== undefined) {
+      if (!dto.zoneId || !dto.zoneId.trim()) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'ZONE_REQUIRED',
+        });
+      }
+      const targetZone = await this.prisma.salonZone.findFirst({
+        where: { id: dto.zoneId.trim(), businessId, isActive: true },
+      });
+      if (!targetZone) {
+        throw new NotFoundException({
+          statusCode: 404,
+          error: 'Not Found',
+          message: 'ZONE_NOT_FOUND',
+        });
+      }
+      if (targetZone.id !== table.zoneId) {
+        isMovingZone = true;
+      }
+      targetZoneId = targetZone.id;
+      targetZoneName = targetZone.name;
     }
 
     if (dto.number && dto.number.trim().toLowerCase() !== table.number.toLowerCase()) {
@@ -126,7 +234,7 @@ export class TablesService {
     const newX = dto.gridX !== undefined ? dto.gridX : table.gridX;
     const newY = dto.gridY !== undefined ? dto.gridY : table.gridY;
 
-    if (dto.gridX !== undefined || dto.gridY !== undefined) {
+    if (dto.gridX !== undefined || dto.gridY !== undefined || isMovingZone) {
       if (
         newX < 0 ||
         newX >= business.gridColumns ||
@@ -138,23 +246,30 @@ export class TablesService {
         );
       }
 
+      const collisionWhere: any = {
+        businessId,
+        gridX: newX,
+        gridY: newY,
+        isActive: true,
+        id: { not: tableId },
+      };
+      if (targetZoneId) {
+        collisionWhere.zoneId = targetZoneId;
+      } else {
+        collisionWhere.zoneId = null;
+      }
+
       const collision = await this.prisma.restaurantTable.findFirst({
-        where: {
-          businessId,
-          gridX: newX,
-          gridY: newY,
-          isActive: true,
-          id: { not: tableId },
-        },
+        where: collisionWhere,
       });
       if (collision) {
         throw new ConflictException(
-          `La celda (${newX}, ${newY}) ya está ocupada por la mesa "${collision.number}"`,
+          `La celda (${newX}, ${newY}) ya está ocupada por la mesa "${collision.number}" en la zona destino`,
         );
       }
     }
 
-    return this.prisma.restaurantTable.update({
+    const updated = await this.prisma.restaurantTable.update({
       where: { id: tableId },
       data: {
         ...(dto.number !== undefined && { number: dto.number.trim() }),
@@ -162,14 +277,60 @@ export class TablesService {
         ...(dto.shape !== undefined && { shape: dto.shape }),
         ...(dto.gridX !== undefined && { gridX: dto.gridX }),
         ...(dto.gridY !== undefined && { gridY: dto.gridY }),
+        ...(dto.zoneId !== undefined && { zoneId: targetZoneId }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
       },
+      include: {
+        zone: {
+          select: { id: true, name: true },
+        },
+      },
     });
+
+    const action = isMovingZone ? 'TABLE_MOVED_ZONE' : 'TABLE_UPDATED';
+    await this.auditService.record({
+      businessId,
+      userId: user?.sub || 'system',
+      userRole: user?.role || 'ENCARGADO',
+      action,
+      entityType: 'RestaurantTable',
+      entityId: tableId,
+      before: {
+        number: table.number,
+        zoneId: table.zoneId,
+        zoneName: table.zone?.name || 'Sin zona',
+        gridX: table.gridX,
+        gridY: table.gridY,
+        capacity: table.capacity,
+        shape: table.shape,
+      },
+      after: {
+        number: updated.number,
+        zoneId: updated.zoneId,
+        zoneName: updated.zone?.name || 'Sin zona',
+        gridX: updated.gridX,
+        gridY: updated.gridY,
+        capacity: updated.capacity,
+        shape: updated.shape,
+      },
+    });
+
+    const { zone: updatedZone, ...rest } = updated;
+    return {
+      ...rest,
+      zoneId: updated.zoneId || null,
+      zoneName: updatedZone?.name || 'Sin zona',
+    };
   }
 
-  async deleteTable(businessId: string, tableId: string) {
+  async deleteTable(businessId: string, tableId: string, user?: JwtPayload) {
     const table = await this.prisma.restaurantTable.findFirst({
       where: { id: tableId, businessId, isActive: true },
+      include: {
+        zone: {
+          select: { id: true, name: true },
+        },
+      },
     });
     if (!table) {
       throw new NotFoundException('Mesa no encontrada');
@@ -190,14 +351,40 @@ export class TablesService {
       },
     });
 
+    await this.auditService.record({
+      businessId,
+      userId: user?.sub || 'system',
+      userRole: user?.role || 'ENCARGADO',
+      action: 'TABLE_DELETED',
+      entityType: 'RestaurantTable',
+      entityId: tableId,
+      before: {
+        number: table.number,
+        zoneId: table.zoneId,
+        zoneName: table.zone?.name || 'Sin zona',
+      },
+    });
+
     this.logger.log(`[deleteTable] Mesa desactivada: id=${tableId} en businessId=${businessId}`);
     return { success: true, message: 'Mesa eliminada exitosamente' };
   }
 
-  async getTablesStatus(businessId: string) {
+  async getTablesStatus(businessId: string, zoneId?: string) {
+    const where: any = { businessId, isActive: true };
+    if (zoneId) {
+      if (zoneId === 'null' || zoneId === 'none' || zoneId === 'sin-zona') {
+        where.zoneId = null;
+      } else {
+        where.zoneId = zoneId;
+      }
+    }
+
     const tables = await this.prisma.restaurantTable.findMany({
-      where: { businessId, isActive: true },
+      where,
       include: {
+        zone: {
+          select: { id: true, name: true },
+        },
         orders: {
           where: { status: TableOrderStatus.OPEN },
           include: {
@@ -231,6 +418,8 @@ export class TablesService {
         shape: t.shape,
         gridX: t.gridX,
         gridY: t.gridY,
+        zoneId: t.zoneId || null,
+        zoneName: t.zone?.name || 'Sin zona',
         status: isOccupied ? ('OCCUPIED' as const) : ('FREE' as const),
         currentOrder: currentOrder
           ? {
@@ -266,7 +455,14 @@ export class TablesService {
           },
         },
         table: {
-          select: { id: true, number: true, capacity: true, shape: true },
+          select: {
+            id: true,
+            number: true,
+            capacity: true,
+            shape: true,
+            zoneId: true,
+            zone: { select: { id: true, name: true } },
+          },
         },
       },
     });
@@ -296,7 +492,14 @@ export class TablesService {
           },
         },
         table: {
-          select: { id: true, number: true, capacity: true, shape: true },
+          select: {
+            id: true,
+            number: true,
+            capacity: true,
+            shape: true,
+            zoneId: true,
+            zone: { select: { id: true, name: true } },
+          },
         },
       },
     });
@@ -318,7 +521,14 @@ export class TablesService {
           orderBy: { createdAt: 'asc' },
         },
         table: {
-          select: { id: true, number: true, capacity: true, shape: true },
+          select: {
+            id: true,
+            number: true,
+            capacity: true,
+            shape: true,
+            zoneId: true,
+            zone: { select: { id: true, name: true } },
+          },
         },
       },
     });
@@ -621,7 +831,16 @@ export class TablesService {
       createdAt: order.createdAt,
       closedAt: order.closedAt,
       saleId: order.saleId,
-      table: order.table || null,
+      table: order.table
+        ? {
+            id: order.table.id,
+            number: order.table.number,
+            capacity: order.table.capacity,
+            shape: order.table.shape,
+            zoneId: order.table.zoneId || null,
+            zoneName: order.table.zone?.name || 'Sin zona',
+          }
+        : null,
       itemsCount,
       subtotal: Math.round(subtotal * 100) / 100,
       items: formattedItems,

@@ -30,4 +30,8 @@ export class UpdateTableDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
+  zoneId?: string;
 }

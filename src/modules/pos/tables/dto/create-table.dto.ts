@@ -23,4 +23,8 @@ export class CreateTableDto {
   @IsInt()
   @Min(0)
   gridY: number;
+
+  @IsOptional()
+  @IsString()
+  zoneId?: string;
 }

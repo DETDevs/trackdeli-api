@@ -7,6 +7,7 @@ import { CashRegisterModule } from './cash-register/cash-register.module';
 import { ReportsModule } from './reports/reports.module';
 import { SettingsModule } from './settings/settings.module';
 import { TablesModule } from './tables/tables.module';
+import { SalonModule } from './salon/salon.module';
 import { OfflineModule } from './offline/offline.module';
 import { CreditModule } from './credit/credit.module';
 import { WaitersModule } from './waiters/waiters.module';
@@ -35,6 +36,7 @@ import { InventoryModule } from './inventory/inventory.module';
     ReportsModule,
     SettingsModule,
     TablesModule,
+    SalonModule,
     OfflineModule,
     CreditModule,
     WaitersModule,

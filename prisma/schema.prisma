@@ -303,6 +303,7 @@ model Business {
   sales            Sale[]
   cashRegisters    CashRegister[]
   cashMovements    CashMovement[]
+  salonZones       SalonZone[]
   restaurantTables RestaurantTable[]
   tableOrders      TableOrder[]
   waiters          Waiter[]
@@ -1399,10 +1400,28 @@ model InviteCodeUsage {
 // POS RESTAURANT TABLES & TABLE ORDERS
 // ═══════════════════════════════════════════════
 
+model SalonZone {
+  id         String            @id @default(uuid())
+  businessId String
+  business   Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String            @db.VarChar(50)
+  sortOrder  Int               @default(0)
+  isActive   Boolean           @default(true)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  tables     RestaurantTable[]
+
+  @@index([businessId, isActive])
+  @@map("pos_salon_zones")
+}
+
 model RestaurantTable {
   id         String           @id @default(uuid())
   businessId String
   business   Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  zoneId     String?
+  zone       SalonZone?       @relation(fields: [zoneId], references: [id], onDelete: SetNull)
   number     String           @db.VarChar(50)
   capacity   Int              @default(4)
   shape      TableShape       @default(SQUARE)
@@ -1416,6 +1435,7 @@ model RestaurantTable {
 
   @@unique([businessId, number])
   @@index([businessId])
+  @@index([zoneId])
   @@map("pos_restaurant_tables")
 }
 
