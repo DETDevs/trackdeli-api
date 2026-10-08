@@ -266,5 +266,42 @@ export class SuperAdminController {
   ) {
     return this.superAdminService.updatePosSubscription(id, dto, user);
   }
+
+  @Post('businesses/:id/pos-subscription/extend-trial')
+  async extendTrial(
+    @Param('id') id: string,
+    @Body() body: { hours?: number },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.updatePosSubscription(
+      id,
+      { trialAction: 'extend', extendHours: body?.hours },
+      user,
+    );
+  }
+
+  @Post('businesses/:id/pos-subscription/reset-trial')
+  async resetTrial(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.updatePosSubscription(
+      id,
+      { trialAction: 'reset' },
+      user,
+    );
+  }
+
+  @Post('businesses/:id/pos-subscription/terminate-trial')
+  async terminateTrial(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.updatePosSubscription(
+      id,
+      { trialAction: 'terminate' },
+      user,
+    );
+  }
 }
 

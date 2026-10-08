@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, Logger, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, NotFoundException, ConflictException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -8,7 +8,7 @@ import { TokenResponseDto } from './dto/token-response.dto';
 import { RegisterRiderDto } from './dto/register-rider.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
-import { User, AuthProvider } from '@prisma/client';
+import { User, AuthProvider, BusinessProductType, UserRole } from '@prisma/client';
 import { FirebaseService } from '../notifications/firebase.service';
 import { PosDevicesService } from '../pos/devices/pos-devices.service';
 import { getSalonLabels, resolveSalonProfile } from '../pos/salon/salon-profile.util';
@@ -60,6 +60,69 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
+    let posSub: any = null;
+    let trialData: { endsAt: string | null; serverNow: string; remainingSeconds: number | null } | null = null;
+    let maxExpiresAt: Date | null = null;
+
+    if (user.businessId && user.role !== UserRole.SUPERADMIN) {
+      posSub = await this.prisma.businessProductSubscription.findUnique({
+        where: {
+          businessId_productType: {
+            businessId: user.businessId,
+            productType: BusinessProductType.POS,
+          },
+        },
+      });
+
+      if (posSub && posSub.trialHours !== null && posSub.trialHours >= 1) {
+        const now = new Date();
+
+        if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {
+          this.logger.warn(`[login] Rechazado por prueba vencida: businessId=${user.businessId}, email=${dto.email}`);
+          throw new ForbiddenException({
+            statusCode: 403,
+            error: 'Forbidden',
+            code: 'TRIAL_EXPIRED',
+            message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
+          });
+        }
+
+        const headers = req?.headers || {};
+        const platformRaw = headers['x-client-platform'] || headers['X-Client-Platform'];
+        const isDesktopWin = String(platformRaw || '').trim().toLowerCase() === 'desktop-win';
+
+        if (isDesktopWin && !posSub.trialStartedAt) {
+          const trialStartedAt = now;
+          const trialEndsAt = new Date(now.getTime() + posSub.trialHours * 60 * 60 * 1000);
+          posSub = await this.prisma.businessProductSubscription.update({
+            where: { id: posSub.id },
+            data: {
+              trialStartedAt,
+              trialEndsAt,
+            },
+          });
+          this.logger.log(
+            `[login] Reloj de prueba iniciado para businessId=${user.businessId}: ${posSub.trialHours}h hasta ${trialEndsAt.toISOString()}`,
+          );
+        }
+
+        if (posSub.trialEndsAt) {
+          maxExpiresAt = posSub.trialEndsAt;
+        }
+
+        const serverNow = new Date();
+        const remainingSeconds = posSub.trialEndsAt
+          ? Math.max(0, Math.floor((posSub.trialEndsAt.getTime() - serverNow.getTime()) / 1000))
+          : posSub.trialHours * 3600;
+
+        trialData = {
+          endsAt: posSub.trialEndsAt ? posSub.trialEndsAt.toISOString() : null,
+          serverNow: serverNow.toISOString(),
+          remainingSeconds,
+        };
+      }
+    }
+
     // 132a — Control de dispositivos POS
     await this.posDevicesService.validateAndRegisterOnLogin(user, req);
 
@@ -80,7 +143,7 @@ export class AuthService {
           profileComplete: user.profileComplete,
     };
 
-    const tokens = this.generateTokens(payload);
+    const tokens = this.generateTokens(payload, maxExpiresAt);
 
     let businessData: any = null;
     let salonProfile = 'RESTAURANTE';
@@ -124,6 +187,7 @@ export class AuthService {
         salonProfile,
         salonLabels,
       },
+      trial: trialData,
     };
   }
 
@@ -334,6 +398,50 @@ export class AuthService {
         throw new UnauthorizedException('Usuario no válido o inactivo');
       }
 
+      let posSub: any = null;
+      let trialData: { endsAt: string | null; serverNow: string; remainingSeconds: number | null } | null = null;
+      let maxExpiresAt: Date | null = null;
+
+      if (user.businessId && user.role !== UserRole.SUPERADMIN) {
+        posSub = await this.prisma.businessProductSubscription.findUnique({
+          where: {
+            businessId_productType: {
+              businessId: user.businessId,
+              productType: BusinessProductType.POS,
+            },
+          },
+        });
+
+        if (posSub && posSub.trialHours !== null && posSub.trialHours >= 1) {
+          const now = new Date();
+
+          if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {
+            this.logger.warn(`[refresh] Rechazado por prueba vencida: businessId=${user.businessId}, userId=${user.id}`);
+            throw new ForbiddenException({
+              statusCode: 403,
+              error: 'Forbidden',
+              code: 'TRIAL_EXPIRED',
+              message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
+            });
+          }
+
+          if (posSub.trialEndsAt) {
+            maxExpiresAt = posSub.trialEndsAt;
+          }
+
+          const serverNow = new Date();
+          const remainingSeconds = posSub.trialEndsAt
+            ? Math.max(0, Math.floor((posSub.trialEndsAt.getTime() - serverNow.getTime()) / 1000))
+            : posSub.trialHours * 3600;
+
+          trialData = {
+            endsAt: posSub.trialEndsAt ? posSub.trialEndsAt.toISOString() : null,
+            serverNow: serverNow.toISOString(),
+            remainingSeconds,
+          };
+        }
+      }
+
       const payload: JwtPayload = {
         sub: user.id,
         email: user.email,
@@ -349,7 +457,7 @@ export class AuthService {
         profileComplete: user.profileComplete,
       };
 
-      const tokens = this.generateTokens(payload);
+      const tokens = this.generateTokens(payload, maxExpiresAt);
 
       this.logger.log(`[refresh] OK — userId=${user.id}, nuevos tokens generados`);
 
@@ -371,8 +479,12 @@ export class AuthService {
           isAvailable: user.isAvailable,
           profileComplete: user.profileComplete,
         },
+        trial: trialData,
       };
     } catch (error) {
+      if (error instanceof ForbiddenException) {
+        throw error;
+      }
       this.logger.warn(`[refresh] WARN — token inválido: ${error.message}`);
       throw new UnauthorizedException('Refresh token inválido o expirado');
     }
@@ -431,12 +543,42 @@ export class AuthService {
     };
   }
 
-  private generateTokens(payload: JwtPayload): { accessToken: string; refreshToken: string } {
-    const accessToken = this.jwtService.sign(payload);
+  private parseDurationToSeconds(duration?: string | null): number {
+    if (!duration) return 86400;
+    if (/^\d+$/.test(duration)) return parseInt(duration, 10);
+    const match = duration.match(/^(\d+)([smhd])$/);
+    if (!match) return 86400;
+    const val = parseInt(match[1], 10);
+    const unit = match[2];
+    if (unit === 's') return val;
+    if (unit === 'm') return val * 60;
+    if (unit === 'h') return val * 3600;
+    if (unit === 'd') return val * 86400;
+    return 86400;
+  }
+
+  private generateTokens(payload: JwtPayload, maxExpiresAt?: Date | null): { accessToken: string; refreshToken: string } {
+    let accessExpiresIn: number | string | undefined = undefined;
+    let refreshExpiresIn: number | string | undefined = this.configService.get<string>('JWT_REFRESH_EXPIRATION');
+
+    if (maxExpiresAt) {
+      const nowMs = Date.now();
+      const remainingSec = Math.max(1, Math.floor((maxExpiresAt.getTime() - nowMs) / 1000));
+
+      const defaultAccessExp = this.configService.get<string>('JWT_EXPIRATION') || '1d';
+      const defaultAccessSec = this.parseDurationToSeconds(defaultAccessExp);
+      accessExpiresIn = Math.min(defaultAccessSec, remainingSec);
+
+      const defaultRefreshExp = this.configService.get<string>('JWT_REFRESH_EXPIRATION') || '7d';
+      const defaultRefreshSec = this.parseDurationToSeconds(defaultRefreshExp);
+      refreshExpiresIn = Math.min(defaultRefreshSec, remainingSec);
+    }
+
+    const accessToken = this.jwtService.sign(payload, accessExpiresIn ? { expiresIn: accessExpiresIn } : undefined);
 
     const refreshToken = this.jwtService.sign(payload, {
       secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-      expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRATION'),
+      expiresIn: refreshExpiresIn,
     });
 
     return { accessToken, refreshToken };

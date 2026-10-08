@@ -98,6 +98,12 @@ export class CreateBusinessSuperAdminDto {
   salonProfile?: 'RESTAURANTE' | 'TALLER' | null;
 
   @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(1)
+  trialHours?: number | null;
+
+  @IsOptional()
   @IsBoolean()
   hasCarteraCobro?: boolean;
 

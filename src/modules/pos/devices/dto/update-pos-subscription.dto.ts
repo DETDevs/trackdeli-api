@@ -14,4 +14,19 @@ export class UpdatePosSubscriptionDto {
   @IsOptional()
   @IsIn(['BASIC', 'PRO', null])
   backofficeTier?: 'BASIC' | 'PRO' | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(1)
+  trialHours?: number | null;
+
+  @IsOptional()
+  @IsIn(['extend', 'reset', 'terminate', null])
+  trialAction?: 'extend' | 'reset' | 'terminate' | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  extendHours?: number;
 }

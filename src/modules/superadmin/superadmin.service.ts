@@ -107,6 +107,10 @@ export class SuperAdminService {
             deliveryMonthlyFee: true,
             autoRenew: true,
             renewalCanceledAt: true,
+            backofficeTier: true,
+            trialHours: true,
+            trialStartedAt: true,
+            trialEndsAt: true,
           },
         },
         industry: {
@@ -128,8 +132,8 @@ export class SuperAdminService {
       let endDate: Date | null = null;
       let daysLeft: number | null = null;
 
-      const deliverySub = b.productSubscriptions.find(
-        (s) => s.productType === 'DELIVERY',
+      const deliverySub = (b.productSubscriptions as any[])?.find(
+        (s: any) => s.productType === 'DELIVERY',
       );
       const hasDeliveryContracted = deliverySub?.status === 'ACTIVE';
 
@@ -185,7 +189,10 @@ export class SuperAdminService {
         tracksBatches: b.tracksBatches,
         posVertical: b.posVertical,
         salonProfile: b.salonProfile,
-        maxDevices: b.productSubscriptions.find((s) => s.productType === 'POS')?.maxDevices ?? null,
+        maxDevices: ((b.productSubscriptions as any[])?.find((s: any) => s.productType === 'POS'))?.maxDevices ?? null,
+        trialHours: ((b.productSubscriptions as any[])?.find((s: any) => s.productType === 'POS'))?.trialHours ?? null,
+        trialStartedAt: ((b.productSubscriptions as any[])?.find((s: any) => s.productType === 'POS'))?.trialStartedAt ?? null,
+        trialEndsAt: ((b.productSubscriptions as any[])?.find((s: any) => s.productType === 'POS'))?.trialEndsAt ?? null,
         createdAt: b.createdAt,
         _count: {
           orders: b._count.orders,
@@ -395,6 +402,9 @@ export class SuperAdminService {
       hasCitas: hasCitasActive,
       maxDevices,
       backofficeTier: (posSub as any)?.backofficeTier ?? 'BASIC',
+      trialHours: (posSub as any)?.trialHours ?? null,
+      trialStartedAt: (posSub as any)?.trialStartedAt ?? null,
+      trialEndsAt: (posSub as any)?.trialEndsAt ?? null,
       activeDevices,
       userUsage,
     };
@@ -627,6 +637,7 @@ export class SuperAdminService {
             posMonthlyFee: new Prisma.Decimal(posFee),
             maxDevices,
             backofficeTier: 'BASIC',
+            trialHours: dto.trialHours !== undefined ? dto.trialHours : null,
             activatedAt: now,
             activatedBy: createdBy,
           } as any,
@@ -815,6 +826,7 @@ export class SuperAdminService {
         createdAt: result.business.createdAt,
         salonProfile: result.business.salonProfile,
         maxDevices: dto.maxDevices !== undefined ? dto.maxDevices : 1,
+        trialHours: dto.trialHours !== undefined ? dto.trialHours : null,
       },
       encargado: {
         id: result.encargado.id,
@@ -2176,11 +2188,161 @@ export class SuperAdminService {
       );
     }
 
+    if (dto.trialHours !== undefined) {
+      if (dto.trialHours === null) {
+        const prevHours = (updatedSub as any).trialHours;
+        const prevStarted = (updatedSub as any).trialStartedAt;
+        const prevEnds = (updatedSub as any).trialEndsAt;
+
+        updatedSub = await this.prisma.businessProductSubscription.update({
+          where: { id: sub.id },
+          data: {
+            trialHours: null,
+            trialStartedAt: null,
+            trialEndsAt: null,
+          } as any,
+        });
+
+        await this.auditService.record({
+          businessId,
+          userId: actorUser?.sub || 'system-superadmin',
+          userRole: actorUser?.role || 'SUPERADMIN',
+          action: 'TRIAL_REMOVED',
+          entityType: 'BusinessProductSubscription',
+          entityId: sub.id,
+          before: { trialHours: prevHours, trialStartedAt: prevStarted, trialEndsAt: prevEnds },
+          after: { trialHours: null, trialStartedAt: null, trialEndsAt: null },
+          reason: 'Prueba POS desactivada para el negocio',
+        });
+
+        this.logger.log(`[updatePosSubscription] trial removido para businessId=${businessId}`);
+      } else {
+        const prevHours = (updatedSub as any).trialHours;
+        const newHours = dto.trialHours;
+
+        updatedSub = await this.prisma.businessProductSubscription.update({
+          where: { id: sub.id },
+          data: {
+            trialHours: newHours,
+          } as any,
+        });
+
+        await this.auditService.record({
+          businessId,
+          userId: actorUser?.sub || 'system-superadmin',
+          userRole: actorUser?.role || 'SUPERADMIN',
+          action: 'TRIAL_HOURS_CHANGED',
+          entityType: 'BusinessProductSubscription',
+          entityId: sub.id,
+          before: { trialHours: prevHours },
+          after: { trialHours: newHours },
+          reason: `Horas de prueba POS actualizadas a ${newHours}h`,
+        });
+
+        this.logger.log(
+          `[updatePosSubscription] trialHours de businessId=${businessId} cambiado de ${prevHours} a ${newHours}`,
+        );
+      }
+    }
+
+    if (dto.trialAction) {
+      const now = new Date();
+
+      if (dto.trialAction === 'extend') {
+        const hoursToAdd = dto.extendHours && dto.extendHours >= 1 ? dto.extendHours : ((updatedSub as any).trialHours || 6);
+        let baseTime: Date;
+        if ((updatedSub as any).trialEndsAt) {
+          const currentEnd = new Date((updatedSub as any).trialEndsAt);
+          baseTime = currentEnd > now ? currentEnd : now;
+        } else {
+          baseTime = now;
+        }
+        const newEndsAt = new Date(baseTime.getTime() + hoursToAdd * 60 * 60 * 1000);
+        const prevEndsAt = (updatedSub as any).trialEndsAt;
+
+        updatedSub = await this.prisma.businessProductSubscription.update({
+          where: { id: sub.id },
+          data: {
+            trialEndsAt: newEndsAt,
+            trialStartedAt: (updatedSub as any).trialStartedAt || now,
+          } as any,
+        });
+
+        await this.auditService.record({
+          businessId,
+          userId: actorUser?.sub || 'system-superadmin',
+          userRole: actorUser?.role || 'SUPERADMIN',
+          action: 'TRIAL_EXTENDED',
+          entityType: 'BusinessProductSubscription',
+          entityId: sub.id,
+          before: { trialEndsAt: prevEndsAt },
+          after: { trialEndsAt: newEndsAt, hoursAdded: hoursToAdd },
+          reason: `Prueba POS extendida en ${hoursToAdd}h adicionales`,
+        });
+
+        this.logger.log(
+          `[updatePosSubscription] trial de businessId=${businessId} extendido +${hoursToAdd}h hasta ${newEndsAt.toISOString()}`,
+        );
+      } else if (dto.trialAction === 'reset') {
+        const prevStarted = (updatedSub as any).trialStartedAt;
+        const prevEnds = (updatedSub as any).trialEndsAt;
+
+        updatedSub = await this.prisma.businessProductSubscription.update({
+          where: { id: sub.id },
+          data: {
+            trialStartedAt: null,
+            trialEndsAt: null,
+          } as any,
+        });
+
+        await this.auditService.record({
+          businessId,
+          userId: actorUser?.sub || 'system-superadmin',
+          userRole: actorUser?.role || 'SUPERADMIN',
+          action: 'TRIAL_RESET',
+          entityType: 'BusinessProductSubscription',
+          entityId: sub.id,
+          before: { trialStartedAt: prevStarted, trialEndsAt: prevEnds },
+          after: { trialStartedAt: null, trialEndsAt: null },
+          reason: 'Reloj de prueba POS reiniciado (arrancará en el próximo login en desktop-win)',
+        });
+
+        this.logger.log(`[updatePosSubscription] trial reiniciado para businessId=${businessId}`);
+      } else if (dto.trialAction === 'terminate') {
+        const prevEnds = (updatedSub as any).trialEndsAt;
+        const terminatedAt = now;
+
+        updatedSub = await this.prisma.businessProductSubscription.update({
+          where: { id: sub.id },
+          data: {
+            trialEndsAt: terminatedAt,
+          } as any,
+        });
+
+        await this.auditService.record({
+          businessId,
+          userId: actorUser?.sub || 'system-superadmin',
+          userRole: actorUser?.role || 'SUPERADMIN',
+          action: 'TRIAL_TERMINATED',
+          entityType: 'BusinessProductSubscription',
+          entityId: sub.id,
+          before: { trialEndsAt: prevEnds },
+          after: { trialEndsAt: terminatedAt },
+          reason: 'Prueba POS terminada inmediatamente por el SuperAdmin',
+        });
+
+        this.logger.log(`[updatePosSubscription] trial terminado inmediatamente para businessId=${businessId}`);
+      }
+    }
+
     return {
       ...updatedSub,
       salonProfile: updatedSalonProfile,
       salonLabels: getSalonLabels(updatedSalonProfile),
       backofficeTier: (updatedSub as any).backofficeTier ?? 'BASIC',
+      trialHours: (updatedSub as any).trialHours ?? null,
+      trialStartedAt: (updatedSub as any).trialStartedAt ?? null,
+      trialEndsAt: (updatedSub as any).trialEndsAt ?? null,
     };
   }
 }

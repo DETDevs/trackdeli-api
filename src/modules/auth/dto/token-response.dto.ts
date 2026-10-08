@@ -27,4 +27,9 @@ export class TokenResponseDto {
     salonProfile?: string | null;
     salonLabels?: any;
   };
+  trial?: {
+    endsAt: string | null;
+    serverNow: string;
+    remainingSeconds: number | null;
+  } | null;
 }

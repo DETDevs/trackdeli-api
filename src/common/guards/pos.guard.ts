@@ -58,6 +58,29 @@ export class PosGuard implements CanActivate {
       });
     }
 
+    const posSub = await this.prisma.businessProductSubscription.findUnique({
+      where: {
+        businessId_productType: {
+          businessId: user.businessId,
+          productType: BusinessProductType.POS,
+        },
+      },
+      select: {
+        trialHours: true,
+        trialStartedAt: true,
+        trialEndsAt: true,
+      },
+    });
+
+    if (posSub?.trialEndsAt && new Date() >= posSub.trialEndsAt) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'TRIAL_EXPIRED',
+        message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
+      });
+    }
+
     if (user.role === UserRole.WAITER) {
       const rawPath =
         request.path ||

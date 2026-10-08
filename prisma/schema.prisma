@@ -1584,6 +1584,9 @@ model BusinessProductSubscription {
   posMonthlyFee           Decimal?               @db.Decimal(10, 2)
   maxDevices              Int?
   backofficeTier          String?                @default("BASIC") @db.VarChar(20)
+  trialHours              Int?
+  trialStartedAt          DateTime?
+  trialEndsAt             DateTime?
   // CARTERA_COBRO:
   carteraMonthlyFee       Decimal?               @db.Decimal(10, 2)
   // CITAS:

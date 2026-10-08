@@ -2121,6 +2121,18 @@ WHERE a."customerId" = c."id"
           name: '144a - business_product_subscriptions.backofficeTier VARCHAR(20) DEFAULT BASIC',
           sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "backofficeTier" VARCHAR(20) DEFAULT 'BASIC';`,
         },
+        {
+          name: '147a - business_product_subscriptions.trialHours INTEGER',
+          sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "trialHours" INTEGER;`,
+        },
+        {
+          name: '147a - business_product_subscriptions.trialStartedAt TIMESTAMPTZ',
+          sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "trialStartedAt" TIMESTAMPTZ;`,
+        },
+        {
+          name: '147a - business_product_subscriptions.trialEndsAt TIMESTAMPTZ',
+          sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "trialEndsAt" TIMESTAMPTZ;`,
+        },
       ];
 
       for (const step of ddlStatements) {
