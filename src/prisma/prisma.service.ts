@@ -2113,6 +2113,10 @@ WHERE a."customerId" = c."id"
           name: '142a - pos_sales.customerName VARCHAR(120)',
           sql: `ALTER TABLE "pos_sales" ALTER COLUMN "customerName" TYPE VARCHAR(120);`,
         },
+        {
+          name: '143a - Seed industria Taller / Servicios automotrices',
+          sql: `INSERT INTO "industries" ("id", "code", "name", "posVertical", "usesVariants", "tracksBatches", "isActive", "order", "createdAt", "updatedAt") VALUES (gen_random_uuid(), 'taller', 'Taller / Servicios automotrices (POS: Taller)', 'RETAIL', false, false, true, 8, NOW(), NOW()) ON CONFLICT ("code") DO UPDATE SET "name" = EXCLUDED."name", "posVertical" = EXCLUDED."posVertical";`,
+        },
       ];
 
       for (const step of ddlStatements) {
@@ -2817,6 +2821,13 @@ WHERE a."customerId" = c."id"
             },
             { key: 'temporada', label: 'Temporada', dataType: ProductFieldDataType.TEXT, order: 5 },
           ],
+        },
+        {
+          code: 'taller',
+          name: 'Taller / Servicios automotrices (POS: Taller)',
+          posVertical: PosVertical.RETAIL,
+          order: 8,
+          fields: [] as any[],
         },
       ];
 

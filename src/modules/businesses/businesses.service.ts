@@ -30,6 +30,7 @@ export class BusinessesService {
       hasPOS: business.hasPOS,
       hasCarteraCobro: business.hasCarteraCobro,
       posVertical: business.posVertical,
+      salonProfile: business.salonProfile ?? 'RESTAURANTE',
       gridColumns: business.gridColumns,
       gridRows: business.gridRows,
       pricingModel: business.pricingModel,

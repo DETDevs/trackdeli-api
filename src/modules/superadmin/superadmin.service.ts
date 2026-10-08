@@ -101,6 +101,7 @@ export class SuperAdminService {
             status: true,
             posVertical: true,
             posMonthlyFee: true,
+            maxDevices: true,
             carteraMonthlyFee: true,
             citasMonthlyFee: true,
             deliveryMonthlyFee: true,
@@ -183,6 +184,8 @@ export class SuperAdminService {
         usesVariants: b.usesVariants,
         tracksBatches: b.tracksBatches,
         posVertical: b.posVertical,
+        salonProfile: b.salonProfile,
+        maxDevices: b.productSubscriptions.find((s) => s.productType === 'POS')?.maxDevices ?? null,
         createdAt: b.createdAt,
         _count: {
           orders: b._count.orders,
@@ -374,6 +377,7 @@ export class SuperAdminService {
       usesVariants: business.usesVariants,
       tracksBatches: business.tracksBatches,
       posVertical: business.posVertical,
+      salonProfile: business.salonProfile,
       createdAt: business.createdAt,
       encargados: business.users,
       riders,
@@ -489,6 +493,14 @@ export class SuperAdminService {
 
       const resolvedPosVertical = dto.posVertical || targetIndustry?.posVertical || PosVertical.RESTAURANTE;
 
+      const isTallerIndustry =
+        targetIndustry?.code === 'taller' ||
+        targetIndustry?.name?.toLowerCase().includes('taller') ||
+        dto.type?.toLowerCase().includes('taller');
+
+      const resolvedSalonProfile =
+        dto.salonProfile || (isTallerIndustry ? 'TALLER' : 'RESTAURANTE');
+
       const business = await tx.business.create({
         data: {
           name: dto.name,
@@ -509,6 +521,7 @@ export class SuperAdminService {
           hasCarteraCobro: hasCarteraCobro,
           hasCitas: hasCitas,
           posVertical: resolvedPosVertical,
+          salonProfile: resolvedSalonProfile,
         },
       });
 
@@ -798,6 +811,8 @@ export class SuperAdminService {
         dispatchTimeoutMin: result.business.dispatchTimeoutMin,
         isActive: result.business.isActive,
         createdAt: result.business.createdAt,
+        salonProfile: result.business.salonProfile,
+        maxDevices: dto.maxDevices !== undefined ? dto.maxDevices : 1,
       },
       encargado: {
         id: result.encargado.id,

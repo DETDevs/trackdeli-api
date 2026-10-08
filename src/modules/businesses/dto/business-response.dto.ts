@@ -22,6 +22,7 @@ export class BusinessResponseDto {
   hasCarteraCobro: boolean;
 
   posVertical: PosVertical;
+  salonProfile?: string | null;
   gridColumns: number;
   gridRows: number;
 
