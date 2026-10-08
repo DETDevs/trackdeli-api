@@ -275,6 +275,7 @@ model Business {
 
   // Vertical de negocio (POS) y dimensiones del layout de mesas
   posVertical            PosVertical  @default(RETAIL)
+  salonProfile           String?      @default("RESTAURANTE") @db.VarChar(50)
   posPolicies            PosPolicies?
   gridColumns            Int          @default(10)
   gridRows               Int          @default(10)
@@ -1455,8 +1456,8 @@ model RestaurantTable {
   number     String           @db.VarChar(50)
   capacity   Int              @default(4)
   shape      TableShape       @default(SQUARE)
-  gridX      Int
-  gridY      Int
+  gridX      Int?
+  gridY      Int?
   isActive   Boolean          @default(true)
   createdAt  DateTime         @default(now())
   updatedAt  DateTime         @updatedAt

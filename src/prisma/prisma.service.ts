@@ -2041,6 +2041,15 @@ WHERE a."customerId" = c."id"
             CREATE INDEX IF NOT EXISTS "pos_product_components_componentProductId_idx" ON "pos_product_components"("componentProductId");
           `,
         },
+        {
+          name: '138a - businesses.salonProfile and pos_restaurant_tables nullable grid coordinates',
+          sql: `
+            ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "salonProfile" VARCHAR(50) DEFAULT 'RESTAURANTE';
+            UPDATE "businesses" SET "salonProfile" = 'RESTAURANTE' WHERE "salonProfile" IS NULL;
+            ALTER TABLE "pos_restaurant_tables" ALTER COLUMN "gridX" DROP NOT NULL;
+            ALTER TABLE "pos_restaurant_tables" ALTER COLUMN "gridY" DROP NOT NULL;
+          `,
+        },
       ];
 
       for (const step of ddlStatements) {

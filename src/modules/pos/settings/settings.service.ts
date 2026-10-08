@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, Logger, ForbiddenException, BadRequestEx
 import { PrismaService } from "../../../prisma/prisma.service";
 import { UpdatePosSettingsDto } from "./dto/update-pos-settings.dto";
 import { UserRole } from "@prisma/client";
+import { getSalonLabels, resolveSalonProfile } from "../salon/salon-profile.util";
 
 @Injectable()
 export class SettingsService {
@@ -14,7 +15,7 @@ export class SettingsService {
       where: { id: businessId },
       select: {
         id: true, name: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true, hasCitas: true,
-        posVertical: true, gridColumns: true, gridRows: true,
+        posVertical: true, salonProfile: true, gridColumns: true, gridRows: true,
         taxRate: true, taxEnabled: true, taxIncluded: true, currency: true, invoicePrefix: true, invoiceCounter: true,
         posAddress: true, posPhone: true, posFooter: true,
         productSubscriptions: {
@@ -31,6 +32,7 @@ export class SettingsService {
     const isCarteraCobroActive = carteraSub ? carteraSub.status === 'ACTIVE' : Boolean(business.hasCarteraCobro);
     const citasSub = business.productSubscriptions?.find((s) => s.productType === 'CITAS');
     const isCitasActive = citasSub ? citasSub.status === 'ACTIVE' : Boolean((business as any).hasCitas);
+    const resolvedSalonProfile = resolveSalonProfile(business.salonProfile);
 
     const { productSubscriptions, ...businessData } = business;
     return {
@@ -38,6 +40,8 @@ export class SettingsService {
       hasCarteraCobro: isCarteraCobroActive,
       hasCitas: isCitasActive,
       posVertical: resolvedPosVertical,
+      salonProfile: resolvedSalonProfile,
+      salonLabels: getSalonLabels(resolvedSalonProfile),
     };
   }
 

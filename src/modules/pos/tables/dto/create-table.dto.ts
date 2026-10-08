@@ -16,13 +16,15 @@ export class CreateTableDto {
   @IsEnum(TableShape)
   shape?: TableShape;
 
+  @IsOptional()
   @IsInt()
   @Min(0)
-  gridX: number;
+  gridX?: number;
 
+  @IsOptional()
   @IsInt()
   @Min(0)
-  gridY: number;
+  gridY?: number;
 
   @IsOptional()
   @IsString()

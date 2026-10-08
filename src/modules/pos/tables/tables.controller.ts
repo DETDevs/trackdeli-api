@@ -26,6 +26,7 @@ import { AddOrderItemsDto } from './dto/add-order-items.dto';
 import { UpdateOrderItemDto } from './dto/update-order-item.dto';
 import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
 import { CancelTableOrderDto } from './dto/cancel-table-order.dto';
+import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
@@ -51,6 +52,16 @@ export class TablesController {
     @Query('businessId') qBid?: string,
   ) {
     return this.service.createTable(resolveBusinessId(user, qBid), dto, user);
+  }
+
+  @Post('receive')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  receiveVehicle(
+    @Body() dto: ReceiveVehicleDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.receiveVehicle(resolveBusinessId(user, qBid), dto, user);
   }
 
   @Get('status')

@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, Min, ValidateIf } from 'class-validator';
+import { IsIn, IsInt, IsOptional, Min, ValidateIf } from 'class-validator';
 
 export class UpdatePosSubscriptionDto {
   @IsOptional()
@@ -6,4 +6,8 @@ export class UpdatePosSubscriptionDto {
   @IsInt()
   @Min(1)
   maxDevices?: number | null;
+
+  @IsOptional()
+  @IsIn(['RESTAURANTE', 'TALLER', null])
+  salonProfile?: 'RESTAURANTE' | 'TALLER' | null;
 }

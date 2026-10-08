@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -17,6 +18,8 @@ import { AddOrderItemsDto } from './dto/add-order-items.dto';
 import { UpdateOrderItemDto } from './dto/update-order-item.dto';
 import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
 import { CancelTableOrderDto } from './dto/cancel-table-order.dto';
+import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
+import { getSalonLabels } from '../salon/salon-profile.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
 @Injectable()
@@ -30,6 +33,12 @@ export class TablesService {
   ) {}
 
   async findAllTables(businessId: string, zoneId?: string) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { salonProfile: true },
+    });
+    const isTaller = business?.salonProfile === 'TALLER';
+
     const where: any = { businessId, isActive: true };
     if (zoneId) {
       if (zoneId === 'null' || zoneId === 'none' || zoneId === 'sin-zona') {
@@ -46,7 +55,9 @@ export class TablesService {
           select: { id: true, name: true },
         },
       },
-      orderBy: [{ gridY: 'asc' }, { gridX: 'asc' }, { number: 'asc' }],
+      orderBy: isTaller
+        ? [{ createdAt: 'asc' }]
+        : [{ gridY: 'asc' }, { gridX: 'asc' }, { number: 'asc' }],
     });
 
     return tables.map((t) => {
@@ -62,11 +73,12 @@ export class TablesService {
   async createTable(businessId: string, dto: CreateTableDto, user?: JwtPayload) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { id: true, gridColumns: true, gridRows: true },
+      select: { id: true, gridColumns: true, gridRows: true, salonProfile: true },
     });
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
     }
+    const isTaller = business.salonProfile === 'TALLER';
 
     if (!dto.zoneId || !dto.zoneId.trim()) {
       throw new BadRequestException({
@@ -87,15 +99,67 @@ export class TablesService {
       });
     }
 
-    if (
-      dto.gridX < 0 ||
-      dto.gridX >= business.gridColumns ||
-      dto.gridY < 0 ||
-      dto.gridY >= business.gridRows
-    ) {
-      throw new BadRequestException(
-        `Coordenadas (${dto.gridX}, ${dto.gridY}) fuera de los límites de la grilla (${business.gridColumns}x${business.gridRows}).`,
-      );
+    const hasCoords =
+      dto.gridX !== undefined && dto.gridX !== null && dto.gridY !== undefined && dto.gridY !== null;
+
+    if (!isTaller) {
+      if (!hasCoords) {
+        throw new BadRequestException('Las coordenadas (gridX, gridY) son requeridas para este perfil');
+      }
+      if (
+        dto.gridX < 0 ||
+        dto.gridX >= business.gridColumns ||
+        dto.gridY < 0 ||
+        dto.gridY >= business.gridRows
+      ) {
+        throw new BadRequestException(
+          `Coordenadas (${dto.gridX}, ${dto.gridY}) fuera de los límites de la grilla (${business.gridColumns}x${business.gridRows}).`,
+        );
+      }
+
+      const existingPosition = await this.prisma.restaurantTable.findFirst({
+        where: {
+          businessId,
+          zoneId: zone.id,
+          gridX: dto.gridX,
+          gridY: dto.gridY,
+          isActive: true,
+        },
+      });
+      if (existingPosition) {
+        throw new ConflictException(
+          `La celda (${dto.gridX}, ${dto.gridY}) ya está ocupada por la mesa "${existingPosition.number}" en esta zona`,
+        );
+      }
+    } else {
+      // In TALLER: validate grid bounds & collision only if coordinates are provided
+      if (hasCoords) {
+        if (
+          dto.gridX < 0 ||
+          dto.gridX >= business.gridColumns ||
+          dto.gridY < 0 ||
+          dto.gridY >= business.gridRows
+        ) {
+          throw new BadRequestException(
+            `Coordenadas (${dto.gridX}, ${dto.gridY}) fuera de los límites de la grilla (${business.gridColumns}x${business.gridRows}).`,
+          );
+        }
+
+        const existingPosition = await this.prisma.restaurantTable.findFirst({
+          where: {
+            businessId,
+            zoneId: zone.id,
+            gridX: dto.gridX,
+            gridY: dto.gridY,
+            isActive: true,
+          },
+        });
+        if (existingPosition) {
+          throw new ConflictException(
+            `La celda (${dto.gridX}, ${dto.gridY}) ya está ocupada por la mesa "${existingPosition.number}" en esta zona`,
+          );
+        }
+      }
     }
 
     const existingNumber = await this.prisma.restaurantTable.findFirst({
@@ -109,21 +173,6 @@ export class TablesService {
       throw new ConflictException(`Ya existe una mesa con el identificador "${dto.number}"`);
     }
 
-    const existingPosition = await this.prisma.restaurantTable.findFirst({
-      where: {
-        businessId,
-        zoneId: zone.id,
-        gridX: dto.gridX,
-        gridY: dto.gridY,
-        isActive: true,
-      },
-    });
-    if (existingPosition) {
-      throw new ConflictException(
-        `La celda (${dto.gridX}, ${dto.gridY}) ya está ocupada por la mesa "${existingPosition.number}" en esta zona`,
-      );
-    }
-
     const table = await this.prisma.restaurantTable.create({
       data: {
         businessId,
@@ -131,8 +180,8 @@ export class TablesService {
         number: dto.number.trim(),
         capacity: dto.capacity,
         shape: dto.shape || TableShape.SQUARE,
-        gridX: dto.gridX,
-        gridY: dto.gridY,
+        gridX: dto.gridX !== undefined ? dto.gridX : null,
+        gridY: dto.gridY !== undefined ? dto.gridY : null,
       },
       include: {
         zone: {
@@ -183,11 +232,12 @@ export class TablesService {
 
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { id: true, gridColumns: true, gridRows: true },
+      select: { id: true, gridColumns: true, gridRows: true, salonProfile: true },
     });
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
     }
+    const isTaller = business.salonProfile === 'TALLER';
 
     let targetZoneId = table.zoneId;
     let targetZoneName = table.zone?.name || 'Sin zona';
@@ -234,39 +284,80 @@ export class TablesService {
 
     const newX = dto.gridX !== undefined ? dto.gridX : table.gridX;
     const newY = dto.gridY !== undefined ? dto.gridY : table.gridY;
+    const hasCoordinates = newX !== null && newX !== undefined && newY !== null && newY !== undefined;
 
-    if (dto.gridX !== undefined || dto.gridY !== undefined || isMovingZone) {
-      if (
-        newX < 0 ||
-        newX >= business.gridColumns ||
-        newY < 0 ||
-        newY >= business.gridRows
-      ) {
-        throw new BadRequestException(
-          `Coordenadas (${newX}, ${newY}) fuera de los límites de la grilla (${business.gridColumns}x${business.gridRows}).`,
-        );
+    if (!isTaller) {
+      if (dto.gridX !== undefined || dto.gridY !== undefined || isMovingZone) {
+        if (!hasCoordinates) {
+          throw new BadRequestException('Las coordenadas (gridX, gridY) son requeridas para este perfil');
+        }
+        if (
+          newX < 0 ||
+          newX >= business.gridColumns ||
+          newY < 0 ||
+          newY >= business.gridRows
+        ) {
+          throw new BadRequestException(
+            `Coordenadas (${newX}, ${newY}) fuera de los límites de la grilla (${business.gridColumns}x${business.gridRows}).`,
+          );
+        }
+
+        const collisionWhere: any = {
+          businessId,
+          gridX: newX,
+          gridY: newY,
+          isActive: true,
+          id: { not: tableId },
+        };
+        if (targetZoneId) {
+          collisionWhere.zoneId = targetZoneId;
+        } else {
+          collisionWhere.zoneId = null;
+        }
+
+        const collision = await this.prisma.restaurantTable.findFirst({
+          where: collisionWhere,
+        });
+        if (collision) {
+          throw new ConflictException(
+            `La celda (${newX}, ${newY}) ya está ocupada por la mesa "${collision.number}" en la zona destino`,
+          );
+        }
       }
+    } else {
+      if (hasCoordinates && (dto.gridX !== undefined || dto.gridY !== undefined)) {
+        if (
+          newX < 0 ||
+          newX >= business.gridColumns ||
+          newY < 0 ||
+          newY >= business.gridRows
+        ) {
+          throw new BadRequestException(
+            `Coordenadas (${newX}, ${newY}) fuera de los límites de la grilla (${business.gridColumns}x${business.gridRows}).`,
+          );
+        }
 
-      const collisionWhere: any = {
-        businessId,
-        gridX: newX,
-        gridY: newY,
-        isActive: true,
-        id: { not: tableId },
-      };
-      if (targetZoneId) {
-        collisionWhere.zoneId = targetZoneId;
-      } else {
-        collisionWhere.zoneId = null;
-      }
+        const collisionWhere: any = {
+          businessId,
+          gridX: newX,
+          gridY: newY,
+          isActive: true,
+          id: { not: tableId },
+        };
+        if (targetZoneId) {
+          collisionWhere.zoneId = targetZoneId;
+        } else {
+          collisionWhere.zoneId = null;
+        }
 
-      const collision = await this.prisma.restaurantTable.findFirst({
-        where: collisionWhere,
-      });
-      if (collision) {
-        throw new ConflictException(
-          `La celda (${newX}, ${newY}) ya está ocupada por la mesa "${collision.number}" en la zona destino`,
-        );
+        const collision = await this.prisma.restaurantTable.findFirst({
+          where: collisionWhere,
+        });
+        if (collision) {
+          throw new ConflictException(
+            `La celda (${newX}, ${newY}) ya está ocupada por la mesa "${collision.number}" en la zona destino`,
+          );
+        }
       }
     }
 
@@ -371,6 +462,12 @@ export class TablesService {
   }
 
   async getTablesStatus(businessId: string, zoneId?: string) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { salonProfile: true },
+    });
+    const isTaller = business?.salonProfile === 'TALLER';
+
     const where: any = { businessId, isActive: true };
     if (zoneId) {
       if (zoneId === 'null' || zoneId === 'none' || zoneId === 'sin-zona') {
@@ -395,7 +492,9 @@ export class TablesService {
           take: 1,
         },
       },
-      orderBy: [{ gridY: 'asc' }, { gridX: 'asc' }, { number: 'asc' }],
+      orderBy: isTaller
+        ? [{ createdAt: 'asc' }]
+        : [{ gridY: 'asc' }, { gridX: 'asc' }, { number: 'asc' }],
     });
 
     return tables.map((t) => {
@@ -683,8 +782,9 @@ export class TablesService {
 
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { taxRate: true },
+      select: { taxRate: true, salonProfile: true },
     });
+    const labels = getSalonLabels(business?.salonProfile);
     const taxRate = business?.taxRate || 0;
     const discountAmount = dto.discountAmount || 0;
     const taxable = Math.max(0, subtotal - discountAmount);
@@ -701,7 +801,9 @@ export class TablesService {
       customerPhone: dto.customerPhone,
       customerRuc: dto.customerRuc,
       cashRegisterId: dto.cashRegisterId,
-      notes: dto.notes ? `${dto.notes} (Mesa ${order.table.number})` : `Mesa ${order.table.number}`,
+      notes: dto.notes
+        ? `${dto.notes} (${labels.table} ${order.table.number})`
+        : `${labels.table} ${order.table.number}`,
       reference: dto.reference || dto.paymentReference,
       payments: dto.payments,
       items: order.items.map((i) => ({
@@ -723,6 +825,16 @@ export class TablesService {
         saleId: sale.id,
       },
     });
+
+    if (business?.salonProfile === 'TALLER') {
+      await this.prisma.restaurantTable.update({
+        where: { id: order.tableId },
+        data: { isActive: false },
+      });
+      this.logger.log(
+        `[checkoutTableOrder] Vehículo desactivado (isActive=false): tableId=${order.tableId} (${order.table.number})`,
+      );
+    }
 
     this.logger.log(
       `[checkoutTableOrder] Mesa ${order.table.number} facturada con éxito: saleId=${sale.id} invoice=${sale.invoiceNumber} orderId=${order.id}`,
@@ -795,6 +907,156 @@ export class TablesService {
         reason: cancelledOrder.cancellationReason,
         cancellationReason: cancelledOrder.cancellationReason,
       },
+    };
+  }
+
+  async receiveVehicle(businessId: string, dto: ReceiveVehicleDto, user?: JwtPayload) {
+    if (!dto.zoneId || !dto.zoneId.trim()) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'ZONE_REQUIRED',
+      });
+    }
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true, salonProfile: true },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+    if (business.salonProfile !== 'TALLER') {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        message: 'SALON_PROFILE_MISMATCH',
+      });
+    }
+
+    const zone = await this.prisma.salonZone.findFirst({
+      where: { id: dto.zoneId.trim(), businessId, isActive: true },
+    });
+    if (!zone) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'ZONE_NOT_FOUND',
+      });
+    }
+
+    const plateNumber = dto.number.trim();
+
+    let table = await this.prisma.restaurantTable.findFirst({
+      where: {
+        businessId,
+        number: { equals: plateNumber, mode: 'insensitive' },
+      },
+      include: {
+        zone: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (table) {
+      const openOrder = await this.prisma.tableOrder.findFirst({
+        where: { tableId: table.id, status: TableOrderStatus.OPEN },
+      });
+      if (openOrder) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          message: 'VEHICLE_ALREADY_OPEN',
+        });
+      }
+
+      table = await this.prisma.restaurantTable.update({
+        where: { id: table.id },
+        data: {
+          isActive: true,
+          zoneId: zone.id,
+        },
+        include: {
+          zone: { select: { id: true, name: true } },
+        },
+      });
+    } else {
+      table = await this.prisma.restaurantTable.create({
+        data: {
+          businessId,
+          zoneId: zone.id,
+          number: plateNumber,
+          capacity: 1,
+          shape: TableShape.SQUARE,
+          gridX: null,
+          gridY: null,
+          isActive: true,
+        },
+        include: {
+          zone: { select: { id: true, name: true } },
+        },
+      });
+    }
+
+    const isWaiter = user?.role === UserRole.WAITER;
+    const openedByWaiterId = isWaiter ? user.sub : null;
+    const openedByWaiterName = isWaiter ? (user.waiterName || null) : null;
+
+    const newOrder = await this.prisma.tableOrder.create({
+      data: {
+        businessId,
+        tableId: table.id,
+        status: TableOrderStatus.OPEN,
+        openedByWaiterId,
+        openedByWaiterName,
+        notes: dto.note ? dto.note.trim() : null,
+      },
+      include: {
+        items: {
+          include: {
+            product: {
+              select: { id: true, name: true, imageUrl: true, price: true, unit: true, stock: true },
+            },
+          },
+        },
+        table: {
+          select: {
+            id: true,
+            number: true,
+            capacity: true,
+            shape: true,
+            zoneId: true,
+            zone: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
+
+    this.logger.log(`[receiveVehicle] Vehículo ${table.number} recibido con comanda ${newOrder.id} en zona ${zone.name}`);
+
+    const formattedOrder = this.formatOrderResponse(newOrder);
+    const formattedTable = {
+      id: table.id,
+      businessId: table.businessId,
+      number: table.number,
+      capacity: table.capacity,
+      shape: table.shape,
+      gridX: table.gridX,
+      gridY: table.gridY,
+      zoneId: table.zoneId || null,
+      zoneName: table.zone?.name || 'Sin zona',
+      isActive: table.isActive,
+      createdAt: table.createdAt,
+      updatedAt: table.updatedAt,
+      status: 'OCCUPIED' as const,
+      order: formattedOrder,
+      currentOrder: formattedOrder,
+    };
+
+    return {
+      ...formattedTable,
+      table: formattedTable,
+      order: formattedOrder,
     };
   }
 

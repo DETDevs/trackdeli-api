@@ -17,5 +17,14 @@ export class TokenResponseDto {
     profilePhotoUrl?: string | null;
     isAvailable?: boolean;
     profileComplete: boolean;
+    business?: {
+      id?: string;
+      name?: string;
+      salonProfile?: string | null;
+      salonLabels?: any;
+      posVertical?: string | null;
+    } | null;
+    salonProfile?: string | null;
+    salonLabels?: any;
   };
 }

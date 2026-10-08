@@ -18,6 +18,7 @@ import { BusinessType, MembershipStatus, OrderStatus, Prisma, UserRole, Business
 import { AuditService } from '../pos/audit/audit.service';
 import { UpdateDeviceDto } from '../pos/devices/dto/update-device.dto';
 import { UpdatePosSubscriptionDto } from '../pos/devices/dto/update-pos-subscription.dto';
+import { getSalonLabels } from '../pos/salon/salon-profile.util';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import * as bcrypt from 'bcrypt';
 
@@ -2060,7 +2061,7 @@ export class SuperAdminService {
   ) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { id: true },
+      select: { id: true, salonProfile: true },
     });
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
@@ -2079,28 +2080,62 @@ export class SuperAdminService {
       throw new NotFoundException('Suscripción POS no encontrada para este negocio');
     }
 
-    const updated = await this.prisma.businessProductSubscription.update({
-      where: { id: sub.id },
-      data: {
-        ...(dto.maxDevices !== undefined && { maxDevices: dto.maxDevices }),
-      },
-    });
+    let updatedSub = sub;
+    if (dto.maxDevices !== undefined) {
+      updatedSub = await this.prisma.businessProductSubscription.update({
+        where: { id: sub.id },
+        data: {
+          maxDevices: dto.maxDevices,
+        },
+      });
 
-    await this.auditService.record({
-      businessId,
-      userId: actorUser?.sub || 'system-superadmin',
-      userRole: actorUser?.role || 'SUPERADMIN',
-      action: 'DEVICE_LIMIT_CHANGED',
-      entityType: 'BusinessProductSubscription',
-      entityId: sub.id,
-      before: { maxDevices: sub.maxDevices },
-      after: { maxDevices: updated.maxDevices },
-    });
+      await this.auditService.record({
+        businessId,
+        userId: actorUser?.sub || 'system-superadmin',
+        userRole: actorUser?.role || 'SUPERADMIN',
+        action: 'DEVICE_LIMIT_CHANGED',
+        entityType: 'BusinessProductSubscription',
+        entityId: sub.id,
+        before: { maxDevices: sub.maxDevices },
+        after: { maxDevices: updatedSub.maxDevices },
+      });
 
-    this.logger.log(
-      `[updatePosSubscription] Límite maxDevices de businessId=${businessId} cambiado de ${sub.maxDevices} a ${updated.maxDevices}`,
-    );
+      this.logger.log(
+        `[updatePosSubscription] Límite maxDevices de businessId=${businessId} cambiado de ${sub.maxDevices} a ${updatedSub.maxDevices}`,
+      );
+    }
 
-    return updated;
+    let updatedSalonProfile = business.salonProfile;
+    if (dto.salonProfile !== undefined) {
+      const newProfile = dto.salonProfile || 'RESTAURANTE';
+      const updatedBusiness = await this.prisma.business.update({
+        where: { id: businessId },
+        data: { salonProfile: newProfile },
+        select: { salonProfile: true },
+      });
+      updatedSalonProfile = updatedBusiness.salonProfile;
+
+      await this.auditService.record({
+        businessId,
+        userId: actorUser?.sub || 'system-superadmin',
+        userRole: actorUser?.role || 'SUPERADMIN',
+        action: 'SALON_PROFILE_CHANGED',
+        entityType: 'Business',
+        entityId: businessId,
+        before: { salonProfile: business.salonProfile },
+        after: { salonProfile: updatedSalonProfile },
+        reason: `Perfil de Salón actualizado a ${updatedSalonProfile}`,
+      });
+
+      this.logger.log(
+        `[updatePosSubscription] salonProfile de businessId=${businessId} cambiado de ${business.salonProfile} a ${updatedSalonProfile}`,
+      );
+    }
+
+    return {
+      ...updatedSub,
+      salonProfile: updatedSalonProfile,
+      salonLabels: getSalonLabels(updatedSalonProfile),
+    };
   }
 }

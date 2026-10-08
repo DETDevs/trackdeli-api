@@ -23,12 +23,19 @@ export class SalonZonesService {
   ) {}
 
   async findAll(businessId: string) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { salonProfile: true },
+    });
+    const isTaller = business?.salonProfile === 'TALLER';
+
     const zones = await this.prisma.salonZone.findMany({
       where: { businessId, isActive: true },
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      orderBy: isTaller ? [{ createdAt: 'asc' }] : [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
       include: {
         tables: {
           where: { isActive: true },
+          orderBy: isTaller ? [{ createdAt: 'asc' }] : [{ gridY: 'asc' }, { gridX: 'asc' }, { number: 'asc' }],
           include: {
             orders: {
               where: { status: TableOrderStatus.OPEN },

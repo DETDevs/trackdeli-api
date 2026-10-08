@@ -11,6 +11,7 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { User, AuthProvider } from '@prisma/client';
 import { FirebaseService } from '../notifications/firebase.service';
 import { PosDevicesService } from '../pos/devices/pos-devices.service';
+import { getSalonLabels, resolveSalonProfile } from '../pos/salon/salon-profile.util';
 
 @Injectable()
 export class AuthService {
@@ -81,6 +82,27 @@ export class AuthService {
 
     const tokens = this.generateTokens(payload);
 
+    let businessData: any = null;
+    let salonProfile = 'RESTAURANTE';
+    let salonLabels = getSalonLabels('RESTAURANTE');
+    if (user.businessId) {
+      const b = await this.prisma.business.findUnique({
+        where: { id: user.businessId },
+        select: { id: true, name: true, salonProfile: true, posVertical: true },
+      });
+      if (b) {
+        salonProfile = resolveSalonProfile(b.salonProfile);
+        salonLabels = getSalonLabels(salonProfile);
+        businessData = {
+          id: b.id,
+          name: b.name,
+          salonProfile,
+          salonLabels,
+          posVertical: b.posVertical,
+        };
+      }
+    }
+
     return {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -90,14 +112,17 @@ export class AuthService {
         email: user.email,
         role: user.role,
         businessId: user.businessId,
-          phone: user.phone,
-          vehicleType: user.vehicleType,
-          vehiclePlate: user.vehiclePlate,
-          vehicleColor: user.vehicleColor,
-          vehiclePhotoUrl: user.vehiclePhotoUrl,
-          profilePhotoUrl: user.profilePhotoUrl,
-          isAvailable: user.isAvailable,
-          profileComplete: user.profileComplete,
+        phone: user.phone,
+        vehicleType: user.vehicleType,
+        vehiclePlate: user.vehiclePlate,
+        vehicleColor: user.vehicleColor,
+        vehiclePhotoUrl: user.vehiclePhotoUrl,
+        profilePhotoUrl: user.profilePhotoUrl,
+        isAvailable: user.isAvailable,
+        profileComplete: user.profileComplete,
+        business: businessData,
+        salonProfile,
+        salonLabels,
       },
     };
   }
@@ -374,19 +399,36 @@ export class AuthService {
         currentLongitude: true,
         business: {
           select: {
+            id: true,
             name: true,
             latitude: true,
             longitude: true,
-          }
-        }
-      }
+            salonProfile: true,
+            posVertical: true,
+          },
+        },
+      },
     });
 
     if (!user) {
       throw new NotFoundException('Usuario no encontrado');
     }
 
-    return user;
+    const salonProfile = resolveSalonProfile(user.business?.salonProfile);
+    const salonLabels = getSalonLabels(salonProfile);
+
+    return {
+      ...user,
+      salonProfile,
+      salonLabels,
+      business: user.business
+        ? {
+            ...user.business,
+            salonProfile,
+            salonLabels,
+          }
+        : null,
+    };
   }
 
   private generateTokens(payload: JwtPayload): { accessToken: string; refreshToken: string } {
