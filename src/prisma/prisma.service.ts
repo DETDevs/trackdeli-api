@@ -2117,6 +2117,10 @@ WHERE a."customerId" = c."id"
           name: '143a - Seed industria Taller / Servicios automotrices',
           sql: `INSERT INTO "industries" ("id", "code", "name", "posVertical", "usesVariants", "tracksBatches", "isActive", "order", "createdAt", "updatedAt") VALUES (gen_random_uuid(), 'taller', 'Taller / Servicios automotrices (POS: Taller)', 'RETAIL', false, false, true, 8, NOW(), NOW()) ON CONFLICT ("code") DO UPDATE SET "name" = EXCLUDED."name", "posVertical" = EXCLUDED."posVertical";`,
         },
+        {
+          name: '144a - business_product_subscriptions.backofficeTier VARCHAR(20) DEFAULT BASIC',
+          sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "backofficeTier" VARCHAR(20) DEFAULT 'BASIC';`,
+        },
       ];
 
       for (const step of ddlStatements) {

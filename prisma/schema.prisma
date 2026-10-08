@@ -1583,6 +1583,7 @@ model BusinessProductSubscription {
   posVertical             PosVertical?
   posMonthlyFee           Decimal?               @db.Decimal(10, 2)
   maxDevices              Int?
+  backofficeTier          String?                @default("BASIC") @db.VarChar(20)
   // CARTERA_COBRO:
   carteraMonthlyFee       Decimal?               @db.Decimal(10, 2)
   // CITAS:

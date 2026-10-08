@@ -10,4 +10,8 @@ export class UpdatePosSubscriptionDto {
   @IsOptional()
   @IsIn(['RESTAURANTE', 'TALLER', null])
   salonProfile?: 'RESTAURANTE' | 'TALLER' | null;
+
+  @IsOptional()
+  @IsIn(['BASIC', 'PRO', null])
+  backofficeTier?: 'BASIC' | 'PRO' | null;
 }

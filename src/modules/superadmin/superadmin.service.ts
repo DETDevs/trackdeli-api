@@ -394,6 +394,7 @@ export class SuperAdminService {
       hasCarteraCobro: hasCarteraActive,
       hasCitas: hasCitasActive,
       maxDevices,
+      backofficeTier: (posSub as any)?.backofficeTier ?? 'BASIC',
       activeDevices,
       userUsage,
     };
@@ -625,9 +626,10 @@ export class SuperAdminService {
             posVertical,
             posMonthlyFee: new Prisma.Decimal(posFee),
             maxDevices,
+            backofficeTier: 'BASIC',
             activatedAt: now,
             activatedBy: createdBy,
-          },
+          } as any,
         });
 
         await tx.businessProductAuditLog.create({
@@ -2147,10 +2149,38 @@ export class SuperAdminService {
       );
     }
 
+    if (dto.backofficeTier !== undefined) {
+      const newTier = dto.backofficeTier || 'BASIC';
+      const beforeTier = (sub as any).backofficeTier || 'BASIC';
+      updatedSub = await this.prisma.businessProductSubscription.update({
+        where: { id: sub.id },
+        data: {
+          backofficeTier: newTier,
+        } as any,
+      });
+
+      await this.auditService.record({
+        businessId,
+        userId: actorUser?.sub || 'system-superadmin',
+        userRole: actorUser?.role || 'SUPERADMIN',
+        action: 'BACKOFFICE_TIER_CHANGED',
+        entityType: 'BusinessProductSubscription',
+        entityId: sub.id,
+        before: { backofficeTier: beforeTier },
+        after: { backofficeTier: newTier },
+        reason: `Nivel de Backoffice actualizado a ${newTier}`,
+      });
+
+      this.logger.log(
+        `[updatePosSubscription] backofficeTier de businessId=${businessId} cambiado de ${beforeTier} a ${newTier}`,
+      );
+    }
+
     return {
       ...updatedSub,
       salonProfile: updatedSalonProfile,
       salonLabels: getSalonLabels(updatedSalonProfile),
+      backofficeTier: (updatedSub as any).backofficeTier ?? 'BASIC',
     };
   }
 }

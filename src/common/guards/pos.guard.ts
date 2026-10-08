@@ -50,9 +50,12 @@ export class PosGuard implements CanActivate {
     );
 
     if (!isPosActive) {
-      throw new ForbiddenException(
-        'El modulo POS no esta activo para este negocio. Contacta a TrackDeli.',
-      );
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'MODULE_NOT_ENABLED',
+        message: 'El módulo POS no está habilitado para este negocio. Contacta a TrackDeli.',
+      });
     }
 
     if (user.role === UserRole.WAITER) {

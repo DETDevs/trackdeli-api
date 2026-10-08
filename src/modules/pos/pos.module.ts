@@ -25,6 +25,7 @@ import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 import { PurchasesModule } from './purchases/purchases.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { PosDevicesModule } from './devices/pos-devices.module';
+import { BackofficeModule } from './backoffice/backoffice.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { PosDevicesModule } from './devices/pos-devices.module';
     IdempotencyModule,
     ExchangeRateModule,
     PosDevicesModule,
+    BackofficeModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
