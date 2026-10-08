@@ -2018,37 +2018,56 @@ WHERE a."customerId" = c."id"
             ALTER COLUMN "resultingStock" TYPE DECIMAL(12,3) USING "resultingStock"::DECIMAL(12,3);`,
         },
         {
-          name: '137a - pos_products.isRecipe and pos_product_components table',
-          sql: `
-            ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "isRecipe" BOOLEAN NOT NULL DEFAULT false;
-
-            CREATE TABLE IF NOT EXISTS "pos_product_components" (
-              "id" TEXT NOT NULL,
-              "businessId" TEXT NOT NULL,
-              "parentProductId" TEXT NOT NULL,
-              "componentProductId" TEXT NOT NULL,
-              "quantity" DECIMAL(12,3) NOT NULL,
-              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              CONSTRAINT "pos_product_components_pkey" PRIMARY KEY ("id"),
-              CONSTRAINT "pos_product_components_parentProductId_fkey" FOREIGN KEY ("parentProductId") REFERENCES "pos_products"("id") ON DELETE CASCADE ON UPDATE CASCADE,
-              CONSTRAINT "pos_product_components_componentProductId_fkey" FOREIGN KEY ("componentProductId") REFERENCES "pos_products"("id") ON DELETE CASCADE ON UPDATE CASCADE,
-              CONSTRAINT "pos_product_components_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS "pos_product_components_parentProductId_componentProductId_key" ON "pos_product_components"("parentProductId", "componentProductId");
-            CREATE INDEX IF NOT EXISTS "pos_product_components_businessId_idx" ON "pos_product_components"("businessId");
-            CREATE INDEX IF NOT EXISTS "pos_product_components_parentProductId_idx" ON "pos_product_components"("parentProductId");
-            CREATE INDEX IF NOT EXISTS "pos_product_components_componentProductId_idx" ON "pos_product_components"("componentProductId");
-          `,
+          name: '137a - Columna isRecipe en pos_products',
+          sql: `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "isRecipe" BOOLEAN NOT NULL DEFAULT false;`,
         },
         {
-          name: '138a - businesses.salonProfile and pos_restaurant_tables nullable grid coordinates',
-          sql: `
-            ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "salonProfile" VARCHAR(50) DEFAULT 'RESTAURANTE';
-            UPDATE "businesses" SET "salonProfile" = 'RESTAURANTE' WHERE "salonProfile" IS NULL;
-            ALTER TABLE "pos_restaurant_tables" ALTER COLUMN "gridX" DROP NOT NULL;
-            ALTER TABLE "pos_restaurant_tables" ALTER COLUMN "gridY" DROP NOT NULL;
-          `,
+          name: '137a - Tabla pos_product_components',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_product_components" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "parentProductId" TEXT NOT NULL,
+            "componentProductId" TEXT NOT NULL,
+            "quantity" DECIMAL(12,3) NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_product_components_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_product_components_parentProductId_fkey" FOREIGN KEY ("parentProductId") REFERENCES "pos_products"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_product_components_componentProductId_fkey" FOREIGN KEY ("componentProductId") REFERENCES "pos_products"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_product_components_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: '137a - Índice pos_product_components.parent_component',
+          sql: `CREATE UNIQUE INDEX IF NOT EXISTS "pos_product_components_parentProductId_componentProductId_key" ON "pos_product_components"("parentProductId", "componentProductId");`,
+        },
+        {
+          name: '137a - Índice pos_product_components.businessId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_product_components_businessId_idx" ON "pos_product_components"("businessId");`,
+        },
+        {
+          name: '137a - Índice pos_product_components.parentProductId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_product_components_parentProductId_idx" ON "pos_product_components"("parentProductId");`,
+        },
+        {
+          name: '137a - Índice pos_product_components.componentProductId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_product_components_componentProductId_idx" ON "pos_product_components"("componentProductId");`,
+        },
+        {
+          name: '138a - Columna businesses.salonProfile',
+          sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "salonProfile" VARCHAR(50) DEFAULT 'RESTAURANTE';`,
+        },
+        {
+          name: '138a - Default salonProfile en businesses',
+          sql: `UPDATE "businesses" SET "salonProfile" = 'RESTAURANTE' WHERE "salonProfile" IS NULL;`,
+        },
+        {
+          name: '138a - pos_restaurant_tables.gridX DROP NOT NULL',
+          sql: `ALTER TABLE "pos_restaurant_tables" ALTER COLUMN "gridX" DROP NOT NULL;`,
+        },
+        {
+          name: '138a - pos_restaurant_tables.gridY DROP NOT NULL',
+          sql: `ALTER TABLE "pos_restaurant_tables" ALTER COLUMN "gridY" DROP NOT NULL;`,
         },
       ];
 
@@ -2057,6 +2076,25 @@ WHERE a."customerId" = c."id"
           await this.$executeRawUnsafe(step.sql);
           this.logger.log(`[PrismaService] ✓ Sincronizado: ${step.name}`);
         } catch (stepErr: any) {
+          if (
+            stepErr.message &&
+            stepErr.message.includes('cannot insert multiple commands into a prepared statement')
+          ) {
+            try {
+              const subQueries = step.sql
+                .split(';')
+                .map((q) => q.trim())
+                .filter((q) => q.length > 0);
+              for (const subQ of subQueries) {
+                await this.$executeRawUnsafe(subQ);
+              }
+              this.logger.log(`[PrismaService] ✓ Sincronizado (sub-queries): ${step.name}`);
+              continue;
+            } catch (subErr: any) {
+              this.logger.warn(`[PrismaService] ⚠ Advertencia en ${step.name} (sub-queries): ${subErr.message}`);
+              continue;
+            }
+          }
           this.logger.warn(`[PrismaService] ⚠ Advertencia en ${step.name}: ${stepErr.message}`);
         }
       }
