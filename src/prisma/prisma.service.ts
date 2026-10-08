@@ -2017,6 +2017,30 @@ WHERE a."customerId" = c."id"
             ALTER COLUMN "expectedStock" TYPE DECIMAL(12,3) USING "expectedStock"::DECIMAL(12,3),
             ALTER COLUMN "resultingStock" TYPE DECIMAL(12,3) USING "resultingStock"::DECIMAL(12,3);`,
         },
+        {
+          name: '137a - pos_products.isRecipe and pos_product_components table',
+          sql: `
+            ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "isRecipe" BOOLEAN NOT NULL DEFAULT false;
+
+            CREATE TABLE IF NOT EXISTS "pos_product_components" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "parentProductId" TEXT NOT NULL,
+              "componentProductId" TEXT NOT NULL,
+              "quantity" DECIMAL(12,3) NOT NULL,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_product_components_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_product_components_parentProductId_fkey" FOREIGN KEY ("parentProductId") REFERENCES "pos_products"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_product_components_componentProductId_fkey" FOREIGN KEY ("componentProductId") REFERENCES "pos_products"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_product_components_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_product_components_parentProductId_componentProductId_key" ON "pos_product_components"("parentProductId", "componentProductId");
+            CREATE INDEX IF NOT EXISTS "pos_product_components_businessId_idx" ON "pos_product_components"("businessId");
+            CREATE INDEX IF NOT EXISTS "pos_product_components_parentProductId_idx" ON "pos_product_components"("parentProductId");
+            CREATE INDEX IF NOT EXISTS "pos_product_components_componentProductId_idx" ON "pos_product_components"("componentProductId");
+          `,
+        },
       ];
 
       for (const step of ddlStatements) {

@@ -134,11 +134,59 @@ export class SalesService {
 
       for (const item of dto.items) {
         if (item.productId) {
-          const product = await tx.product.findFirst({ where: { id: item.productId, businessId } });
+          const product = await tx.product.findFirst({
+            where: { id: item.productId, businessId },
+            include: {
+              recipeComponents: {
+                include: {
+                  componentProduct: true,
+                },
+              },
+            },
+          });
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
           const requestedQty = validateProductQuantity(product.unit, item.quantity, product.name);
-          const currentStock = Number(product.stock);
-          if (product.trackStock === true) {
+
+          if (product.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
+            for (const comp of product.recipeComponents) {
+              const compProd = comp.componentProduct;
+              if (compProd && compProd.trackStock === true) {
+                const compRequestedQty = round3(requestedQty * Number(comp.quantity));
+                const compCurrentStock = Number(compProd.stock);
+                if (compCurrentStock < compRequestedQty) {
+                  if (!policies.allowNegativeStock && !dto.isOfflineSync) {
+                    throw new UnprocessableEntityException({
+                      statusCode: 422,
+                      error: 'Unprocessable Entity',
+                      code: 'INSUFFICIENT_STOCK',
+                      message: {
+                        code: 'INSUFFICIENT_STOCK',
+                        message: `Stock insuficiente para "${compProd.name}" (insumo de "${product.name}"). Disponible: ${compCurrentStock}, solicitado: ${compRequestedQty}`,
+                        details: {
+                          productId: compProd.id,
+                          productName: compProd.name,
+                          recipeProductId: product.id,
+                          recipeProductName: product.name,
+                          available: compCurrentStock,
+                          requested: compRequestedQty,
+                        },
+                      },
+                      details: {
+                        productId: compProd.id,
+                        productName: compProd.name,
+                        recipeProductId: product.id,
+                        recipeProductName: product.name,
+                        available: compCurrentStock,
+                        requested: compRequestedQty,
+                      },
+                    });
+                  }
+                  hasNegativeStock = true;
+                }
+              }
+            }
+          } else if (product.trackStock === true) {
+            const currentStock = Number(product.stock);
             if (currentStock < requestedQty) {
               if (!policies.allowNegativeStock && !dto.isOfflineSync) {
                 throw new UnprocessableEntityException({
@@ -766,8 +814,47 @@ export class SalesService {
 
       for (const item of dto.items) {
         if (item.productId) {
-          const product = await tx.product.findUnique({ where: { id: item.productId } });
-          if (product?.trackStock) {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+            include: {
+              recipeComponents: {
+                include: {
+                  componentProduct: true,
+                },
+              },
+            },
+          });
+          if (product?.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
+            const lineQty = round3(item.quantity);
+            for (const comp of product.recipeComponents) {
+              const compProd = comp.componentProduct;
+              if (compProd?.trackStock) {
+                const deductQty = round3(lineQty * Number(comp.quantity));
+                const currentComp = await tx.product.findUnique({ where: { id: compProd.id } });
+                const stockBefore = currentComp ? Number(currentComp.stock) : 0;
+                const stockAfter = round3(stockBefore - deductQty);
+
+                await tx.product.update({
+                  where: { id: compProd.id },
+                  data: { stock: { decrement: deductQty } },
+                });
+
+                await tx.stockMovement.create({
+                  data: {
+                    businessId,
+                    productId: compProd.id,
+                    userId: cashierId,
+                    type: "VENTA",
+                    quantity: -deductQty,
+                    stockBefore,
+                    stockAfter,
+                    concept: `Consumo receta: ${product.name}`,
+                    reference: sale.id,
+                  },
+                });
+              }
+            }
+          } else if (product?.trackStock) {
             const qty = round3(item.quantity);
             const stockBefore = Number(product.stock);
             const stockAfter = round3(stockBefore - qty);
@@ -957,6 +1044,19 @@ export class SalesService {
                   price: true,
                   barcode: true,
                   trackStock: true,
+                  isRecipe: true,
+                  recipeComponents: {
+                    include: {
+                      componentProduct: {
+                        select: {
+                          id: true,
+                          name: true,
+                          stock: true,
+                          trackStock: true,
+                        },
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -1013,7 +1113,37 @@ export class SalesService {
 
       // 2. Stock replenishment
       for (const item of sale.items) {
-        if (item.productId && item.product?.trackStock) {
+        if (item.productId && item.product?.isRecipe && item.product.recipeComponents && item.product.recipeComponents.length > 0) {
+          const lineQty = round3(item.quantity);
+          for (const comp of item.product.recipeComponents) {
+            const compProd = comp.componentProduct;
+            if (compProd?.trackStock) {
+              const returnQty = round3(lineQty * Number(comp.quantity));
+              const currentComp = await tx.product.findUnique({ where: { id: compProd.id } });
+              const stockBefore = currentComp ? Number(currentComp.stock) : 0;
+              const stockAfter = round3(stockBefore + returnQty);
+
+              await tx.product.update({
+                where: { id: compProd.id },
+                data: { stock: { increment: returnQty } },
+              });
+
+              await tx.stockMovement.create({
+                data: {
+                  businessId,
+                  productId: compProd.id,
+                  userId,
+                  type: 'DEVOLUCION',
+                  quantity: returnQty,
+                  stockBefore,
+                  stockAfter,
+                  concept: `Reposición receta: ${item.productName || item.product.name}`,
+                  reference: sale.id,
+                },
+              });
+            }
+          }
+        } else if (item.productId && item.product?.trackStock) {
           const qty = round3(item.quantity);
           const currentProd = await tx.product.findUnique({ where: { id: item.productId } });
           const stockBefore = currentProd ? Number(currentProd.stock) : 0;
@@ -1268,6 +1398,19 @@ export class SalesService {
                   price: true,
                   barcode: true,
                   trackStock: true,
+                  isRecipe: true,
+                  recipeComponents: {
+                    include: {
+                      componentProduct: {
+                        select: {
+                          id: true,
+                          name: true,
+                          stock: true,
+                          trackStock: true,
+                        },
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -1609,7 +1752,52 @@ export class SalesService {
           data: { returnedQty: { increment: line.qty } },
         });
 
-        if (saleItem.productId && saleItem.product?.trackStock) {
+        if (saleItem.productId && saleItem.product?.isRecipe && saleItem.product.recipeComponents && saleItem.product.recipeComponents.length > 0) {
+          const lineQty = round3(line.qty);
+          for (const comp of saleItem.product.recipeComponents) {
+            const compProd = comp.componentProduct;
+            if (compProd?.trackStock) {
+              const compQty = round3(lineQty * Number(comp.quantity));
+              const currentProd = await tx.product.findUnique({ where: { id: compProd.id } });
+              const stockBefore = currentProd ? Number(currentProd.stock) : 0;
+
+              if (line.restock) {
+                const stockAfter = round3(stockBefore + compQty);
+                await tx.product.update({
+                  where: { id: compProd.id },
+                  data: { stock: { increment: compQty } },
+                });
+                await tx.stockMovement.create({
+                  data: {
+                    businessId,
+                    productId: compProd.id,
+                    userId,
+                    type: 'DEVOLUCION',
+                    quantity: compQty,
+                    stockBefore,
+                    stockAfter,
+                    concept: `Devolución receta: ${saleItem.productName || saleItem.product.name}`,
+                    reference: sale.id,
+                  },
+                });
+              } else {
+                await tx.stockMovement.create({
+                  data: {
+                    businessId,
+                    productId: compProd.id,
+                    userId,
+                    type: 'AJUSTE',
+                    quantity: 0,
+                    stockBefore,
+                    stockAfter: stockBefore,
+                    concept: `Merma/daño devolución receta: ${saleItem.productName || saleItem.product.name}`,
+                    reference: sale.id,
+                  },
+                });
+              }
+            }
+          }
+        } else if (saleItem.productId && saleItem.product?.trackStock) {
           const qty = round3(line.qty);
           const currentProd = await tx.product.findUnique({ where: { id: saleItem.productId } });
           const stockBefore = currentProd ? Number(currentProd.stock) : 0;

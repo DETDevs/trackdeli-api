@@ -13,6 +13,7 @@ import { ProductsService } from "./products.service";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
 import { AdjustStockDto } from "./dto/adjust-stock.dto";
+import { SetRecipeComponentsDto } from "./dto/set-recipe-components.dto";
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
@@ -100,6 +101,27 @@ export class ProductsController {
     @Query("businessId") qBid?: string,
   ) {
     return this.service.remove(id, resolveBusinessId(user, qBid));
+  }
+
+  @Get(":id/components")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  getComponents(
+    @Param("id") id: string,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getRecipeComponents(id, resolveBusinessId(user, qBid));
+  }
+
+  @Put(":id/components")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  setComponents(
+    @Param("id") id: string,
+    @Body() dto: SetRecipeComponentsDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.setRecipeComponents(id, dto, resolveBusinessId(user, qBid), user);
   }
 
   @Post(":id/stock")

@@ -337,6 +337,7 @@ model Business {
   inventoryAdjustments  InventoryAdjustment[]
   creditGroups          CreditGroup[]
   creditStatements      CreditStatement[]
+  productComponents     ProductComponent[]
 
   @@map("businesses")
 }
@@ -909,6 +910,7 @@ model Product {
   taxIncluded Boolean   @default(true)
 
   unit        String   @default("UND") @db.VarChar(10)
+  isRecipe    Boolean  @default(false)
   trackStock  Boolean  @default(true)
   stock       Decimal  @default(0) @db.Decimal(12, 3)
   minStock    Decimal  @default(5) @db.Decimal(12, 3)
@@ -925,6 +927,8 @@ model Product {
   purchaseItems          PurchaseItem[]
   costHistories          ProductCostHistory[]
   inventoryAdjustments   InventoryAdjustment[]
+  recipeComponents       ProductComponent[]    @relation("ParentProductComponents")
+  usedInRecipes          ProductComponent[]    @relation("ComponentProductUsages")
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -932,6 +936,25 @@ model Product {
   @@unique([businessId, barcode])
   @@unique([businessId, sku])
   @@map("pos_products")
+}
+
+model ProductComponent {
+  id                 String   @id @default(uuid())
+  businessId         String
+  business           Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  parentProductId    String
+  parentProduct      Product  @relation("ParentProductComponents", fields: [parentProductId], references: [id], onDelete: Cascade)
+  componentProductId String
+  componentProduct   Product  @relation("ComponentProductUsages", fields: [componentProductId], references: [id], onDelete: Cascade)
+  quantity           Decimal  @db.Decimal(12, 3)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([parentProductId, componentProductId])
+  @@index([businessId])
+  @@index([parentProductId])
+  @@index([componentProductId])
+  @@map("pos_product_components")
 }
 
 model Sale {

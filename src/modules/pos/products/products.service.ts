@@ -8,26 +8,50 @@ import {
 } from "@nestjs/common";
 import { BusinessProductType, PosVertical, Prisma, ProductFieldDataType, StockMovementType, UserRole } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
+import { AuditService } from "../audit/audit.service";
+import { JwtPayload } from "../../../common/types/jwt-payload.interface";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
 import { AdjustStockDto } from "./dto/adjust-stock.dto";
+import { SetRecipeComponentsDto } from "./dto/set-recipe-components.dto";
 import { validateProductQuantity, round3 } from "./product-unit.util";
 
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
 
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditService: AuditService,
+  ) { }
 
   private mapProductWithInventory(product: any) {
     if (!product) return product;
+    const { recipeComponents: rawComponents, ...rest } = product;
+    const isRecipe = Boolean(product.isRecipe);
+    const components = rawComponents
+      ? rawComponents.map((c: any) => ({
+          productId: c.componentProductId || c.productId,
+          quantity: Number(c.quantity),
+          ...(c.componentProduct
+            ? {
+                productName: c.componentProduct.name,
+                unit: c.componentProduct.unit || 'UND',
+                currentStock: Number(c.componentProduct.stock),
+              }
+            : {}),
+        }))
+      : undefined;
+
     return {
-      ...product,
+      ...rest,
       stock: product.stock != null ? Number(product.stock) : 0,
       minStock: product.minStock != null ? Number(product.minStock) : 0,
       maxStock: product.maxStock != null ? Number(product.maxStock) : null,
       unit: product.unit || 'UND',
       trackInventory: product.trackStock,
+      isRecipe,
+      ...(isRecipe && components ? { components } : {}),
     };
   }
 
@@ -240,7 +264,15 @@ export class ProductsService {
 
     const products = await this.prisma.product.findMany({
       where,
-      include: { category: true, supplier: { select: { id: true, name: true } } },
+      include: {
+        category: true,
+        supplier: { select: { id: true, name: true } },
+        recipeComponents: {
+          include: {
+            componentProduct: { select: { id: true, name: true, unit: true, stock: true } },
+          },
+        },
+      },
       orderBy: { name: "asc" },
     });
 
@@ -256,7 +288,15 @@ export class ProductsService {
   async findOne(id: string, businessId: string, userRole?: string) {
     const product = await this.prisma.product.findFirst({
       where: { id, businessId },
-      include: { category: true, supplier: true },
+      include: {
+        category: true,
+        supplier: true,
+        recipeComponents: {
+          include: {
+            componentProduct: { select: { id: true, name: true, unit: true, stock: true } },
+          },
+        },
+      },
     });
     if (!product) throw new NotFoundException("Producto no encontrado");
 
@@ -273,7 +313,14 @@ export class ProductsService {
     this.logger.log(`[findByBarcode] barcode=${barcode} businessId=${businessId}`);
     const product = await this.prisma.product.findFirst({
       where: { businessId, barcode, isActive: true },
-      include: { category: true },
+      include: {
+        category: true,
+        recipeComponents: {
+          include: {
+            componentProduct: { select: { id: true, name: true, unit: true, stock: true } },
+          },
+        },
+      },
     });
     if (!product) throw new NotFoundException("Producto no encontrado");
 
@@ -418,6 +465,30 @@ export class ProductsService {
     }
 
     const trackStock = dto.trackStock ?? dto.trackInventory;
+    if (product.isRecipe && trackStock === true) {
+      throw new UnprocessableEntityException({
+        statusCode: 422,
+        error: 'Unprocessable Entity',
+        code: 'RECIPE_PARENT_TRACKS_STOCK',
+        message: 'Un producto con receta no puede controlar inventario (trackStock debe ser false)',
+      });
+    }
+
+    if (trackStock === false) {
+      const usedInRecipe = await this.prisma.productComponent.findFirst({
+        where: { componentProductId: id, businessId },
+        include: { parentProduct: { select: { name: true } } },
+      });
+      if (usedInRecipe) {
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          error: 'Unprocessable Entity',
+          code: 'RECIPE_COMPONENT_NOT_STOCKED',
+          message: `El producto es componente del servicio "${usedInRecipe.parentProduct?.name}" y debe controlar inventario (trackStock = true)`,
+        });
+      }
+    }
+
     const { trackInventory, attributes: incomingAttributes, ...updateData } = dto;
     if (trackStock !== undefined) {
       (updateData as any).trackStock = trackStock;
@@ -592,6 +663,270 @@ export class ProductsService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  async getRecipeComponents(
+    productId: string,
+    businessId: string,
+    tx?: Prisma.TransactionClient | PrismaService,
+  ) {
+    const db = tx || this.prisma;
+    const product = await db.product.findFirst({
+      where: { id: productId, businessId },
+    });
+    if (!product) {
+      throw new NotFoundException('Producto no encontrado');
+    }
+
+    const components = await db.productComponent.findMany({
+      where: { parentProductId: productId, businessId },
+      include: {
+        componentProduct: {
+          select: {
+            id: true,
+            name: true,
+            unit: true,
+            stock: true,
+            trackStock: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return components.map((c) => ({
+      id: c.id,
+      productId: c.componentProductId,
+      name: c.componentProduct.name,
+      unit: c.componentProduct.unit || 'UND',
+      currentStock: Number(c.componentProduct.stock),
+      quantity: Number(c.quantity),
+    }));
+  }
+
+  async setRecipeComponents(
+    productId: string,
+    dto: SetRecipeComponentsDto,
+    businessId: string,
+    user: JwtPayload,
+  ) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, businessId },
+      include: {
+        recipeComponents: true,
+      },
+    });
+    if (!product) {
+      throw new NotFoundException('Producto no encontrado');
+    }
+
+    const incoming = dto.components || [];
+
+    // Si viene lista vacía: quita la receta y pone isRecipe = false
+    if (incoming.length === 0) {
+      const prevComponents = product.recipeComponents.map((c) => ({
+        productId: c.componentProductId,
+        quantity: Number(c.quantity),
+      }));
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.productComponent.deleteMany({
+          where: { parentProductId: productId, businessId },
+        });
+
+        await tx.product.update({
+          where: { id: productId },
+          data: { isRecipe: false },
+        });
+
+        await this.auditService.record(
+          {
+            businessId,
+            userId: user.sub,
+            userRole: user.role,
+            action: 'RECIPE_UPDATED',
+            entityType: 'PRODUCT',
+            entityId: productId,
+            before: {
+              isRecipe: product.isRecipe,
+              components: prevComponents,
+            },
+            after: {
+              isRecipe: false,
+              components: [],
+            },
+            reason: 'Receta eliminada / convertida a producto simple',
+          },
+          tx,
+        );
+      });
+
+      return [];
+    }
+
+    // Regla: el padre debe tener trackStock = false (el servicio no tiene stock propio)
+    if (product.trackStock) {
+      throw new UnprocessableEntityException({
+        statusCode: 422,
+        error: 'Unprocessable Entity',
+        code: 'RECIPE_PARENT_TRACKS_STOCK',
+        message: 'El producto padre debe tener trackStock = false (el servicio no tiene stock propio)',
+      });
+    }
+
+    // Regla: no duplicados en la lista de componentes
+    const seenIds = new Set<string>();
+    for (const comp of incoming) {
+      if (seenIds.has(comp.productId)) {
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          error: 'Unprocessable Entity',
+          code: 'RECIPE_DUPLICATE_COMPONENT',
+          message: `El componente "${comp.productId}" está duplicado en la lista`,
+        });
+      }
+      seenIds.add(comp.productId);
+    }
+
+    // Regla: no auto-referencia
+    if (seenIds.has(productId)) {
+      throw new UnprocessableEntityException({
+        statusCode: 422,
+        error: 'Unprocessable Entity',
+        code: 'RECIPE_SELF_REFERENCE',
+        message: 'Un producto no puede ser componente de sí mismo',
+      });
+    }
+
+    // Regla: un componente no puede ser otro que a su vez sea receta (un solo nivel, sin recetas anidadas)
+    // También verificar que el producto padre no sea actualmente componente de otra receta
+    const usedInOtherRecipe = await this.prisma.productComponent.findFirst({
+      where: { componentProductId: productId, businessId },
+      include: { parentProduct: { select: { name: true } } },
+    });
+    if (usedInOtherRecipe) {
+      throw new UnprocessableEntityException({
+        statusCode: 422,
+        error: 'Unprocessable Entity',
+        code: 'RECIPE_NESTED_NOT_ALLOWED',
+        message: `El producto ya es componente de la receta "${usedInOtherRecipe.parentProduct?.name}". No se permiten recetas anidadas`,
+      });
+    }
+
+    // Consultar todos los componentes de la base de datos pertenecientes al mismo businessId
+    const componentProducts = await this.prisma.product.findMany({
+      where: {
+        id: { in: Array.from(seenIds) },
+        businessId,
+      },
+    });
+
+    if (componentProducts.length !== seenIds.size) {
+      throw new NotFoundException('Uno o más productos componentes no fueron encontrados o pertenecen a otro negocio');
+    }
+
+    const componentMap = new Map(componentProducts.map((p) => [p.id, p]));
+
+    // Validar cada componente
+    const validatedData: { businessId: string; parentProductId: string; componentProductId: string; quantity: number }[] = [];
+
+    for (const comp of incoming) {
+      const compProd = componentMap.get(comp.productId)!;
+
+      // Regla: los componentes deben tener trackStock = true
+      if (!compProd.trackStock) {
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          error: 'Unprocessable Entity',
+          code: 'RECIPE_COMPONENT_NOT_STOCKED',
+          message: `El componente "${compProd.name}" no controla inventario (trackStock = false)`,
+        });
+      }
+
+      // Regla: sin recetas anidadas
+      if (compProd.isRecipe) {
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          error: 'Unprocessable Entity',
+          code: 'RECIPE_NESTED_NOT_ALLOWED',
+          message: `El componente "${compProd.name}" es una receta. No se permiten recetas anidadas`,
+        });
+      }
+
+      // Regla: cantidad > 0. Si el componente es UND, la cantidad de la receta debe ser entera.
+      if (!comp.quantity || comp.quantity <= 0) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'INVALID_QUANTITY',
+          message: `La cantidad del componente "${compProd.name}" debe ser mayor a 0`,
+        });
+      }
+
+      const qty = validateProductQuantity(compProd.unit, comp.quantity, compProd.name);
+      if (qty <= 0) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'INVALID_QUANTITY',
+          message: `La cantidad del componente "${compProd.name}" debe ser mayor a 0`,
+        });
+      }
+
+      validatedData.push({
+        businessId,
+        parentProductId: productId,
+        componentProductId: comp.productId,
+        quantity: qty,
+      });
+    }
+
+    const prevComponents = product.recipeComponents.map((c) => ({
+      productId: c.componentProductId,
+      quantity: Number(c.quantity),
+    }));
+
+    return await this.prisma.$transaction(async (tx) => {
+      // Reemplaza el conjunto completo
+      await tx.productComponent.deleteMany({
+        where: { parentProductId: productId, businessId },
+      });
+
+      await tx.productComponent.createMany({
+        data: validatedData,
+      });
+
+      await tx.product.update({
+        where: { id: productId },
+        data: { isRecipe: true },
+      });
+
+      await this.auditService.record(
+        {
+          businessId,
+          userId: user.sub,
+          userRole: user.role,
+          action: 'RECIPE_UPDATED',
+          entityType: 'PRODUCT',
+          entityId: productId,
+          before: {
+            isRecipe: product.isRecipe,
+            components: prevComponents,
+          },
+          after: {
+            isRecipe: true,
+            components: validatedData.map((c) => ({
+              productId: c.componentProductId,
+              quantity: c.quantity,
+            })),
+          },
+          reason: 'Componentes de receta actualizados',
+        },
+        tx,
+      );
+
+      return this.getRecipeComponents(productId, businessId, tx);
+    });
   }
 }
 

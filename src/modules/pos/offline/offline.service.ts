@@ -236,13 +236,60 @@ export class OfflineService {
             if (item.productId) {
               const product = await tx.product.findFirst({
                 where: { id: item.productId, businessId },
+                include: {
+                  recipeComponents: {
+                    include: {
+                      componentProduct: true,
+                    },
+                  },
+                },
               });
 
               if (product) {
                 validateProductQuantity(product.unit, item.quantity, product.name);
               }
 
-              if (product && product.trackStock) {
+              if (product && product.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
+                // Producto con receta: descontar cada componente
+                for (const comp of product.recipeComponents) {
+                  const compProd = comp.componentProduct;
+                  if (compProd && compProd.trackStock) {
+                    const deductQty = round3(Number(item.quantity) * Number(comp.quantity));
+                    const expectedStock = Number(compProd.stock);
+                    const resultingStock = round3(expectedStock - deductQty);
+
+                    if (expectedStock < deductQty) {
+                      discrepancies.push({
+                        productId: compProd.id,
+                        expectedStock,
+                        resultingStock,
+                      });
+                    }
+
+                    await tx.product.update({
+                      where: { id: compProd.id },
+                      data: { stock: { decrement: deductQty } },
+                    });
+
+                    await tx.stockMovement.create({
+                      data: {
+                        businessId,
+                        productId: compProd.id,
+                        userId: cashierId,
+                        type: "VENTA",
+                        quantity: -deductQty,
+                        stockBefore: expectedStock,
+                        stockAfter: resultingStock,
+                        concept: `Consumo receta: ${product.name}`,
+                        reference: saleDto.clientGeneratedId,
+                      },
+                    });
+
+                    // Actualizar en memoria para líneas posteriores
+                    compProd.stock = resultingStock as any;
+                  }
+                }
+              } else if (product && product.trackStock) {
                 const qty = round3(item.quantity);
                 const expectedStock = Number(product.stock);
                 const resultingStock = round3(expectedStock - qty);
@@ -273,6 +320,8 @@ export class OfflineService {
                     reference: saleDto.clientGeneratedId,
                   },
                 });
+
+                product.stock = resultingStock as any;
               }
             }
           }
@@ -462,7 +511,15 @@ export class OfflineService {
 
     const products = await this.prisma.product.findMany({
       where: { businessId, isActive: true },
-      include: { category: true },
+      include: {
+        category: true,
+        recipeComponents: {
+          select: {
+            componentProductId: true,
+            quantity: true,
+          },
+        },
+      },
       orderBy: { name: "asc" },
     });
 
@@ -489,14 +546,27 @@ export class OfflineService {
       snapshotVersion,
       businessId,
       categories,
-      products: products.map((p) => ({
-        ...p,
-        stock: Number(p.stock),
-        minStock: Number(p.minStock),
-        maxStock: p.maxStock != null ? Number(p.maxStock) : null,
-        unit: p.unit || 'UND',
-        trackInventory: p.trackStock,
-      })),
+      products: products.map((p) => {
+        const isRecipe = Boolean(p.isRecipe);
+        const { recipeComponents, ...rest } = p;
+        return {
+          ...rest,
+          stock: Number(p.stock),
+          minStock: Number(p.minStock),
+          maxStock: p.maxStock != null ? Number(p.maxStock) : null,
+          unit: p.unit || 'UND',
+          trackInventory: p.trackStock,
+          isRecipe,
+          ...(isRecipe && recipeComponents
+            ? {
+                components: recipeComponents.map((c) => ({
+                  productId: c.componentProductId,
+                  quantity: Number(c.quantity),
+                })),
+              }
+            : {}),
+        };
+      }),
     };
   }
 
