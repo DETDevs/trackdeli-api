@@ -36,6 +36,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
   }
 
   async onModuleInit() {
+    (Prisma.Decimal.prototype as any).toJSON = function () {
+      return this.toNumber();
+    };
     await this.$connect();
 
     (this as any).$on('query', (e: any) => {
@@ -1972,6 +1975,47 @@ WHERE a."customerId" = c."id"
         {
           name: '132a - Columna business_product_subscriptions.maxDevices',
           sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "maxDevices" INTEGER;`,
+        },
+        {
+          name: '136a - Columna unit en pos_products',
+          sql: `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "unit" VARCHAR(10) NOT NULL DEFAULT 'UND';`,
+        },
+        {
+          name: '136a - pos_products.stock DECIMAL(12,3)',
+          sql: `ALTER TABLE "pos_products" ALTER COLUMN "stock" TYPE DECIMAL(12,3) USING "stock"::DECIMAL(12,3), ALTER COLUMN "stock" SET DEFAULT 0;`,
+        },
+        {
+          name: '136a - pos_products.minStock DECIMAL(12,3)',
+          sql: `ALTER TABLE "pos_products" ALTER COLUMN "minStock" TYPE DECIMAL(12,3) USING "minStock"::DECIMAL(12,3), ALTER COLUMN "minStock" SET DEFAULT 5;`,
+        },
+        {
+          name: '136a - pos_products.maxStock DECIMAL(12,3)',
+          sql: `ALTER TABLE "pos_products" ALTER COLUMN "maxStock" TYPE DECIMAL(12,3) USING "maxStock"::DECIMAL(12,3);`,
+        },
+        {
+          name: '136a - pos_stock_movements decimales',
+          sql: `ALTER TABLE "pos_stock_movements" 
+            ALTER COLUMN "quantity" TYPE DECIMAL(12,3) USING "quantity"::DECIMAL(12,3),
+            ALTER COLUMN "stockBefore" TYPE DECIMAL(12,3) USING "stockBefore"::DECIMAL(12,3),
+            ALTER COLUMN "stockAfter" TYPE DECIMAL(12,3) USING "stockAfter"::DECIMAL(12,3);`,
+        },
+        {
+          name: '136a - pos_table_order_items.quantity DECIMAL(12,3)',
+          sql: `ALTER TABLE "pos_table_order_items" ALTER COLUMN "quantity" TYPE DECIMAL(12,3) USING "quantity"::DECIMAL(12,3);`,
+        },
+        {
+          name: '136a - pos_purchase_items.quantity DECIMAL(12,3)',
+          sql: `ALTER TABLE "pos_purchase_items" ALTER COLUMN "quantity" TYPE DECIMAL(12,3) USING "quantity"::DECIMAL(12,3);`,
+        },
+        {
+          name: '136a - pos_inventory_adjustments.qtyDelta DECIMAL(12,3)',
+          sql: `ALTER TABLE "pos_inventory_adjustments" ALTER COLUMN "qtyDelta" TYPE DECIMAL(12,3) USING "qtyDelta"::DECIMAL(12,3);`,
+        },
+        {
+          name: '136a - pos_inventory_discrepancies decimales',
+          sql: `ALTER TABLE "pos_inventory_discrepancies" 
+            ALTER COLUMN "expectedStock" TYPE DECIMAL(12,3) USING "expectedStock"::DECIMAL(12,3),
+            ALTER COLUMN "resultingStock" TYPE DECIMAL(12,3) USING "resultingStock"::DECIMAL(12,3);`,
         },
       ];
 

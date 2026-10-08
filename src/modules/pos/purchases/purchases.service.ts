@@ -12,6 +12,7 @@ import { PoliciesService } from '../policies/policies.service';
 import { AuditService } from '../audit/audit.service';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { VoidPurchaseDto } from './dto/void-purchase.dto';
+import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
 @Injectable()
 export class PurchasesService {
@@ -116,20 +117,21 @@ export class PurchasesService {
           });
         }
 
+        const validQty = validateProductQuantity(product.unit, item.quantity, product.name);
         const unitCostDec = new Prisma.Decimal(item.unitCost);
-        const itemSubtotal = new Prisma.Decimal(item.quantity).times(unitCostDec);
+        const itemSubtotal = new Prisma.Decimal(validQty).times(unitCostDec);
         await tx.purchaseItem.create({
           data: {
             purchaseId: purchase.id,
             productId: product.id,
-            quantity: item.quantity,
+            quantity: validQty,
             unitCost: unitCostDec,
             subtotal: itemSubtotal,
           },
         });
 
-        const stockBefore = product.stock;
-        const stockAfter = stockBefore + item.quantity;
+        const stockBefore = Number(product.stock);
+        const stockAfter = round3(stockBefore + validQty);
         const oldCostDec = product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null;
         const newCostNum = Number(unitCostDec);
 
@@ -137,7 +139,7 @@ export class PurchasesService {
           await tx.product.update({
             where: { id: product.id },
             data: {
-              stock: { increment: item.quantity },
+              stock: { increment: validQty },
               cost: newCostNum,
             },
           });
@@ -148,7 +150,7 @@ export class PurchasesService {
               productId: product.id,
               userId,
               type: StockMovementType.COMPRA,
-              quantity: item.quantity,
+              quantity: validQty,
               stockBefore,
               stockAfter,
               cost: unitCostDec,
@@ -262,7 +264,9 @@ export class PurchasesService {
         const product = await tx.product.findUniqueOrThrow({ where: { id: item.productId } });
 
         if (product.trackStock) {
-          const resultingStock = product.stock - item.quantity;
+          const qty = round3(Number(item.quantity));
+          const currentStock = Number(product.stock);
+          const resultingStock = round3(currentStock - qty);
           if (resultingStock < 0 && !policies.allowNegativeStock) {
             throw new UnprocessableEntityException({
               statusCode: 422,
@@ -270,11 +274,11 @@ export class PurchasesService {
               code: 'PURCHASE_VOID_INSUFFICIENT_STOCK',
               message: {
                 code: 'PURCHASE_VOID_INSUFFICIENT_STOCK',
-                message: `No se puede anular la compra: el stock de "${product.name}" quedaría en ${resultingStock} (disponible actual: ${product.stock}, a revertir: ${item.quantity}).`,
+                message: `No se puede anular la compra: el stock de "${product.name}" quedaría en ${resultingStock} (disponible actual: ${currentStock}, a revertir: ${qty}).`,
                 productId: product.id,
                 productName: product.name,
-                currentStock: product.stock,
-                revertQuantity: item.quantity,
+                currentStock,
+                revertQuantity: qty,
                 resultingStock,
               },
             });
@@ -285,13 +289,14 @@ export class PurchasesService {
       // Revert stock and handle cost history
       for (const item of purchase.items) {
         const product = await tx.product.findUniqueOrThrow({ where: { id: item.productId } });
-        const stockBefore = product.stock;
-        const stockAfter = stockBefore - item.quantity;
+        const qty = round3(Number(item.quantity));
+        const stockBefore = Number(product.stock);
+        const stockAfter = round3(stockBefore - qty);
 
         if (product.trackStock) {
           await tx.product.update({
             where: { id: product.id },
-            data: { stock: { decrement: item.quantity } },
+            data: { stock: { decrement: qty } },
           });
 
           await tx.stockMovement.create({
@@ -300,7 +305,7 @@ export class PurchasesService {
               productId: product.id,
               userId,
               type: StockMovementType.AJUSTE,
-              quantity: -item.quantity,
+              quantity: -qty,
               stockBefore,
               stockAfter,
               cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,

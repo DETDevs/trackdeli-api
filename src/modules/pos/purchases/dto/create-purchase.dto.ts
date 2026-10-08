@@ -16,8 +16,8 @@ export class PurchaseItemDto {
   @IsString()
   productId: string;
 
-  @IsInt()
-  @Min(1)
+  @IsNumber()
+  @Min(0.001)
   quantity: number;
 
   @IsNumber()

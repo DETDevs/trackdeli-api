@@ -47,6 +47,7 @@ const CORE_TARGETS: ImportTarget[] = [
   { id: 'stock', label: 'Existencia (Stock)', kind: 'core', dataType: 'NUMBER', required: false },
   { id: 'minStock', label: 'Stock Mínimo', kind: 'core', dataType: 'NUMBER', required: false },
   { id: 'maxStock', label: 'Stock Máximo', kind: 'core', dataType: 'NUMBER', required: false },
+  { id: 'unit', label: 'Unidad de Medida', kind: 'core', dataType: 'SELECT', options: ['UND', 'LT', 'GAL', 'KG', 'LB'], required: false },
   { id: 'supplierId', label: 'Proveedor', kind: 'core', dataType: 'TEXT', required: false },
   { id: 'isActive', label: 'Activo', kind: 'core', dataType: 'BOOLEAN', required: false },
 ];
@@ -369,14 +370,15 @@ export class ProductsImportService {
         if (valStr !== '') {
           if (tgt.id === 'stock' || tgt.id === 'minStock' || tgt.id === 'maxStock') {
              parsedVal = this.parseTolerantNumber(valStr);
-             if (isNaN(parsedVal) || !Number.isInteger(parsedVal)) {
-               rowError = `Columna '${h}': debe ser un número entero.`;
+             if (isNaN(parsedVal)) {
+               rowError = `Columna '${h}': debe ser un número.`;
                break;
              }
              if (parsedVal < 0) {
                rowError = `Columna '${h}': no puede ser negativo.`;
                break;
              }
+             parsedVal = Math.round(parsedVal * 1000) / 1000;
           } else if (tgt.id === 'price' || tgt.id === 'cost') {
              parsedVal = this.parseTolerantNumber(valStr);
              if (isNaN(parsedVal) || parsedVal < 0) {
@@ -484,8 +486,9 @@ export class ProductsImportService {
           const coreUpdate = { ...payload.core };
           // Check stock diff
           let stockDiff = 0;
-          if (coreUpdate.trackStock !== false && coreUpdate.stock !== undefined && existing.stock !== coreUpdate.stock) {
-             stockDiff = coreUpdate.stock - existing.stock;
+          const currentStockNum = existing.stock !== undefined && existing.stock !== null ? Number(existing.stock) : 0;
+          if (coreUpdate.trackStock !== false && coreUpdate.stock !== undefined && currentStockNum !== coreUpdate.stock) {
+             stockDiff = Math.round((coreUpdate.stock - currentStockNum) * 1000) / 1000;
           }
           
           let isUnchanged = true;
@@ -502,7 +505,7 @@ export class ProductsImportService {
           if (isUnchanged) {
             result.unchanged++;
           } else {
-            toUpdate.push({ id: existing.id, rowNum, data: { ...coreUpdate, attributes: mergedAttrs }, stockDiff, oldStock: existing.stock });
+            toUpdate.push({ id: existing.id, rowNum, data: { ...coreUpdate, attributes: mergedAttrs }, stockDiff, oldStock: currentStockNum });
           }
         } else {
           toCreate.push({ rowNum, data: { ...payload.core, attributes: mergedAttrs, businessId } });
@@ -516,7 +519,7 @@ export class ProductsImportService {
       await this.prisma.$transaction(async (tx) => {
         for (const item of toCreate) {
           const p = await tx.product.create({ data: item.data });
-          if (p.trackStock && p.stock > 0) {
+          if (p.trackStock && Number(p.stock) > 0) {
              await tx.stockMovement.create({
                data: {
                  businessId,

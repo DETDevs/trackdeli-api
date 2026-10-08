@@ -1,6 +1,6 @@
 import {
   IsArray,
-  IsInt,
+  IsNumber,
   IsNotEmpty,
   IsString,
   ValidateNested,
@@ -16,7 +16,7 @@ export class BatchCountLineDto {
   @IsString()
   productId: string;
 
-  @IsInt()
+  @IsNumber()
   @Min(0)
   countedQty: number;
 }

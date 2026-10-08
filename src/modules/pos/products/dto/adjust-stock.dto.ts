@@ -1,8 +1,8 @@
-﻿import { IsInt, IsEnum, IsString, IsOptional, IsNumber, Min } from 'class-validator';
+import { IsEnum, IsString, IsOptional, IsNumber, Min } from 'class-validator';
 import { StockMovementType } from '@prisma/client';
 
 export class AdjustStockDto {
-  @IsInt()
+  @IsNumber()
   quantity: number;
 
   @IsEnum(StockMovementType)

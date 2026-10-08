@@ -67,7 +67,7 @@ export class ProductsController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.create(dto, resolveBusinessId(user, qBid));
+    return this.service.create(dto, resolveBusinessId(user, qBid), user?.sub);
   }
 
   @Patch(":id")
@@ -78,7 +78,7 @@ export class ProductsController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.update(id, dto, resolveBusinessId(user, qBid));
+    return this.service.update(id, dto, resolveBusinessId(user, qBid), user?.sub);
   }
 
   @Put(":id")
@@ -89,7 +89,7 @@ export class ProductsController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.update(id, dto, resolveBusinessId(user, qBid));
+    return this.service.update(id, dto, resolveBusinessId(user, qBid), user?.sub);
   }
 
   @Delete(":id")

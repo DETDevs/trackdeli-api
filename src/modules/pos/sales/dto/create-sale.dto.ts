@@ -30,7 +30,7 @@ export class CreateSaleItemDto {
 
   @Type(() => Number)
   @IsNumber()
-  @Min(0.01)
+  @Min(0.001)
   quantity: number;
 
   @IsOptional()

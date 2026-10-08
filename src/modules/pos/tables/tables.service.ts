@@ -17,6 +17,7 @@ import { AddOrderItemsDto } from './dto/add-order-items.dto';
 import { UpdateOrderItemDto } from './dto/update-order-item.dto';
 import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
 import { CancelTableOrderDto } from './dto/cancel-table-order.dto';
+import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
 @Injectable()
 export class TablesService {
@@ -406,8 +407,8 @@ export class TablesService {
 
       if (currentOrder) {
         for (const item of currentOrder.items) {
-          itemsCount += item.quantity;
-          total += item.quantity * item.unitPrice;
+          itemsCount += Number(item.quantity);
+          total += Number(item.quantity) * Number(item.unitPrice);
         }
       }
 
@@ -487,7 +488,7 @@ export class TablesService {
         items: {
           include: {
             product: {
-              select: { id: true, name: true, imageUrl: true, price: true },
+              select: { id: true, name: true, imageUrl: true, price: true, unit: true, stock: true },
             },
           },
         },
@@ -515,7 +516,7 @@ export class TablesService {
         items: {
           include: {
             product: {
-              select: { id: true, name: true, imageUrl: true, price: true },
+              select: { id: true, name: true, imageUrl: true, price: true, unit: true, stock: true },
             },
           },
           orderBy: { createdAt: 'asc' },
@@ -578,6 +579,8 @@ export class TablesService {
         throw new NotFoundException(`Producto ${item.productId} no encontrado o inactivo`);
       }
 
+      const itemQty = validateProductQuantity(product.unit, item.quantity, product.name);
+
       const existingItem = await this.prisma.tableOrderItem.findFirst({
         where: {
           tableOrderId: order.id,
@@ -589,7 +592,7 @@ export class TablesService {
       if (existingItem) {
         await this.prisma.tableOrderItem.update({
           where: { id: existingItem.id },
-          data: { quantity: existingItem.quantity + item.quantity },
+          data: { quantity: round3(Number(existingItem.quantity) + itemQty) },
         });
       } else {
         await this.prisma.tableOrderItem.create({
@@ -598,7 +601,7 @@ export class TablesService {
             productId: product.id,
             productName: product.name,
             unitPrice: product.price,
-            quantity: item.quantity,
+            quantity: itemQty,
             notes: item.notes?.trim() || null,
             waiterId,
             waiterName,
@@ -633,10 +636,12 @@ export class TablesService {
     if (dto.quantity <= 0) {
       await this.prisma.tableOrderItem.delete({ where: { id: itemId } });
     } else {
+      const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
+      const validQty = validateProductQuantity(product?.unit, dto.quantity, product?.name || item.productName);
       await this.prisma.tableOrderItem.update({
         where: { id: itemId },
         data: {
-          quantity: dto.quantity,
+          quantity: validQty,
           ...(dto.notes !== undefined && { notes: dto.notes.trim() || null }),
         },
       });
@@ -673,7 +678,7 @@ export class TablesService {
 
     let subtotal = 0;
     for (const item of order.items) {
-      subtotal += item.quantity * item.unitPrice;
+      subtotal += Number(item.quantity) * Number(item.unitPrice);
     }
 
     const business = await this.prisma.business.findUnique({
@@ -703,7 +708,7 @@ export class TablesService {
         productId: i.productId,
         productName: i.productName,
         unitPrice: i.unitPrice,
-        quantity: i.quantity,
+        quantity: round3(Number(i.quantity)),
         discount: 0,
       })),
     };
@@ -798,20 +803,27 @@ export class TablesService {
     let itemsCount = 0;
 
     const formattedItems = (order.items || []).map((item: any) => {
-      const itemSubtotal = item.quantity * item.unitPrice;
+      const itemQty = Number(item.quantity);
+      const itemSubtotal = itemQty * item.unitPrice;
       subtotal += itemSubtotal;
-      itemsCount += item.quantity;
+      itemsCount += itemQty;
       return {
         id: item.id,
         productId: item.productId,
         productName: item.productName,
         unitPrice: item.unitPrice,
-        quantity: item.quantity,
+        quantity: itemQty,
         subtotal: Math.round(itemSubtotal * 100) / 100,
         notes: item.notes,
         waiterId: item.waiterId || null,
         waiterName: item.waiterName || null,
-        product: item.product || null,
+        product: item.product
+          ? {
+              ...item.product,
+              stock: item.product.stock != null ? Number(item.product.stock) : undefined,
+              unit: item.product.unit || 'UND',
+            }
+          : null,
         createdAt: item.createdAt,
       };
     });

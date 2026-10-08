@@ -1,6 +1,6 @@
 import {
   IsEnum,
-  IsInt,
+  IsNumber,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -17,11 +17,11 @@ export class CreateAdjustmentDto {
   type: InventoryAdjustmentType;
 
   @IsOptional()
-  @IsInt()
+  @IsNumber()
   qtyDelta?: number;
 
   @IsOptional()
-  @IsInt()
+  @IsNumber()
   countedQty?: number;
 
   @IsNotEmpty({ message: 'El motivo del ajuste es obligatorio' })

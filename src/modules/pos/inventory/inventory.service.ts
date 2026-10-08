@@ -14,6 +14,7 @@ import { AuditService } from '../audit/audit.service';
 import { PosAction } from '../permissions/permissions.service';
 import { CreateAdjustmentDto } from './dto/create-adjustment.dto';
 import { BatchCountDto } from './dto/batch-count.dto';
+import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
 @Injectable()
 export class InventoryService {
@@ -101,6 +102,7 @@ export class InventoryService {
         });
       }
 
+      const currentStock = Number(product.stock);
       let qtyDelta: number;
       if (dto.type === InventoryAdjustmentType.COUNT) {
         if (dto.countedQty === undefined || dto.countedQty === null) {
@@ -114,7 +116,8 @@ export class InventoryService {
             },
           });
         }
-        qtyDelta = dto.countedQty - product.stock;
+        const validCounted = validateProductQuantity(product.unit, dto.countedQty, product.name);
+        qtyDelta = round3(validCounted - currentStock);
       } else {
         if (dto.qtyDelta === undefined || dto.qtyDelta === null) {
           throw new BadRequestException({
@@ -127,11 +130,12 @@ export class InventoryService {
             },
           });
         }
-        qtyDelta = dto.qtyDelta;
+        validateProductQuantity(product.unit, Math.abs(dto.qtyDelta), product.name);
+        qtyDelta = round3(dto.qtyDelta);
       }
 
-      const stockBefore = product.stock;
-      const stockAfter = stockBefore + qtyDelta;
+      const stockBefore = currentStock;
+      const stockAfter = round3(stockBefore + qtyDelta);
 
       if (stockAfter < 0 && !policies.allowNegativeStock) {
         throw new UnprocessableEntityException({
@@ -309,9 +313,10 @@ export class InventoryService {
           continue; // Productos sin trackStock se omiten del conteo físico
         }
 
-        const qtyDelta = line.countedQty - product.stock;
-        const stockBefore = product.stock;
-        const stockAfter = line.countedQty;
+        const validCounted = validateProductQuantity(product.unit, line.countedQty, product.name);
+        const stockBefore = Number(product.stock);
+        const qtyDelta = round3(validCounted - stockBefore);
+        const stockAfter = validCounted;
 
         if (stockAfter < 0 && !policies.allowNegativeStock) {
           throw new UnprocessableEntityException({

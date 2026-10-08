@@ -12,6 +12,7 @@ import {
   SyncOfflineBatchDto,
   ResolveDiscrepancyDto,
 } from "./dto/offline.dto";
+import { validateProductQuantity, round3 } from "../products/product-unit.util";
 
 @Injectable()
 export class OfflineService {
@@ -237,12 +238,16 @@ export class OfflineService {
                 where: { id: item.productId, businessId },
               });
 
-              if (product && product.trackStock) {
-                const qty = Math.ceil(item.quantity);
-                const expectedStock = product.stock;
-                const resultingStock = product.stock - qty;
+              if (product) {
+                validateProductQuantity(product.unit, item.quantity, product.name);
+              }
 
-                if (product.stock < qty) {
+              if (product && product.trackStock) {
+                const qty = round3(item.quantity);
+                const expectedStock = Number(product.stock);
+                const resultingStock = round3(expectedStock - qty);
+
+                if (expectedStock < qty) {
                   discrepancies.push({
                     productId: product.id,
                     expectedStock,
@@ -486,6 +491,10 @@ export class OfflineService {
       categories,
       products: products.map((p) => ({
         ...p,
+        stock: Number(p.stock),
+        minStock: Number(p.minStock),
+        maxStock: p.maxStock != null ? Number(p.maxStock) : null,
+        unit: p.unit || 'UND',
         trackInventory: p.trackStock,
       })),
     };

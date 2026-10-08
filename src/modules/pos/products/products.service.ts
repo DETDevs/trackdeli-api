@@ -11,6 +11,7 @@ import { PrismaService } from "../../../prisma/prisma.service";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
 import { AdjustStockDto } from "./dto/adjust-stock.dto";
+import { validateProductQuantity, round3 } from "./product-unit.util";
 
 @Injectable()
 export class ProductsService {
@@ -22,6 +23,10 @@ export class ProductsService {
     if (!product) return product;
     return {
       ...product,
+      stock: product.stock != null ? Number(product.stock) : 0,
+      minStock: product.minStock != null ? Number(product.minStock) : 0,
+      maxStock: product.maxStock != null ? Number(product.maxStock) : null,
+      unit: product.unit || 'UND',
       trackInventory: product.trackStock,
     };
   }
@@ -241,7 +246,7 @@ export class ProductsService {
 
     if (filters?.lowStock) {
       return products
-        .filter((p) => p.trackStock && p.stock <= p.minStock)
+        .filter((p) => p.trackStock && Number(p.stock) <= Number(p.minStock))
         .map((p) => this.filterActiveAttributes(p, activeKeys, userRole));
     }
 
@@ -328,11 +333,23 @@ export class ProductsService {
 
     const validatedAttributes = await this.validateAttributes(businessId, dto.attributes);
 
+    const unit = (dto.unit || 'UND').trim().toUpperCase();
+    if (dto.stock !== undefined && dto.stock !== null) {
+      dto.stock = validateProductQuantity(unit, dto.stock, dto.name);
+    }
+    if (dto.minStock !== undefined && dto.minStock !== null) {
+      dto.minStock = validateProductQuantity(unit, dto.minStock, dto.name);
+    }
+    if (dto.maxStock !== undefined && dto.maxStock !== null) {
+      dto.maxStock = validateProductQuantity(unit, dto.maxStock, dto.name);
+    }
+
     const { trackInventory, attributes: _ignored, ...productData } = dto;
 
     const product = await this.prisma.product.create({
       data: {
         ...productData,
+        unit,
         trackStock,
         attributes: validatedAttributes,
         businessId,
@@ -340,20 +357,32 @@ export class ProductsService {
       include: { category: true, supplier: { select: { id: true, name: true } } },
     });
 
-    if (product.trackStock && product.stock > 0) {
-      await this.prisma.stockMovement.create({
-        data: {
-          businessId,
-          productId: product.id,
-          userId: userId || 'system',
-          type: StockMovementType.INITIAL,
-          quantity: product.stock,
-          stockBefore: 0,
-          stockAfter: product.stock,
-          cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
-          concept: 'Stock inicial',
-        },
-      });
+    const initialStock = Number(product.stock);
+    if (product.trackStock && initialStock > 0) {
+      let resolvedUserId = userId;
+      if (!resolvedUserId || resolvedUserId === 'system') {
+        const fallbackUser = await this.prisma.user.findFirst({
+          where: { businessId },
+          select: { id: true },
+        });
+        resolvedUserId = fallbackUser?.id;
+      }
+
+      if (resolvedUserId) {
+        await this.prisma.stockMovement.create({
+          data: {
+            businessId,
+            productId: product.id,
+            userId: resolvedUserId,
+            type: StockMovementType.INITIAL,
+            quantity: initialStock,
+            stockBefore: 0,
+            stockAfter: initialStock,
+            cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
+            concept: 'Stock inicial',
+          },
+        });
+      }
     }
 
     const activeFields = await this.prisma.productFieldDefinition.findMany({
@@ -394,6 +423,23 @@ export class ProductsService {
       (updateData as any).trackStock = trackStock;
     }
 
+    const effectiveUnit = (dto.unit || product.unit || 'UND').trim().toUpperCase();
+    if (dto.unit !== undefined) {
+      (updateData as any).unit = effectiveUnit;
+    }
+    if (dto.stock !== undefined && dto.stock !== null) {
+      dto.stock = validateProductQuantity(effectiveUnit, dto.stock, dto.name || product.name);
+      (updateData as any).stock = dto.stock;
+    }
+    if (dto.minStock !== undefined && dto.minStock !== null) {
+      dto.minStock = validateProductQuantity(effectiveUnit, dto.minStock, dto.name || product.name);
+      (updateData as any).minStock = dto.minStock;
+    }
+    if (dto.maxStock !== undefined && dto.maxStock !== null) {
+      dto.maxStock = validateProductQuantity(effectiveUnit, dto.maxStock, dto.name || product.name);
+      (updateData as any).maxStock = dto.maxStock;
+    }
+
     if (incomingAttributes !== undefined) {
       const existingAttrs =
         product.attributes && typeof product.attributes === 'object' && !Array.isArray(product.attributes)
@@ -415,8 +461,9 @@ export class ProductsService {
       include: { category: true, supplier: { select: { id: true, name: true } } },
     });
 
-    if (dto.stock !== undefined && dto.stock !== product.stock && (trackStock ?? product.trackStock)) {
-      const stockDiff = dto.stock - product.stock;
+    const currentStock = Number(product.stock);
+    if (dto.stock !== undefined && dto.stock !== currentStock && (trackStock ?? product.trackStock)) {
+      const stockDiff = round3(dto.stock - currentStock);
       await this.prisma.stockMovement.create({
         data: {
           businessId,
@@ -424,7 +471,7 @@ export class ProductsService {
           userId: userId || 'system',
           type: StockMovementType.AJUSTE,
           quantity: stockDiff,
-          stockBefore: product.stock,
+          stockBefore: currentStock,
           stockAfter: dto.stock,
           cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
           concept: 'Edición manual de producto',
@@ -453,10 +500,13 @@ export class ProductsService {
       const product = await tx.product.findFirst({ where: { id: productId, businessId } });
       if (!product) throw new NotFoundException("Producto no encontrado");
 
-      const stockAfter = product.stock + dto.quantity;
+      const qty = validateProductQuantity(product.unit, Math.abs(dto.quantity), product.name);
+      const signedQty = dto.quantity < 0 ? -qty : qty;
+      const currentStock = Number(product.stock);
+      const stockAfter = round3(currentStock + signedQty);
       if (stockAfter < 0) {
         throw new BadRequestException(
-          `Stock insuficiente. Disponible: ${product.stock}, solicitado: ${Math.abs(dto.quantity)}`
+          `Stock insuficiente. Disponible: ${currentStock}, solicitado: ${Math.abs(dto.quantity)}`
         );
       }
 
@@ -468,8 +518,8 @@ export class ProductsService {
           productId,
           userId,
           type: dto.type,
-          quantity: dto.quantity,
-          stockBefore: product.stock,
+          quantity: signedQty,
+          stockBefore: currentStock,
           stockAfter,
           cost: dto.cost != null ? new Prisma.Decimal(dto.cost.toString()) : null,
           concept: dto.concept,
@@ -478,10 +528,10 @@ export class ProductsService {
       });
 
       this.logger.log(
-        `[adjustStock] producto=${productId} antes=${product.stock} despues=${stockAfter} tipo=${dto.type}`
+        `[adjustStock] producto=${productId} antes=${currentStock} despues=${stockAfter} tipo=${dto.type}`
       );
 
-      return { stockBefore: product.stock, stockAfter, movement };
+      return { stockBefore: currentStock, stockAfter, movement };
     });
   }
 
@@ -527,7 +577,13 @@ export class ProductsService {
     ]);
 
     return {
-      product: { id: product.id, name: product.name, currentStock: product.stock, trackStock: product.trackStock },
+      product: {
+        id: product.id,
+        name: product.name,
+        currentStock: Number(product.stock),
+        unit: product.unit || 'UND',
+        trackStock: product.trackStock,
+      },
       data,
       pagination: {
         page,

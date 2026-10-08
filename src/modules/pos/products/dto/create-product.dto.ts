@@ -1,5 +1,6 @@
-import { IsString, MinLength, IsOptional, IsNumber, Min, IsBoolean, IsInt, IsNotEmpty } from 'class-validator';
+import { IsString, MinLength, IsOptional, IsNumber, Min, IsBoolean, IsNotEmpty, IsIn } from 'class-validator';
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
+import { ALLOWED_PRODUCT_UNITS } from '../product-unit.util';
 
 export class CreateProductDto {
   @SanitizeText()
@@ -23,6 +24,13 @@ export class CreateProductDto {
   @IsOptional()
   @IsString()
   imageUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(ALLOWED_PRODUCT_UNITS as any, {
+    message: 'La unidad de medida debe ser una de: UND, LT, GAL, KG, LB',
+  })
+  unit?: string;
 
   @IsNumber()
   @Min(0)
@@ -50,17 +58,17 @@ export class CreateProductDto {
   trackInventory?: boolean;
 
   @IsOptional()
-  @IsInt()
+  @IsNumber()
   @Min(0)
   stock?: number;
 
   @IsOptional()
-  @IsInt()
+  @IsNumber()
   @Min(0)
   minStock?: number;
 
   @IsOptional()
-  @IsInt()
+  @IsNumber()
   @Min(0)
   maxStock?: number;
 

@@ -14,6 +14,7 @@ import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { AuditService } from '../audit/audit.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { PosAction } from '../permissions/permissions.service';
+import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
 @Injectable()
 export class SalesService {
@@ -135,9 +136,10 @@ export class SalesService {
         if (item.productId) {
           const product = await tx.product.findFirst({ where: { id: item.productId, businessId } });
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
+          const requestedQty = validateProductQuantity(product.unit, item.quantity, product.name);
+          const currentStock = Number(product.stock);
           if (product.trackStock === true) {
-            const requestedQty = Math.ceil(item.quantity);
-            if (product.stock < requestedQty) {
+            if (currentStock < requestedQty) {
               if (!policies.allowNegativeStock && !dto.isOfflineSync) {
                 throw new UnprocessableEntityException({
                   statusCode: 422,
@@ -145,18 +147,18 @@ export class SalesService {
                   code: 'INSUFFICIENT_STOCK',
                   message: {
                     code: 'INSUFFICIENT_STOCK',
-                    message: `Stock insuficiente para "${product.name}". Disponible: ${product.stock}, solicitado: ${requestedQty}`,
+                    message: `Stock insuficiente para "${product.name}". Disponible: ${currentStock}, solicitado: ${requestedQty}`,
                     details: {
                       productId: product.id,
                       productName: product.name,
-                      available: product.stock,
+                      available: currentStock,
                       requested: requestedQty,
                     },
                   },
                   details: {
                     productId: product.id,
                     productName: product.name,
-                    available: product.stock,
+                    available: currentStock,
                     requested: requestedQty,
                   },
                 });
@@ -766,9 +768,9 @@ export class SalesService {
         if (item.productId) {
           const product = await tx.product.findUnique({ where: { id: item.productId } });
           if (product?.trackStock) {
-            const qty = Math.ceil(item.quantity);
-            const stockBefore = product.stock;
-            const stockAfter = product.stock - qty;
+            const qty = round3(item.quantity);
+            const stockBefore = Number(product.stock);
+            const stockAfter = round3(stockBefore - qty);
             await tx.product.update({
               where: { id: item.productId },
               data: { stock: { decrement: qty } },
@@ -1012,10 +1014,10 @@ export class SalesService {
       // 2. Stock replenishment
       for (const item of sale.items) {
         if (item.productId && item.product?.trackStock) {
-          const qty = Math.ceil(item.quantity);
+          const qty = round3(item.quantity);
           const currentProd = await tx.product.findUnique({ where: { id: item.productId } });
-          const stockBefore = currentProd ? currentProd.stock : 0;
-          const stockAfter = stockBefore + qty;
+          const stockBefore = currentProd ? Number(currentProd.stock) : 0;
+          const stockAfter = round3(stockBefore + qty);
 
           await tx.product.update({
             where: { id: item.productId },
@@ -1608,12 +1610,12 @@ export class SalesService {
         });
 
         if (saleItem.productId && saleItem.product?.trackStock) {
-          const qty = Math.ceil(line.qty);
+          const qty = round3(line.qty);
           const currentProd = await tx.product.findUnique({ where: { id: saleItem.productId } });
-          const stockBefore = currentProd ? currentProd.stock : 0;
+          const stockBefore = currentProd ? Number(currentProd.stock) : 0;
 
           if (line.restock) {
-            const stockAfter = stockBefore + qty;
+            const stockAfter = round3(stockBefore + qty);
             await tx.product.update({
               where: { id: saleItem.productId },
               data: { stock: { increment: qty } },

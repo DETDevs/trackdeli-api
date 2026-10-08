@@ -175,7 +175,9 @@ export class ReportsService {
       where: { businessId, isActive: true, trackStock: true },
       include: { category: true },
     });
-    return products.filter((p) => p.stock <= p.minStock).sort((a, b) => a.stock - b.stock);
+    return products
+      .filter((p) => Number(p.stock) <= Number(p.minStock))
+      .sort((a, b) => Number(a.stock) - Number(b.stock));
   }
 
   async getCashRegisters(businessId: string, from?: string, to?: string) {
