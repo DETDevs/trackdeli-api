@@ -2069,6 +2069,50 @@ WHERE a."customerId" = c."id"
           name: '138a - pos_restaurant_tables.gridY DROP NOT NULL',
           sql: `ALTER TABLE "pos_restaurant_tables" ALTER COLUMN "gridY" DROP NOT NULL;`,
         },
+        {
+          name: '142a - pos_table_orders.customerName',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "customerName" VARCHAR(120);`,
+        },
+        {
+          name: '142a - pos_table_orders.customerPhone',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "customerPhone" VARCHAR(30);`,
+        },
+        {
+          name: '142a - pos_table_orders.vehicleInfo',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "vehicleInfo" VARCHAR(120);`,
+        },
+        {
+          name: '142a - pos_table_orders.assignedWaiterId',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "assignedWaiterId" TEXT;`,
+        },
+        {
+          name: '142a - pos_table_orders.assignedWaiterId FK',
+          sql: `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_table_orders_assignedWaiterId_fkey') THEN ALTER TABLE "pos_table_orders" ADD CONSTRAINT "pos_table_orders_assignedWaiterId_fkey" FOREIGN KEY ("assignedWaiterId") REFERENCES "pos_waiters"("id") ON DELETE SET NULL ON UPDATE CASCADE; END IF; END $$;`,
+        },
+        {
+          name: '142a - pos_table_orders.assignedWaiterId IDX',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_table_orders_assignedWaiterId_idx" ON "pos_table_orders"("assignedWaiterId");`,
+        },
+        {
+          name: '142a - pos_sales.tableNumber',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "tableNumber" VARCHAR(50);`,
+        },
+        {
+          name: '142a - pos_sales.zoneName',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "zoneName" VARCHAR(100);`,
+        },
+        {
+          name: '142a - pos_sales.waiterName',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "waiterName" VARCHAR(100);`,
+        },
+        {
+          name: '142a - pos_sales.vehicleInfo',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "vehicleInfo" VARCHAR(120);`,
+        },
+        {
+          name: '142a - pos_sales.customerName VARCHAR(120)',
+          sql: `ALTER TABLE "pos_sales" ALTER COLUMN "customerName" TYPE VARCHAR(120);`,
+        },
       ];
 
       for (const step of ddlStatements) {

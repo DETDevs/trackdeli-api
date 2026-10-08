@@ -134,6 +134,22 @@ export class CreateSaleDto {
   @IsString()
   notes?: string;
 
+  @IsOptional()
+  @IsString()
+  tableNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  zoneName?: string;
+
+  @IsOptional()
+  @IsString()
+  waiterName?: string;
+
+  @IsOptional()
+  @IsString()
+  vehicleInfo?: string;
+
   // Snapshot del cliente (offline o offline/online sync tolerante)
   @IsOptional()
   @IsNumber()

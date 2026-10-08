@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, Length, MaxLength } from 'class-validator';
 
 export class ReceiveVehicleDto {
   @IsString()
@@ -10,8 +10,27 @@ export class ReceiveVehicleDto {
   @IsNotEmpty({ message: 'ZONE_REQUIRED' })
   zoneId: string;
 
+  @IsString({ message: 'El nombre del cliente debe ser un texto' })
+  @IsNotEmpty({ message: 'El nombre del cliente es obligatorio en el perfil Taller' })
+  @Length(2, 120, { message: 'El nombre del cliente debe tener entre 2 y 120 caracteres' })
+  customerName: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30, { message: 'El teléfono del cliente no puede exceder 30 caracteres' })
+  customerPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120, { message: 'La información del vehículo no puede exceder 120 caracteres' })
+  vehicleInfo?: string;
+
+  @IsOptional()
+  technicianId?: string | null;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)
   note?: string;
 }
+

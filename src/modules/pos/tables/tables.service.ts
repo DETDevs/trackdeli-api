@@ -19,6 +19,7 @@ import { UpdateOrderItemDto } from './dto/update-order-item.dto';
 import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
 import { CancelTableOrderDto } from './dto/cancel-table-order.dto';
 import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
+import { UpdateOrderAssignmentDto } from './dto/update-order-assignment.dto';
 import { getSalonLabels } from '../salon/salon-profile.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
@@ -487,6 +488,9 @@ export class TablesService {
           where: { status: TableOrderStatus.OPEN },
           include: {
             items: true,
+            assignedWaiter: {
+              select: { id: true, name: true },
+            },
           },
           orderBy: { createdAt: 'desc' },
           take: 1,
@@ -511,6 +515,10 @@ export class TablesService {
         }
       }
 
+      const assignedWaiter = currentOrder?.assignedWaiter
+        ? { id: currentOrder.assignedWaiter.id, name: currentOrder.assignedWaiter.name }
+        : null;
+
       return {
         id: t.id,
         number: t.number,
@@ -520,6 +528,11 @@ export class TablesService {
         gridY: t.gridY,
         zoneId: t.zoneId || null,
         zoneName: t.zone?.name || 'Sin zona',
+        customerName: currentOrder?.customerName || null,
+        customerPhone: currentOrder?.customerPhone || null,
+        vehicleInfo: currentOrder?.vehicleInfo || null,
+        assignedWaiterId: currentOrder?.assignedWaiterId || null,
+        assignedWaiter,
         status: isOccupied ? ('OCCUPIED' as const) : ('FREE' as const),
         currentOrder: currentOrder
           ? {
@@ -528,6 +541,11 @@ export class TablesService {
               openedAt: currentOrder.createdAt,
               createdAt: currentOrder.createdAt,
               notes: currentOrder.notes,
+              customerName: currentOrder.customerName || null,
+              customerPhone: currentOrder.customerPhone || null,
+              vehicleInfo: currentOrder.vehicleInfo || null,
+              assignedWaiterId: currentOrder.assignedWaiterId || null,
+              assignedWaiter,
               itemsCount,
               total: Math.round(total * 100) / 100,
             }
@@ -563,6 +581,9 @@ export class TablesService {
             zoneId: true,
             zone: { select: { id: true, name: true } },
           },
+        },
+        assignedWaiter: {
+          select: { id: true, name: true },
         },
       },
     });
@@ -601,6 +622,9 @@ export class TablesService {
             zone: { select: { id: true, name: true } },
           },
         },
+        assignedWaiter: {
+          select: { id: true, name: true },
+        },
       },
     });
 
@@ -629,6 +653,9 @@ export class TablesService {
             zoneId: true,
             zone: { select: { id: true, name: true } },
           },
+        },
+        assignedWaiter: {
+          select: { id: true, name: true },
         },
       },
     });
@@ -763,7 +790,12 @@ export class TablesService {
       where: { tableId, businessId, status: TableOrderStatus.OPEN },
       include: {
         items: true,
-        table: true,
+        table: {
+          include: {
+            zone: { select: { id: true, name: true } },
+          },
+        },
+        assignedWaiter: { select: { id: true, name: true } },
       },
     });
 
@@ -797,9 +829,13 @@ export class TablesService {
       paymentMethod: dto.paymentMethod || PosPaymentMethod.EFECTIVO,
       amountPaid,
       discountAmount,
-      customerName: dto.customerName,
-      customerPhone: dto.customerPhone,
+      customerName: dto.customerName || order.customerName || undefined,
+      customerPhone: dto.customerPhone || order.customerPhone || undefined,
       customerRuc: dto.customerRuc,
+      tableNumber: order.table?.number || undefined,
+      zoneName: order.table?.zone?.name || undefined,
+      waiterName: order.assignedWaiter?.name || order.openedByWaiterName || undefined,
+      vehicleInfo: order.vehicleInfo || undefined,
       cashRegisterId: dto.cashRegisterId,
       notes: dto.notes
         ? `${dto.notes} (${labels.table} ${order.table.number})`
@@ -998,6 +1034,19 @@ export class TablesService {
       });
     }
 
+    const customerName = dto.customerName?.trim();
+    if (!customerName || customerName.length < 2 || customerName.length > 120) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'El nombre del cliente debe tener entre 2 y 120 caracteres',
+      });
+    }
+
+    const assignedWaiter = dto.technicianId !== undefined
+      ? await this.resolveTechnician(businessId, dto.technicianId)
+      : null;
+
     const isWaiter = user?.role === UserRole.WAITER;
     const openedByWaiterId = isWaiter ? user.sub : null;
     const openedByWaiterName = isWaiter ? (user.waiterName || null) : null;
@@ -1009,6 +1058,10 @@ export class TablesService {
         status: TableOrderStatus.OPEN,
         openedByWaiterId,
         openedByWaiterName,
+        customerName,
+        customerPhone: dto.customerPhone ? dto.customerPhone.trim() : null,
+        vehicleInfo: dto.vehicleInfo ? dto.vehicleInfo.trim() : null,
+        assignedWaiterId: assignedWaiter ? assignedWaiter.id : null,
         notes: dto.note ? dto.note.trim() : null,
       },
       include: {
@@ -1029,6 +1082,9 @@ export class TablesService {
             zone: { select: { id: true, name: true } },
           },
         },
+        assignedWaiter: {
+          select: { id: true, name: true },
+        },
       },
     });
 
@@ -1045,6 +1101,11 @@ export class TablesService {
       gridY: table.gridY,
       zoneId: table.zoneId || null,
       zoneName: table.zone?.name || 'Sin zona',
+      customerName: formattedOrder.customerName,
+      customerPhone: formattedOrder.customerPhone,
+      vehicleInfo: formattedOrder.vehicleInfo,
+      assignedWaiterId: formattedOrder.assignedWaiterId,
+      assignedWaiter: formattedOrder.assignedWaiter,
       isActive: table.isActive,
       createdAt: table.createdAt,
       updatedAt: table.updatedAt,
@@ -1098,6 +1159,16 @@ export class TablesService {
       notes: order.notes,
       openedByWaiterId: order.openedByWaiterId || null,
       openedByWaiterName: order.openedByWaiterName || null,
+      customerName: order.customerName || null,
+      customerPhone: order.customerPhone || null,
+      vehicleInfo: order.vehicleInfo || null,
+      assignedWaiterId: order.assignedWaiterId || null,
+      assignedWaiter: order.assignedWaiter
+        ? {
+            id: order.assignedWaiter.id,
+            name: order.assignedWaiter.name,
+          }
+        : null,
       cancelledAt: order.cancelledAt || null,
       cancelledByUserId: order.cancelledByUserId || null,
       cancelledByUserName: order.cancelledByUserName || null,
@@ -1119,6 +1190,235 @@ export class TablesService {
       subtotal: Math.round(subtotal * 100) / 100,
       items: formattedItems,
     };
+  }
+
+  async findFirstAvailableTechnician(businessId: string): Promise<any | null> {
+    const activeWaiters = await this.prisma.waiter.findMany({
+      where: {
+        businessId,
+        active: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    if (activeWaiters.length === 0) {
+      return null;
+    }
+
+    const waiterIds = activeWaiters.map((w) => w.id);
+
+    const openOrders = await this.prisma.tableOrder.groupBy({
+      by: ['assignedWaiterId'],
+      where: {
+        businessId,
+        assignedWaiterId: { in: waiterIds },
+        status: TableOrderStatus.OPEN,
+      },
+      _count: { id: true },
+    });
+
+    const openCountMap = new Map<string, number>();
+    for (const item of openOrders) {
+      if (item.assignedWaiterId) {
+        openCountMap.set(item.assignedWaiterId, item._count.id);
+      }
+    }
+
+    const lastAssignments = await this.prisma.tableOrder.groupBy({
+      by: ['assignedWaiterId'],
+      where: {
+        businessId,
+        assignedWaiterId: { in: waiterIds },
+      },
+      _max: { createdAt: true },
+    });
+
+    const lastAssignedMap = new Map<string, number>();
+    for (const item of lastAssignments) {
+      if (item.assignedWaiterId && item._max.createdAt) {
+        lastAssignedMap.set(item.assignedWaiterId, item._max.createdAt.getTime());
+      }
+    }
+
+    const sorted = [...activeWaiters].sort((a, b) => {
+      const countA = openCountMap.get(a.id) || 0;
+      const countB = openCountMap.get(b.id) || 0;
+      if (countA !== countB) {
+        return countA - countB;
+      }
+
+      const timeA = lastAssignedMap.get(a.id) || 0;
+      const timeB = lastAssignedMap.get(b.id) || 0;
+      if (timeA !== timeB) {
+        return timeA - timeB;
+      }
+
+      return a.createdAt.getTime() - b.createdAt.getTime();
+    });
+
+    return sorted[0] || null;
+  }
+
+  async resolveTechnician(businessId: string, technicianId?: string | null): Promise<any | null> {
+    if (technicianId === undefined || technicianId === null || technicianId === '' || technicianId === 'null') {
+      return null;
+    }
+
+    const trimmed = typeof technicianId === 'string' ? technicianId.trim() : technicianId;
+
+    if (trimmed.toUpperCase() === 'AUTO') {
+      return this.findFirstAvailableTechnician(businessId);
+    }
+
+    const waiter = await this.prisma.waiter.findFirst({
+      where: {
+        id: trimmed,
+        businessId,
+      },
+    });
+
+    if (!waiter) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Técnico no encontrado',
+      });
+    }
+
+    if (!waiter.active) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'El técnico seleccionado está inactivo',
+      });
+    }
+
+    return waiter;
+  }
+
+  async updateOrderAssignment(
+    businessId: string,
+    tableId: string,
+    dto: UpdateOrderAssignmentDto,
+    user?: JwtPayload,
+  ) {
+    const table = await this.prisma.restaurantTable.findFirst({
+      where: { id: tableId, businessId, isActive: true },
+    });
+    if (!table) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Mesa o vehículo no encontrado',
+      });
+    }
+
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, status: TableOrderStatus.OPEN },
+      include: {
+        assignedWaiter: { select: { id: true, name: true } },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'No hay una comanda abierta para este vehículo o mesa',
+      });
+    }
+
+    const updateData: any = {};
+
+    if (dto.customerName !== undefined) {
+      const trimmedName = dto.customerName?.trim();
+      if (!trimmedName || trimmedName.length < 2 || trimmedName.length > 120) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'El nombre del cliente debe tener entre 2 y 120 caracteres',
+        });
+      }
+      updateData.customerName = trimmedName;
+    }
+
+    if (dto.customerPhone !== undefined) {
+      updateData.customerPhone = dto.customerPhone ? dto.customerPhone.trim() : null;
+    }
+
+    if (dto.vehicleInfo !== undefined) {
+      updateData.vehicleInfo = dto.vehicleInfo ? dto.vehicleInfo.trim() : null;
+    }
+
+    let technicianChanged = false;
+
+    if (dto.technicianId !== undefined) {
+      if (dto.technicianId === null || dto.technicianId === '' || dto.technicianId === 'null') {
+        updateData.assignedWaiterId = null;
+        technicianChanged = order.assignedWaiterId !== null;
+      } else {
+        const waiter = await this.resolveTechnician(businessId, dto.technicianId);
+        const resolvedId = waiter ? waiter.id : null;
+        updateData.assignedWaiterId = resolvedId;
+        technicianChanged = order.assignedWaiterId !== resolvedId;
+      }
+    }
+
+    const updatedOrder = await this.prisma.tableOrder.update({
+      where: { id: order.id },
+      data: updateData,
+      include: {
+        items: {
+          include: {
+            product: {
+              select: { id: true, name: true, imageUrl: true, price: true, unit: true, stock: true },
+            },
+          },
+        },
+        table: {
+          select: {
+            id: true,
+            number: true,
+            capacity: true,
+            shape: true,
+            zoneId: true,
+            zone: { select: { id: true, name: true } },
+          },
+        },
+        assignedWaiter: {
+          select: { id: true, name: true },
+        },
+      },
+    });
+
+    await this.auditService.record({
+      businessId,
+      userId: user?.sub || 'system',
+      userRole: user?.role || 'ENCARGADO',
+      action: technicianChanged ? 'ORDER_TECHNICIAN_REASSIGNED' : 'ORDER_ASSIGNMENT_UPDATED',
+      entityType: 'TableOrder',
+      entityId: order.id,
+      before: {
+        assignedWaiterId: order.assignedWaiterId,
+        assignedWaiterName: order.assignedWaiter?.name || null,
+        customerName: order.customerName,
+        customerPhone: order.customerPhone,
+        vehicleInfo: order.vehicleInfo,
+      },
+      after: {
+        assignedWaiterId: updatedOrder.assignedWaiterId,
+        assignedWaiterName: updatedOrder.assignedWaiter?.name || null,
+        customerName: updatedOrder.customerName,
+        customerPhone: updatedOrder.customerPhone,
+        vehicleInfo: updatedOrder.vehicleInfo,
+      },
+    });
+
+    this.logger.log(
+      `[updateOrderAssignment] Comanda ${order.id} actualizada (técnico: ${order.assignedWaiterId} -> ${updatedOrder.assignedWaiterId}) por ${user?.sub || 'system'}`,
+    );
+
+    return this.formatOrderResponse(updatedOrder);
   }
 }
 

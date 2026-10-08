@@ -980,9 +980,13 @@ model Sale {
 
   customerId     String?
   customer       Customer?        @relation(fields: [customerId], references: [id])
-  customerName   String?          @db.VarChar(100)
+  customerName   String?          @db.VarChar(120)
   customerPhone  String?          @db.VarChar(30)
   customerRuc    String?          @db.VarChar(30)
+  tableNumber    String?          @db.VarChar(50)
+  zoneName       String?          @db.VarChar(100)
+  waiterName     String?          @db.VarChar(100)
+  vehicleInfo    String?          @db.VarChar(120)
 
   creditAccount  CreditAccount?
   items          SaleItem[]
@@ -1483,6 +1487,11 @@ model TableOrder {
   notes              String?
   openedByWaiterId   String?          @db.VarChar(100)
   openedByWaiterName String?          @db.VarChar(100)
+  customerName       String?          @db.VarChar(120)
+  customerPhone      String?          @db.VarChar(30)
+  vehicleInfo        String?          @db.VarChar(120)
+  assignedWaiterId   String?
+  assignedWaiter     Waiter?          @relation("AssignedWaiterOrders", fields: [assignedWaiterId], references: [id], onDelete: SetNull)
   cancelledAt        DateTime?
   cancelledByUserId  String?          @db.VarChar(100)
   cancelledByUserName String?         @db.VarChar(100)
@@ -1492,6 +1501,7 @@ model TableOrder {
 
   @@index([businessId, status])
   @@index([tableId, status])
+  @@index([assignedWaiterId])
   @@map("pos_table_orders")
 }
 
@@ -1513,14 +1523,15 @@ model TableOrderItem {
 }
 
 model Waiter {
-  id         String   @id @default(cuid())
-  businessId String
-  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  name       String   @db.VarChar(100)
-  pinHash    String   @db.VarChar(100)
-  active     Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id             String       @id @default(cuid())
+  businessId     String
+  business       Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name           String       @db.VarChar(100)
+  pinHash        String       @db.VarChar(100)
+  active         Boolean      @default(true)
+  assignedOrders TableOrder[] @relation("AssignedWaiterOrders")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
   @@index([businessId])
   @@map("pos_waiters")

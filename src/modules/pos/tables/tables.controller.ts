@@ -27,6 +27,7 @@ import { UpdateOrderItemDto } from './dto/update-order-item.dto';
 import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
 import { CancelTableOrderDto } from './dto/cancel-table-order.dto';
 import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
+import { UpdateOrderAssignmentDto } from './dto/update-order-assignment.dto';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
@@ -190,6 +191,22 @@ export class TablesController {
       user,
       tableId,
       dto,
+    );
+  }
+
+  @Patch(':id/order/assignment')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
+  updateOrderAssignment(
+    @Param('id') tableId: string,
+    @Body() dto: UpdateOrderAssignmentDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.updateOrderAssignment(
+      resolveBusinessId(user, qBid),
+      tableId,
+      dto,
+      user,
     );
   }
 }

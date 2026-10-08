@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BusinessProductsService } from '../../business-products/business-products.service';
-import { BusinessProductType, UserRole } from '@prisma/client';
+import { BusinessProductType, TableOrderStatus, UserRole } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
@@ -92,7 +92,33 @@ export class WaitersService {
       },
     });
 
-    return waiters;
+    const waiterIds = waiters.map((w) => w.id);
+    const openOrders = await this.prisma.tableOrder.groupBy({
+      by: ['assignedWaiterId'],
+      where: {
+        businessId: business.id,
+        assignedWaiterId: { in: waiterIds },
+        status: TableOrderStatus.OPEN,
+      },
+      _count: { id: true },
+    });
+
+    const openCountMap = new Map<string, number>();
+    for (const item of openOrders) {
+      if (item.assignedWaiterId) {
+        openCountMap.set(item.assignedWaiterId, item._count.id);
+      }
+    }
+
+    return waiters.map((w) => {
+      const openOrdersCount = openCountMap.get(w.id) || 0;
+      return {
+        id: w.id,
+        name: w.name,
+        openOrdersCount,
+        available: openOrdersCount === 0,
+      };
+    });
   }
 
   /**
@@ -175,7 +201,7 @@ export class WaitersService {
    * Administración de meseros (ENCARGADO / SUPERADMIN)
    */
   async findAll(businessId: string) {
-    return this.prisma.waiter.findMany({
+    const waiters = await this.prisma.waiter.findMany({
       where: { businessId },
       select: {
         id: true,
@@ -186,6 +212,33 @@ export class WaitersService {
         updatedAt: true,
       },
       orderBy: { name: 'asc' },
+    });
+
+    const waiterIds = waiters.map((w) => w.id);
+    const openOrders = await this.prisma.tableOrder.groupBy({
+      by: ['assignedWaiterId'],
+      where: {
+        businessId,
+        assignedWaiterId: { in: waiterIds },
+        status: TableOrderStatus.OPEN,
+      },
+      _count: { id: true },
+    });
+
+    const openCountMap = new Map<string, number>();
+    for (const item of openOrders) {
+      if (item.assignedWaiterId) {
+        openCountMap.set(item.assignedWaiterId, item._count.id);
+      }
+    }
+
+    return waiters.map((w) => {
+      const openOrdersCount = openCountMap.get(w.id) || 0;
+      return {
+        ...w,
+        openOrdersCount,
+        available: openOrdersCount === 0,
+      };
     });
   }
 
@@ -206,7 +259,19 @@ export class WaitersService {
       throw new NotFoundException('Mesero no encontrado');
     }
 
-    return waiter;
+    const openOrdersCount = await this.prisma.tableOrder.count({
+      where: {
+        businessId,
+        assignedWaiterId: id,
+        status: TableOrderStatus.OPEN,
+      },
+    });
+
+    return {
+      ...waiter,
+      openOrdersCount,
+      available: openOrdersCount === 0,
+    };
   }
 
   async create(businessId: string, dto: CreateWaiterDto) {
