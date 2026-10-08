@@ -24,6 +24,7 @@ import { IdempotencyModule } from './idempotency/idempotency.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 import { PurchasesModule } from './purchases/purchases.module';
 import { InventoryModule } from './inventory/inventory.module';
+import { PosDevicesModule } from './devices/pos-devices.module';
 
 @Module({
   imports: [
@@ -48,9 +49,10 @@ import { InventoryModule } from './inventory/inventory.module';
     ApprovalsModule,
     IdempotencyModule,
     ExchangeRateModule,
+    PosDevicesModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
-  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule],
+  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule],
 })
 export class PosModule {}

@@ -32,6 +32,8 @@ import { ClientVersionService } from '../client-version/client-version.service';
 import { UpdateClientVersionDto } from '../client-version/dto/update-client-version.dto';
 import { GetClientVersionQueryDto } from '../client-version/dto/get-client-version.dto';
 import { DEFAULT_PLATFORM } from '../client-version/client-version.constants';
+import { UpdateDeviceDto } from '../pos/devices/dto/update-device.dto';
+import { UpdatePosSubscriptionDto } from '../pos/devices/dto/update-pos-subscription.dto';
 
 @Controller('superadmin')
 @UseGuards(SuperAdminGuard)
@@ -239,6 +241,30 @@ export class SuperAdminController {
     @Req() req: any,
   ) {
     return this.updateClientVersion(dto, user, req);
+  }
+
+  @Get('businesses/:id/devices')
+  async getBusinessDevices(@Param('id') id: string) {
+    return this.superAdminService.getBusinessDevices(id);
+  }
+
+  @Patch('businesses/:id/devices/:deviceId')
+  async updateBusinessDevice(
+    @Param('id') id: string,
+    @Param('deviceId') deviceId: string,
+    @Body() dto: UpdateDeviceDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.updateBusinessDevice(id, deviceId, dto, user);
+  }
+
+  @Patch('businesses/:id/pos-subscription')
+  async updatePosSubscription(
+    @Param('id') id: string,
+    @Body() dto: UpdatePosSubscriptionDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.updatePosSubscription(id, dto, user);
   }
 }
 

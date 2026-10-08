@@ -8,12 +8,14 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { PosDevicesModule } from '../pos/devices/pos-devices.module';
 
 @Module({
   imports: [
     PrismaModule,
     PassportModule,
     NotificationsModule,
+    PosDevicesModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => ({

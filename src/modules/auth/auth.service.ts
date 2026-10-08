@@ -10,6 +10,7 @@ import { SocialLoginDto } from './dto/social-login.dto';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { User, AuthProvider } from '@prisma/client';
 import { FirebaseService } from '../notifications/firebase.service';
+import { PosDevicesService } from '../pos/devices/pos-devices.service';
 
 @Injectable()
 export class AuthService {
@@ -20,6 +21,7 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
     private firebaseService: FirebaseService,
+    private posDevicesService: PosDevicesService,
   ) {}
 
   async validateUser(email: string, password: string): Promise<User | null> {
@@ -50,12 +52,15 @@ export class AuthService {
     return user;
   }
 
-  async login(dto: LoginDto): Promise<TokenResponseDto> {
+  async login(dto: LoginDto, req?: any): Promise<TokenResponseDto> {
     const user = await this.validateUser(dto.email, dto.password);
 
     if (!user) {
       throw new UnauthorizedException('Credenciales inválidas');
     }
+
+    // 132a — Control de dispositivos POS
+    await this.posDevicesService.validateAndRegisterOnLogin(user, req);
 
     this.logger.log(`[login] OK email=${dto.email}, rol=${user.role}`);
 

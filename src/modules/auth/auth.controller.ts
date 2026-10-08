@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -23,8 +23,8 @@ export class AuthController {
   @Post('login')
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
-  async login(@Body() dto: LoginDto): Promise<TokenResponseDto> {
-    return this.authService.login(dto);
+  async login(@Body() dto: LoginDto, @Req() req: any): Promise<TokenResponseDto> {
+    return this.authService.login(dto, req);
   }
 
   @Post('social-login')

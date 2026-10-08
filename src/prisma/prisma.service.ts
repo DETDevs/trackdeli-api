@@ -1934,6 +1934,45 @@ WHERE a."customerId" = c."id"
           name: '125a - Índice pos_restaurant_tables.zoneId',
           sql: `CREATE INDEX IF NOT EXISTS "pos_restaurant_tables_zoneId_idx" ON "pos_restaurant_tables"("zoneId");`,
         },
+        {
+          name: '132a - Enum PosDeviceStatus',
+          sql: `DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'PosDeviceStatus') THEN
+              CREATE TYPE "PosDeviceStatus" AS ENUM ('ACTIVE', 'REVOKED');
+            END IF;
+          END $$;`,
+        },
+        {
+          name: '132a - Tabla pos_devices',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_devices" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "deviceId" VARCHAR(100) NOT NULL,
+            "name" VARCHAR(100),
+            "platform" VARCHAR(50),
+            "appVersion" VARCHAR(50),
+            "status" "PosDeviceStatus" NOT NULL DEFAULT 'ACTIVE',
+            "firstSeenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "lastSeenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "lastUserId" VARCHAR(100),
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_devices_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_devices_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: '132a - Índice único pos_devices.businessId_deviceId',
+          sql: `CREATE UNIQUE INDEX IF NOT EXISTS "pos_devices_businessId_deviceId_key" ON "pos_devices"("businessId", "deviceId");`,
+        },
+        {
+          name: '132a - Índice pos_devices.businessId_status',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_devices_businessId_status_idx" ON "pos_devices"("businessId", "status");`,
+        },
+        {
+          name: '132a - Columna business_product_subscriptions.maxDevices',
+          sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "maxDevices" INTEGER;`,
+        },
       ];
 
       for (const step of ddlStatements) {

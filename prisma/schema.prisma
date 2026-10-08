@@ -15,6 +15,11 @@ enum UserRole {
   WAITER
 }
 
+enum PosDeviceStatus {
+  ACTIVE
+  REVOKED
+}
+
 enum AuthProvider {
   EMAIL
   GOOGLE
@@ -313,6 +318,7 @@ model Business {
   productFieldDefinitions ProductFieldDefinition[]
   posExchangeRates PosExchangeRate[]
   saleReturns      SaleReturn[]
+  posDevices       PosDevice[]
 
   // Subscripciones de Productos y Auditoría
   productSubscriptions BusinessProductSubscription[]
@@ -1496,6 +1502,30 @@ model Waiter {
 }
 
 // ═══════════════════════════════════════════════
+// 132a — DISPOSITIVOS POS
+// ═══════════════════════════════════════════════
+
+model PosDevice {
+  id          String          @id @default(uuid())
+  businessId  String
+  business    Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  deviceId    String          @db.VarChar(100)
+  name        String?         @db.VarChar(100)
+  platform    String?         @db.VarChar(50)
+  appVersion  String?         @db.VarChar(50)
+  status      PosDeviceStatus @default(ACTIVE)
+  firstSeenAt DateTime        @default(now())
+  lastSeenAt  DateTime        @default(now())
+  lastUserId  String?         @db.VarChar(100)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@unique([businessId, deviceId])
+  @@index([businessId, status])
+  @@map("pos_devices")
+}
+
+// ═══════════════════════════════════════════════
 // BUSINESS PRODUCT SUBSCRIPTIONS & AUDIT LOGS
 // ═══════════════════════════════════════════════
 
@@ -1516,6 +1546,7 @@ model BusinessProductSubscription {
   // POS:
   posVertical             PosVertical?
   posMonthlyFee           Decimal?               @db.Decimal(10, 2)
+  maxDevices              Int?
   // CARTERA_COBRO:
   carteraMonthlyFee       Decimal?               @db.Decimal(10, 2)
   // CITAS:

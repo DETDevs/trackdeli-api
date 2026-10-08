@@ -14,7 +14,11 @@ import { CreateMembershipDto } from './dto/create-membership.dto';
 import { UpdateMembershipDto } from './dto/update-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
 import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
-import { BusinessType, MembershipStatus, OrderStatus, Prisma, UserRole, BusinessProductType, BusinessProductStatus, BusinessProductAction, PosVertical, PaymentMethod } from '@prisma/client';
+import { BusinessType, MembershipStatus, OrderStatus, Prisma, UserRole, BusinessProductType, BusinessProductStatus, BusinessProductAction, PosVertical, PaymentMethod, PosDeviceStatus } from '@prisma/client';
+import { AuditService } from '../pos/audit/audit.service';
+import { UpdateDeviceDto } from '../pos/devices/dto/update-device.dto';
+import { UpdatePosSubscriptionDto } from '../pos/devices/dto/update-pos-subscription.dto';
+import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import * as bcrypt from 'bcrypt';
 
 function generateBusinessCredentials(businessName: string): {
@@ -58,6 +62,7 @@ export class SuperAdminService {
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
     private readonly userQuotaService: UserQuotaService,
+    private readonly auditService: AuditService,
   ) { }
 
   async getBusinesses() {
@@ -330,6 +335,14 @@ export class SuperAdminService {
       (s) => s.productType === BusinessProductType.CITAS && s.status === BusinessProductStatus.ACTIVE,
     );
 
+    const posSub = resolvedProductSubscriptions.find(
+      (s) => s.productType === BusinessProductType.POS,
+    );
+    const maxDevices = posSub?.maxDevices ?? null;
+    const activeDevices = await this.prisma.posDevice.count({
+      where: { businessId: id, status: PosDeviceStatus.ACTIVE },
+    });
+
     const userUsage = await this.userQuotaService.getUsage(id);
 
     return {
@@ -375,6 +388,8 @@ export class SuperAdminService {
       hasTrackDeli: hasTrackDeliActive,
       hasCarteraCobro: hasCarteraActive,
       hasCitas: hasCitasActive,
+      maxDevices,
+      activeDevices,
       userUsage,
     };
   }
@@ -586,6 +601,8 @@ export class SuperAdminService {
           : DEFAULT_POS_MONTHLY_FEE;
         const posVertical = resolvedPosVertical;
 
+        const maxDevices = dto.maxDevices !== undefined ? dto.maxDevices : 1;
+
         const posSub = await tx.businessProductSubscription.create({
           data: {
             businessId: business.id,
@@ -593,6 +610,7 @@ export class SuperAdminService {
             status: BusinessProductStatus.ACTIVE,
             posVertical,
             posMonthlyFee: new Prisma.Decimal(posFee),
+            maxDevices,
             activatedAt: now,
             activatedBy: createdBy,
           },
@@ -705,6 +723,7 @@ export class SuperAdminService {
               productType: prodType,
               status: BusinessProductStatus.INACTIVE,
               posVertical: prodType === BusinessProductType.POS ? PosVertical.RESTAURANTE : null,
+              maxDevices: prodType === BusinessProductType.POS ? (dto.maxDevices !== undefined ? dto.maxDevices : 1) : null,
             },
           });
         }
@@ -1962,5 +1981,126 @@ export class SuperAdminService {
     
     this.logger.log(`[updateUserQuota] Se actualizaron los cupos extra del negocio ${id} a ${extraUserSlots}`);
     return this.userQuotaService.getUsage(id);
+  }
+
+  async getBusinessDevices(businessId: string) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+    return this.prisma.posDevice.findMany({
+      where: { businessId },
+      orderBy: [{ lastSeenAt: 'desc' }, { createdAt: 'desc' }],
+    });
+  }
+
+  async updateBusinessDevice(
+    businessId: string,
+    deviceIdOrId: string,
+    dto: UpdateDeviceDto,
+    actorUser?: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    const device = await this.prisma.posDevice.findFirst({
+      where: {
+        businessId,
+        OR: [{ id: deviceIdOrId }, { deviceId: deviceIdOrId }],
+      },
+    });
+
+    if (!device) {
+      throw new NotFoundException('Dispositivo no encontrado');
+    }
+
+    const updated = await this.prisma.posDevice.update({
+      where: { id: device.id },
+      data: {
+        ...(dto.status !== undefined && { status: dto.status }),
+        ...(dto.name !== undefined && { name: dto.name.trim() }),
+      },
+    });
+
+    let action = 'DEVICE_UPDATED';
+    if (dto.status && dto.status !== device.status) {
+      action = dto.status === PosDeviceStatus.REVOKED ? 'DEVICE_REVOKED' : 'DEVICE_ACTIVATED';
+    }
+
+    await this.auditService.record({
+      businessId,
+      userId: actorUser?.sub || 'system-superadmin',
+      userRole: actorUser?.role || 'SUPERADMIN',
+      action,
+      entityType: 'PosDevice',
+      entityId: device.id,
+      before: { status: device.status, name: device.name },
+      after: { status: updated.status, name: updated.name },
+    });
+
+    this.logger.log(
+      `[updateBusinessDevice] Dispositivo ${device.id} (${device.deviceId}) actualizado: status=${updated.status}, name="${updated.name}"`,
+    );
+
+    return updated;
+  }
+
+  async updatePosSubscription(
+    businessId: string,
+    dto: UpdatePosSubscriptionDto,
+    actorUser?: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    const sub = await this.prisma.businessProductSubscription.findUnique({
+      where: {
+        businessId_productType: {
+          businessId,
+          productType: BusinessProductType.POS,
+        },
+      },
+    });
+
+    if (!sub) {
+      throw new NotFoundException('Suscripción POS no encontrada para este negocio');
+    }
+
+    const updated = await this.prisma.businessProductSubscription.update({
+      where: { id: sub.id },
+      data: {
+        ...(dto.maxDevices !== undefined && { maxDevices: dto.maxDevices }),
+      },
+    });
+
+    await this.auditService.record({
+      businessId,
+      userId: actorUser?.sub || 'system-superadmin',
+      userRole: actorUser?.role || 'SUPERADMIN',
+      action: 'DEVICE_LIMIT_CHANGED',
+      entityType: 'BusinessProductSubscription',
+      entityId: sub.id,
+      before: { maxDevices: sub.maxDevices },
+      after: { maxDevices: updated.maxDevices },
+    });
+
+    this.logger.log(
+      `[updatePosSubscription] Límite maxDevices de businessId=${businessId} cambiado de ${sub.maxDevices} a ${updated.maxDevices}`,
+    );
+
+    return updated;
   }
 }
