@@ -63,17 +63,44 @@ export class PosDevicesService {
     const deviceName = deviceNameRaw ? String(deviceNameRaw).trim() : null;
 
     const platformRaw = headers['x-client-platform'] || headers['X-Client-Platform'];
-    const platform = platformRaw ? String(platformRaw).trim() : 'desktop-win';
+    const platform = platformRaw ? String(platformRaw).trim().toLowerCase() : null;
+    const isDesktopWin = platform === 'desktop-win';
 
     const versionRaw = headers['x-client-version'] || headers['X-Client-Version'];
     const appVersion = versionRaw ? String(versionRaw).trim() : null;
 
     const ipAddress = req?.ip || req?.connection?.remoteAddress || undefined;
 
-    // Si el header no viene (versiones viejas), el login funciona como hoy
+    // Si el header X-Device-Id no viene:
     if (!deviceId) {
+      // 132c: Si el negocio tiene límite (maxDevices !== null) y es desktop-win, exigir el header
+      if (isDesktopWin && posSub.maxDevices !== null) {
+        this.logger.warn(
+          `[validateAndRegisterOnLogin] Login rechazado sin X-Device-Id en desktop-win para businessId=${user.businessId} (maxDevices=${posSub.maxDevices})`,
+        );
+
+        await this.auditService.record({
+          businessId: user.businessId,
+          userId: user.id,
+          userRole: user.role,
+          action: 'DEVICE_ID_REQUIRED',
+          entityType: 'PosDevice',
+          reason: 'Intento de login desde desktop-win sin X-Device-Id en negocio con límite de dispositivos',
+          ipAddress,
+        });
+
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'DEVICE_ID_REQUIRED',
+          message:
+            'Esta versión del POS ya no es compatible con tu plan. Actualiza a la última versión desde el instalador de NEXOL.',
+        });
+      }
+
+      // Si maxDevices es null o es otra plataforma (web, comandero, etc.): se permite sin bloquear
       this.logger.log(
-        `[validateAndRegisterOnLogin] Login sin X-Device-Id para businessId=${user.businessId}, user=${user.email} (dispositivo desconocido)`,
+        `[validateAndRegisterOnLogin] Login sin X-Device-Id permitido para businessId=${user.businessId}, user=${user.email} (platform=${platform || 'desconocida'}, maxDevices=${posSub.maxDevices})`,
       );
       return;
     }
