@@ -22,6 +22,7 @@ import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
 import { UpdateOrderAssignmentDto } from './dto/update-order-assignment.dto';
 import { getSalonLabels } from '../salon/salon-profile.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
+import { WorkshopService } from '../workshop/workshop.service';
 
 @Injectable()
 export class TablesService {
@@ -31,6 +32,7 @@ export class TablesService {
     private readonly prisma: PrismaService,
     private readonly salesService: SalesService,
     private readonly auditService: AuditService,
+    private readonly workshopService: WorkshopService,
   ) {}
 
   async findAllTables(businessId: string, zoneId?: string) {
@@ -829,6 +831,7 @@ export class TablesService {
       paymentMethod: dto.paymentMethod || PosPaymentMethod.EFECTIVO,
       amountPaid,
       discountAmount,
+      customerId: dto.customerId || order.customerId || undefined,
       customerName: dto.customerName || order.customerName || undefined,
       customerPhone: dto.customerPhone || order.customerPhone || undefined,
       customerRuc: dto.customerRuc,
@@ -836,6 +839,7 @@ export class TablesService {
       zoneName: order.table?.zone?.name || undefined,
       waiterName: order.assignedWaiter?.name || order.openedByWaiterName || undefined,
       vehicleInfo: order.vehicleInfo || undefined,
+      workshopVehicleId: order.workshopVehicleId || undefined,
       cashRegisterId: dto.cashRegisterId,
       notes: dto.notes
         ? `${dto.notes} (${labels.table} ${order.table.number})`
@@ -1051,6 +1055,21 @@ export class TablesService {
     const openedByWaiterId = isWaiter ? user.sub : null;
     const openedByWaiterName = isWaiter ? (user.waiterName || null) : null;
 
+    // Ficha del vehículo y cliente (Taller)
+    let vehicleData: { vehicleId: string; customerId: string | null } | null = null;
+    try {
+      vehicleData = await this.workshopService.ensureVehicleOnReceive(businessId, {
+        number: plateNumber,
+        customerName,
+        customerPhone: dto.customerPhone,
+        customerId: dto.customerId,
+        vehicleInfo: dto.vehicleInfo,
+        mileage: dto.mileage,
+      });
+    } catch (vErr: any) {
+      this.logger.error(`[receiveVehicle] Error no bloqueante al gestionar ficha de taller: ${vErr.message}`);
+    }
+
     const newOrder = await this.prisma.tableOrder.create({
       data: {
         businessId,
@@ -1061,6 +1080,9 @@ export class TablesService {
         customerName,
         customerPhone: dto.customerPhone ? dto.customerPhone.trim() : null,
         vehicleInfo: dto.vehicleInfo ? dto.vehicleInfo.trim() : null,
+        workshopVehicleId: vehicleData?.vehicleId || null,
+        customerId: vehicleData?.customerId || dto.customerId || null,
+        mileage: dto.mileage !== undefined ? dto.mileage : null,
         assignedWaiterId: assignedWaiter ? assignedWaiter.id : null,
         notes: dto.note ? dto.note.trim() : null,
       },
@@ -1106,6 +1128,9 @@ export class TablesService {
       vehicleInfo: formattedOrder.vehicleInfo,
       assignedWaiterId: formattedOrder.assignedWaiterId,
       assignedWaiter: formattedOrder.assignedWaiter,
+      workshopVehicleId: formattedOrder.workshopVehicleId,
+      customerId: formattedOrder.customerId,
+      mileage: formattedOrder.mileage,
       isActive: table.isActive,
       createdAt: table.createdAt,
       updatedAt: table.updatedAt,
@@ -1162,6 +1187,9 @@ export class TablesService {
       customerName: order.customerName || null,
       customerPhone: order.customerPhone || null,
       vehicleInfo: order.vehicleInfo || null,
+      workshopVehicleId: order.workshopVehicleId || null,
+      customerId: order.customerId || null,
+      mileage: order.mileage !== undefined ? order.mileage : null,
       assignedWaiterId: order.assignedWaiterId || null,
       assignedWaiter: order.assignedWaiter
         ? {

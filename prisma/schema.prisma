@@ -339,6 +339,7 @@ model Business {
   creditGroups          CreditGroup[]
   creditStatements      CreditStatement[]
   productComponents     ProductComponent[]
+  workshopVehicles      WorkshopVehicle[]
 
   @@map("businesses")
 }
@@ -732,6 +733,8 @@ model Customer {
   creditAccounts   CreditAccount[]
   appointments     Appointment[]
   statementItems   CreditStatementItem[]
+  workshopVehicles WorkshopVehicle[]
+  tableOrders      TableOrder[]
 
   @@unique([businessId, phone])
   @@index([businessId, phone])
@@ -1017,10 +1020,13 @@ model Sale {
 
   returns             SaleReturn[]
   creditStatementItem CreditStatementItem?
+  workshopVehicleId   String?
+  workshopVehicle     WorkshopVehicle?     @relation(fields: [workshopVehicleId], references: [id], onDelete: SetNull)
 
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
+  @@index([workshopVehicleId])
   @@map("pos_sales")
 }
 
@@ -1490,6 +1496,11 @@ model TableOrder {
   customerName       String?          @db.VarChar(120)
   customerPhone      String?          @db.VarChar(30)
   vehicleInfo        String?          @db.VarChar(120)
+  workshopVehicleId  String?
+  workshopVehicle    WorkshopVehicle? @relation(fields: [workshopVehicleId], references: [id], onDelete: SetNull)
+  customerId         String?
+  customer           Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  mileage            Int?
   assignedWaiterId   String?
   assignedWaiter     Waiter?          @relation("AssignedWaiterOrders", fields: [assignedWaiterId], references: [id], onDelete: SetNull)
   cancelledAt        DateTime?
@@ -1502,6 +1513,8 @@ model TableOrder {
   @@index([businessId, status])
   @@index([tableId, status])
   @@index([assignedWaiterId])
+  @@index([workshopVehicleId])
+  @@index([customerId])
   @@map("pos_table_orders")
 }
 
@@ -1520,6 +1533,28 @@ model TableOrderItem {
   createdAt    DateTime    @default(now())
 
   @@map("pos_table_order_items")
+}
+
+model WorkshopVehicle {
+  id              String       @id @default(uuid())
+  businessId      String
+  business        Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  plate           String       @db.VarChar(50)
+  normalizedPlate String       @db.VarChar(50)
+  description     String?      @db.VarChar(200)
+  customerId      String?
+  customer        Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  lastMileage     Int?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  tableOrders     TableOrder[]
+  sales           Sale[]
+
+  @@unique([businessId, normalizedPlate])
+  @@index([businessId, customerId])
+  @@index([businessId, normalizedPlate])
+  @@map("workshop_vehicles")
 }
 
 model Waiter {

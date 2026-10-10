@@ -150,6 +150,10 @@ export class CreateSaleDto {
   @IsString()
   vehicleInfo?: string;
 
+  @IsOptional()
+  @IsString()
+  workshopVehicleId?: string;
+
   // Snapshot del cliente (offline o offline/online sync tolerante)
   @IsOptional()
   @IsNumber()

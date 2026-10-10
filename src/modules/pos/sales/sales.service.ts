@@ -766,6 +766,7 @@ export class SalesService {
           zoneName: dto.zoneName || null,
           waiterName: dto.waiterName || null,
           vehicleInfo: dto.vehicleInfo || null,
+          workshopVehicleId: dto.workshopVehicleId || null,
           items: { create: processedItems },
           payments: { create: processedPayments },
           subtotal,

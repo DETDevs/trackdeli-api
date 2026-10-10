@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsOptional, IsString, Length, MaxLength } from 'class-validator';
+import { IsInt, IsNotEmpty, IsOptional, IsString, Length, MaxLength, Min } from 'class-validator';
 
 export class ReceiveVehicleDto {
   @IsString()
@@ -22,8 +22,17 @@ export class ReceiveVehicleDto {
 
   @IsOptional()
   @IsString()
+  customerId?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(120, { message: 'La información del vehículo no puede exceder 120 caracteres' })
   vehicleInfo?: string;
+
+  @IsOptional()
+  @IsInt({ message: 'El kilometraje debe ser un número entero' })
+  @Min(0, { message: 'El kilometraje no puede ser negativo' })
+  mileage?: number;
 
   @IsOptional()
   technicianId?: string | null;

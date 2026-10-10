@@ -2133,6 +2133,61 @@ WHERE a."customerId" = c."id"
           name: '147a - business_product_subscriptions.trialEndsAt TIMESTAMPTZ',
           sql: `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "trialEndsAt" TIMESTAMPTZ;`,
         },
+        {
+          name: '155a - CREATE TABLE workshop_vehicles',
+          sql: `CREATE TABLE IF NOT EXISTS "workshop_vehicles" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "plate" VARCHAR(50) NOT NULL,
+            "normalizedPlate" VARCHAR(50) NOT NULL,
+            "description" VARCHAR(200),
+            "customerId" TEXT,
+            "lastMileage" INTEGER,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "workshop_vehicles_pkey" PRIMARY KEY ("id")
+          );`,
+        },
+        {
+          name: '155a - UNIQUE INDEX workshop_vehicles businessId normalizedPlate',
+          sql: `CREATE UNIQUE INDEX IF NOT EXISTS "workshop_vehicles_businessId_normalizedPlate_key" ON "workshop_vehicles" ("businessId", "normalizedPlate");`,
+        },
+        {
+          name: '155a - INDEX workshop_vehicles businessId customerId',
+          sql: `CREATE INDEX IF NOT EXISTS "workshop_vehicles_businessId_customerId_idx" ON "workshop_vehicles" ("businessId", "customerId");`,
+        },
+        {
+          name: '155a - INDEX workshop_vehicles businessId normalizedPlate',
+          sql: `CREATE INDEX IF NOT EXISTS "workshop_vehicles_businessId_normalizedPlate_idx" ON "workshop_vehicles" ("businessId", "normalizedPlate");`,
+        },
+        {
+          name: '155a - ALTER TABLE pos_table_orders ADD workshopVehicleId',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "workshopVehicleId" TEXT;`,
+        },
+        {
+          name: '155a - ALTER TABLE pos_table_orders ADD customerId',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "customerId" TEXT;`,
+        },
+        {
+          name: '155a - ALTER TABLE pos_table_orders ADD mileage',
+          sql: `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "mileage" INTEGER;`,
+        },
+        {
+          name: '155a - INDEX pos_table_orders workshopVehicleId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_table_orders_workshopVehicleId_idx" ON "pos_table_orders" ("workshopVehicleId");`,
+        },
+        {
+          name: '155a - INDEX pos_table_orders customerId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_table_orders_customerId_idx" ON "pos_table_orders" ("customerId");`,
+        },
+        {
+          name: '155a - ALTER TABLE pos_sales ADD workshopVehicleId',
+          sql: `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "workshopVehicleId" TEXT;`,
+        },
+        {
+          name: '155a - INDEX pos_sales workshopVehicleId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_sales_workshopVehicleId_idx" ON "pos_sales" ("workshopVehicleId");`,
+        },
       ];
 
       for (const step of ddlStatements) {

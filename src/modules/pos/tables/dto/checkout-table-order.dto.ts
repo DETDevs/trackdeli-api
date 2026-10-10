@@ -20,6 +20,10 @@ export class CheckoutTableOrderDto {
   discountAmount?: number;
 
   @IsOptional()
+  @IsString()
+  customerId?: string;
+
+  @IsOptional()
   @SanitizeText()
   @IsString()
   @MaxLength(100)
