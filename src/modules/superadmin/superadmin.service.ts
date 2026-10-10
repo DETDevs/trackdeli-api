@@ -485,6 +485,33 @@ export class SuperAdminService {
     const hasCarteraCobro = dto.hasCarteraCobro ?? false;
     const hasCitas = dto.hasCitas ?? false;
 
+    const webAdminEnabled = dto.webAdminEnabled !== undefined ? dto.webAdminEnabled : true;
+    let webBillingEnabled = dto.webBillingEnabled !== undefined ? dto.webBillingEnabled : false;
+    const maxWebDevices = dto.maxWebDevices !== undefined ? dto.maxWebDevices : 2;
+    const webBillingMonthlyUsd =
+      dto.webBillingMonthlyUsd !== undefined && dto.webBillingMonthlyUsd !== null
+        ? Number(dto.webBillingMonthlyUsd)
+        : null;
+
+    if (hasPOS) {
+      if (webBillingEnabled && !webAdminEnabled) {
+        throw new BadRequestException(
+          'La facturación web requiere que el acceso a la web admin esté habilitado',
+        );
+      }
+      if (!webAdminEnabled) {
+        webBillingEnabled = false;
+      }
+      if (webBillingMonthlyUsd !== null && webBillingMonthlyUsd < 0) {
+        throw new BadRequestException(
+          'La tarifa mensual de facturación web no puede ser negativa',
+        );
+      }
+      if (maxWebDevices !== null && maxWebDevices < 0) {
+        throw new BadRequestException('maxWebDevices no puede ser negativo');
+      }
+    }
+
     const result = await this.prisma.$transaction(async (tx) => {
       let targetIndustry: any = null;
       if (dto.industryId) {
@@ -636,6 +663,10 @@ export class SuperAdminService {
             posVertical,
             posMonthlyFee: new Prisma.Decimal(posFee),
             maxDevices,
+            webAdminEnabled,
+            webBillingEnabled,
+            maxWebDevices,
+            webBillingMonthlyUsd: webBillingMonthlyUsd !== null ? new Prisma.Decimal(webBillingMonthlyUsd) : null,
             backofficeTier: 'BASIC',
             trialHours: dto.trialHours !== undefined ? dto.trialHours : null,
             activatedAt: now,
@@ -653,6 +684,11 @@ export class SuperAdminService {
             metadata: {
               posVertical,
               posMonthlyFee: posFee,
+              maxDevices,
+              webAdminEnabled,
+              webBillingEnabled,
+              maxWebDevices,
+              webBillingMonthlyUsd,
             },
           },
         });
@@ -826,6 +862,10 @@ export class SuperAdminService {
         createdAt: result.business.createdAt,
         salonProfile: result.business.salonProfile,
         maxDevices: dto.maxDevices !== undefined ? dto.maxDevices : 1,
+        webAdminEnabled: hasPOS ? webAdminEnabled : false,
+        webBillingEnabled: hasPOS ? webBillingEnabled : false,
+        maxWebDevices: hasPOS ? maxWebDevices : null,
+        webBillingMonthlyUsd: hasPOS ? webBillingMonthlyUsd : null,
         trialHours: dto.trialHours !== undefined ? dto.trialHours : null,
       },
       encargado: {
@@ -2219,18 +2259,78 @@ export class SuperAdminService {
       );
     }
 
-    if (dto.webBillingEnabled !== undefined || dto.maxWebDevices !== undefined) {
-      const dataToUpdate: any = {};
-      if (dto.webBillingEnabled !== undefined) dataToUpdate.webBillingEnabled = dto.webBillingEnabled;
-      if (dto.maxWebDevices !== undefined) dataToUpdate.maxWebDevices = dto.maxWebDevices;
+    if (
+      dto.webAdminEnabled !== undefined ||
+      dto.webBillingEnabled !== undefined ||
+      dto.maxWebDevices !== undefined ||
+      dto.webBillingMonthlyUsd !== undefined
+    ) {
+      if (
+        dto.webBillingMonthlyUsd !== undefined &&
+        dto.webBillingMonthlyUsd !== null &&
+        Number(dto.webBillingMonthlyUsd) < 0
+      ) {
+        throw new BadRequestException(
+          'La tarifa mensual de facturación web no puede ser negativa',
+        );
+      }
+      if (
+        dto.maxWebDevices !== undefined &&
+        dto.maxWebDevices !== null &&
+        dto.maxWebDevices < 0
+      ) {
+        throw new BadRequestException('maxWebDevices no puede ser negativo');
+      }
 
+      const prevWebAdmin = (updatedSub as any).webAdminEnabled ?? true;
       const prevWebBilling = updatedSub.webBillingEnabled;
       const prevMaxWebDevices = updatedSub.maxWebDevices;
+      const prevWebBillingMonthlyUsd =
+        (updatedSub as any).webBillingMonthlyUsd !== null &&
+        (updatedSub as any).webBillingMonthlyUsd !== undefined
+          ? Number((updatedSub as any).webBillingMonthlyUsd)
+          : null;
+
+      const targetWebAdmin =
+        dto.webAdminEnabled !== undefined ? dto.webAdminEnabled : prevWebAdmin;
+      let targetWebBilling =
+        dto.webBillingEnabled !== undefined ? dto.webBillingEnabled : prevWebBilling;
+
+      // Regla: webBillingEnabled = true exige webAdminEnabled = true
+      if (dto.webBillingEnabled === true && !targetWebAdmin) {
+        throw new BadRequestException(
+          'La facturación web requiere que el acceso a la web admin esté habilitado',
+        );
+      }
+
+      // Si se apaga webAdminEnabled, también queda apagado webBillingEnabled
+      if (!targetWebAdmin) {
+        targetWebBilling = false;
+      }
+
+      const dataToUpdate: any = {};
+      if (dto.webAdminEnabled !== undefined) dataToUpdate.webAdminEnabled = targetWebAdmin;
+      if (targetWebBilling !== prevWebBilling || dto.webBillingEnabled !== undefined) {
+        dataToUpdate.webBillingEnabled = targetWebBilling;
+      }
+      if (dto.maxWebDevices !== undefined) dataToUpdate.maxWebDevices = dto.maxWebDevices;
+      if (dto.webBillingMonthlyUsd !== undefined) {
+        dataToUpdate.webBillingMonthlyUsd =
+          dto.webBillingMonthlyUsd !== null
+            ? new Prisma.Decimal(dto.webBillingMonthlyUsd)
+            : null;
+      }
 
       updatedSub = await this.prisma.businessProductSubscription.update({
         where: { id: sub.id },
         data: dataToUpdate,
       });
+
+      const nextWebBillingMonthlyUsd =
+        (updatedSub as any).webBillingMonthlyUsd !== null &&
+        (updatedSub as any).webBillingMonthlyUsd !== undefined
+          ? Number((updatedSub as any).webBillingMonthlyUsd)
+          : null;
 
       await this.auditService.record({
         businessId,
@@ -2239,12 +2339,22 @@ export class SuperAdminService {
         action: 'WEB_BILLING_SETTINGS_CHANGED',
         entityType: 'BusinessProductSubscription',
         entityId: sub.id,
-        before: { webBillingEnabled: prevWebBilling, maxWebDevices: prevMaxWebDevices },
-        after: { webBillingEnabled: updatedSub.webBillingEnabled, maxWebDevices: updatedSub.maxWebDevices },
+        before: {
+          webAdminEnabled: prevWebAdmin,
+          webBillingEnabled: prevWebBilling,
+          maxWebDevices: prevMaxWebDevices,
+          webBillingMonthlyUsd: prevWebBillingMonthlyUsd,
+        },
+        after: {
+          webAdminEnabled: updatedSub.webAdminEnabled,
+          webBillingEnabled: updatedSub.webBillingEnabled,
+          maxWebDevices: updatedSub.maxWebDevices,
+          webBillingMonthlyUsd: nextWebBillingMonthlyUsd,
+        },
       });
 
       this.logger.log(
-        `[updatePosSubscription] Configuración web billing de businessId=${businessId} cambiada: webBillingEnabled=${updatedSub.webBillingEnabled}, maxWebDevices=${updatedSub.maxWebDevices}`,
+        `[updatePosSubscription] Configuración web admin/billing de businessId=${businessId} cambiada: webAdminEnabled=${updatedSub.webAdminEnabled}, webBillingEnabled=${updatedSub.webBillingEnabled}, maxWebDevices=${updatedSub.maxWebDevices}, webBillingMonthlyUsd=${nextWebBillingMonthlyUsd}`,
       );
     }
 

@@ -94,6 +94,26 @@ export class CreateBusinessSuperAdminDto {
   maxDevices?: number | null;
 
   @IsOptional()
+  @IsBoolean()
+  webAdminEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  webBillingEnabled?: boolean;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(0)
+  maxWebDevices?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsNumber()
+  @Min(0)
+  webBillingMonthlyUsd?: number | null;
+
+  @IsOptional()
   @IsIn(['RESTAURANTE', 'TALLER', null])
   salonProfile?: 'RESTAURANTE' | 'TALLER' | null;
 

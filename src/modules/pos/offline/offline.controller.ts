@@ -11,6 +11,7 @@ import {
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
+import { NoWebPlatformGuard } from "../../../common/guards/no-web-platform.guard";
 import { SkipMembershipCheck } from "../../../common/decorators/skip-membership.decorator";
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from "../../../common/types/jwt-payload.interface";
@@ -46,6 +47,7 @@ export class OfflineController {
   }
 
   @Post("sync-offline-sales")
+  @UseGuards(NoWebPlatformGuard)
   syncOfflineSales(
     @Body() dto: SyncOfflineBatchDto,
     @CurrentUser() user: JwtPayload,

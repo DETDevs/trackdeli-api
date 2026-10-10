@@ -69,6 +69,7 @@ export class PosGuard implements CanActivate {
         trialHours: true,
         trialStartedAt: true,
         trialEndsAt: true,
+        webAdminEnabled: true,
       },
     });
 
@@ -79,6 +80,29 @@ export class PosGuard implements CanActivate {
         code: 'TRIAL_EXPIRED',
         message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
       });
+    }
+
+    const rawPlatform =
+      request.headers['x-client-platform'] || request.headers['X-Client-Platform'];
+    const platform = (rawPlatform || '').toString().toLowerCase();
+
+    if (platform.startsWith('web') && user.role !== UserRole.SUPERADMIN) {
+      const rawPath =
+        request.path ||
+        request.originalUrl?.split('?')[0] ||
+        request.url?.split('?')[0] ||
+        '';
+      const normalizedPath =
+        rawPath.replace(/^\/api\/v1/, '').replace(/\/$/, '') || '/';
+
+      if (normalizedPath !== '/pos/web-billing/status' && posSub?.webAdminEnabled === false) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'WEB_ACCESS_DISABLED',
+          message: 'El acceso a la web de administración está deshabilitado para este negocio',
+        });
+      }
     }
 
     if (user.role === UserRole.WAITER) {

@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsInt, IsOptional, Min, ValidateIf } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, Min, ValidateIf } from 'class-validator';
 
 export class UpdatePosSubscriptionDto {
   @IsOptional()
@@ -9,6 +9,10 @@ export class UpdatePosSubscriptionDto {
 
   @IsOptional()
   @IsBoolean()
+  webAdminEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   webBillingEnabled?: boolean;
 
   @IsOptional()
@@ -16,6 +20,12 @@ export class UpdatePosSubscriptionDto {
   @IsInt()
   @Min(0)
   maxWebDevices?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsNumber()
+  @Min(0)
+  webBillingMonthlyUsd?: number | null;
 
   @IsOptional()
   @IsIn(['RESTAURANTE', 'TALLER', null])

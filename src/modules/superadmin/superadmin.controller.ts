@@ -88,7 +88,7 @@ export class SuperAdminController {
   }
 
   @Post('businesses')
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async createBusiness(
     @Body() dto: CreateBusinessSuperAdminDto,
     @CurrentUser() user?: JwtPayload,

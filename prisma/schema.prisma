@@ -1635,8 +1635,10 @@ model BusinessProductSubscription {
   posVertical             PosVertical?
   posMonthlyFee           Decimal?               @db.Decimal(10, 2)
   maxDevices              Int?
+  webAdminEnabled         Boolean                @default(true)
   webBillingEnabled       Boolean                @default(false)
   maxWebDevices           Int?                   @default(2)
+  webBillingMonthlyUsd    Decimal?               @db.Decimal(10, 2)
   backofficeTier          String?                @default("BASIC") @db.VarChar(20)
   trialHours              Int?
   trialStartedAt          DateTime?

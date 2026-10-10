@@ -3,6 +3,7 @@ import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { IdempotencyInterceptor } from "../idempotency/idempotency.interceptor";
 import { PosGuard } from "../../../common/guards/pos.guard";
 import { WebBillingGuard } from "../../../common/guards/web-billing.guard";
+import { NoWebPlatformGuard } from "../../../common/guards/no-web-platform.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from '../../../common/types/jwt-payload.interface';
@@ -74,7 +75,7 @@ export class CashRegisterController {
   }
 
   @Post(":id/close")
-  @UseGuards(WebBillingGuard)
+  @UseGuards(NoWebPlatformGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
   close(
@@ -87,7 +88,7 @@ export class CashRegisterController {
   }
 
   @Post(":id/force-close")
-  @UseGuards(WebBillingGuard)
+  @UseGuards(NoWebPlatformGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
   forceClose(
@@ -107,6 +108,7 @@ export class CashRegisterController {
   }
 
   @Post("movements")
+  @UseGuards(NoWebPlatformGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.MOVIMIENTO_CAJA)
   addMovementCurrent(
@@ -117,9 +119,8 @@ export class CashRegisterController {
     return this.service.addMovement(null, dto, resolveBusinessId(user, qBid), user.sub, user.role);
   }
 
-
-
   @Post(":id/movements")
+  @UseGuards(NoWebPlatformGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.MOVIMIENTO_CAJA)
   addMovementPlural(
@@ -141,6 +142,7 @@ export class CashRegisterController {
   }
 
   @Post(":id/drawer-open")
+  @UseGuards(NoWebPlatformGuard)
   @RequirePosAction(PosAction.ABRIR_CAJON_SIN_VENTA)
   drawerOpen(
     @Param("id") id: string,
@@ -152,6 +154,7 @@ export class CashRegisterController {
   }
 
   @Post("drawer-open")
+  @UseGuards(NoWebPlatformGuard)
   @RequirePosAction(PosAction.ABRIR_CAJON_SIN_VENTA)
   drawerOpenCurrent(
     @Body() dto: { reason: string },

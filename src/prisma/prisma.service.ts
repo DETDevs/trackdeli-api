@@ -2242,6 +2242,7 @@ WHERE a."customerId" = c."id"
 
       await this.ensureProductTypeColumn();
       await this.ensureWebBillingColumns();
+      await this.ensureWebAdminColumns();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -2366,6 +2367,39 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 165a - Advertencia creando columnas de facturación web: ${err.message}`);
+    }
+  }
+
+  /**
+   * 166a - Columnas para acceso a la web admin por niveles (básico / con facturación):
+   * - business_product_subscriptions: webAdminEnabled (boolean default true), webBillingMonthlyUsd (numeric(10,2) null)
+   * DDL idempotente (ADD COLUMN IF NOT EXISTS) con advisory lock 1660100.
+   */
+  private async ensureWebAdminColumns(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1660100)`);
+
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "webAdminEnabled" BOOLEAN NOT NULL DEFAULT true`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "webBillingMonthlyUsd" NUMERIC(10, 2)`,
+          );
+
+          await tx.$executeRawUnsafe(
+            `UPDATE "business_product_subscriptions" SET "webAdminEnabled" = true WHERE "webAdminEnabled" IS NULL`,
+          );
+
+          this.logger.log(
+            `[PrismaService] ✓ 166a - Columnas de web admin por niveles sincronizadas (webAdminEnabled, webBillingMonthlyUsd).`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 166a - Advertencia creando columnas de web admin: ${err.message}`);
     }
   }
 

@@ -35,6 +35,7 @@ import { MembershipGuard } from './common/guards/membership.guard';
 import { HealthController } from './health.controller';
 
 import { CustomThrottlerGuard } from './common/guards/custom-throttler.guard';
+import { WebAdminAccessGuard } from './common/guards/web-admin-access.guard';
 
 @Module({
   imports: [
@@ -198,6 +199,10 @@ import { CustomThrottlerGuard } from './common/guards/custom-throttler.guard';
     {
       provide: APP_GUARD,
       useClass: MembershipGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: WebAdminAccessGuard,
     },
   ],
 })

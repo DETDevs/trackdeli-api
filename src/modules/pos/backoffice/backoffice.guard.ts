@@ -90,6 +90,7 @@ export class BackofficeGuard implements CanActivate {
           trialHours: true,
           trialStartedAt: true,
           trialEndsAt: true,
+          webAdminEnabled: true,
         },
       });
 
@@ -99,6 +100,19 @@ export class BackofficeGuard implements CanActivate {
           error: 'Forbidden',
           code: 'TRIAL_EXPIRED',
           message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
+        });
+      }
+
+      const rawPlatform =
+        request.headers['x-client-platform'] || request.headers['X-Client-Platform'];
+      const platform = (rawPlatform || '').toString().toLowerCase();
+
+      if (platform.startsWith('web') && posSub?.webAdminEnabled === false) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'WEB_ACCESS_DISABLED',
+          message: 'El acceso a la web de administración está deshabilitado para este negocio',
         });
       }
     }

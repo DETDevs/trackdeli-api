@@ -34,6 +34,7 @@ import { PosAction } from '../permissions/permissions.service';
 import { IdempotencyInterceptor } from '../idempotency/idempotency.interceptor';
 
 import { PosGuard } from '../../../common/guards/pos.guard';
+import { NoWebPlatformGuard } from '../../../common/guards/no-web-platform.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 
@@ -48,6 +49,7 @@ export class CreditController {
   // ABONOS INDIVIDUALES EXISTENTES
   // -------------------------------------------------------------
   @Post(['pos/credit-accounts/:id/payments', 'credit-accounts/:id/payments'])
+  @UseGuards(NoWebPlatformGuard)
   @RequirePosAction(PosAction.ABONAR_CREDITO)
   registerPayment(
     @Param('id') id: string,
@@ -273,6 +275,7 @@ export class CreditController {
   }
 
   @Post(['pos/credit/statements/:id/settle', 'credit/statements/:id/settle'])
+  @UseGuards(NoWebPlatformGuard)
   @RequirePosAction(PosAction.GROUP_SETTLE)
   @UseInterceptors(IdempotencyInterceptor)
   settleStatement(
@@ -298,6 +301,7 @@ export class CreditController {
 
   @Post(['pos/credit/statements/:id/cancel', 'credit/statements/:id/cancel'])
   @Patch(['pos/credit/statements/:id/cancel', 'credit/statements/:id/cancel'])
+  @UseGuards(NoWebPlatformGuard)
   @RequirePosAction(PosAction.GROUP_SETTLE)
   @UseInterceptors(IdempotencyInterceptor)
   cancelStatement(

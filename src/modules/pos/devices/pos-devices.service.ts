@@ -631,7 +631,10 @@ export class PosDevicesService {
       where: { businessId, status: 'OPEN' },
     });
 
+    const webAdminEnabled = (posSub as any)?.webAdminEnabled ?? true;
+
     return {
+      webAdminEnabled,
       enabled,
       maxWebDevices,
       activeWebDevices,
