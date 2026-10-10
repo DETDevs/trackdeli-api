@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, Logger } from "@nestjs/common";
 import { BusinessProductType, CreditAccountStatus, PosPaymentMethod } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { BusinessProductsService } from "../../business-products/business-products.service";
@@ -209,33 +209,100 @@ export class ReportsService {
     });
   }
 
-  async getOverview(businessId: string, period?: string, from?: string, to?: string) {
-    let dateFrom = from;
-    let dateTo = to;
-    if (period && !from && !to) {
-      const now = new Date();
-      if (period === 'today') {
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        dateFrom = start.toISOString();
-      } else if (period === 'week') {
-        const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        dateFrom = start.toISOString();
-      } else if (period === 'month') {
-        const start = new Date(now.getFullYear(), now.getMonth(), 1);
-        dateFrom = start.toISOString();
-      } else if (period === 'year') {
-        const start = new Date(now.getFullYear(), 0, 1);
-        dateFrom = start.toISOString();
+  resolveDateRange(period?: string, from?: string, to?: string) {
+    const MANAGUA_OFFSET_MS = -6 * 60 * 60 * 1000;
+
+    const createUtcDateFromManagua = (year: number, month: number, day: number, hour = 0, minute = 0, second = 0, ms = 0) => {
+      return new Date(Date.UTC(year, month, day, hour + 6, minute, second, ms));
+    };
+
+    const nowUtc = new Date();
+    const nowManagua = new Date(nowUtc.getTime() + MANAGUA_OFFSET_MS);
+    const y = nowManagua.getUTCFullYear();
+    const m = nowManagua.getUTCMonth();
+    const d = nowManagua.getUTCDate();
+
+    let curFrom: Date;
+    let curTo: Date;
+    let prevFrom: Date;
+    let prevTo: Date;
+
+    if (from && to) {
+      if (from.includes('T')) {
+        curFrom = new Date(from);
+      } else {
+        const [fy, fm, fd] = from.split('-').map(Number);
+        curFrom = createUtcDateFromManagua(fy, fm - 1, fd, 0, 0, 0, 0);
       }
+
+      if (to.includes('T')) {
+        curTo = new Date(to);
+      } else {
+        const [ty, tm, td] = to.split('-').map(Number);
+        curTo = createUtcDateFromManagua(ty, tm - 1, td, 23, 59, 59, 999);
+      }
+
+      if (isNaN(curFrom.getTime()) || isNaN(curTo.getTime())) {
+        throw new BadRequestException('Formato de fecha inválido');
+      }
+
+      if (curFrom > curTo) {
+        throw new BadRequestException('La fecha inicial (from) no puede ser posterior a la fecha final (to)');
+      }
+
+      const diffMs = curTo.getTime() - curFrom.getTime();
+      if (diffMs > 366 * 24 * 60 * 60 * 1000) {
+        throw new BadRequestException('El rango de fechas no puede exceder 366 días');
+      }
+
+      prevTo = new Date(curFrom.getTime() - 1);
+      prevFrom = new Date(prevTo.getTime() - diffMs);
+    } else if (period === 'week') {
+      curTo = nowUtc;
+      curFrom = new Date(nowUtc.getTime() - 7 * 24 * 60 * 60 * 1000);
+      prevTo = curFrom;
+      prevFrom = new Date(prevTo.getTime() - 7 * 24 * 60 * 60 * 1000);
+    } else if (period === 'month') {
+      curFrom = createUtcDateFromManagua(y, m, 1, 0, 0, 0, 0);
+      curTo = nowUtc;
+      const prevMonthYear = m === 0 ? y - 1 : y;
+      const prevMonth = m === 0 ? 11 : m - 1;
+      prevFrom = createUtcDateFromManagua(prevMonthYear, prevMonth, 1, 0, 0, 0, 0);
+      prevTo = new Date(curFrom.getTime() - 1);
+    } else if (period === 'year') {
+      curFrom = createUtcDateFromManagua(y, 0, 1, 0, 0, 0, 0);
+      curTo = nowUtc;
+      prevFrom = createUtcDateFromManagua(y - 1, 0, 1, 0, 0, 0, 0);
+      prevTo = new Date(curFrom.getTime() - 1);
+    } else {
+      // 'today' is default
+      curFrom = createUtcDateFromManagua(y, m, d, 0, 0, 0, 0);
+      curTo = createUtcDateFromManagua(y, m, d, 23, 59, 59, 999);
+      prevFrom = createUtcDateFromManagua(y, m, d - 1, 0, 0, 0, 0);
+      prevTo = createUtcDateFromManagua(y, m, d - 1, 23, 59, 59, 999);
     }
 
-    const summary = await this.getSalesSummary(businessId, dateFrom, dateTo);
-    const topProducts = await this.getTopProducts(businessId, dateFrom, dateTo, 5);
+    return {
+      current: { from: curFrom, to: curTo, fromIso: curFrom.toISOString(), toIso: curTo.toISOString() },
+      previous: { from: prevFrom, to: prevTo, fromIso: prevFrom.toISOString(), toIso: prevTo.toISOString() },
+    };
+  }
+
+  async getOverview(businessId: string, period?: string, from?: string, to?: string) {
+    const range = this.resolveDateRange(period, from, to);
+    const summary = await this.getSalesSummary(businessId, range.current.fromIso, range.current.toIso);
+    const prevSummary = await this.getSalesSummary(businessId, range.previous.fromIso, range.previous.toIso);
+    const topProducts = await this.getTopProducts(businessId, range.current.fromIso, range.current.toIso, 5);
     const lowStockProducts = await this.getStockAlerts(businessId);
 
     const totalCash = summary.byPaymentMethod['EFECTIVO'] || 0;
     const totalCard = summary.byPaymentMethod['TARJETA'] || 0;
     const totalTransfer = summary.byPaymentMethod['TRANSFERENCIA'] || 0;
+
+    const calcChange = (cur: number, prev: number): number | null => {
+      if (prev <= 0) return null;
+      return Math.round(((cur - prev) / prev) * 10000) / 100;
+    };
 
     return {
       totalSales: summary.totalRevenue,
@@ -252,6 +319,27 @@ export class ReportsService {
       })),
       lowStockProducts,
       summary,
+      comparison: {
+        previousPeriod: {
+          from: range.previous.fromIso,
+          to: range.previous.toIso,
+        },
+        totalSales: {
+          current: summary.totalRevenue,
+          previous: prevSummary.totalRevenue,
+          changePercent: calcChange(summary.totalRevenue, prevSummary.totalRevenue),
+        },
+        salesCount: {
+          current: summary.totalSales,
+          previous: prevSummary.totalSales,
+          changePercent: calcChange(summary.totalSales, prevSummary.totalSales),
+        },
+        averageTicket: {
+          current: summary.averageTicket,
+          previous: prevSummary.averageTicket,
+          changePercent: calcChange(summary.averageTicket, prevSummary.averageTicket),
+        },
+      },
     };
   }
 
@@ -533,6 +621,613 @@ export class ReportsService {
       totalRevenue: Math.round(totalRevenue * 100) / 100,
       totalQuantity: Math.round(totalQuantity * 100) / 100,
       products: sortedProducts,
+    };
+  }
+
+  async getProfit(businessId: string, period?: string, from?: string, to?: string) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
+
+    const result: any[] = await this.prisma.$queryRaw`
+      WITH product_costs AS (
+        SELECT
+          p.id AS product_id,
+          COALESCE(
+            p.cost,
+            (
+              SELECT SUM(rc.quantity * comp.cost)
+              FROM pos_product_components rc
+              JOIN pos_products comp ON comp.id = rc."componentProductId"
+              WHERE rc."parentProductId" = p.id
+                AND comp.cost IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM pos_product_components rc2
+                  JOIN pos_products comp2 ON comp2.id = rc2."componentProductId"
+                  WHERE rc2."parentProductId" = p.id AND (comp2.cost IS NULL OR comp2.cost <= 0)
+                )
+            )
+          ) AS unit_cost
+        FROM pos_products p
+        WHERE p."businessId" = ${businessId}
+      ),
+      item_sales AS (
+        SELECT
+          i.id,
+          i."productId",
+          i."productName",
+          GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS net_qty,
+          ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))::float AS line_revenue,
+          pc.unit_cost
+        FROM pos_sale_items i
+        JOIN pos_sales s ON s.id = i."saleId"
+        LEFT JOIN product_costs pc ON pc.product_id = i."productId"
+        WHERE s."businessId" = ${businessId}
+          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+      )
+      SELECT
+        COALESCE(SUM(line_revenue), 0)::float AS "totalRevenue",
+        COALESCE(SUM(CASE WHEN unit_cost IS NOT NULL AND unit_cost > 0 THEN unit_cost * net_qty ELSE 0 END), 0)::float AS "totalCost"
+      FROM item_sales;
+    `;
+
+    const missing: any[] = await this.prisma.$queryRaw`
+      WITH product_costs AS (
+        SELECT
+          p.id AS product_id,
+          COALESCE(
+            p.cost,
+            (
+              SELECT SUM(rc.quantity * comp.cost)
+              FROM pos_product_components rc
+              JOIN pos_products comp ON comp.id = rc."componentProductId"
+              WHERE rc."parentProductId" = p.id
+                AND comp.cost IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM pos_product_components rc2
+                  JOIN pos_products comp2 ON comp2.id = rc2."componentProductId"
+                  WHERE rc2."parentProductId" = p.id AND (comp2.cost IS NULL OR comp2.cost <= 0)
+                )
+            )
+          ) AS unit_cost
+        FROM pos_products p
+        WHERE p."businessId" = ${businessId}
+      ),
+      item_sales AS (
+        SELECT
+          i."productId",
+          i."productName",
+          GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS net_qty,
+          ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))::float AS line_revenue,
+          pc.unit_cost
+        FROM pos_sale_items i
+        JOIN pos_sales s ON s.id = i."saleId"
+        LEFT JOIN product_costs pc ON pc.product_id = i."productId"
+        WHERE s."businessId" = ${businessId}
+          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+      )
+      SELECT
+        COALESCE("productId", 'unknown') AS id,
+        "productName" AS name,
+        SUM(net_qty)::float AS "quantitySold",
+        SUM(line_revenue)::float AS "totalSold"
+      FROM item_sales
+      WHERE (unit_cost IS NULL OR unit_cost <= 0) AND net_qty > 0
+      GROUP BY "productId", "productName"
+      ORDER BY "totalSold" DESC;
+    `;
+
+    const totalRevenue = Math.round((result[0]?.totalRevenue || 0) * 100) / 100;
+    const totalCost = Math.round((result[0]?.totalCost || 0) * 100) / 100;
+    const estimatedProfit = Math.round((totalRevenue - totalCost) * 100) / 100;
+    const marginPercent = totalRevenue > 0
+      ? Math.round(((totalRevenue - totalCost) / totalRevenue) * 10000) / 100
+      : 0;
+
+    return {
+      period: { from: range.current.fromIso, to: range.current.toIso },
+      totalRevenue,
+      totalCost,
+      estimatedProfit,
+      marginPercent,
+      missingCostCount: missing.length,
+      missingCostProducts: missing.slice(0, 10).map(m => ({
+        id: m.id,
+        name: m.name,
+        quantitySold: Math.round(m.quantitySold * 100) / 100,
+        totalSold: Math.round(m.totalSold * 100) / 100,
+      })),
+    };
+  }
+
+  async getSalesByTime(businessId: string, period?: string, from?: string, to?: string) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
+
+    const hoursRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        EXTRACT(HOUR FROM s."createdAt" AT TIME ZONE 'America/Managua')::int AS hour,
+        COUNT(s.id)::int AS count,
+        COALESCE(SUM(s.total - COALESCE(refunds.total_refund, 0)), 0)::float AS revenue
+      FROM pos_sales s
+      LEFT JOIN (
+        SELECT "saleId", SUM("refundAmount") AS total_refund
+        FROM pos_sale_returns
+        WHERE "businessId" = ${businessId}
+        GROUP BY "saleId"
+      ) refunds ON refunds."saleId" = s.id
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+      GROUP BY hour
+      ORDER BY hour ASC;
+    `;
+
+    const hourMap = new Map<number, { count: number; revenue: number }>();
+    for (const r of hoursRaw) {
+      hourMap.set(r.hour, { count: r.count, revenue: Math.round(r.revenue * 100) / 100 });
+    }
+
+    const byHour: Array<{ hour: number; count: number; revenue: number }> = [];
+    let peakHour: { hour: number; count: number; revenue: number } | null = null;
+    for (let h = 0; h < 24; h++) {
+      const data = hourMap.get(h) || { count: 0, revenue: 0 };
+      const item = { hour: h, count: data.count, revenue: data.revenue };
+      byHour.push(item);
+      if (item.count > 0 && (!peakHour || item.revenue > peakHour.revenue)) {
+        peakHour = item;
+      }
+    }
+
+    const dowRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        EXTRACT(DOW FROM s."createdAt" AT TIME ZONE 'America/Managua')::int AS dow,
+        COUNT(s.id)::int AS count,
+        COALESCE(SUM(s.total - COALESCE(refunds.total_refund, 0)), 0)::float AS revenue
+      FROM pos_sales s
+      LEFT JOIN (
+        SELECT "saleId", SUM("refundAmount") AS total_refund
+        FROM pos_sale_returns
+        WHERE "businessId" = ${businessId}
+        GROUP BY "saleId"
+      ) refunds ON refunds."saleId" = s.id
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+      GROUP BY dow
+      ORDER BY dow ASC;
+    `;
+
+    const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    const dowMap = new Map<number, { count: number; revenue: number }>();
+    for (const r of dowRaw) {
+      dowMap.set(r.dow, { count: r.count, revenue: Math.round(r.revenue * 100) / 100 });
+    }
+
+    const byDayOfWeek: Array<{ dayOfWeek: number; dayName: string; count: number; revenue: number }> = [];
+    let peakDay: { dayOfWeek: number; dayName: string; count: number; revenue: number } | null = null;
+    for (let d = 0; d < 7; d++) {
+      const data = dowMap.get(d) || { count: 0, revenue: 0 };
+      const item = { dayOfWeek: d, dayName: dayNames[d], count: data.count, revenue: data.revenue };
+      byDayOfWeek.push(item);
+      if (item.count > 0 && (!peakDay || item.revenue > peakDay.revenue)) {
+        peakDay = item;
+      }
+    }
+
+    return {
+      period: { from: range.current.fromIso, to: range.current.toIso },
+      byHour,
+      peakHour,
+      byDayOfWeek,
+      peakDay,
+    };
+  }
+
+  async getSalesByCategory(businessId: string, period?: string, from?: string, to?: string) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
+
+    const rows: any[] = await this.prisma.$queryRaw`
+      SELECT
+        COALESCE(c.id, 'uncategorized') AS "categoryId",
+        COALESCE(c.name, 'Sin categoría') AS "categoryName",
+        COALESCE(SUM(GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))), 0)::float AS quantity,
+        COALESCE(SUM((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))), 0)::float AS revenue
+      FROM pos_sale_items i
+      JOIN pos_sales s ON s.id = i."saleId"
+      LEFT JOIN pos_products p ON p.id = i."productId"
+      LEFT JOIN pos_categories c ON c.id = p."categoryId"
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+      GROUP BY c.id, c.name
+      HAVING COALESCE(SUM(GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))), 0) > 0
+      ORDER BY revenue DESC;
+    `;
+
+    const totalRevenue = rows.reduce((sum, r) => sum + r.revenue, 0);
+
+    const categories = rows.map(r => ({
+      categoryId: r.categoryId,
+      categoryName: r.categoryName,
+      quantity: Math.round(r.quantity * 100) / 100,
+      revenue: Math.round(r.revenue * 100) / 100,
+      percentage: totalRevenue > 0 ? Math.round((r.revenue / totalRevenue) * 10000) / 100 : 0,
+    }));
+
+    return {
+      period: { from: range.current.fromIso, to: range.current.toIso },
+      totalRevenue: Math.round(totalRevenue * 100) / 100,
+      categories,
+    };
+  }
+
+  async getControl(businessId: string, period?: string, from?: string, to?: string) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
+
+    // 1. Ventas anuladas
+    const voidedSalesAgg: any[] = await this.prisma.$queryRaw`
+      SELECT
+        COUNT(id)::int AS count,
+        COALESCE(SUM(total), 0)::float AS "totalAmount"
+      FROM pos_sales
+      WHERE "businessId" = ${businessId}
+        AND status = 'VOIDED'
+        AND (
+          ("voidedAt" >= ${startDate} AND "voidedAt" <= ${endDate})
+          OR ("voidedAt" IS NULL AND "createdAt" >= ${startDate} AND "createdAt" <= ${endDate})
+        );
+    `;
+
+    const voidedSalesRecent = await this.prisma.sale.findMany({
+      where: {
+        businessId,
+        status: 'VOIDED',
+        OR: [
+          { voidedAt: { gte: startDate, lte: endDate } },
+          { voidedAt: null, createdAt: { gte: startDate, lte: endDate } },
+        ],
+      },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        total: true,
+        voidedAt: true,
+        createdAt: true,
+        voidReason: true,
+        voidedById: true,
+        voidApprovedById: true,
+      },
+      orderBy: { voidedAt: 'desc' },
+      take: 10,
+    });
+
+    // 2. Devoluciones
+    const returnsAgg: any[] = await this.prisma.$queryRaw`
+      SELECT
+        COUNT(id)::int AS count,
+        COALESCE(SUM("refundAmount"), 0)::float AS "totalAmount"
+      FROM pos_sale_returns
+      WHERE "businessId" = ${businessId}
+        AND "createdAt" >= ${startDate} AND "createdAt" <= ${endDate};
+    `;
+
+    const returnsRecent = await this.prisma.saleReturn.findMany({
+      where: {
+        businessId,
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      select: {
+        id: true,
+        returnNumber: true,
+        refundAmount: true,
+        refundMethod: true,
+        reason: true,
+        createdAt: true,
+        createdById: true,
+        approvedById: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    });
+
+    // 3. Descuentos
+    const discountsAgg: any[] = await this.prisma.$queryRaw`
+      SELECT
+        COUNT(id)::int AS count,
+        COALESCE(SUM("discountAmount"), 0)::float AS "totalAmount"
+      FROM pos_sales
+      WHERE "businessId" = ${businessId}
+        AND "discountAmount" > 0
+        AND status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND "createdAt" >= ${startDate} AND "createdAt" <= ${endDate};
+    `;
+
+    const discountsRecent = await this.prisma.sale.findMany({
+      where: {
+        businessId,
+        discountAmount: { gt: 0 },
+        status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        subtotal: true,
+        discountAmount: true,
+        total: true,
+        createdAt: true,
+        cashierId: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    });
+
+    const userIds = new Set<string>();
+    for (const v of voidedSalesRecent) {
+      if (v.voidedById) userIds.add(v.voidedById);
+      if (v.voidApprovedById) userIds.add(v.voidApprovedById);
+    }
+    for (const r of returnsRecent) {
+      if (r.createdById) userIds.add(r.createdById);
+      if (r.approvedById) userIds.add(r.approvedById);
+    }
+    for (const d of discountsRecent) {
+      if (d.cashierId) userIds.add(d.cashierId);
+    }
+
+    const users = userIds.size > 0
+      ? await this.prisma.user.findMany({
+          where: { id: { in: Array.from(userIds) } },
+          select: { id: true, name: true, email: true },
+        })
+      : [];
+    const userMap = new Map(users.map(u => [u.id, { id: u.id, name: u.name || u.email }]));
+
+    // 4. Diferencias de caja
+    const registersAgg: any[] = await this.prisma.$queryRaw`
+      SELECT
+        COUNT(id)::int AS count,
+        COALESCE(SUM(difference), 0)::float AS "totalDifference",
+        COUNT(CASE WHEN difference < 0 THEN 1 END)::int AS "shortageCount",
+        COALESCE(SUM(CASE WHEN difference < 0 THEN difference ELSE 0 END), 0)::float AS "shortageTotal",
+        COUNT(CASE WHEN difference > 0 THEN 1 END)::int AS "overageCount",
+        COALESCE(SUM(CASE WHEN difference > 0 THEN difference ELSE 0 END), 0)::float AS "overageTotal"
+      FROM pos_cash_registers
+      WHERE "businessId" = ${businessId}
+        AND status = 'CLOSED'
+        AND "closedAt" >= ${startDate} AND "closedAt" <= ${endDate};
+    `;
+
+    const registersRecent = await this.prisma.cashRegister.findMany({
+      where: {
+        businessId,
+        status: 'CLOSED',
+        closedAt: { gte: startDate, lte: endDate },
+      },
+      include: {
+        cashier: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { closedAt: 'desc' },
+      take: 10,
+    });
+
+    return {
+      period: { from: range.current.fromIso, to: range.current.toIso },
+      voidedSales: {
+        count: voidedSalesAgg[0]?.count || 0,
+        totalAmount: Math.round((voidedSalesAgg[0]?.totalAmount || 0) * 100) / 100,
+        recent: voidedSalesRecent.map(v => ({
+          id: v.id,
+          invoiceNumber: v.invoiceNumber,
+          total: v.total,
+          voidedAt: v.voidedAt || v.createdAt,
+          reason: v.voidReason,
+          voidedBy: v.voidedById ? userMap.get(v.voidedById) || { id: v.voidedById, name: 'Desconocido' } : null,
+          approvedBy: v.voidApprovedById ? userMap.get(v.voidApprovedById) || { id: v.voidApprovedById, name: 'Desconocido' } : null,
+        })),
+      },
+      returns: {
+        count: returnsAgg[0]?.count || 0,
+        totalAmount: Math.round((returnsAgg[0]?.totalAmount || 0) * 100) / 100,
+        recent: returnsRecent.map(r => ({
+          id: r.id,
+          returnNumber: r.returnNumber,
+          refundAmount: r.refundAmount,
+          refundMethod: r.refundMethod,
+          reason: r.reason,
+          createdAt: r.createdAt,
+          createdBy: r.createdById ? userMap.get(r.createdById) || { id: r.createdById, name: 'Desconocido' } : null,
+          approvedBy: r.approvedById ? userMap.get(r.approvedById) || { id: r.approvedById, name: 'Desconocido' } : null,
+        })),
+      },
+      discounts: {
+        count: discountsAgg[0]?.count || 0,
+        totalAmount: Math.round((discountsAgg[0]?.totalAmount || 0) * 100) / 100,
+        recent: discountsRecent.map(d => ({
+          id: d.id,
+          invoiceNumber: d.invoiceNumber,
+          subtotal: d.subtotal,
+          discountAmount: d.discountAmount,
+          total: d.total,
+          createdAt: d.createdAt,
+          cashier: d.cashierId ? userMap.get(d.cashierId) || { id: d.cashierId, name: 'Desconocido' } : null,
+        })),
+      },
+      cashDiscrepancies: {
+        closedRegistersCount: registersAgg[0]?.count || 0,
+        totalDifference: Math.round((registersAgg[0]?.totalDifference || 0) * 100) / 100,
+        shortageCount: registersAgg[0]?.shortageCount || 0,
+        shortageTotal: Math.round((registersAgg[0]?.shortageTotal || 0) * 100) / 100,
+        overageCount: registersAgg[0]?.overageCount || 0,
+        overageTotal: Math.round((registersAgg[0]?.overageTotal || 0) * 100) / 100,
+        recent: registersRecent.map(r => ({
+          id: r.id,
+          openedAt: r.openedAt,
+          closedAt: r.closedAt,
+          cashier: { id: r.cashier.id, name: r.cashier.name || r.cashier.email },
+          expectedCash: r.expectedCash ? Number(r.expectedCash) : 0,
+          closingCash: r.closingCash ? Number(r.closingCash) : 0,
+          difference: r.difference ? Number(r.difference) : 0,
+          notes: r.notes,
+        })),
+      },
+    };
+  }
+
+  async getSalesByCashier(businessId: string, period?: string, from?: string, to?: string) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
+
+    const rows: any[] = await this.prisma.$queryRaw`
+      SELECT
+        u.id AS "cashierId",
+        COALESCE(u.name, u.email) AS "cashierName",
+        COUNT(s.id)::int AS "salesCount",
+        COALESCE(SUM(s.total - COALESCE(refunds.total_refund, 0)), 0)::float AS "totalSales"
+      FROM pos_sales s
+      JOIN users u ON u.id = s."cashierId"
+      LEFT JOIN (
+        SELECT "saleId", SUM("refundAmount") AS total_refund
+        FROM pos_sale_returns
+        WHERE "businessId" = ${businessId}
+        GROUP BY "saleId"
+      ) refunds ON refunds."saleId" = s.id
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+      GROUP BY u.id, u.name, u.email
+      ORDER BY "totalSales" DESC;
+    `;
+
+    const totalSales = rows.reduce((sum, r) => sum + r.totalSales, 0);
+
+    const cashiers = rows.map(r => ({
+      cashierId: r.cashierId,
+      cashierName: r.cashierName,
+      salesCount: r.salesCount,
+      totalSales: Math.round(r.totalSales * 100) / 100,
+      averageTicket: r.salesCount > 0 ? Math.round((r.totalSales / r.salesCount) * 100) / 100 : 0,
+      percentage: totalSales > 0 ? Math.round((r.totalSales / totalSales) * 10000) / 100 : 0,
+    }));
+
+    return {
+      period: { from: range.current.fromIso, to: range.current.toIso },
+      totalSales: Math.round(totalSales * 100) / 100,
+      cashiers,
+    };
+  }
+
+  async getWorkshopReport(businessId: string, period?: string, from?: string, to?: string) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { salonProfile: true },
+    });
+
+    if (business?.salonProfile !== 'TALLER') {
+      return {
+        isWorkshop: false,
+        period: { from: range.current.fromIso, to: range.current.toIso },
+        services: [],
+        technicians: [],
+        vehiclesAttendedCount: 0,
+        vehiclesAttended: [],
+      };
+    }
+
+    const servicesRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        COALESCE(i."productId", 'unknown') AS "productId",
+        i."productName",
+        SUM(GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))::float AS quantity,
+        SUM((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))::float AS total
+      FROM pos_sale_items i
+      JOIN pos_sales s ON s.id = i."saleId"
+      LEFT JOIN pos_products p ON p.id = i."productId"
+      LEFT JOIN pos_categories c ON c.id = p."categoryId"
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND (s."workshopVehicleId" IS NOT NULL OR p."trackStock" = false OR c.name ILIKE '%servicio%')
+      GROUP BY i."productId", i."productName"
+      HAVING SUM(GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))) > 0
+      ORDER BY total DESC
+      LIMIT 10;
+    `;
+
+    const techniciansRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        w.id AS "technicianId",
+        COALESCE(w.name, 'Sin técnico') AS "technicianName",
+        COUNT(o.id)::int AS "ordersCount",
+        COALESCE(SUM(s.total), 0)::float AS "totalRevenue"
+      FROM pos_table_orders o
+      JOIN pos_sales s ON s.id = o."saleId"
+      LEFT JOIN pos_waiters w ON w.id = o."assignedWaiterId"
+      WHERE o."businessId" = ${businessId}
+        AND o.status = 'CLOSED'
+        AND o."workshopVehicleId" IS NOT NULL
+        AND COALESCE(o."closedAt", o."createdAt") >= ${startDate}
+        AND COALESCE(o."closedAt", o."createdAt") <= ${endDate}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+      GROUP BY w.id, w.name
+      ORDER BY "totalRevenue" DESC;
+    `;
+
+    const vehiclesRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        v.id AS "vehicleId",
+        v.plate,
+        v.description,
+        COUNT(o.id)::int AS "ordersCount",
+        COALESCE(SUM(s.total), 0)::float AS "totalRevenue"
+      FROM pos_table_orders o
+      JOIN pos_sales s ON s.id = o."saleId"
+      JOIN workshop_vehicles v ON v.id = o."workshopVehicleId"
+      WHERE o."businessId" = ${businessId}
+        AND o.status = 'CLOSED'
+        AND COALESCE(o."closedAt", o."createdAt") >= ${startDate}
+        AND COALESCE(o."closedAt", o."createdAt") <= ${endDate}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+      GROUP BY v.id, v.plate, v.description
+      ORDER BY "totalRevenue" DESC;
+    `;
+
+    return {
+      isWorkshop: true,
+      period: { from: range.current.fromIso, to: range.current.toIso },
+      services: servicesRaw.map(s => ({
+        productId: s.productId,
+        productName: s.productName,
+        quantity: Math.round(s.quantity * 100) / 100,
+        total: Math.round(s.total * 100) / 100,
+      })),
+      technicians: techniciansRaw.map(t => ({
+        technicianId: t.technicianId,
+        technicianName: t.technicianName,
+        ordersCount: t.ordersCount,
+        totalRevenue: Math.round(t.totalRevenue * 100) / 100,
+      })),
+      vehiclesAttendedCount: vehiclesRaw.length,
+      vehiclesAttended: vehiclesRaw.map(v => ({
+        vehicleId: v.vehicleId,
+        plate: v.plate,
+        description: v.description,
+        ordersCount: v.ordersCount,
+        totalRevenue: Math.round(v.totalRevenue * 100) / 100,
+      })),
     };
   }
 }

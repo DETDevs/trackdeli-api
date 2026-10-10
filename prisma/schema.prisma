@@ -1028,6 +1028,7 @@ model Sale {
 
   @@index([workshopVehicleId])
   @@index([businessId, customerId])
+  @@index([businessId, status, createdAt])
   @@map("pos_sales")
 }
 
@@ -1048,6 +1049,7 @@ model SaleItem {
 
   returnItems SaleReturnItem[]
 
+  @@index([saleId])
   @@map("pos_sale_items")
 }
 
@@ -1268,6 +1270,7 @@ model CashRegister {
 
   createdAt     DateTime   @default(now())
 
+  @@index([businessId, status, closedAt])
   @@map("pos_cash_registers")
 }
 

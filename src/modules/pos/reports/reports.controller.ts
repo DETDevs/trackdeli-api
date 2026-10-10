@@ -126,4 +126,70 @@ export class ReportsController {
       to,
     );
   }
+
+  @Get("profit")
+  profit(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getProfit(resolveBusinessId(user, qBid), period, from, to);
+  }
+
+  @Get("sales-by-time")
+  salesByTime(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getSalesByTime(resolveBusinessId(user, qBid), period, from, to);
+  }
+
+  @Get("sales-by-category")
+  salesByCategory(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getSalesByCategory(resolveBusinessId(user, qBid), period, from, to);
+  }
+
+  @Get("control")
+  control(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getControl(resolveBusinessId(user, qBid), period, from, to);
+  }
+
+  @Get("sales-by-cashier")
+  salesByCashier(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getSalesByCashier(resolveBusinessId(user, qBid), period, from, to);
+  }
+
+  @Get("workshop")
+  workshop(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getWorkshopReport(resolveBusinessId(user, qBid), period, from, to);
+  }
 }
