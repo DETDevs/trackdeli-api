@@ -365,6 +365,11 @@ export class ProductsService {
     }
 
     let trackStock = dto.trackStock ?? dto.trackInventory;
+    // 160d: tipo explícito; si no viene, PRODUCT (compatibilidad con desktop viejo)
+    const type: 'PRODUCT' | 'SERVICE' = dto.type ?? 'PRODUCT';
+    if (type === 'SERVICE') {
+      trackStock = false;
+    }
     if (trackStock === undefined) {
       const subscription = await this.prisma.businessProductSubscription.findUnique({
         where: { businessId_productType: { businessId, productType: BusinessProductType.POS } },
@@ -397,6 +402,7 @@ export class ProductsService {
       data: {
         ...productData,
         unit,
+        type,
         trackStock,
         attributes: validatedAttributes,
         businessId,
@@ -464,7 +470,12 @@ export class ProductsService {
       }
     }
 
-    const trackStock = dto.trackStock ?? dto.trackInventory;
+    let trackStock = dto.trackStock ?? dto.trackInventory;
+    // 160d: si no viene type se mantiene el actual. Un SERVICE nunca controla stock propio.
+    const effectiveType = dto.type ?? (product as any).type ?? 'PRODUCT';
+    if (effectiveType === 'SERVICE') {
+      trackStock = false;
+    }
     if (product.isRecipe && trackStock === true) {
       throw new UnprocessableEntityException({
         statusCode: 422,

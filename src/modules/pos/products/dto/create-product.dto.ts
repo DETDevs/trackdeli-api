@@ -78,4 +78,8 @@ export class CreateProductDto {
 
   @IsOptional()
   attributes?: Record<string, any>;
+
+  @IsOptional()
+  @IsIn(['PRODUCT', 'SERVICE'], { message: 'El tipo debe ser PRODUCT o SERVICE' })
+  type?: 'PRODUCT' | 'SERVICE';
 }

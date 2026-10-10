@@ -915,6 +915,8 @@ model Product {
 
   unit        String   @default("UND") @db.VarChar(10)
   isRecipe    Boolean  @default(false)
+  /// 160d: 'PRODUCT' | 'SERVICE'. Un SERVICE no controla stock propio (trackStock = false).
+  type        String   @default("PRODUCT") @db.VarChar(10)
   trackStock  Boolean  @default(true)
   stock       Decimal  @default(0) @db.Decimal(12, 3)
   minStock    Decimal  @default(5) @db.Decimal(12, 3)

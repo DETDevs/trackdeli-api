@@ -2240,6 +2240,8 @@ WHERE a."customerId" = c."id"
 
       this.logger.log('[PrismaService] Esquema de base de datos verificado y listo.');
 
+      await this.ensureProductTypeColumn();
+
       await this.ensureBusinessProductsBackfilled();
 
       await this.reconcileProductTrackStock();
@@ -2259,6 +2261,47 @@ WHERE a."customerId" = c."id"
       await this.ensureSalonZonesBackfilled();
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia general en auto-sincronización de esquema: ${err.message}`);
+    }
+  }
+
+  /**
+   * 160d - Columna pos_products."type" ('PRODUCT' | 'SERVICE').
+   * Se crea una sola vez. El backfill corre SOLO en la misma transacción que crea la columna:
+   * si la columna ya existe no se toca ningún dato (no pisa cambios manuales).
+   * DDL transaccional de Postgres: si el backfill falla, la columna tampoco queda creada y se reintenta
+   * en el próximo arranque. El advisory lock evita que dos instancias lo hagan en paralelo.
+   * Backfill: SERVICE solo si trackStock = false Y sku empieza con 'SRV-'. Nada más.
+   */
+  private async ensureProductTypeColumn(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1600400)`);
+          const existing: any[] = await tx.$queryRawUnsafe(
+            `SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema() AND table_name = 'pos_products' AND column_name = 'type'`,
+          );
+          if (existing.length > 0) {
+            this.logger.log('[PrismaService] ✓ 160d - pos_products.type ya existe; sin backfill.');
+            return;
+          }
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "type" VARCHAR(10) NOT NULL DEFAULT 'PRODUCT'`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_products" ADD CONSTRAINT "pos_products_type_check" CHECK ("type" IN ('PRODUCT', 'SERVICE'))`,
+          );
+          const marked = await tx.$executeRawUnsafe(
+            `UPDATE "pos_products" SET "type" = 'SERVICE' WHERE "trackStock" = false AND "sku" LIKE 'SRV-%'`,
+          );
+          this.logger.log(
+            `[PrismaService] ✓ 160d - Columna pos_products.type creada. Backfill: ${marked} producto(s) marcados SERVICE (trackStock=false y sku 'SRV-%').`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 160d - Advertencia creando pos_products.type: ${err.message}`);
     }
   }
 

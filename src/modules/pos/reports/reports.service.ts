@@ -9,12 +9,12 @@ export class ReportsService {
 
   /**
    * Única resolución de costo por producto (usar con `WITH RECURSIVE`).
-   * Prioridad: PRODUCT_COST (cost cargado, 0 incluido) > RECIPE > UNKNOWN.
+   * Prioridad: PRODUCT_COST (cost cargado, 0 incluido) > RECIPE > LABOR > UNKNOWN.
    * - RECIPE es recursiva (tope de profundidad 5). Un componente usa su costo directo
    *   o, si no lo tiene, su propia receta. Si CUALQUIER hoja no tiene costo, el producto
-   *   completo queda UNKNOWN (sin suma parcial).
-   * - LABOR: DESACTIVADO. pos_products no tiene un campo que marque "servicio"
-   *   (trackStock / nombre de categoría NO sirven para esto), así que no se clasifica LABOR.
+   *   completo queda UNKNOWN (sin suma parcial), aunque sea servicio.
+   * - LABOR (160d): solo `type = 'SERVICE'`, SIN receta y con cost nulo -> costo 0, cubierto.
+   *   Nunca se decide por trackStock, categoría ni nombre.
    * - PURCHASE: no entra (no hay fuente de costo por compras en esta resolución).
    */
   private getCostResolutionSql(businessId: string) {
@@ -49,11 +49,15 @@ export class ReportsService {
           CASE
             WHEN p.cost IS NOT NULL THEN 'PRODUCT_COST'
             WHEN rs.root_id IS NOT NULL AND rs.has_missing = false THEN 'RECIPE'
+            WHEN p."type" = 'SERVICE' AND rs.root_id IS NULL
+              AND NOT EXISTS (SELECT 1 FROM pos_product_components x WHERE x."parentProductId" = p.id) THEN 'LABOR'
             ELSE 'UNKNOWN'
           END AS cost_source,
           CASE
             WHEN p.cost IS NOT NULL THEN p.cost::float
             WHEN rs.root_id IS NOT NULL AND rs.has_missing = false THEN rs.recipe_cost
+            WHEN p."type" = 'SERVICE' AND rs.root_id IS NULL
+              AND NOT EXISTS (SELECT 1 FROM pos_product_components x WHERE x."parentProductId" = p.id) THEN 0::float
             ELSE NULL
           END AS unit_cost
         FROM pos_products p
