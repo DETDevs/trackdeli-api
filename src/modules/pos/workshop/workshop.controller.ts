@@ -29,7 +29,7 @@ export class WorkshopController {
    * Busca vehículos por placa, cliente o teléfono (máx 20).
    */
   @Get('vehicles')
-  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   getVehicles(
     @CurrentUser() user: JwtPayload,
     @Query('search') search?: string,
@@ -44,7 +44,7 @@ export class WorkshopController {
    * Ficha completa del vehículo y su cliente.
    */
   @Get('vehicles/:id')
-  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   getVehicleById(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
@@ -59,7 +59,7 @@ export class WorkshopController {
    * Historial de visitas con fecha, kilometraje, técnico, servicios/productos cobrados y total.
    */
   @Get('vehicles/:id/history')
-  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   getVehicleHistory(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
@@ -94,7 +94,7 @@ export class WorkshopController {
    * Ficha del cliente con todos sus vehículos registrados.
    */
   @Get('customers/:id')
-  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   getCustomerWithVehicles(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
