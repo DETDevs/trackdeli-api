@@ -33,107 +33,149 @@ export class ReportsService {
     return range;
   }
 
-  async getSalesSummary(businessId: string, from?: string, to?: string) {
-    const where: any = {
-      businessId,
-      status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
-    };
-    const dateRange = this.buildDateRange(from, to);
-    if (Object.keys(dateRange).length) where.createdAt = dateRange;
+  async getSalesSummary(businessId: string, period?: string, from?: string, to?: string) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
 
-    const sales = await this.prisma.sale.findMany({
-      where,
-      include: { items: true, returns: true },
-    });
+    const summaryAgg: any[] = await this.prisma.$queryRaw`
+      SELECT
+        COUNT(s.id)::int AS "totalSales",
+        COALESCE(SUM(GREATEST(0, s.total - COALESCE(refunds.total_refund, 0))), 0)::float AS "totalRevenue",
+        COALESCE(SUM(s."discountAmount"), 0)::float AS "totalDiscount",
+        COALESCE(SUM(GREATEST(0, s."taxAmount" - COALESCE(refunds.tax_refund, 0))), 0)::float AS "totalTax",
+        COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS "netRevenue"
+      FROM pos_sales s
+      LEFT JOIN (
+        SELECT "saleId", SUM("refundAmount") AS total_refund, SUM("taxRefunded") AS tax_refund, SUM("refundAmount" - COALESCE("taxRefunded", 0)) AS net_refund
+        FROM pos_sale_returns
+        WHERE "businessId" = ${businessId}
+        GROUP BY "saleId"
+      ) refunds ON refunds."saleId" = s.id
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND s.total > COALESCE(refunds.total_refund, 0);
+    `;
 
-    const totalSales = sales.length;
-    // Las ventas VOIDED y CANCELLED NO suman como venta (excluidas en where).
-    // PARTIALLY_RETURNED y RETURNED suman neto (venta menos reembolsos), no el bruto.
-    const totalRevenue = sales.reduce((sum, s) => {
-      const refundsTotal = (s.returns || []).reduce((rSum: number, r: any) => rSum + r.refundAmount, 0);
-      return sum + Math.max(0, s.total - refundsTotal);
-    }, 0);
-    const totalDiscount = sales.reduce((sum, s) => sum + s.discountAmount, 0);
-    const totalTax = sales.reduce((sum, s) => {
-      const taxRefunded = (s.returns || []).reduce((rSum: number, r: any) => rSum + (r.taxRefunded || 0), 0);
-      return sum + Math.max(0, s.taxAmount - taxRefunded);
-    }, 0);
+    const byPaymentMethodRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        s."paymentMethod",
+        COALESCE(SUM(GREATEST(0, s.total - COALESCE(refunds.total_refund, 0))), 0)::float AS revenue
+      FROM pos_sales s
+      LEFT JOIN (
+        SELECT "saleId", SUM("refundAmount") AS total_refund
+        FROM pos_sale_returns
+        WHERE "businessId" = ${businessId}
+        GROUP BY "saleId"
+      ) refunds ON refunds."saleId" = s.id
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND s.total > COALESCE(refunds.total_refund, 0)
+      GROUP BY s."paymentMethod";
+    `;
+
+    const byDayRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        TO_CHAR(s."createdAt" AT TIME ZONE 'America/Managua', 'YYYY-MM-DD') AS date,
+        COUNT(s.id)::int AS count,
+        COALESCE(SUM(GREATEST(0, s.total - COALESCE(refunds.total_refund, 0))), 0)::float AS revenue
+      FROM pos_sales s
+      LEFT JOIN (
+        SELECT "saleId", SUM("refundAmount") AS total_refund
+        FROM pos_sale_returns
+        WHERE "businessId" = ${businessId}
+        GROUP BY "saleId"
+      ) refunds ON refunds."saleId" = s.id
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND s.total > COALESCE(refunds.total_refund, 0)
+      GROUP BY TO_CHAR(s."createdAt" AT TIME ZONE 'America/Managua', 'YYYY-MM-DD')
+      ORDER BY date ASC;
+    `;
 
     const byPaymentMethod: Record<string, number> = {};
-    for (const sale of sales) {
-      const refundsTotal = (sale.returns || []).reduce((rSum: number, r: any) => rSum + r.refundAmount, 0);
-      const netSaleTotal = Math.max(0, sale.total - refundsTotal);
-      byPaymentMethod[sale.paymentMethod] = (byPaymentMethod[sale.paymentMethod] || 0) + netSaleTotal;
+    for (const r of byPaymentMethodRaw) {
+      if (r.revenue > 0) {
+        byPaymentMethod[r.paymentMethod] = Math.round(r.revenue * 100) / 100;
+      }
     }
 
-    const byDay = this.groupByDay(sales);
+    const byDay = byDayRaw.map(r => ({
+      date: r.date,
+      count: r.count,
+      revenue: Math.round(r.revenue * 100) / 100
+    }));
+
+    const totalSales = summaryAgg[0]?.totalSales || 0;
+    const totalRevenue = summaryAgg[0]?.totalRevenue || 0;
+    const totalDiscount = summaryAgg[0]?.totalDiscount || 0;
+    const totalTax = summaryAgg[0]?.totalTax || 0;
+    const netRevenue = summaryAgg[0]?.netRevenue || 0;
 
     this.logger.log(`[getSalesSummary] businessId=${businessId} ventas=${totalSales} total=${totalRevenue.toFixed(2)}`);
 
     return {
-      period: { from, to },
+      period: { from: range.current.fromIso, to: range.current.toIso },
       totalSales,
       totalRevenue: Math.round(totalRevenue * 100) / 100,
       totalDiscount: Math.round(totalDiscount * 100) / 100,
       totalTax: Math.round(totalTax * 100) / 100,
-      netRevenue: Math.round((totalRevenue - totalDiscount) * 100) / 100,
+      netRevenue: Math.round(netRevenue * 100) / 100,
       averageTicket: totalSales > 0 ? Math.round((totalRevenue / totalSales) * 100) / 100 : 0,
       byPaymentMethod,
       byDay,
     };
   }
 
-  private groupByDay(sales: any[]) {
-    const map = new Map<string, { count: number; revenue: number }>();
-    for (const sale of sales) {
-      const refundsTotal = (sale.returns || []).reduce((rSum: number, r: any) => rSum + r.refundAmount, 0);
-      const netSaleTotal = Math.max(0, sale.total - refundsTotal);
-      const day = sale.createdAt.toISOString().split("T")[0];
-      const existing = map.get(day) || { count: 0, revenue: 0 };
-      existing.count += 1;
-      existing.revenue += netSaleTotal;
-      map.set(day, existing);
-    }
-    return Array.from(map.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([date, data]) => ({ date, count: data.count, revenue: Math.round(data.revenue * 100) / 100 }));
-  }
-
   async getTopProducts(businessId: string, from?: string, to?: string, limit = 10) {
-    const saleWhere: any = {
-      businessId,
-      status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
-    };
     const dateRange = this.buildDateRange(from, to);
-    if (Object.keys(dateRange).length) saleWhere.createdAt = dateRange;
-
-    const items = await this.prisma.saleItem.findMany({
-      where: { sale: saleWhere },
-      include: { product: { select: { category: { select: { name: true } } } } },
-    });
-
-    const productMap = new Map<string, { name: string; category: string; quantity: number; revenue: number; times: number }>();
-    for (const item of items) {
-      const netQty = Math.max(0, item.quantity - (item.returnedQty || 0));
-      if (netQty <= 0) continue;
-
-      const key = item.productName;
-      const existing = productMap.get(key) || {
-        name: item.productName,
-        category: item.product?.category?.name || "Sin categoría",
-        quantity: 0, revenue: 0, times: 0,
-      };
-      existing.quantity += netQty;
-      const unitEffective = item.quantity > 0 ? (item.subtotal / item.quantity) : item.unitPrice;
-      existing.revenue += unitEffective * netQty;
-      existing.times += 1;
-      productMap.set(key, existing);
+    let startDate: Date, endDate: Date;
+    if (Object.keys(dateRange).length) {
+      startDate = new Date(dateRange.gte);
+      endDate = new Date(dateRange.lte);
+    } else {
+      startDate = new Date('2000-01-01');
+      endDate = new Date('2100-01-01');
     }
 
-    return Array.from(productMap.values())
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, limit)
-      .map(p => ({ ...p, revenue: Math.round(p.revenue * 100) / 100 }));
+    const topsRaw: any[] = await this.prisma.$queryRaw`
+      WITH item_sales AS (
+        SELECT
+          i."productName",
+          COALESCE(c.name, 'Sin categoría') AS category,
+          GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS quantity,
+          ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))::float AS revenue
+        FROM pos_sale_items i
+        JOIN pos_sales s ON s.id = i."saleId"
+        LEFT JOIN pos_products p ON p.id = i."productId"
+        LEFT JOIN pos_categories c ON c.id = p."categoryId"
+        WHERE s."businessId" = ${businessId}
+          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+      )
+      SELECT
+        "productName" AS name,
+        category,
+        SUM(quantity)::float AS quantity,
+        SUM(revenue)::float AS revenue,
+        COUNT(*)::int AS times
+      FROM item_sales
+      WHERE quantity > 0 OR revenue > 0
+      GROUP BY "productName", category
+      ORDER BY revenue DESC
+      LIMIT ${limit};
+    `;
+
+    return topsRaw.map(p => ({
+      name: p.name,
+      category: p.category,
+      quantity: Math.round(p.quantity * 100) / 100,
+      revenue: Math.round(p.revenue * 100) / 100,
+      times: p.times,
+    }));
   }
 
   async getDaily(businessId: string) {
@@ -659,7 +701,10 @@ export class ReportsService {
             i."productId",
             i."productName",
             GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS net_qty,
-            ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))::float AS line_revenue,
+            (
+              ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
+              * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
+            )::float AS line_revenue,
             pc.unit_cost
           FROM pos_sale_items i
           JOIN pos_sales s ON s.id = i."saleId"
@@ -667,6 +712,25 @@ export class ReportsService {
           WHERE s."businessId" = ${businessId}
             AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
             AND s."createdAt" >= ${fromDt} AND s."createdAt" <= ${toDt}
+
+          UNION ALL
+
+          SELECT
+            s.id AS id,
+            NULL AS "productId",
+            'Sin categoría' AS "productName",
+            1::float AS net_qty,
+            GREATEST(0, s.subtotal - s."discountAmount" - COALESCE((
+              SELECT SUM("refundAmount" - COALESCE("taxRefunded", 0))
+              FROM pos_sale_returns r
+              WHERE r."saleId" = s.id
+            ), 0))::float AS line_revenue,
+            NULL AS unit_cost
+          FROM pos_sales s
+          WHERE s."businessId" = ${businessId}
+            AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+            AND s."createdAt" >= ${fromDt} AND s."createdAt" <= ${toDt}
+            AND NOT EXISTS (SELECT 1 FROM pos_sale_items i WHERE i."saleId" = s.id)
         )
         SELECT
           COALESCE(SUM(line_revenue), 0)::float AS "totalRevenue",
@@ -735,7 +799,10 @@ export class ReportsService {
           i."productId",
           i."productName",
           GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS net_qty,
-          ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))::float AS line_revenue,
+          (
+            ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
+            * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
+          )::float AS line_revenue,
           pc.unit_cost
         FROM pos_sale_items i
         JOIN pos_sales s ON s.id = i."saleId"
@@ -743,6 +810,24 @@ export class ReportsService {
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
           AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+
+        UNION ALL
+
+        SELECT
+          NULL AS "productId",
+          'Sin categoría' AS "productName",
+          1::float AS net_qty,
+          GREATEST(0, s.subtotal - s."discountAmount" - COALESCE((
+            SELECT SUM("refundAmount" - COALESCE("taxRefunded", 0))
+            FROM pos_sale_returns r
+            WHERE r."saleId" = s.id
+          ), 0))::float AS line_revenue,
+          NULL AS unit_cost
+        FROM pos_sales s
+        WHERE s."businessId" = ${businessId}
+          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+          AND NOT EXISTS (SELECT 1 FROM pos_sale_items i WHERE i."saleId" = s.id)
       )
       SELECT
         COALESCE("productId", 'unknown') AS id,
@@ -820,10 +905,10 @@ export class ReportsService {
       SELECT
         EXTRACT(HOUR FROM s."createdAt" AT TIME ZONE 'America/Managua')::int AS hour,
         COUNT(s.id)::int AS count,
-        COALESCE(SUM(s.total - COALESCE(refunds.total_refund, 0)), 0)::float AS revenue
+        COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS revenue
       FROM pos_sales s
       LEFT JOIN (
-        SELECT "saleId", SUM("refundAmount") AS total_refund
+        SELECT "saleId", SUM("refundAmount" - COALESCE("taxRefunded", 0)) AS net_refund, SUM("refundAmount") AS total_refund
         FROM pos_sale_returns
         WHERE "businessId" = ${businessId}
         GROUP BY "saleId"
@@ -831,6 +916,7 @@ export class ReportsService {
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND s.total > COALESCE(refunds.total_refund, 0)
       GROUP BY hour
       ORDER BY hour ASC;
     `;
@@ -855,10 +941,10 @@ export class ReportsService {
       SELECT
         EXTRACT(DOW FROM s."createdAt" AT TIME ZONE 'America/Managua')::int AS dow,
         COUNT(s.id)::int AS count,
-        COALESCE(SUM(s.total - COALESCE(refunds.total_refund, 0)), 0)::float AS revenue
+        COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS revenue
       FROM pos_sales s
       LEFT JOIN (
-        SELECT "saleId", SUM("refundAmount") AS total_refund
+        SELECT "saleId", SUM("refundAmount" - COALESCE("taxRefunded", 0)) AS net_refund, SUM("refundAmount") AS total_refund
         FROM pos_sale_returns
         WHERE "businessId" = ${businessId}
         GROUP BY "saleId"
@@ -866,6 +952,7 @@ export class ReportsService {
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND s.total > COALESCE(refunds.total_refund, 0)
       GROUP BY dow
       ORDER BY dow ASC;
     `;
@@ -902,20 +989,48 @@ export class ReportsService {
     const endDate = range.current.to;
 
     const rows: any[] = await this.prisma.$queryRaw`
+      WITH item_sales AS (
+        SELECT
+          c.id AS "categoryId",
+          c.name AS "categoryName",
+          GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS quantity,
+          (
+            ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
+            * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
+          )::float AS revenue
+        FROM pos_sale_items i
+        JOIN pos_sales s ON s.id = i."saleId"
+        LEFT JOIN pos_products p ON p.id = i."productId"
+        LEFT JOIN pos_categories c ON c.id = p."categoryId"
+        WHERE s."businessId" = ${businessId}
+          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+
+        UNION ALL
+
+        SELECT
+          NULL AS "categoryId",
+          'Sin categoría' AS "categoryName",
+          1::float AS quantity,
+          GREATEST(0, s.subtotal - s."discountAmount" - COALESCE((
+            SELECT SUM("refundAmount" - COALESCE("taxRefunded", 0))
+            FROM pos_sale_returns r
+            WHERE r."saleId" = s.id
+          ), 0))::float AS revenue
+        FROM pos_sales s
+        WHERE s."businessId" = ${businessId}
+          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+          AND NOT EXISTS (SELECT 1 FROM pos_sale_items i WHERE i."saleId" = s.id)
+      )
       SELECT
-        COALESCE(c.id, 'uncategorized') AS "categoryId",
-        COALESCE(c.name, 'Sin categoría') AS "categoryName",
-        COALESCE(SUM(GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))), 0)::float AS quantity,
-        COALESCE(SUM((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))), 0)::float AS revenue
-      FROM pos_sale_items i
-      JOIN pos_sales s ON s.id = i."saleId"
-      LEFT JOIN pos_products p ON p.id = i."productId"
-      LEFT JOIN pos_categories c ON c.id = p."categoryId"
-      WHERE s."businessId" = ${businessId}
-        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
-      GROUP BY c.id, c.name
-      HAVING COALESCE(SUM(GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))), 0) > 0
+        COALESCE("categoryId", 'uncategorized') AS "categoryId",
+        COALESCE("categoryName", 'Sin categoría') AS "categoryName",
+        SUM(quantity)::float AS quantity,
+        SUM(revenue)::float AS revenue
+      FROM item_sales
+      WHERE quantity > 0 OR revenue > 0
+      GROUP BY "categoryId", "categoryName"
       ORDER BY revenue DESC;
     `;
 
@@ -1103,6 +1218,7 @@ export class ReportsService {
           voidedAt: v.voidedAt || v.createdAt,
           reason: v.voidReason,
           voidReason: v.voidReason,
+          selfApproved: v.voidedById != null && v.voidedById === v.voidApprovedById,
           cashier: v.cashierId ? userMap.get(v.cashierId) || null : null,
           voidedBy: v.voidedById ? userMap.get(v.voidedById) || { id: v.voidedById, name: 'Desconocido' } : null,
           approvedBy: v.voidApprovedById ? userMap.get(v.voidApprovedById) || { id: v.voidApprovedById, name: 'Desconocido' } : null,
@@ -1117,6 +1233,7 @@ export class ReportsService {
           refundAmount: r.refundAmount,
           refundMethod: r.refundMethod,
           reason: r.reason,
+          selfApproved: r.createdById != null && r.createdById === r.approvedById,
           createdAt: r.createdAt,
           createdBy: r.createdById ? userMap.get(r.createdById) || { id: r.createdById, name: 'Desconocido' } : null,
           approvedBy: r.approvedById ? userMap.get(r.approvedById) || { id: r.approvedById, name: 'Desconocido' } : null,
@@ -1166,11 +1283,12 @@ export class ReportsService {
         u.id AS "cashierId",
         COALESCE(u.name, u.email) AS "cashierName",
         COUNT(s.id)::int AS "salesCount",
-        COALESCE(SUM(s.total - COALESCE(refunds.total_refund, 0)), 0)::float AS "totalSales"
+        COALESCE(SUM(GREATEST(0, s.total - COALESCE(refunds.total_refund, 0))), 0)::float AS "totalSales",
+        COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS "netRevenue"
       FROM pos_sales s
       JOIN users u ON u.id = s."cashierId"
       LEFT JOIN (
-        SELECT "saleId", SUM("refundAmount") AS total_refund
+        SELECT "saleId", SUM("refundAmount" - COALESCE("taxRefunded", 0)) AS net_refund, SUM("refundAmount") AS total_refund
         FROM pos_sale_returns
         WHERE "businessId" = ${businessId}
         GROUP BY "saleId"
@@ -1178,6 +1296,7 @@ export class ReportsService {
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND s.total > COALESCE(refunds.total_refund, 0)
       GROUP BY u.id, u.name, u.email
       ORDER BY "totalSales" DESC;
     `;
@@ -1189,6 +1308,7 @@ export class ReportsService {
       cashierName: r.cashierName,
       salesCount: r.salesCount,
       totalSales: Math.round(r.totalSales * 100) / 100,
+      netRevenue: Math.round(r.netRevenue * 100) / 100,
       averageTicket: r.salesCount > 0 ? Math.round((r.totalSales / r.salesCount) * 100) / 100 : 0,
       percentage: totalSales > 0 ? Math.round((r.totalSales / totalSales) * 10000) / 100 : 0,
     }));
