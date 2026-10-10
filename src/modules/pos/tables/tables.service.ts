@@ -787,6 +787,8 @@ export class TablesService {
     cashierId: string,
     tableId: string,
     dto: CheckoutTableOrderDto,
+    userRole?: string,
+    clientInfo?: { channel?: string; deviceId?: string },
   ) {
     const order = await this.prisma.tableOrder.findFirst({
       where: { tableId, businessId, status: TableOrderStatus.OPEN },
@@ -855,7 +857,7 @@ export class TablesService {
       })),
     };
 
-    const sale = await this.salesService.create(saleDto, businessId, cashierId);
+    const sale = await this.salesService.create(saleDto, businessId, cashierId, userRole, clientInfo);
 
     const closedOrder = await this.prisma.tableOrder.update({
       where: { id: order.id },

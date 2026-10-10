@@ -52,7 +52,12 @@ export class WebBillingGuard implements CanActivate {
       },
     });
 
-    if (!posSub || posSub.status !== BusinessProductStatus.ACTIVE || !posSub.webBillingEnabled) {
+    if (
+      !posSub ||
+      posSub.status !== BusinessProductStatus.ACTIVE ||
+      !posSub.webBillingEnabled ||
+      (posSub as any).webAdminEnabled === false
+    ) {
       throw new ForbiddenException({
         statusCode: 403,
         error: 'Forbidden',

@@ -9,10 +9,12 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PosGuard } from '../../../common/guards/pos.guard';
+import { WebBillingGuard } from '../../../common/guards/web-billing.guard';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { SkipWebAdminAccess } from '../../../common/decorators/skip-web-admin-access.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -163,23 +165,31 @@ export class TablesController {
   }
 
   @Post(':id/order/checkout')
+  @UseGuards(WebBillingGuard)
   @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   @HttpCode(HttpStatus.OK)
   checkout(
     @Param('id') tableId: string,
     @Body() dto: CheckoutTableOrderDto,
     @CurrentUser() user: JwtPayload,
+    @Req() req: any,
     @Query('businessId') qBid?: string,
   ) {
+    const platform = (req?.headers?.['x-client-platform'] || req?.headers?.['X-Client-Platform'] || '').toString().toLowerCase();
+    const channel = platform.startsWith('web') ? 'WEB' : 'DESKTOP';
+    const deviceId = (req?.headers?.['x-device-id'] || req?.headers?.['X-Device-Id'] || null)?.toString().trim() || null;
     return this.service.checkoutTableOrder(
       resolveBusinessId(user, qBid),
       user.sub,
       tableId,
       dto,
+      user.role,
+      { channel, deviceId },
     );
   }
 
   @Post(':id/order/cancel')
+  @UseGuards(WebBillingGuard)
   @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   @HttpCode(HttpStatus.OK)
   cancelOrder(
