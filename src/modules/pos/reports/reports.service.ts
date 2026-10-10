@@ -86,7 +86,7 @@ export class ReportsService {
         LEFT JOIN product_costs pc ON pc.product_id = i."productId"
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-          AND s."createdAt" >= ${fromDt} AND s."createdAt" <= ${toDt}
+          AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt}
 
         UNION ALL
 
@@ -105,7 +105,7 @@ export class ReportsService {
         FROM pos_sales s
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-          AND s."createdAt" >= ${fromDt} AND s."createdAt" <= ${toDt}
+          AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt}
           AND NOT EXISTS (SELECT 1 FROM pos_sale_items i WHERE i."saleId" = s.id)
       )
     `;
@@ -129,10 +129,20 @@ export class ReportsService {
   private buildDateRange(from?: string, to?: string) {
     const range: any = {};
     if (from) {
-      range.gte = from.includes('T') ? new Date(from) : new Date(`${from}T00:00:00.000Z`);
+      if (from.includes('T')) {
+        range.gte = new Date(from);
+      } else {
+        const [y, m, d] = from.split('-').map(Number);
+        range.gte = new Date(Date.UTC(y, m - 1, d, 6, 0, 0, 0));
+      }
     }
     if (to) {
-      range.lte = to.includes('T') ? new Date(to) : new Date(`${to}T23:59:59.999Z`);
+      if (to.includes('T')) {
+        range.lte = new Date(to);
+      } else {
+        const [y, m, d] = to.split('-').map(Number);
+        range.lte = new Date(Date.UTC(y, m - 1, d, 29, 59, 59, 999));
+      }
     }
     return range;
   }
@@ -158,7 +168,7 @@ export class ReportsService {
       ) refunds ON refunds."saleId" = s.id
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0);
     `;
 
@@ -175,7 +185,7 @@ export class ReportsService {
       ) refunds ON refunds."saleId" = s.id
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
       GROUP BY s."paymentMethod";
     `;
@@ -194,7 +204,7 @@ export class ReportsService {
       ) refunds ON refunds."saleId" = s.id
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
       GROUP BY TO_CHAR((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua', 'YYYY-MM-DD')
       ORDER BY date ASC;
@@ -234,12 +244,13 @@ export class ReportsService {
     };
   }
 
-  async getTopProducts(businessId: string, from?: string, to?: string, limit = 10) {
-    const dateRange = this.buildDateRange(from, to);
-    let startDate: Date, endDate: Date;
-    if (Object.keys(dateRange).length) {
-      startDate = new Date(dateRange.gte);
-      endDate = new Date(dateRange.lte);
+  async getTopProducts(businessId: string, period?: string, from?: string, to?: string, limit = 10) {
+    let startDate: Date;
+    let endDate: Date;
+    if (period || from || to) {
+      const range = this.resolveDateRange(period, from, to);
+      startDate = range.current.from;
+      endDate = range.current.to;
     } else {
       startDate = new Date('2000-01-01');
       endDate = new Date('2100-01-01');
@@ -258,7 +269,7 @@ export class ReportsService {
         LEFT JOIN pos_categories c ON c.id = p."categoryId"
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+          AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
       )
       SELECT
         "productName" AS name,
@@ -373,19 +384,32 @@ export class ReportsService {
     let prevFrom: Date;
     let prevTo: Date;
 
-    if (from && to) {
-      if (from.includes('T')) {
-        curFrom = new Date(from);
-      } else {
-        const [fy, fm, fd] = from.split('-').map(Number);
-        curFrom = createUtcDateFromManagua(fy, fm - 1, fd, 0, 0, 0, 0);
+    const cleanFrom = from?.trim();
+    const cleanTo = to?.trim();
+
+    if (cleanFrom || cleanTo) {
+      if (!cleanFrom || !cleanTo) {
+        throw new BadRequestException('Se requieren ambos parámetros (from y to) para un rango personalizado');
       }
 
-      if (to.includes('T')) {
-        curTo = new Date(to);
+      if (cleanFrom.includes('T')) {
+        curFrom = new Date(cleanFrom);
       } else {
-        const [ty, tm, td] = to.split('-').map(Number);
-        curTo = createUtcDateFromManagua(ty, tm - 1, td, 23, 59, 59, 999);
+        const parts = cleanFrom.split('-').map(Number);
+        if (parts.length !== 3 || parts.some(isNaN)) {
+          throw new BadRequestException('Formato de fecha inválido en from (esperado YYYY-MM-DD)');
+        }
+        curFrom = createUtcDateFromManagua(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+      }
+
+      if (cleanTo.includes('T')) {
+        curTo = new Date(cleanTo);
+      } else {
+        const parts = cleanTo.split('-').map(Number);
+        if (parts.length !== 3 || parts.some(isNaN)) {
+          throw new BadRequestException('Formato de fecha inválido en to (esperado YYYY-MM-DD)');
+        }
+        curTo = createUtcDateFromManagua(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999);
       }
 
       if (isNaN(curFrom.getTime()) || isNaN(curTo.getTime())) {
@@ -436,9 +460,9 @@ export class ReportsService {
 
   async getOverview(businessId: string, period?: string, from?: string, to?: string) {
     const range = this.resolveDateRange(period, from, to);
-    const summary = await this.getSalesSummary(businessId, range.current.fromIso, range.current.toIso);
-    const prevSummary = await this.getSalesSummary(businessId, range.previous.fromIso, range.previous.toIso);
-    const topProducts = await this.getTopProducts(businessId, range.current.fromIso, range.current.toIso, 5);
+    const summary = await this.getSalesSummary(businessId, undefined, range.current.fromIso, range.current.toIso);
+    const prevSummary = await this.getSalesSummary(businessId, undefined, range.previous.fromIso, range.previous.toIso);
+    const topProducts = await this.getTopProducts(businessId, undefined, range.current.fromIso, range.current.toIso, 5);
     const lowStockProducts = await this.getStockAlerts(businessId);
 
     const totalCash = summary.byPaymentMethod['EFECTIVO'] || 0;
@@ -930,7 +954,7 @@ export class ReportsService {
       ) refunds ON refunds."saleId" = s.id
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
       GROUP BY hour
       ORDER BY hour ASC;
@@ -966,7 +990,7 @@ export class ReportsService {
       ) refunds ON refunds."saleId" = s.id
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
       GROUP BY dow
       ORDER BY dow ASC;
@@ -1019,7 +1043,7 @@ export class ReportsService {
         LEFT JOIN pos_categories c ON c.id = p."categoryId"
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+          AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
 
         UNION ALL
 
@@ -1035,7 +1059,7 @@ export class ReportsService {
         FROM pos_sales s
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+          AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
           AND NOT EXISTS (SELECT 1 FROM pos_sale_items i WHERE i."saleId" = s.id)
       )
       SELECT
@@ -1080,8 +1104,8 @@ export class ReportsService {
       WHERE "businessId" = ${businessId}
         AND status = 'VOIDED'
         AND (
-          ("voidedAt" >= ${startDate} AND "voidedAt" <= ${endDate})
-          OR ("voidedAt" IS NULL AND "createdAt" >= ${startDate} AND "createdAt" <= ${endDate})
+          (("voidedAt" AT TIME ZONE 'UTC') >= ${startDate} AND ("voidedAt" AT TIME ZONE 'UTC') <= ${endDate})
+          OR ("voidedAt" IS NULL AND ("createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND ("createdAt" AT TIME ZONE 'UTC') <= ${endDate})
         );
     `;
 
@@ -1116,7 +1140,7 @@ export class ReportsService {
         COALESCE(SUM("refundAmount"), 0)::float AS "totalAmount"
       FROM pos_sale_returns
       WHERE "businessId" = ${businessId}
-        AND "createdAt" >= ${startDate} AND "createdAt" <= ${endDate};
+        AND ("createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND ("createdAt" AT TIME ZONE 'UTC') <= ${endDate};
     `;
 
     const returnsRecent = await this.prisma.saleReturn.findMany({
@@ -1147,7 +1171,7 @@ export class ReportsService {
       WHERE "businessId" = ${businessId}
         AND "discountAmount" > 0
         AND status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-        AND "createdAt" >= ${startDate} AND "createdAt" <= ${endDate};
+        AND ("createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND ("createdAt" AT TIME ZONE 'UTC') <= ${endDate};
     `;
 
     const discountsRecent = await this.prisma.sale.findMany({
@@ -1204,7 +1228,7 @@ export class ReportsService {
       FROM pos_cash_registers
       WHERE "businessId" = ${businessId}
         AND status = 'CLOSED'
-        AND "closedAt" >= ${startDate} AND "closedAt" <= ${endDate};
+        AND ("closedAt" AT TIME ZONE 'UTC') >= ${startDate} AND ("closedAt" AT TIME ZONE 'UTC') <= ${endDate};
     `;
 
     const registersRecent = await this.prisma.cashRegister.findMany({
@@ -1310,7 +1334,7 @@ export class ReportsService {
       ) refunds ON refunds."saleId" = s.id
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
       GROUP BY u.id, u.name, u.email
       ORDER BY "totalSales" DESC;
@@ -1368,7 +1392,7 @@ export class ReportsService {
       LEFT JOIN pos_categories c ON c.id = p."categoryId"
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-        AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s."workshopVehicleId" IS NOT NULL
       GROUP BY i."productId", i."productName"
       HAVING SUM(GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))) > 0
@@ -1388,8 +1412,8 @@ export class ReportsService {
       WHERE o."businessId" = ${businessId}
         AND o.status = 'CLOSED'
         AND o."workshopVehicleId" IS NOT NULL
-        AND COALESCE(o."closedAt", o."createdAt") >= ${startDate}
-        AND COALESCE(o."closedAt", o."createdAt") <= ${endDate}
+        AND (COALESCE(o."closedAt", o."createdAt") AT TIME ZONE 'UTC') >= ${startDate}
+        AND (COALESCE(o."closedAt", o."createdAt") AT TIME ZONE 'UTC') <= ${endDate}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
       GROUP BY w.id, w.name
       ORDER BY "totalRevenue" DESC;
@@ -1407,8 +1431,8 @@ export class ReportsService {
       JOIN workshop_vehicles v ON v.id = o."workshopVehicleId"
       WHERE o."businessId" = ${businessId}
         AND o.status = 'CLOSED'
-        AND COALESCE(o."closedAt", o."createdAt") >= ${startDate}
-        AND COALESCE(o."closedAt", o."createdAt") <= ${endDate}
+        AND (COALESCE(o."closedAt", o."createdAt") AT TIME ZONE 'UTC') >= ${startDate}
+        AND (COALESCE(o."closedAt", o."createdAt") AT TIME ZONE 'UTC') <= ${endDate}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
       GROUP BY v.id, v.plate, v.description
       ORDER BY "totalRevenue" DESC;

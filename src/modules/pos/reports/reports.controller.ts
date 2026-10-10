@@ -31,22 +31,24 @@ export class ReportsController {
   @Get("sales-summary")
   salesSummary(
     @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.getSalesSummary(resolveBusinessId(user, qBid), from, to);
+    return this.service.getSalesSummary(resolveBusinessId(user, qBid), period, from, to);
   }
 
   @Get("products")
   topProducts(
     @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("limit") limit?: string,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.getTopProducts(resolveBusinessId(user, qBid), from, to, limit ? +limit : 10);
+    return this.service.getTopProducts(resolveBusinessId(user, qBid), period, from, to, limit ? +limit : 10);
   }
 
   @Get("daily")
