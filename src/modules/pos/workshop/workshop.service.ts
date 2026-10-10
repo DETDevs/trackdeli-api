@@ -5,9 +5,11 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { normalizePlate } from './workshop.util';
 import { UpdateWorkshopVehicleDto } from './dto/update-workshop-vehicle.dto';
+import { UpdateWorkshopCustomerDto } from './dto/update-workshop-customer.dto';
 import { JwtPayload } from '../../../common/types/jwt-payload.interface';
 
 @Injectable()
@@ -509,8 +511,131 @@ export class WorkshopService {
   }
 
   /**
+   * GET /pos/workshop/customers?search=&page=&limit=
+   * Lista y busca clientes que tengan al menos un vehículo o una visita de taller,
+   * con agregaciones de vehículos, visitas (órdenes cobradas), total gastado y última visita.
+   */
+  async getWorkshopCustomers(
+    businessId: string,
+    search?: string,
+    page: number = 1,
+    limit: number = 20,
+  ) {
+    const p = Math.max(1, page);
+    const l = Math.min(Math.max(1, limit), 50);
+    const offset = (p - 1) * l;
+
+    const hasSearch = !!(search && search.trim());
+    const searchPattern = hasSearch ? `%${search.trim()}%` : null;
+    const normalizedSearch = hasSearch ? `%${normalizePlate(search)}%` : null;
+
+    const searchClause = hasSearch
+      ? Prisma.sql`AND (
+          c.name ILIKE ${searchPattern}
+          OR (c.phone IS NOT NULL AND c.phone ILIKE ${searchPattern})
+          OR EXISTS (
+            SELECT 1 FROM workshop_vehicles v
+            WHERE v."customerId" = c.id
+              AND v."businessId" = c."businessId"
+              AND (v.plate ILIKE ${searchPattern} OR v."normalizedPlate" ILIKE ${normalizedSearch})
+          )
+        )`
+      : Prisma.empty;
+
+    const totalRes = await this.prisma.$queryRaw<{ total: number }[]>`
+      SELECT COUNT(*)::int AS total
+      FROM customers c
+      WHERE c."businessId" = ${businessId}
+        AND (
+          EXISTS (SELECT 1 FROM workshop_vehicles v WHERE v."customerId" = c.id AND v."businessId" = c."businessId")
+          OR EXISTS (SELECT 1 FROM pos_table_orders o WHERE o."customerId" = c.id AND o."businessId" = c."businessId" AND o."workshopVehicleId" IS NOT NULL)
+        )
+        ${searchClause};
+    `;
+    const total = totalRes[0]?.total || 0;
+
+    const rows = await this.prisma.$queryRaw<{
+      id: string;
+      name: string;
+      phone: string | null;
+      vehiclesCount: number;
+      visitsCount: number;
+      totalSpent: number;
+      lastVisitAt: Date | null;
+      inWorkshopNow: boolean;
+    }[]>`
+      SELECT
+        c.id,
+        c.name,
+        c.phone,
+        (
+          SELECT COUNT(*)::int
+          FROM workshop_vehicles v
+          WHERE v."customerId" = c.id AND v."businessId" = c."businessId"
+        ) AS "vehiclesCount",
+        (
+          SELECT COUNT(*)::int
+          FROM pos_table_orders o
+          WHERE (o."customerId" = c.id OR o."workshopVehicleId" IN (SELECT v.id FROM workshop_vehicles v WHERE v."customerId" = c.id AND v."businessId" = c."businessId"))
+            AND o."businessId" = c."businessId"
+            AND o.status = 'CLOSED'
+        ) AS "visitsCount",
+        (
+          SELECT COALESCE(SUM(s.total), 0)::float
+          FROM pos_sales s
+          WHERE (s."customerId" = c.id OR s."workshopVehicleId" IN (SELECT v.id FROM workshop_vehicles v WHERE v."customerId" = c.id AND v."businessId" = c."businessId"))
+            AND s."businessId" = c."businessId"
+            AND s.status = 'COMPLETED'
+        ) AS "totalSpent",
+        (
+          SELECT MAX(COALESCE(o."closedAt", o."createdAt"))
+          FROM pos_table_orders o
+          WHERE (o."customerId" = c.id OR o."workshopVehicleId" IN (SELECT v.id FROM workshop_vehicles v WHERE v."customerId" = c.id AND v."businessId" = c."businessId"))
+            AND o."businessId" = c."businessId"
+            AND o.status = 'CLOSED'
+        ) AS "lastVisitAt",
+        EXISTS(
+          SELECT 1
+          FROM pos_table_orders o
+          WHERE (o."customerId" = c.id OR o."workshopVehicleId" IN (SELECT v.id FROM workshop_vehicles v WHERE v."customerId" = c.id AND v."businessId" = c."businessId"))
+            AND o."businessId" = c."businessId"
+            AND o.status = 'OPEN'
+        ) AS "inWorkshopNow"
+      FROM customers c
+      WHERE c."businessId" = ${businessId}
+        AND (
+          EXISTS (SELECT 1 FROM workshop_vehicles v WHERE v."customerId" = c.id AND v."businessId" = c."businessId")
+          OR EXISTS (SELECT 1 FROM pos_table_orders o WHERE o."customerId" = c.id AND o."businessId" = c."businessId" AND o."workshopVehicleId" IS NOT NULL)
+        )
+        ${searchClause}
+      ORDER BY "lastVisitAt" DESC NULLS LAST, c."updatedAt" DESC
+      LIMIT ${l} OFFSET ${offset};
+    `;
+
+    const data = rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      phone: r.phone,
+      vehiclesCount: Number(r.vehiclesCount || 0),
+      visitsCount: Number(r.visitsCount || 0),
+      totalSpent: Math.round(Number(r.totalSpent || 0) * 100) / 100,
+      lastVisitAt: r.lastVisitAt,
+      inWorkshopNow: Boolean(r.inWorkshopNow),
+    }));
+
+    return {
+      data,
+      total,
+      page: p,
+      limit: l,
+      totalPages: Math.ceil(total / l),
+    };
+  }
+
+  /**
    * GET /pos/workshop/customers/:id
-   * Devuelve ficha del cliente con todos sus vehículos registrados.
+   * Devuelve ficha del cliente con todos sus vehículos registrados,
+   * ampliado con total gastado, cantidad de visitas, primera y última visita y estado actual.
    */
   async getCustomerWithVehicles(businessId: string, customerId: string) {
     const customer = await this.prisma.customer.findFirst({
@@ -535,23 +660,77 @@ export class WorkshopService {
       });
     }
 
-    const vehicles = await this.prisma.workshopVehicle.findMany({
-      where: { customerId, businessId },
-      include: {
-        tableOrders: {
-          select: {
-            id: true,
-            createdAt: true,
+    const [vehicles, statsRes] = await Promise.all([
+      this.prisma.workshopVehicle.findMany({
+        where: { customerId, businessId },
+        include: {
+          tableOrders: {
+            select: {
+              id: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
           },
-          orderBy: { createdAt: 'desc' },
-          take: 1,
+          _count: {
+            select: { tableOrders: true },
+          },
         },
-        _count: {
-          select: { tableOrders: true },
-        },
-      },
-      orderBy: { updatedAt: 'desc' },
-    });
+        orderBy: { updatedAt: 'desc' },
+      }),
+      this.prisma.$queryRaw<{
+        visitsCount: number;
+        totalSpent: number;
+        firstVisitAt: Date | null;
+        lastVisitAt: Date | null;
+        inWorkshopNow: boolean;
+      }[]>`
+        SELECT
+          (
+            SELECT COUNT(*)::int
+            FROM pos_table_orders o
+            WHERE (o."customerId" = ${customerId} OR o."workshopVehicleId" IN (SELECT v.id FROM workshop_vehicles v WHERE v."customerId" = ${customerId} AND v."businessId" = ${businessId}))
+              AND o."businessId" = ${businessId}
+              AND o.status = 'CLOSED'
+          ) AS "visitsCount",
+          (
+            SELECT COALESCE(SUM(s.total), 0)::float
+            FROM pos_sales s
+            WHERE (s."customerId" = ${customerId} OR s."workshopVehicleId" IN (SELECT v.id FROM workshop_vehicles v WHERE v."customerId" = ${customerId} AND v."businessId" = ${businessId}))
+              AND s."businessId" = ${businessId}
+              AND s.status = 'COMPLETED'
+          ) AS "totalSpent",
+          (
+            SELECT MIN(COALESCE(o."closedAt", o."createdAt"))
+            FROM pos_table_orders o
+            WHERE (o."customerId" = ${customerId} OR o."workshopVehicleId" IN (SELECT v.id FROM workshop_vehicles v WHERE v."customerId" = ${customerId} AND v."businessId" = ${businessId}))
+              AND o."businessId" = ${businessId}
+              AND o.status = 'CLOSED'
+          ) AS "firstVisitAt",
+          (
+            SELECT MAX(COALESCE(o."closedAt", o."createdAt"))
+            FROM pos_table_orders o
+            WHERE (o."customerId" = ${customerId} OR o."workshopVehicleId" IN (SELECT v.id FROM workshop_vehicles v WHERE v."customerId" = ${customerId} AND v."businessId" = ${businessId}))
+              AND o."businessId" = ${businessId}
+              AND o.status = 'CLOSED'
+          ) AS "lastVisitAt",
+          EXISTS(
+            SELECT 1
+            FROM pos_table_orders o
+            WHERE (o."customerId" = ${customerId} OR o."workshopVehicleId" IN (SELECT v.id FROM workshop_vehicles v WHERE v."customerId" = ${customerId} AND v."businessId" = ${businessId}))
+              AND o."businessId" = ${businessId}
+              AND o.status = 'OPEN'
+          ) AS "inWorkshopNow";
+      `,
+    ]);
+
+    const stats = statsRes[0] || {
+      visitsCount: 0,
+      totalSpent: 0,
+      firstVisitAt: null,
+      lastVisitAt: null,
+      inWorkshopNow: false,
+    };
 
     return {
       ...customer,
@@ -566,6 +745,214 @@ export class WorkshopService {
         createdAt: v.createdAt,
         updatedAt: v.updatedAt,
       })),
+      visitsCount: Number(stats.visitsCount || 0),
+      totalSpent: Math.round(Number(stats.totalSpent || 0) * 100) / 100,
+      firstVisitAt: stats.firstVisitAt,
+      lastVisitAt: stats.lastVisitAt,
+      inWorkshopNow: Boolean(stats.inWorkshopNow),
     };
+  }
+
+  /**
+   * GET /pos/workshop/customers/:id/history?page=&limit=
+   * Historial combinado de visitas de todos los vehículos de un cliente.
+   */
+  async getCustomerHistory(
+    businessId: string,
+    customerId: string,
+    page: number = 1,
+    limit: number = 20,
+  ) {
+    const p = Math.max(1, page);
+    const l = Math.min(Math.max(1, limit), 50);
+    const skip = (p - 1) * l;
+
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: customerId, businessId },
+      select: { id: true, name: true },
+    });
+
+    if (!customer) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'CUSTOMER_NOT_FOUND',
+      });
+    }
+
+    const whereClause: Prisma.TableOrderWhereInput = {
+      businessId,
+      OR: [
+        { customerId },
+        { workshopVehicle: { customerId } },
+      ],
+    };
+
+    const total = await this.prisma.tableOrder.count({ where: whereClause });
+
+    const orders = await this.prisma.tableOrder.findMany({
+      where: whereClause,
+      include: {
+        table: { select: { id: true, number: true } },
+        workshopVehicle: {
+          select: {
+            id: true,
+            plate: true,
+            normalizedPlate: true,
+            description: true,
+          },
+        },
+        assignedWaiter: {
+          select: { id: true, name: true },
+        },
+        items: {
+          select: {
+            id: true,
+            productId: true,
+            productName: true,
+            quantity: true,
+            unitPrice: true,
+            notes: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: l,
+    });
+
+    const saleIds = orders.map((o) => o.saleId).filter((id): id is string => !!id);
+    const sales =
+      saleIds.length > 0
+        ? await this.prisma.sale.findMany({
+            where: { id: { in: saleIds }, businessId },
+            select: {
+              id: true,
+              invoiceNumber: true,
+              reference: true,
+              subtotal: true,
+              taxAmount: true,
+              total: true,
+              status: true,
+              paymentMethod: true,
+              createdAt: true,
+            },
+          })
+        : [];
+    const salesMap = new Map(sales.map((s) => [s.id, s]));
+
+    const data = orders.map((o) => {
+      const sale = o.saleId ? salesMap.get(o.saleId) : null;
+      const items = (o.items || []).map((i) => ({
+        id: i.id,
+        productId: i.productId,
+        productName: i.productName,
+        quantity: Number(i.quantity),
+        unitPrice: Number(i.unitPrice),
+        total: Math.round(Number(i.quantity) * Number(i.unitPrice) * 100) / 100,
+        notes: i.notes,
+      }));
+      const itemsSubtotal = items.reduce((acc, curr) => acc + curr.total, 0);
+
+      return {
+        id: o.id,
+        date: o.createdAt,
+        closedAt: o.closedAt,
+        status: o.status,
+        vehicle: {
+          id: o.workshopVehicle?.id || o.workshopVehicleId || null,
+          plate: o.workshopVehicle?.plate || o.table?.number || null,
+          description: o.workshopVehicle?.description || o.vehicleInfo || null,
+        },
+        mileage: o.mileage,
+        technician: o.assignedWaiter
+          ? {
+              id: o.assignedWaiter.id,
+              name: o.assignedWaiter.name,
+            }
+          : null,
+        notes: o.notes,
+        items,
+        sale: sale
+          ? {
+              id: sale.id,
+              invoiceNumber: sale.invoiceNumber,
+              reference: sale.reference,
+              subtotal: sale.subtotal,
+              taxAmount: sale.taxAmount,
+              total: sale.total,
+              status: sale.status,
+              paymentMethod: sale.paymentMethod,
+            }
+          : null,
+        total: sale ? sale.total : Math.round(itemsSubtotal * 100) / 100,
+      };
+    });
+
+    return {
+      data,
+      total,
+      page: p,
+      limit: l,
+      totalPages: Math.ceil(total / l),
+    };
+  }
+
+  /**
+   * PATCH /pos/workshop/customers/:id
+   * Corrige nombre y teléfono del cliente validando que el teléfono no choque con otro.
+   */
+  async updateCustomer(
+    businessId: string,
+    customerId: string,
+    dto: UpdateWorkshopCustomerDto,
+  ) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: customerId, businessId },
+    });
+
+    if (!customer) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'CUSTOMER_NOT_FOUND',
+      });
+    }
+
+    const trimmedPhone =
+      dto.phone !== undefined ? (dto.phone?.trim() || null) : undefined;
+    const trimmedName = dto.name !== undefined ? dto.name.trim() : undefined;
+
+    if (trimmedPhone) {
+      const existingWithPhone = await this.prisma.customer.findFirst({
+        where: {
+          businessId,
+          phone: trimmedPhone,
+          id: { not: customerId },
+        },
+      });
+
+      if (existingWithPhone) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          message: 'PHONE_ALREADY_EXISTS',
+        });
+      }
+    }
+
+    const updated = await this.prisma.customer.update({
+      where: { id: customerId },
+      data: {
+        ...(trimmedName !== undefined ? { name: trimmedName } : {}),
+        ...(trimmedPhone !== undefined ? { phone: trimmedPhone } : {}),
+      },
+    });
+
+    this.logger.log(
+      `[updateCustomer] Cliente ${updated.id} (${updated.name}) actualizado.`,
+    );
+
+    return updated;
   }
 }

@@ -17,6 +17,7 @@ import { UserRole } from '@prisma/client';
 import { resolveBusinessId } from '../pos.utils';
 import { WorkshopService } from './workshop.service';
 import { UpdateWorkshopVehicleDto } from './dto/update-workshop-vehicle.dto';
+import { UpdateWorkshopCustomerDto } from './dto/update-workshop-customer.dto';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
@@ -90,8 +91,27 @@ export class WorkshopController {
   }
 
   /**
+   * GET /pos/workshop/customers?search=&page=&limit=
+   * Lista y busca clientes con agregaciones de vehículos, visitas y total gastado.
+   */
+  @Get('customers')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
+  getWorkshopCustomers(
+    @CurrentUser() user: JwtPayload,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('businessId') qBid?: string,
+  ) {
+    const businessId = resolveBusinessId(user, qBid);
+    const p = page ? parseInt(page, 10) : 1;
+    const l = limit ? parseInt(limit, 10) : 20;
+    return this.service.getWorkshopCustomers(businessId, search, p, l);
+  }
+
+  /**
    * GET /pos/workshop/customers/:id
-   * Ficha del cliente con todos sus vehículos registrados.
+   * Ficha del cliente con todos sus vehículos registrados y resumen de visitas/totales.
    */
   @Get('customers/:id')
   @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
@@ -102,5 +122,40 @@ export class WorkshopController {
   ) {
     const businessId = resolveBusinessId(user, qBid);
     return this.service.getCustomerWithVehicles(businessId, id);
+  }
+
+  /**
+   * GET /pos/workshop/customers/:id/history?page=&limit=
+   * Historial combinado de todos los vehículos de un cliente.
+   */
+  @Get('customers/:id/history')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
+  getCustomerHistory(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('businessId') qBid?: string,
+  ) {
+    const businessId = resolveBusinessId(user, qBid);
+    const p = page ? parseInt(page, 10) : 1;
+    const l = limit ? parseInt(limit, 10) : 20;
+    return this.service.getCustomerHistory(businessId, id, p, l);
+  }
+
+  /**
+   * PATCH /pos/workshop/customers/:id
+   * Corrige nombre y teléfono de un cliente. Solo ENCARGADO y SUPERADMIN.
+   */
+  @Patch('customers/:id')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  updateCustomer(
+    @Param('id') id: string,
+    @Body() dto: UpdateWorkshopCustomerDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    const businessId = resolveBusinessId(user, qBid);
+    return this.service.updateCustomer(businessId, id, dto);
   }
 }

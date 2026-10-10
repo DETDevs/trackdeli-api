@@ -2188,6 +2188,14 @@ WHERE a."customerId" = c."id"
           name: '155a - INDEX pos_sales workshopVehicleId',
           sql: `CREATE INDEX IF NOT EXISTS "pos_sales_workshopVehicleId_idx" ON "pos_sales" ("workshopVehicleId");`,
         },
+        {
+          name: '157a - INDEX pos_table_orders businessId customerId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_table_orders_businessId_customerId_idx" ON "pos_table_orders" ("businessId", "customerId");`,
+        },
+        {
+          name: '157a - INDEX pos_sales businessId customerId',
+          sql: `CREATE INDEX IF NOT EXISTS "pos_sales_businessId_customerId_idx" ON "pos_sales" ("businessId", "customerId");`,
+        },
       ];
 
       for (const step of ddlStatements) {
