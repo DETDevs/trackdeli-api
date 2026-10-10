@@ -7,37 +7,102 @@ import { BusinessProductsService } from "../../business-products/business-produc
 export class ReportsService {
   private readonly logger = new Logger(ReportsService.name);
 
+  /**
+   * Única resolución de costo por producto (usar con `WITH RECURSIVE`).
+   * Prioridad: PRODUCT_COST (cost cargado, 0 incluido) > RECIPE > UNKNOWN.
+   * - RECIPE es recursiva (tope de profundidad 5). Un componente usa su costo directo
+   *   o, si no lo tiene, su propia receta. Si CUALQUIER hoja no tiene costo, el producto
+   *   completo queda UNKNOWN (sin suma parcial).
+   * - LABOR: DESACTIVADO. pos_products no tiene un campo que marque "servicio"
+   *   (trackStock / nombre de categoría NO sirven para esto), así que no se clasifica LABOR.
+   * - PURCHASE: no entra (no hay fuente de costo por compras en esta resolución).
+   */
   private getCostResolutionSql(businessId: string) {
     return Prisma.sql`
+      recipe_tree AS (
+        SELECT rc."parentProductId" AS root_id, rc."componentProductId" AS node_id,
+               rc.quantity::float AS mult, 1 AS depth
+        FROM pos_product_components rc
+        WHERE rc."businessId" = ${businessId}
+        UNION ALL
+        SELECT t.root_id, rc."componentProductId", t.mult * rc.quantity::float, t.depth + 1
+        FROM recipe_tree t
+        JOIN pos_products np ON np.id = t.node_id AND np.cost IS NULL
+        JOIN pos_product_components rc ON rc."parentProductId" = t.node_id
+        WHERE t.depth < 5
+      ),
       recipe_summary AS (
         SELECT
-          rc."parentProductId",
-          SUM(rc.quantity * comp.cost) AS recipe_cost,
-          COUNT(CASE WHEN comp.cost IS NULL THEN 1 END) AS missing_comp_cost_count,
-          COUNT(rc.id) AS total_components
-        FROM pos_product_components rc
-        JOIN pos_products comp ON comp.id = rc."componentProductId"
-        GROUP BY rc."parentProductId"
+          t.root_id,
+          SUM(t.mult * np.cost)::float AS recipe_cost,
+          BOOL_OR(np.cost IS NULL) AS has_missing
+        FROM recipe_tree t
+        JOIN pos_products np ON np.id = t.node_id
+        WHERE np.cost IS NOT NULL
+           OR t.depth >= 5
+           OR NOT EXISTS (SELECT 1 FROM pos_product_components x WHERE x."parentProductId" = t.node_id)
+        GROUP BY t.root_id
       ),
       product_costs AS (
         SELECT
           p.id AS product_id,
           CASE
-            WHEN p.cost IS NOT NULL THEN 'DIRECT'
-            WHEN rs.total_components > 0 AND rs.missing_comp_cost_count = 0 THEN 'RECIPE'
-            WHEN p."trackStock" = false OR c.name ILIKE '%servicio%' THEN 'LABOR'
-            ELSE 'NONE'
+            WHEN p.cost IS NOT NULL THEN 'PRODUCT_COST'
+            WHEN rs.root_id IS NOT NULL AND rs.has_missing = false THEN 'RECIPE'
+            ELSE 'UNKNOWN'
           END AS cost_source,
           CASE
             WHEN p.cost IS NOT NULL THEN p.cost::float
-            WHEN rs.total_components > 0 AND rs.missing_comp_cost_count = 0 THEN rs.recipe_cost::float
-            WHEN p."trackStock" = false OR c.name ILIKE '%servicio%' THEN 0::float
+            WHEN rs.root_id IS NOT NULL AND rs.has_missing = false THEN rs.recipe_cost
             ELSE NULL
           END AS unit_cost
         FROM pos_products p
-        LEFT JOIN recipe_summary rs ON rs."parentProductId" = p.id
-        LEFT JOIN pos_categories c ON c.id = p."categoryId"
+        LEFT JOIN recipe_summary rs ON rs.root_id = p.id
         WHERE p."businessId" = ${businessId}
+      )
+    `;
+  }
+
+  private getProfitItemsSql(businessId: string, fromDt: Date, toDt: Date) {
+    return Prisma.sql`
+      item_sales AS (
+        SELECT
+          i."productId" AS product_id,
+          i."productName" AS product_name,
+          GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS net_qty,
+          (
+            ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
+            * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
+          )::float AS line_revenue,
+          pc.unit_cost,
+          COALESCE(pc.cost_source, 'UNKNOWN') AS cost_source,
+          false AS is_orphan
+        FROM pos_sale_items i
+        JOIN pos_sales s ON s.id = i."saleId"
+        LEFT JOIN product_costs pc ON pc.product_id = i."productId"
+        WHERE s."businessId" = ${businessId}
+          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+          AND s."createdAt" >= ${fromDt} AND s."createdAt" <= ${toDt}
+
+        UNION ALL
+
+        SELECT
+          NULL AS product_id,
+          'Sin categoría' AS product_name,
+          1::float AS net_qty,
+          GREATEST(0, s.subtotal - s."discountAmount" - COALESCE((
+            SELECT SUM("refundAmount" - COALESCE("taxRefunded", 0))
+            FROM pos_sale_returns r
+            WHERE r."saleId" = s.id
+          ), 0))::float AS line_revenue,
+          NULL::float AS unit_cost,
+          'UNKNOWN' AS cost_source,
+          true AS is_orphan
+        FROM pos_sales s
+        WHERE s."businessId" = ${businessId}
+          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+          AND s."createdAt" >= ${fromDt} AND s."createdAt" <= ${toDt}
+          AND NOT EXISTS (SELECT 1 FROM pos_sale_items i WHERE i."saleId" = s.id)
       )
     `;
   }
@@ -113,7 +178,7 @@ export class ReportsService {
 
     const byDayRaw: any[] = await this.prisma.$queryRaw`
       SELECT
-        TO_CHAR(s."createdAt" AT TIME ZONE 'America/Managua', 'YYYY-MM-DD') AS date,
+        TO_CHAR((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua', 'YYYY-MM-DD') AS date,
         COUNT(s.id)::int AS count,
         COALESCE(SUM(GREATEST(0, s.total - COALESCE(refunds.total_refund, 0))), 0)::float AS revenue
       FROM pos_sales s
@@ -127,7 +192,7 @@ export class ReportsService {
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
-      GROUP BY TO_CHAR(s."createdAt" AT TIME ZONE 'America/Managua', 'YYYY-MM-DD')
+      GROUP BY TO_CHAR((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua', 'YYYY-MM-DD')
       ORDER BY date ASC;
     `;
 
@@ -706,66 +771,38 @@ export class ReportsService {
     const startDate = range.current.from;
     const endDate = range.current.to;
 
+    const SOURCES = ['PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR', 'UNKNOWN'] as const;
+    const r2 = (n: any) => Math.round((Number(n) || 0) * 100) / 100;
+
     const computeProfitMetrics = async (fromDt: Date, toDt: Date) => {
-      const result: any[] = await this.prisma.$queryRaw`
-        WITH ${this.getCostResolutionSql(businessId)},
-        item_sales AS (
-          SELECT
-            i.id,
-            i."productId",
-            i."productName",
-            GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS net_qty,
-            (
-              ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
-              * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
-            )::float AS line_revenue,
-            pc.unit_cost,
-            COALESCE(pc.cost_source, 'NONE') AS cost_source
-          FROM pos_sale_items i
-          JOIN pos_sales s ON s.id = i."saleId"
-          LEFT JOIN product_costs pc ON pc.product_id = i."productId"
-          WHERE s."businessId" = ${businessId}
-            AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-            AND s."createdAt" >= ${fromDt} AND s."createdAt" <= ${toDt}
-
-          UNION ALL
-
-          SELECT
-            s.id AS id,
-            NULL AS "productId",
-            'Sin categoría' AS "productName",
-            1::float AS net_qty,
-            GREATEST(0, s.subtotal - s."discountAmount" - COALESCE((
-              SELECT SUM("refundAmount" - COALESCE("taxRefunded", 0))
-              FROM pos_sale_returns r
-              WHERE r."saleId" = s.id
-            ), 0))::float AS line_revenue,
-            NULL AS unit_cost,
-            'NONE' AS cost_source
-          FROM pos_sales s
-          WHERE s."businessId" = ${businessId}
-            AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-            AND s."createdAt" >= ${fromDt} AND s."createdAt" <= ${toDt}
-            AND NOT EXISTS (SELECT 1 FROM pos_sale_items i WHERE i."saleId" = s.id)
-        )
+      const rows: any[] = await this.prisma.$queryRaw`
+        WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
+        ${this.getProfitItemsSql(businessId, fromDt, toDt)}
         SELECT
-          COALESCE(SUM(line_revenue), 0)::float AS "totalRevenue",
-          COALESCE(SUM(CASE WHEN cost_source != 'NONE' THEN line_revenue ELSE 0 END), 0)::float AS "coveredRevenue",
-          COALESCE(SUM(CASE WHEN cost_source = 'NONE' THEN line_revenue ELSE 0 END), 0)::float AS "uncoveredRevenue",
-          COALESCE(SUM(CASE WHEN cost_source = 'LABOR' THEN line_revenue ELSE 0 END), 0)::float AS "laborRevenue",
-          COALESCE(SUM(CASE WHEN cost_source != 'NONE' THEN unit_cost * net_qty ELSE 0 END), 0)::float AS "totalCost",
-          COALESCE(SUM(CASE WHEN cost_source = 'DIRECT' THEN line_revenue ELSE 0 END), 0)::float AS "sourceDirect",
-          COALESCE(SUM(CASE WHEN cost_source = 'RECIPE' THEN line_revenue ELSE 0 END), 0)::float AS "sourceRecipe",
-          COALESCE(SUM(CASE WHEN cost_source = 'LABOR' THEN line_revenue ELSE 0 END), 0)::float AS "sourceLabor",
-          COALESCE(SUM(CASE WHEN cost_source = 'NONE' THEN line_revenue ELSE 0 END), 0)::float AS "sourceNone"
+          cost_source AS source,
+          COALESCE(SUM(line_revenue), 0)::float AS revenue,
+          COALESCE(SUM(unit_cost * net_qty), 0)::float AS cost,
+          COUNT(*) FILTER (WHERE NOT is_orphan)::int AS lines,
+          COALESCE(SUM(line_revenue) FILTER (WHERE is_orphan), 0)::float AS "orphanRevenue"
         FROM item_sales
-        WHERE net_qty > 0;
+        WHERE net_qty > 0
+        GROUP BY cost_source;
       `;
 
-      const totalRevenue = Math.round((result[0]?.totalRevenue || 0) * 100) / 100;
-      const coveredRevenue = Math.round((result[0]?.coveredRevenue || 0) * 100) / 100;
-      const uncoveredRevenue = Math.round((result[0]?.uncoveredRevenue || 0) * 100) / 100;
-      const laborRevenue = Math.round((result[0]?.laborRevenue || 0) * 100) / 100;
+      const bySource: Record<string, { revenue: number; cost: number; lines: number }> = {};
+      for (const s of SOURCES) bySource[s] = { revenue: 0, cost: 0, lines: 0 };
+      let uncategorizedRevenue = 0;
+      for (const r of rows) {
+        if (!bySource[r.source]) continue;
+        bySource[r.source] = { revenue: r2(r.revenue), cost: r2(r.cost), lines: r.lines };
+        uncategorizedRevenue += r.orphanRevenue || 0;
+      }
+
+      const covered = ['PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR'];
+      const totalRevenue = r2(SOURCES.reduce((a, s) => a + bySource[s].revenue, 0));
+      const coveredRevenue = r2(covered.reduce((a, s) => a + bySource[s].revenue, 0));
+      const uncoveredRevenue = r2(bySource.UNKNOWN.revenue);
+      const laborRevenue = bySource.LABOR.revenue;
       const coveragePercent = totalRevenue > 0
         ? Math.round((coveredRevenue / totalRevenue) * 10000) / 100
         : 0;
@@ -774,9 +811,9 @@ export class ReportsService {
       let estimatedProfit: number | null = null;
       let marginPercent: number | null = null;
 
-      if (coveragePercent > 0 && coveredRevenue > 0) {
-        totalCost = Math.round((result[0]?.totalCost || 0) * 100) / 100;
-        estimatedProfit = Math.round((coveredRevenue - totalCost) * 100) / 100;
+      if (coveredRevenue > 0) {
+        totalCost = r2(covered.reduce((a, s) => a + bySource[s].cost, 0));
+        estimatedProfit = r2(coveredRevenue - totalCost);
         marginPercent = Math.round(((coveredRevenue - totalCost) / coveredRevenue) * 10000) / 100;
       }
 
@@ -789,66 +826,27 @@ export class ReportsService {
         totalCost,
         estimatedProfit,
         marginPercent,
-        bySource: {
-          DIRECT: Math.round((result[0]?.sourceDirect || 0) * 100) / 100,
-          RECIPE: Math.round((result[0]?.sourceRecipe || 0) * 100) / 100,
-          LABOR: Math.round((result[0]?.sourceLabor || 0) * 100) / 100,
-          NONE: Math.round((result[0]?.sourceNone || 0) * 100) / 100,
-        }
+        bySource,
+        uncategorizedRevenue: r2(uncategorizedRevenue),
       };
     };
 
     const currentMetrics = await computeProfitMetrics(startDate, endDate);
 
     const missing: any[] = await this.prisma.$queryRaw`
-      WITH ${this.getCostResolutionSql(businessId)},
-      item_sales AS (
-        SELECT
-          i."productId",
-          i."productName",
-          GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS net_qty,
-          (
-            ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
-            * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
-          )::float AS line_revenue,
-          pc.unit_cost,
-          COALESCE(pc.cost_source, 'NONE') AS cost_source
-        FROM pos_sale_items i
-        JOIN pos_sales s ON s.id = i."saleId"
-        LEFT JOIN product_costs pc ON pc.product_id = i."productId"
-        WHERE s."businessId" = ${businessId}
-          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
-
-        UNION ALL
-
-        SELECT
-          NULL AS "productId",
-          'Sin categoría' AS "productName",
-          1::float AS net_qty,
-          GREATEST(0, s.subtotal - s."discountAmount" - COALESCE((
-            SELECT SUM("refundAmount" - COALESCE("taxRefunded", 0))
-            FROM pos_sale_returns r
-            WHERE r."saleId" = s.id
-          ), 0))::float AS line_revenue,
-          NULL AS unit_cost,
-          'NONE' AS cost_source
-        FROM pos_sales s
-        WHERE s."businessId" = ${businessId}
-          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
-          AND NOT EXISTS (SELECT 1 FROM pos_sale_items i WHERE i."saleId" = s.id)
-      )
+      WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
+      ${this.getProfitItemsSql(businessId, startDate, endDate)}
       SELECT
-        COALESCE("productId", 'unknown') AS id,
-        "productName" AS name,
+        product_id AS id,
+        product_name AS name,
         SUM(net_qty)::float AS "quantitySold",
         SUM(line_revenue)::float AS "totalSold"
       FROM item_sales
-      WHERE cost_source = 'NONE' AND net_qty > 0
-      GROUP BY "productId", "productName"
+      WHERE cost_source = 'UNKNOWN' AND net_qty > 0 AND NOT is_orphan
+      GROUP BY product_id, product_name
       ORDER BY "totalSold" DESC;
     `;
+
 
     const prevMetrics = await computeProfitMetrics(range.previous.from, range.previous.to);
 
@@ -868,6 +866,7 @@ export class ReportsService {
       marginPercent: currentMetrics.marginPercent,
       laborRevenue: currentMetrics.laborRevenue,
       bySource: currentMetrics.bySource,
+      uncategorizedRevenue: currentMetrics.uncategorizedRevenue,
       missingCostCount: missing.length,
       missingCostProducts: missing.slice(0, 10).map(m => ({
         id: m.id,
@@ -915,7 +914,7 @@ export class ReportsService {
 
     const hoursRaw: any[] = await this.prisma.$queryRaw`
       SELECT
-        EXTRACT(HOUR FROM s."createdAt" AT TIME ZONE 'America/Managua')::int AS hour,
+        EXTRACT(HOUR FROM (s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua')::int AS hour,
         COUNT(s.id)::int AS count,
         COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS revenue
       FROM pos_sales s
@@ -951,7 +950,7 @@ export class ReportsService {
 
     const dowRaw: any[] = await this.prisma.$queryRaw`
       SELECT
-        EXTRACT(DOW FROM s."createdAt" AT TIME ZONE 'America/Managua')::int AS dow,
+        EXTRACT(DOW FROM (s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua')::int AS dow,
         COUNT(s.id)::int AS count,
         COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS revenue
       FROM pos_sales s
@@ -1366,7 +1365,7 @@ export class ReportsService {
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
-        AND (s."workshopVehicleId" IS NOT NULL OR p."trackStock" = false OR c.name ILIKE '%servicio%')
+        AND s."workshopVehicleId" IS NOT NULL
       GROUP BY i."productId", i."productName"
       HAVING SUM(GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))) > 0
       ORDER BY total DESC
