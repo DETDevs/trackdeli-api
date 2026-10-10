@@ -73,7 +73,13 @@ export class SalesService {
     };
   }
 
-  async create(dto: CreateSaleDto, businessId: string, cashierId: string, userRole?: string) {
+  async create(
+    dto: CreateSaleDto,
+    businessId: string,
+    cashierId: string,
+    userRole?: string,
+    clientInfo?: { channel?: string; deviceId?: string },
+  ) {
     return this.prisma.$transaction(async (tx) => {
       let cashRegisterId: string;
       if (dto.cashRegisterId) {
@@ -115,7 +121,19 @@ export class SalesService {
 
       const business = await tx.business.findUnique({
         where: { id: businessId },
-        select: { invoicePrefix: true, invoiceCounter: true, taxRate: true, taxEnabled: true, taxIncluded: true, currency: true, name: true },
+        select: {
+          invoicePrefix: true,
+          invoiceCounter: true,
+          taxRate: true,
+          taxEnabled: true,
+          taxIncluded: true,
+          currency: true,
+          name: true,
+          posAddress: true,
+          posPhone: true,
+          whatsappNumber: true,
+          logoUrl: true,
+        },
       });
       if (!business) throw new NotFoundException("Negocio no encontrado");
 
@@ -758,6 +776,8 @@ export class SalesService {
           cashRegisterId,
           cashierId,
           invoiceNumber,
+          channel: clientInfo?.channel || 'DESKTOP',
+          deviceId: clientInfo?.deviceId || null,
           customerId,
           customerName,
           customerPhone,
@@ -885,7 +905,16 @@ export class SalesService {
       }
 
       this.logger.log(`[create] Venta: ${invoiceNumber} total=${total.toFixed(2)} metodo=${mainMethod} negocio=${businessId}`);
-      return this.formatSale(sale, userRole);
+      return {
+        ...this.formatSale(sale, userRole),
+        business: {
+          name: business.name,
+          phone: business.posPhone || business.whatsappNumber || null,
+          address: business.posAddress || null,
+          taxId: (business as any).taxId || null,
+          logoUrl: business.logoUrl || null,
+        },
+      };
     });
   }
 

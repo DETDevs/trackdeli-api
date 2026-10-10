@@ -1025,12 +1025,16 @@ model Sale {
   workshopVehicleId   String?
   workshopVehicle     WorkshopVehicle?     @relation(fields: [workshopVehicleId], references: [id], onDelete: SetNull)
 
+  channel        String?          @db.VarChar(20)
+  deviceId       String?          @db.VarChar(100)
+
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
   @@index([workshopVehicleId])
   @@index([businessId, customerId])
   @@index([businessId, status, createdAt])
+  @@index([businessId, channel])
   @@map("pos_sales")
 }
 
@@ -1592,6 +1596,11 @@ model PosDevice {
   platform    String?         @db.VarChar(50)
   appVersion  String?         @db.VarChar(50)
   status      PosDeviceStatus @default(ACTIVE)
+  category    String          @default("DESKTOP") @db.VarChar(20)
+  userId      String?         @db.VarChar(100)
+  userAgent   String?         @db.VarChar(500)
+  ipAddress   String?         @db.VarChar(100)
+  secretHash  String?         @db.VarChar(100)
   firstSeenAt DateTime        @default(now())
   lastSeenAt  DateTime        @default(now())
   lastUserId  String?         @db.VarChar(100)
@@ -1600,6 +1609,7 @@ model PosDevice {
 
   @@unique([businessId, deviceId])
   @@index([businessId, status])
+  @@index([businessId, category, status])
   @@map("pos_devices")
 }
 
@@ -1625,6 +1635,8 @@ model BusinessProductSubscription {
   posVertical             PosVertical?
   posMonthlyFee           Decimal?               @db.Decimal(10, 2)
   maxDevices              Int?
+  webBillingEnabled       Boolean                @default(false)
+  maxWebDevices           Int?                   @default(2)
   backofficeTier          String?                @default("BASIC") @db.VarChar(20)
   trialHours              Int?
   trialStartedAt          DateTime?

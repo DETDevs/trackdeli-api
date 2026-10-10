@@ -258,6 +258,21 @@ export class SuperAdminController {
     return this.superAdminService.updateBusinessDevice(id, deviceId, dto, user);
   }
 
+  @Get('businesses/:id/web-devices')
+  async getBusinessWebDevices(@Param('id') id: string) {
+    return this.superAdminService.getBusinessWebDevices(id);
+  }
+
+  @Patch('businesses/:id/web-devices/:deviceId')
+  async updateBusinessWebDevice(
+    @Param('id') id: string,
+    @Param('deviceId') deviceId: string,
+    @Body() dto: UpdateDeviceDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.updateBusinessWebDevice(id, deviceId, dto, user);
+  }
+
   @Patch('businesses/:id/pos-subscription')
   async updatePosSubscription(
     @Param('id') id: string,

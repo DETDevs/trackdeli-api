@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post, Query, UseGuards, BadRequestExcepti
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { IdempotencyInterceptor } from "../idempotency/idempotency.interceptor";
 import { PosGuard } from "../../../common/guards/pos.guard";
+import { WebBillingGuard } from "../../../common/guards/web-billing.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from '../../../common/types/jwt-payload.interface';
@@ -51,6 +52,7 @@ export class CashRegisterController {
   }
 
   @Post("open")
+  @UseGuards(WebBillingGuard)
   open(
     @Body() dto: OpenCashRegisterDto,
     @CurrentUser() user: JwtPayload,
@@ -60,6 +62,7 @@ export class CashRegisterController {
   }
 
   @Post("close")
+  @UseGuards(WebBillingGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_PROPIO)
   closeCurrent(
@@ -71,6 +74,7 @@ export class CashRegisterController {
   }
 
   @Post(":id/close")
+  @UseGuards(WebBillingGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
   close(
@@ -83,6 +87,7 @@ export class CashRegisterController {
   }
 
   @Post(":id/force-close")
+  @UseGuards(WebBillingGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
   forceClose(

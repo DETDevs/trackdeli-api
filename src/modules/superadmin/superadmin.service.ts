@@ -351,7 +351,7 @@ export class SuperAdminService {
     );
     const maxDevices = posSub?.maxDevices ?? null;
     const activeDevices = await this.prisma.posDevice.count({
-      where: { businessId: id, status: PosDeviceStatus.ACTIVE },
+      where: { businessId: id, status: PosDeviceStatus.ACTIVE, category: 'DESKTOP' },
     });
 
     const userUsage = await this.userQuotaService.getUsage(id);
@@ -2021,10 +2021,11 @@ export class SuperAdminService {
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
     }
-    return this.prisma.posDevice.findMany({
+    const devices = await this.prisma.posDevice.findMany({
       where: { businessId },
       orderBy: [{ lastSeenAt: 'desc' }, { createdAt: 'desc' }],
     });
+    return devices.map(({ secretHash, ...d }) => d);
   }
 
   async updateBusinessDevice(
@@ -2080,7 +2081,91 @@ export class SuperAdminService {
       `[updateBusinessDevice] Dispositivo ${device.id} (${device.deviceId}) actualizado: status=${updated.status}, name="${updated.name}"`,
     );
 
-    return updated;
+    const { secretHash, ...safe } = updated;
+    return safe;
+  }
+
+  async getBusinessWebDevices(businessId: string) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+    const devices = await this.prisma.posDevice.findMany({
+      where: { businessId, category: 'WEB' },
+      orderBy: [{ lastSeenAt: 'desc' }, { createdAt: 'desc' }],
+    });
+    const userIds = Array.from(new Set(devices.map((d) => d.userId).filter(Boolean))) as string[];
+    const users = userIds.length > 0 ? await this.prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, name: true, email: true },
+    }) : [];
+    const userMap = new Map(users.map((u) => [u.id, u]));
+
+    return devices.map(({ secretHash, ...d }) => ({
+      ...d,
+      user: d.userId ? userMap.get(d.userId) || null : null,
+    }));
+  }
+
+  async updateBusinessWebDevice(
+    businessId: string,
+    deviceIdOrId: string,
+    dto: UpdateDeviceDto,
+    actorUser?: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    const device = await this.prisma.posDevice.findFirst({
+      where: {
+        businessId,
+        category: 'WEB',
+        OR: [{ id: deviceIdOrId }, { deviceId: deviceIdOrId }],
+      },
+    });
+
+    if (!device) {
+      throw new NotFoundException('Dispositivo web no encontrado');
+    }
+
+    const updated = await this.prisma.posDevice.update({
+      where: { id: device.id },
+      data: {
+        ...(dto.status !== undefined && { status: dto.status }),
+        ...(dto.name !== undefined && { name: dto.name.trim() }),
+      },
+    });
+
+    let action = 'WEB_DEVICE_UPDATED';
+    if (dto.status && dto.status !== device.status) {
+      action = dto.status === PosDeviceStatus.REVOKED ? 'WEB_DEVICE_REVOKED' : 'WEB_DEVICE_ACTIVATED';
+    }
+
+    await this.auditService.record({
+      businessId,
+      userId: actorUser?.sub || 'system-superadmin',
+      userRole: actorUser?.role || 'SUPERADMIN',
+      action,
+      entityType: 'PosDevice',
+      entityId: device.id,
+      before: { status: device.status, name: device.name },
+      after: { status: updated.status, name: updated.name },
+    });
+
+    this.logger.log(
+      `[updateBusinessWebDevice] Dispositivo web ${device.id} (${device.deviceId}) actualizado: status=${updated.status}, name="${updated.name}"`,
+    );
+
+    const { secretHash, ...safe } = updated;
+    return safe;
   }
 
   async updatePosSubscription(
@@ -2131,6 +2216,35 @@ export class SuperAdminService {
 
       this.logger.log(
         `[updatePosSubscription] Límite maxDevices de businessId=${businessId} cambiado de ${sub.maxDevices} a ${updatedSub.maxDevices}`,
+      );
+    }
+
+    if (dto.webBillingEnabled !== undefined || dto.maxWebDevices !== undefined) {
+      const dataToUpdate: any = {};
+      if (dto.webBillingEnabled !== undefined) dataToUpdate.webBillingEnabled = dto.webBillingEnabled;
+      if (dto.maxWebDevices !== undefined) dataToUpdate.maxWebDevices = dto.maxWebDevices;
+
+      const prevWebBilling = updatedSub.webBillingEnabled;
+      const prevMaxWebDevices = updatedSub.maxWebDevices;
+
+      updatedSub = await this.prisma.businessProductSubscription.update({
+        where: { id: sub.id },
+        data: dataToUpdate,
+      });
+
+      await this.auditService.record({
+        businessId,
+        userId: actorUser?.sub || 'system-superadmin',
+        userRole: actorUser?.role || 'SUPERADMIN',
+        action: 'WEB_BILLING_SETTINGS_CHANGED',
+        entityType: 'BusinessProductSubscription',
+        entityId: sub.id,
+        before: { webBillingEnabled: prevWebBilling, maxWebDevices: prevMaxWebDevices },
+        after: { webBillingEnabled: updatedSub.webBillingEnabled, maxWebDevices: updatedSub.maxWebDevices },
+      });
+
+      this.logger.log(
+        `[updatePosSubscription] Configuración web billing de businessId=${businessId} cambiada: webBillingEnabled=${updatedSub.webBillingEnabled}, maxWebDevices=${updatedSub.maxWebDevices}`,
       );
     }
 

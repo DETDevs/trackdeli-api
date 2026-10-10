@@ -2241,6 +2241,7 @@ WHERE a."customerId" = c."id"
       this.logger.log('[PrismaService] Esquema de base de datos verificado y listo.');
 
       await this.ensureProductTypeColumn();
+      await this.ensureWebBillingColumns();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -2302,6 +2303,69 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 160d - Advertencia creando pos_products.type: ${err.message}`);
+    }
+  }
+
+  /**
+   * 165a - Columnas para facturación web, límite de dispositivos web y canal de venta:
+   * - business_product_subscriptions: webBillingEnabled (boolean default false), maxWebDevices (int default 2)
+   * - pos_devices: category (varchar(20) default 'DESKTOP'), userId (varchar(100)), userAgent (varchar(500)), ipAddress (varchar(100)), secretHash (varchar(100))
+   * - pos_sales: channel (varchar(20)), deviceId (varchar(100))
+   * DDL idempotente (ADD COLUMN IF NOT EXISTS) con advisory lock.
+   */
+  private async ensureWebBillingColumns(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1650100)`);
+
+          // 1. business_product_subscriptions
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "webBillingEnabled" BOOLEAN NOT NULL DEFAULT false`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "business_product_subscriptions" ADD COLUMN IF NOT EXISTS "maxWebDevices" INTEGER DEFAULT 2`,
+          );
+
+          // 2. pos_devices
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_devices" ADD COLUMN IF NOT EXISTS "category" VARCHAR(20) NOT NULL DEFAULT 'DESKTOP'`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_devices" ADD COLUMN IF NOT EXISTS "userId" VARCHAR(100)`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_devices" ADD COLUMN IF NOT EXISTS "userAgent" VARCHAR(500)`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_devices" ADD COLUMN IF NOT EXISTS "ipAddress" VARCHAR(100)`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_devices" ADD COLUMN IF NOT EXISTS "secretHash" VARCHAR(100)`,
+          );
+          await tx.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "pos_devices_businessId_category_status_idx" ON "pos_devices"("businessId", "category", "status")`,
+          );
+
+          // 3. pos_sales
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "channel" VARCHAR(20)`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "deviceId" VARCHAR(100)`,
+          );
+          await tx.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "pos_sales_businessId_channel_idx" ON "pos_sales"("businessId", "channel")`,
+          );
+
+          this.logger.log(
+            `[PrismaService] ✓ 165a - Columnas de facturación web sincronizadas (business_product_subscriptions, pos_devices, pos_sales).`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 165a - Advertencia creando columnas de facturación web: ${err.message}`);
     }
   }
 

@@ -1,8 +1,10 @@
 import {
-  Body, Controller, Get, Param, Post, Query, UseGuards,
+  Body, Controller, Get, Param, Post, Query, Req, UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
+import { WebBillingGuard } from "../../../common/guards/web-billing.guard";
+import { NoWebPlatformGuard } from "../../../common/guards/no-web-platform.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from "../../../common/types/jwt-payload.interface";
@@ -43,14 +45,19 @@ export class SalesController {
   }
 
   @Post()
+  @UseGuards(WebBillingGuard)
   @RequirePosAction(PosAction.VENDER_COBRAR)
   @UseInterceptors(IdempotencyInterceptor)
   create(
     @Body() dto: CreateSaleDto,
     @CurrentUser() user: JwtPayload,
+    @Req() req: any,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.create(dto, resolveBusinessId(user, qBid), user.sub, user.role);
+    const platform = (req.headers['x-client-platform'] || req.headers['X-Client-Platform'] || '').toString().toLowerCase();
+    const channel = platform.startsWith('web') ? 'WEB' : 'DESKTOP';
+    const deviceId = (req.headers['x-device-id'] || req.headers['X-Device-Id'] || null)?.toString().trim() || null;
+    return this.service.create(dto, resolveBusinessId(user, qBid), user.sub, user.role, { channel, deviceId });
   }
 
   @Get(":id")
@@ -64,11 +71,13 @@ export class SalesController {
 
   @Post(":id/void")
   @RequirePosAction(PosAction.ANULAR_VENTA_COBRADA)
+  @UseGuards(NoWebPlatformGuard)
   @UseInterceptors(IdempotencyInterceptor)
   void(
     @Param("id") id: string,
     @Body() dto: VoidSaleDto,
     @CurrentUser() user: JwtPayload,
+    @Req() req: any,
     @Query("businessId") qBid?: string,
   ) {
     return this.service.voidSale(id, resolveBusinessId(user, qBid), user.sub, user.role, dto);
@@ -76,11 +85,13 @@ export class SalesController {
 
   @Post(":id/cancel")
   @RequirePosAction(PosAction.ANULAR_VENTA_COBRADA)
+  @UseGuards(NoWebPlatformGuard)
   @UseInterceptors(IdempotencyInterceptor)
   cancel(
     @Param("id") id: string,
     @Body() dto: CancelSaleDto,
     @CurrentUser() user: JwtPayload,
+    @Req() req: any,
     @Query("businessId") qBid?: string,
   ) {
     return this.service.voidSale(id, resolveBusinessId(user, qBid), user.sub, user.role, {
@@ -91,11 +102,13 @@ export class SalesController {
 
   @Post(":id/returns")
   @RequirePosAction(PosAction.DEVOLUCION)
+  @UseGuards(NoWebPlatformGuard)
   @UseInterceptors(IdempotencyInterceptor)
   createReturn(
     @Param("id") id: string,
     @Body() dto: CreateReturnDto,
     @CurrentUser() user: JwtPayload,
+    @Req() req: any,
     @Query("businessId") qBid?: string,
   ) {
     return this.service.createReturn(id, resolveBusinessId(user, qBid), user.sub, user.role, dto);
