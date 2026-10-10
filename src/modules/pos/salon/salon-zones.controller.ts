@@ -12,6 +12,7 @@ import {
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PosGuard } from '../../../common/guards/pos.guard';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
+import { SkipWebAdminAccess } from '../../../common/decorators/skip-web-admin-access.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -23,6 +24,7 @@ import { UpdateSalonZoneDto } from './dto/update-salon-zone.dto';
 import { ReorderSalonZonesDto } from './dto/reorder-salon-zones.dto';
 
 @SkipMembershipCheck()
+@SkipWebAdminAccess()
 @UseGuards(JwtAuthGuard, PosGuard)
 @Controller('pos/salon/zones')
 export class SalonZonesController {

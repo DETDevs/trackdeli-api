@@ -86,7 +86,12 @@ export class PosGuard implements CanActivate {
       request.headers['x-client-platform'] || request.headers['X-Client-Platform'];
     const platform = (rawPlatform || '').toString().toLowerCase();
 
-    if (platform.startsWith('web') && user.role !== UserRole.SUPERADMIN) {
+    // 166a / 167a: Restricción webAdminEnabled solo aplica a usuarios del backoffice/admin (CAJERO, ENCARGADO).
+    // No aplica a WAITER (comandero), REPARTIDOR ni SUPERADMIN. Tampoco a rutas de comandero (/pos/tables).
+    if (
+      platform.startsWith('web') &&
+      (user.role === UserRole.CAJERO || user.role === UserRole.ENCARGADO)
+    ) {
       const rawPath =
         request.path ||
         request.originalUrl?.split('?')[0] ||
@@ -95,7 +100,11 @@ export class PosGuard implements CanActivate {
       const normalizedPath =
         rawPath.replace(/^\/api\/v1/, '').replace(/\/$/, '') || '/';
 
-      if (normalizedPath !== '/pos/web-billing/status' && posSub?.webAdminEnabled === false) {
+      if (
+        normalizedPath !== '/pos/web-billing/status' &&
+        !normalizedPath.startsWith('/pos/tables') &&
+        posSub?.webAdminEnabled === false
+      ) {
         throw new ForbiddenException({
           statusCode: 403,
           error: 'Forbidden',

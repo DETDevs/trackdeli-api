@@ -4,19 +4,37 @@ import {
   ExecutionContext,
   ForbiddenException,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BusinessProductType, BusinessProductStatus, UserRole } from '@prisma/client';
+import { SKIP_WEB_ADMIN_ACCESS_KEY } from '../decorators/skip-web-admin-access.decorator';
 
 @Injectable()
 export class WebAdminAccessGuard implements CanActivate {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly reflector: Reflector,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    // 167a: Verificar si el handler o la clase tiene el decorador @SkipWebAdminAccess()
+    const skipCheck = this.reflector.getAllAndOverride<boolean>(
+      SKIP_WEB_ADMIN_ACCESS_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    if (skipCheck) {
+      return true;
+    }
+
     const req = context.switchToHttp().getRequest();
     const user = req.user;
 
-    // No aplica a peticiones sin usuario ni a SUPERADMIN
-    if (!user || user.role === UserRole.SUPERADMIN) {
+    // 167a: El acceso web admin solo restringe al backoffice (CAJERO y ENCARGADO).
+    // No aplica a peticiones sin usuario, ni a WAITER (comandero/mesero), REPARTIDOR (DeliTrack) ni SUPERADMIN.
+    if (
+      !user ||
+      (user.role !== UserRole.CAJERO && user.role !== UserRole.ENCARGADO)
+    ) {
       return true;
     }
 
@@ -40,7 +58,11 @@ export class WebAdminAccessGuard implements CanActivate {
       rawPath.replace(/^\/api\/v1/, '').replace(/\/$/, '') || '/';
 
     // GET /pos/web-billing/status no debe bloquearse por webAdminEnabled = false
-    if (normalizedPath === '/pos/web-billing/status') {
+    // Tampoco las rutas operativas de comandero/salón (/pos/tables)
+    if (
+      normalizedPath === '/pos/web-billing/status' ||
+      normalizedPath.startsWith('/pos/tables')
+    ) {
       return true;
     }
 

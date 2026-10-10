@@ -14,6 +14,7 @@ import {
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PosGuard } from '../../../common/guards/pos.guard';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
+import { SkipWebAdminAccess } from '../../../common/decorators/skip-web-admin-access.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../../common/types/jwt-payload.interface';
 import { Roles } from '../../../common/decorators/roles.decorator';
@@ -30,6 +31,7 @@ import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
 import { UpdateOrderAssignmentDto } from './dto/update-order-assignment.dto';
 
 @SkipMembershipCheck()
+@SkipWebAdminAccess()
 @UseGuards(JwtAuthGuard, PosGuard)
 @Controller('pos/tables')
 export class TablesController {
