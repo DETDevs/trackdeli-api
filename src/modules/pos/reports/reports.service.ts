@@ -629,69 +629,105 @@ export class ReportsService {
     const startDate = range.current.from;
     const endDate = range.current.to;
 
-    const result: any[] = await this.prisma.$queryRaw`
-      WITH product_costs AS (
+    const computeProfitMetrics = async (fromDt: Date, toDt: Date) => {
+      const result: any[] = await this.prisma.$queryRaw`
+        WITH recipe_summary AS (
+          SELECT
+            rc."parentProductId",
+            SUM(rc.quantity * comp.cost) AS recipe_cost,
+            COUNT(CASE WHEN comp.cost IS NULL THEN 1 END) AS missing_comp_cost_count,
+            COUNT(rc.id) AS total_components
+          FROM pos_product_components rc
+          JOIN pos_products comp ON comp.id = rc."componentProductId"
+          GROUP BY rc."parentProductId"
+        ),
+        product_costs AS (
+          SELECT
+            p.id AS product_id,
+            CASE
+              WHEN p.cost IS NOT NULL THEN p.cost::float
+              WHEN rs.total_components > 0 AND rs.missing_comp_cost_count = 0 THEN rs.recipe_cost::float
+              ELSE NULL
+            END AS unit_cost
+          FROM pos_products p
+          LEFT JOIN recipe_summary rs ON rs."parentProductId" = p.id
+          WHERE p."businessId" = ${businessId}
+        ),
+        item_sales AS (
+          SELECT
+            i.id,
+            i."productId",
+            i."productName",
+            GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS net_qty,
+            ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))::float AS line_revenue,
+            pc.unit_cost
+          FROM pos_sale_items i
+          JOIN pos_sales s ON s.id = i."saleId"
+          LEFT JOIN product_costs pc ON pc.product_id = i."productId"
+          WHERE s."businessId" = ${businessId}
+            AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+            AND s."createdAt" >= ${fromDt} AND s."createdAt" <= ${toDt}
+        )
         SELECT
-          p.id AS product_id,
-          COALESCE(
-            p.cost,
-            (
-              SELECT SUM(rc.quantity * comp.cost)
-              FROM pos_product_components rc
-              JOIN pos_products comp ON comp.id = rc."componentProductId"
-              WHERE rc."parentProductId" = p.id
-                AND comp.cost IS NOT NULL
-                AND NOT EXISTS (
-                  SELECT 1 FROM pos_product_components rc2
-                  JOIN pos_products comp2 ON comp2.id = rc2."componentProductId"
-                  WHERE rc2."parentProductId" = p.id AND (comp2.cost IS NULL OR comp2.cost <= 0)
-                )
-            )
-          ) AS unit_cost
-        FROM pos_products p
-        WHERE p."businessId" = ${businessId}
-      ),
-      item_sales AS (
-        SELECT
-          i.id,
-          i."productId",
-          i."productName",
-          GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS net_qty,
-          ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))::float AS line_revenue,
-          pc.unit_cost
-        FROM pos_sale_items i
-        JOIN pos_sales s ON s.id = i."saleId"
-        LEFT JOIN product_costs pc ON pc.product_id = i."productId"
-        WHERE s."businessId" = ${businessId}
-          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
-      )
-      SELECT
-        COALESCE(SUM(line_revenue), 0)::float AS "totalRevenue",
-        COALESCE(SUM(CASE WHEN unit_cost IS NOT NULL AND unit_cost > 0 THEN unit_cost * net_qty ELSE 0 END), 0)::float AS "totalCost"
-      FROM item_sales;
-    `;
+          COALESCE(SUM(line_revenue), 0)::float AS "totalRevenue",
+          COALESCE(SUM(CASE WHEN unit_cost IS NOT NULL THEN line_revenue ELSE 0 END), 0)::float AS "coveredRevenue",
+          COALESCE(SUM(CASE WHEN unit_cost IS NULL THEN line_revenue ELSE 0 END), 0)::float AS "uncoveredRevenue",
+          COALESCE(SUM(CASE WHEN unit_cost IS NOT NULL THEN unit_cost * net_qty ELSE 0 END), 0)::float AS "totalCost"
+        FROM item_sales
+        WHERE net_qty > 0;
+      `;
+
+      const totalRevenue = Math.round((result[0]?.totalRevenue || 0) * 100) / 100;
+      const coveredRevenue = Math.round((result[0]?.coveredRevenue || 0) * 100) / 100;
+      const uncoveredRevenue = Math.round((result[0]?.uncoveredRevenue || 0) * 100) / 100;
+      const coveragePercent = totalRevenue > 0
+        ? Math.round((coveredRevenue / totalRevenue) * 10000) / 100
+        : 0;
+
+      let totalCost: number | null = null;
+      let estimatedProfit: number | null = null;
+      let marginPercent: number | null = null;
+
+      if (coveragePercent > 0 && coveredRevenue > 0) {
+        totalCost = Math.round((result[0]?.totalCost || 0) * 100) / 100;
+        estimatedProfit = Math.round((coveredRevenue - totalCost) * 100) / 100;
+        marginPercent = Math.round(((coveredRevenue - totalCost) / coveredRevenue) * 10000) / 100;
+      }
+
+      return {
+        totalRevenue,
+        coveredRevenue,
+        uncoveredRevenue,
+        coveragePercent,
+        totalCost,
+        estimatedProfit,
+        marginPercent,
+      };
+    };
+
+    const currentMetrics = await computeProfitMetrics(startDate, endDate);
 
     const missing: any[] = await this.prisma.$queryRaw`
-      WITH product_costs AS (
+      WITH recipe_summary AS (
+        SELECT
+          rc."parentProductId",
+          SUM(rc.quantity * comp.cost) AS recipe_cost,
+          COUNT(CASE WHEN comp.cost IS NULL THEN 1 END) AS missing_comp_cost_count,
+          COUNT(rc.id) AS total_components
+        FROM pos_product_components rc
+        JOIN pos_products comp ON comp.id = rc."componentProductId"
+        GROUP BY rc."parentProductId"
+      ),
+      product_costs AS (
         SELECT
           p.id AS product_id,
-          COALESCE(
-            p.cost,
-            (
-              SELECT SUM(rc.quantity * comp.cost)
-              FROM pos_product_components rc
-              JOIN pos_products comp ON comp.id = rc."componentProductId"
-              WHERE rc."parentProductId" = p.id
-                AND comp.cost IS NOT NULL
-                AND NOT EXISTS (
-                  SELECT 1 FROM pos_product_components rc2
-                  JOIN pos_products comp2 ON comp2.id = rc2."componentProductId"
-                  WHERE rc2."parentProductId" = p.id AND (comp2.cost IS NULL OR comp2.cost <= 0)
-                )
-            )
-          ) AS unit_cost
+          CASE
+            WHEN p.cost IS NOT NULL THEN p.cost::float
+            WHEN rs.total_components > 0 AND rs.missing_comp_cost_count = 0 THEN rs.recipe_cost::float
+            ELSE NULL
+          END AS unit_cost
         FROM pos_products p
+        LEFT JOIN recipe_summary rs ON rs."parentProductId" = p.id
         WHERE p."businessId" = ${businessId}
       ),
       item_sales AS (
@@ -714,24 +750,27 @@ export class ReportsService {
         SUM(net_qty)::float AS "quantitySold",
         SUM(line_revenue)::float AS "totalSold"
       FROM item_sales
-      WHERE (unit_cost IS NULL OR unit_cost <= 0) AND net_qty > 0
+      WHERE unit_cost IS NULL AND net_qty > 0
       GROUP BY "productId", "productName"
       ORDER BY "totalSold" DESC;
     `;
 
-    const totalRevenue = Math.round((result[0]?.totalRevenue || 0) * 100) / 100;
-    const totalCost = Math.round((result[0]?.totalCost || 0) * 100) / 100;
-    const estimatedProfit = Math.round((totalRevenue - totalCost) * 100) / 100;
-    const marginPercent = totalRevenue > 0
-      ? Math.round(((totalRevenue - totalCost) / totalRevenue) * 10000) / 100
-      : 0;
+    const prevMetrics = await computeProfitMetrics(range.previous.from, range.previous.to);
+
+    const calcChange = (curr: number | null, prev: number | null): number | null => {
+      if (curr === null || prev === null || prev === 0) return null;
+      return Math.round(((curr - prev) / Math.abs(prev)) * 10000) / 100;
+    };
 
     return {
       period: { from: range.current.fromIso, to: range.current.toIso },
-      totalRevenue,
-      totalCost,
-      estimatedProfit,
-      marginPercent,
+      totalRevenue: currentMetrics.totalRevenue,
+      coveredRevenue: currentMetrics.coveredRevenue,
+      uncoveredRevenue: currentMetrics.uncoveredRevenue,
+      coveragePercent: currentMetrics.coveragePercent,
+      totalCost: currentMetrics.totalCost,
+      estimatedProfit: currentMetrics.estimatedProfit,
+      marginPercent: currentMetrics.marginPercent,
       missingCostCount: missing.length,
       missingCostProducts: missing.slice(0, 10).map(m => ({
         id: m.id,
@@ -739,6 +778,36 @@ export class ReportsService {
         quantitySold: Math.round(m.quantitySold * 100) / 100,
         totalSold: Math.round(m.totalSold * 100) / 100,
       })),
+      comparison: {
+        previousPeriod: { from: range.previous.fromIso, to: range.previous.toIso },
+        totalRevenue: {
+          current: currentMetrics.totalRevenue,
+          previous: prevMetrics.totalRevenue,
+          changePercent: calcChange(currentMetrics.totalRevenue, prevMetrics.totalRevenue),
+        },
+        coveredRevenue: {
+          current: currentMetrics.coveredRevenue,
+          previous: prevMetrics.coveredRevenue,
+          changePercent: calcChange(currentMetrics.coveredRevenue, prevMetrics.coveredRevenue),
+        },
+        totalCost: {
+          current: currentMetrics.totalCost,
+          previous: prevMetrics.totalCost,
+          changePercent: calcChange(currentMetrics.totalCost, prevMetrics.totalCost),
+        },
+        estimatedProfit: {
+          current: currentMetrics.estimatedProfit,
+          previous: prevMetrics.estimatedProfit,
+          changePercent: calcChange(currentMetrics.estimatedProfit, prevMetrics.estimatedProfit),
+        },
+        marginPercent: {
+          current: currentMetrics.marginPercent,
+          previous: prevMetrics.marginPercent,
+          changePercent: currentMetrics.marginPercent !== null && prevMetrics.marginPercent !== null
+            ? Math.round((currentMetrics.marginPercent - prevMetrics.marginPercent) * 100) / 100
+            : null,
+        },
+      },
     };
   }
 
@@ -904,6 +973,7 @@ export class ReportsService {
         voidReason: true,
         voidedById: true,
         voidApprovedById: true,
+        cashierId: true,
       },
       orderBy: { voidedAt: 'desc' },
       take: 10,
@@ -972,6 +1042,7 @@ export class ReportsService {
 
     const userIds = new Set<string>();
     for (const v of voidedSalesRecent) {
+      if (v.cashierId) userIds.add(v.cashierId);
       if (v.voidedById) userIds.add(v.voidedById);
       if (v.voidApprovedById) userIds.add(v.voidApprovedById);
     }
@@ -1028,8 +1099,11 @@ export class ReportsService {
           id: v.id,
           invoiceNumber: v.invoiceNumber,
           total: v.total,
+          createdAt: v.createdAt,
           voidedAt: v.voidedAt || v.createdAt,
           reason: v.voidReason,
+          voidReason: v.voidReason,
+          cashier: v.cashierId ? userMap.get(v.cashierId) || null : null,
           voidedBy: v.voidedById ? userMap.get(v.voidedById) || { id: v.voidedById, name: 'Desconocido' } : null,
           approvedBy: v.voidApprovedById ? userMap.get(v.voidApprovedById) || { id: v.voidApprovedById, name: 'Desconocido' } : null,
         })),
