@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber, IsEnum, Matches } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber, IsEnum, Matches, IsBoolean } from 'class-validator';
 import { BusinessType, PosVertical, PricingModel } from '@prisma/client';
 import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
@@ -124,5 +124,57 @@ export class UpdateBusinessDto {
   @Min(2)
   @Max(50)
   gridRows?: number;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(300)
+  posAddress?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(300)
+  address?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(30)
+  posPhone?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(30)
+  phone?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(10)
+  currency?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(500)
+  logo?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(50)
+  taxId?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(50)
+  timezone?: string;
 }
 

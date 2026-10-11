@@ -14,6 +14,7 @@ import { CreateMembershipDto } from './dto/create-membership.dto';
 import { UpdateMembershipDto } from './dto/update-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
 import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
+import { DeleteBusinessDto } from './dto/delete-business.dto';
 import { BusinessType, MembershipStatus, OrderStatus, Prisma, UserRole, BusinessProductType, BusinessProductStatus, BusinessProductAction, PosVertical, PaymentMethod, PosDeviceStatus } from '@prisma/client';
 import { AuditService } from '../pos/audit/audit.service';
 import { UpdateDeviceDto } from '../pos/devices/dto/update-device.dto';
@@ -169,6 +170,9 @@ export class SuperAdminService {
         latitude: b.latitude,
         longitude: b.longitude,
         isActive: b.isActive,
+        posAddress: b.posAddress,
+        posPhone: b.posPhone,
+        currency: b.currency,
         businessType: b.businessType,
         commissionRate: b.commissionRate,
         altCommissionRate: b.altCommissionRate,
@@ -365,6 +369,9 @@ export class SuperAdminService {
       longitude: business.longitude,
       defaultGeofenceRadiusM: business.defaultGeofenceRadiusM,
       isActive: business.isActive,
+      posAddress: business.posAddress,
+      posPhone: business.posPhone,
+      currency: business.currency,
       businessType: business.businessType,
       commissionRate: business.commissionRate,
       altCommissionRate: business.altCommissionRate,
@@ -943,13 +950,17 @@ export class SuperAdminService {
       }
     }
 
+    const addressToUpdate = dto.posAddress !== undefined ? dto.posAddress : dto.address;
+    const phoneToUpdate = dto.posPhone !== undefined ? dto.posPhone : dto.phone;
+    const logoToUpdate = dto.logoUrl !== undefined ? dto.logoUrl : dto.logo;
+
     const updated = await this.prisma.business.update({
       where: { id },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.type !== undefined && { type: dto.type }),
         ...(dto.industryId !== undefined && { industryId: dto.industryId }),
-        ...(dto.logoUrl !== undefined && { logoUrl: dto.logoUrl }),
+        ...(logoToUpdate !== undefined && { logoUrl: logoToUpdate }),
         ...(dto.latitude !== undefined && { latitude: dto.latitude }),
         ...(dto.longitude !== undefined && { longitude: dto.longitude }),
         ...(dto.defaultGeofenceRadiusM !== undefined && { defaultGeofenceRadiusM: dto.defaultGeofenceRadiusM }),
@@ -969,6 +980,10 @@ export class SuperAdminService {
         ...(updatePosVertical !== undefined && { posVertical: updatePosVertical }),
         ...(targetIndustry !== null && { usesVariants: targetIndustry.usesVariants }),
         ...(targetIndustry !== null && { tracksBatches: targetIndustry.tracksBatches }),
+        ...(addressToUpdate !== undefined && { posAddress: addressToUpdate }),
+        ...(phoneToUpdate !== undefined && { posPhone: phoneToUpdate }),
+        ...(dto.currency !== undefined && { currency: dto.currency }),
+        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
       },
     });
 
@@ -2567,6 +2582,416 @@ export class SuperAdminService {
       trialHours: (updatedSub as any).trialHours ?? null,
       trialStartedAt: (updatedSub as any).trialStartedAt ?? null,
       trialEndsAt: (updatedSub as any).trialEndsAt ?? null,
+    };
+  }
+
+  /**
+   * 168a - Inspección dinámica del grafo de foreign keys y columnas de negocio.
+   * Recorre la estructura real de Postgres de hijos a padres con ordenamiento topológico.
+   */
+  private async getDynamicSchemaInfo(client: Prisma.TransactionClient | PrismaService) {
+    const bizCols = await client.$queryRawUnsafe<
+      Array<{ table_name: string; column_name: string }>
+    >(`
+      SELECT table_name, column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND (lower(column_name) = 'businessid' OR lower(column_name) = 'business_id')
+    `);
+    const bizColMap = new Map<string, string>();
+    for (const row of bizCols) {
+      bizColMap.set(row.table_name, row.column_name);
+    }
+
+    const fks = await client.$queryRawUnsafe<
+      Array<{
+        child_table: string;
+        child_col: string;
+        parent_table: string;
+        parent_col: string;
+      }>
+    >(`
+      SELECT DISTINCT
+        tc.table_name AS child_table,
+        kcu.column_name AS child_col,
+        ccu.table_name AS parent_table,
+        ccu.column_name AS parent_col
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+      JOIN information_schema.constraint_column_usage ccu
+        ON tc.constraint_name = ccu.constraint_name AND tc.table_schema = ccu.table_schema
+      WHERE tc.constraint_type = 'FOREIGN KEY'
+        AND tc.table_schema = 'public'
+    `);
+
+    const parentToChildren = new Map<string, typeof fks>();
+    const childToParents = new Map<string, typeof fks>();
+
+    for (const fk of fks) {
+      if (!parentToChildren.has(fk.parent_table)) parentToChildren.set(fk.parent_table, []);
+      parentToChildren.get(fk.parent_table)!.push(fk);
+
+      if (!childToParents.has(fk.child_table)) childToParents.set(fk.child_table, []);
+      childToParents.get(fk.child_table)!.push(fk);
+    }
+
+    const descendants = new Set<string>();
+    const maxDepth = 15;
+
+    const traverse = (table: string, depth: number, currentPath: string[]) => {
+      if (depth > maxDepth) return;
+      if (currentPath.includes(table)) {
+        this.logger.warn(
+          `[getDynamicSchemaInfo] Ciclo detectado en FK: ${[...currentPath, table].join(' -> ')}`,
+        );
+        return;
+      }
+      const children = parentToChildren.get(table) || [];
+      for (const edge of children) {
+        descendants.add(edge.child_table);
+        traverse(edge.child_table, depth + 1, [...currentPath, table]);
+      }
+    };
+
+    traverse('businesses', 1, []);
+
+    // Tablas con business_id / businessId sin FK
+    for (const [table] of bizColMap.entries()) {
+      if (table !== 'businesses') {
+        descendants.add(table);
+      }
+    }
+
+    // Ordenamiento topológico: hijos antes que padres para evitar violaciones de FK
+    const inDegree = new Map<string, number>();
+    const adj = new Map<string, Set<string>>();
+
+    for (const t of descendants) {
+      inDegree.set(t, 0);
+      adj.set(t, new Set());
+    }
+
+    for (const fk of fks) {
+      const child = fk.child_table;
+      const parent = fk.parent_table;
+      if (descendants.has(child) && descendants.has(parent) && child !== parent) {
+        if (!adj.get(child)!.has(parent)) {
+          adj.get(child)!.add(parent);
+        }
+      }
+    }
+
+    for (const [, parents] of adj.entries()) {
+      for (const p of parents) {
+        inDegree.set(p, (inDegree.get(p) || 0) + 1);
+      }
+    }
+
+    const queue: string[] = [];
+    for (const [t, deg] of inDegree.entries()) {
+      if (deg === 0) queue.push(t);
+    }
+
+    const deleteOrder: string[] = [];
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      deleteOrder.push(node);
+
+      for (const parent of adj.get(node) || []) {
+        const newDeg = inDegree.get(parent)! - 1;
+        inDegree.set(parent, newDeg);
+        if (newDeg === 0) queue.push(parent);
+      }
+    }
+
+    for (const t of descendants) {
+      if (!deleteOrder.includes(t)) {
+        deleteOrder.push(t);
+      }
+    }
+
+    return { bizColMap, childToParents, deleteOrder };
+  }
+
+  /**
+   * 168a - Generador dinámico de cláusula WHERE parametrizada ($1 = businessId)
+   */
+  private buildDynamicWhereClause(
+    table: string,
+    bizColMap: Map<string, string>,
+    childToParents: Map<string, any[]>,
+    depth = 0,
+    visited = new Set<string>(),
+  ): string | null {
+    if (depth > 15 || visited.has(table)) return null;
+    visited.add(table);
+
+    if (bizColMap.has(table) && table !== 'businesses') {
+      const col = bizColMap.get(table)!;
+      return `"${col}" = $1`;
+    }
+
+    const outgoingFks = childToParents.get(table) || [];
+    const conditions: string[] = [];
+
+    for (const fk of outgoingFks) {
+      if (fk.parent_table === 'businesses') {
+        conditions.push(`"${fk.child_col}" = $1`);
+      } else {
+        const parentCondition = this.buildDynamicWhereClause(
+          fk.parent_table,
+          bizColMap,
+          childToParents,
+          depth + 1,
+          new Set(visited),
+        );
+        if (parentCondition) {
+          conditions.push(
+            `"${fk.child_col}" IN (SELECT "${fk.parent_col}" FROM "${fk.parent_table}" WHERE ${parentCondition})`,
+          );
+        }
+      }
+    }
+
+    if (conditions.length === 0) return null;
+    return conditions.join(' OR ');
+  }
+
+  /**
+   * 168a - Vista previa de borrado (sin borrar nada).
+   * GET /superadmin/businesses/:id/deletion-preview
+   */
+  async getBusinessDeletionPreview(id: string) {
+    this.logger.log(`[getBusinessDeletionPreview] Obteniendo vista previa de borrado para id=${id}`);
+    const business = await this.prisma.business.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        isActive: true,
+      },
+    });
+
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    // Verificar si algún usuario tiene rol SUPERADMIN
+    const superAdminUser = await this.prisma.user.findFirst({
+      where: { businessId: id, role: UserRole.SUPERADMIN },
+      select: { id: true, email: true },
+    });
+
+    const blockedReason = superAdminUser
+      ? 'El negocio contiene usuarios con rol SUPERADMIN y está protegido contra eliminación'
+      : null;
+
+    // Suscripciones y membresías
+    const subs = await this.prisma.businessProductSubscription.findMany({
+      where: { businessId: id },
+      select: { productType: true, status: true },
+    });
+
+    const activeMembership = await this.prisma.membership.findFirst({
+      where: { businessId: id, status: MembershipStatus.ACTIVE },
+      select: { id: true },
+    });
+
+    const hasActiveSubscription =
+      subs.some((s) => s.status === BusinessProductStatus.ACTIVE) || !!activeMembership;
+
+    const subscriptions = subs.map((s) => ({
+      product: s.productType,
+      status: s.status,
+    }));
+
+    // Conteos dinámicos en exactamente el mismo orden que el borrado real
+    const { bizColMap, childToParents, deleteOrder } = await this.getDynamicSchemaInfo(this.prisma);
+    const counts: Record<string, number> = {};
+
+    for (const table of deleteOrder) {
+      const where = this.buildDynamicWhereClause(table, bizColMap, childToParents);
+      if (!where) continue;
+
+      const res = await this.prisma.$queryRawUnsafe<Array<{ count: number }>>(
+        `SELECT COUNT(*)::int AS count FROM "${table}" WHERE ${where}`,
+        id,
+      );
+      const rowCount = res[0]?.count || 0;
+      if (rowCount > 0) {
+        counts[table] = rowCount;
+        if (table === 'pos_sales') counts['sales'] = rowCount;
+        if (table === 'pos_products') counts['products'] = rowCount;
+      }
+    }
+
+    return {
+      business: {
+        id: business.id,
+        name: business.name,
+        type: business.type,
+        isActive: business.isActive,
+      },
+      counts,
+      hasActiveSubscription,
+      subscriptions,
+      blockedReason,
+    };
+  }
+
+  /**
+   * 168a - Eliminar definitivamente un negocio.
+   * DELETE /superadmin/businesses/:id
+   */
+  async deleteBusiness(id: string, dto: DeleteBusinessDto, adminUserId: string) {
+    this.logger.log(`[deleteBusiness] Solicitud de eliminación definitiva para negocio id=${id}`);
+
+    const business = await this.prisma.business.findUnique({
+      where: { id },
+    });
+
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    // 1. Confirmación de nombre exacta (ignorando mayúsculas y espacios extremos)
+    const expectedName = business.name.trim().toLowerCase();
+    const providedName = dto?.confirmName?.trim()?.toLowerCase() || '';
+
+    if (providedName !== expectedName) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'El nombre de confirmación no coincide con el nombre del negocio',
+        code: 'CONFIRMATION_MISMATCH',
+      });
+    }
+
+    // 2. Proteger si algún usuario del negocio tiene rol SUPERADMIN
+    const superAdminUser = await this.prisma.user.findFirst({
+      where: { businessId: id, role: UserRole.SUPERADMIN },
+      select: { id: true, email: true },
+    });
+
+    if (superAdminUser) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        message: 'El negocio contiene usuarios con rol SUPERADMIN y no puede ser eliminado',
+        code: 'BUSINESS_PROTECTED',
+      });
+    }
+
+    // 3. Recolectar URLs de archivos externos antes de eliminarlos
+    const externalFileUrls: string[] = [];
+    if (business.logoUrl) externalFileUrls.push(business.logoUrl);
+
+    try {
+      const productImgs = await this.prisma.product.findMany({
+        where: { businessId: id, imageUrl: { not: null } },
+        select: { imageUrl: true },
+      });
+      for (const p of productImgs) {
+        if (p.imageUrl) externalFileUrls.push(p.imageUrl);
+      }
+
+      const membershipProofs = await this.prisma.membership.findMany({
+        where: { businessId: id, paymentProofUrl: { not: null } },
+        select: { paymentProofUrl: true },
+      });
+      for (const m of membershipProofs) {
+        if (m.paymentProofUrl) externalFileUrls.push(m.paymentProofUrl);
+      }
+
+      const userPhotos = await this.prisma.user.findMany({
+        where: { businessId: id },
+        select: { profilePhotoUrl: true, vehiclePhotoUrl: true },
+      });
+      for (const u of userPhotos) {
+        if (u.profilePhotoUrl) externalFileUrls.push(u.profilePhotoUrl);
+        if (u.vehiclePhotoUrl) externalFileUrls.push(u.vehiclePhotoUrl);
+      }
+
+      const orderFiles = await this.prisma.order.findMany({
+        where: { businessId: id },
+        select: {
+          deliveryConfirmationUrl: true,
+          signatureUrl: true,
+          photos: { select: { photoUrl: true } },
+        },
+      });
+      for (const o of orderFiles) {
+        if (o.deliveryConfirmationUrl) externalFileUrls.push(o.deliveryConfirmationUrl);
+        if (o.signatureUrl) externalFileUrls.push(o.signatureUrl);
+        for (const ph of o.photos) {
+          if (ph.photoUrl) externalFileUrls.push(ph.photoUrl);
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[deleteBusiness] Error recolectando URLs de archivos externos: ${err.message}`,
+      );
+    }
+
+    // 4. Borrado atómico en una sola transacción
+    const counts: Record<string, number> = {};
+
+    await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+
+        const { bizColMap, childToParents, deleteOrder } = await this.getDynamicSchemaInfo(tx);
+
+        for (const table of deleteOrder) {
+          const where = this.buildDynamicWhereClause(table, bizColMap, childToParents);
+          if (!where) continue;
+
+          const countRes = await tx.$queryRawUnsafe<Array<{ count: number }>>(
+            `SELECT COUNT(*)::int AS count FROM "${table}" WHERE ${where}`,
+            id,
+          );
+          const rowCount = countRes[0]?.count || 0;
+          if (rowCount > 0) {
+            counts[table] = rowCount;
+            if (table === 'pos_sales') counts['sales'] = rowCount;
+            if (table === 'pos_products') counts['products'] = rowCount;
+            await tx.$executeRawUnsafe(`DELETE FROM "${table}" WHERE ${where}`, id);
+          }
+        }
+
+        await tx.$executeRawUnsafe(`DELETE FROM "businesses" WHERE id = $1`, id);
+        counts['businesses'] = 1;
+      },
+      { timeout: 60000 },
+    );
+
+    // 5. Borrado de archivos externos post-transacción (un fallo no revierte el borrado)
+    for (const fileUrl of externalFileUrls) {
+      try {
+        await this.uploadService.deletePhoto(fileUrl);
+      } catch (fileErr: any) {
+        this.logger.warn(
+          `[deleteBusiness] No se pudo borrar archivo externo ${fileUrl}: ${fileErr.message}`,
+        );
+      }
+    }
+
+    // 6. Bitácora estructurada
+    this.logger.warn(
+      `[deleteBusiness] Negocio eliminado definitivamente: ${JSON.stringify({
+        businessId: business.id,
+        businessName: business.name,
+        deletedBySuperadminId: adminUserId,
+        counts,
+        timestamp: new Date().toISOString(),
+      })}`,
+    );
+
+    return {
+      deleted: true,
+      counts,
     };
   }
 }

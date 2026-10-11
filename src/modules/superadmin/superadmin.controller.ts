@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -23,6 +24,7 @@ import { UpdateMembershipDto } from './dto/update-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
+import { DeleteBusinessDto } from './dto/delete-business.dto';
 import { CommissionsService } from '../commissions/commissions.service';
 import { BusinessesService } from '../businesses/businesses.service';
 import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
@@ -64,6 +66,20 @@ export class SuperAdminController {
   @Get('businesses/:id')
   async getBusinessById(@Param('id') id: string) {
     return this.superAdminService.getBusinessById(id);
+  }
+
+  @Get('businesses/:id/deletion-preview')
+  async getBusinessDeletionPreview(@Param('id') id: string) {
+    return this.superAdminService.getBusinessDeletionPreview(id);
+  }
+
+  @Delete('businesses/:id')
+  async deleteBusiness(
+    @Param('id') id: string,
+    @Body() dto: DeleteBusinessDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.deleteBusiness(id, dto, user?.sub || 'system-superadmin');
   }
 
   @Patch('businesses/:id')
