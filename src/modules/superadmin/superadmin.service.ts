@@ -22,6 +22,14 @@ import { UpdatePosSubscriptionDto } from '../pos/devices/dto/update-pos-subscrip
 import { getSalonLabels } from '../pos/salon/salon-profile.util';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import * as bcrypt from 'bcrypt';
+import {
+  calculateDueDate,
+  calculateGraceEndsAt,
+  computeBusinessMembershipBilling,
+  createManaguaDate,
+  getManaguaDateParts,
+  toManaguaDateString,
+} from './utils/membership-billing.util';
 
 function generateBusinessCredentials(businessName: string): {
   email: string;
@@ -67,10 +75,10 @@ export class SuperAdminService {
     private readonly auditService: AuditService,
   ) { }
 
-  async getBusinesses() {
+  async getBusinesses(simulatedDate?: Date) {
     this.logger.log('[getBusinesses] Obteniendo lista de negocios con métricas');
 
-    const now = new Date();
+    const now = simulatedDate ? new Date(simulatedDate) : new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -93,7 +101,6 @@ export class SuperAdminService {
         },
         memberships: {
           orderBy: { endDate: 'desc' },
-          take: 1,
         },
         productSubscriptions: {
           select: {
@@ -128,39 +135,12 @@ export class SuperAdminService {
         ACTIVE_ORDER_STATUSES.includes(o.status),
       ).length;
 
-      const latestMembership = b.memberships[0];
-      let membershipStatus: 'ACTIVE' | 'EXPIRED' | 'NONE' | 'NOT_CONTRACTED' = 'NONE';
-      let endDate: Date | null = null;
-      let daysLeft: number | null = null;
+      const billing = computeBusinessMembershipBilling(b, b.memberships, now);
 
       const deliverySub = (b.productSubscriptions as any[])?.find(
         (s: any) => s.productType === 'DELIVERY',
       );
       const hasDeliveryContracted = deliverySub?.status === 'ACTIVE';
-
-      if (!hasDeliveryContracted) {
-        membershipStatus = 'NOT_CONTRACTED';
-      } else if (latestMembership) {
-        endDate = latestMembership.endDate;
-        const isCurrentlyActive =
-          latestMembership.status === MembershipStatus.ACTIVE &&
-          latestMembership.startDate <= now &&
-          latestMembership.endDate >= now;
-
-        if (isCurrentlyActive) {
-          membershipStatus = 'ACTIVE';
-          daysLeft = Math.max(
-            0,
-            Math.ceil(
-              (latestMembership.endDate.getTime() - now.getTime()) /
-              (1000 * 60 * 60 * 24),
-            ),
-          );
-        } else {
-          membershipStatus = 'EXPIRED';
-          daysLeft = 0;
-        }
-      }
 
       return {
         id: b.id,
@@ -205,10 +185,21 @@ export class SuperAdminService {
         ordersToday,
         ordersThisMonth,
         activeOrders,
+        billing_anchor_day: billing.billing_anchor_day,
+        current_period_start: billing.current_period_start,
+        due_date: billing.due_date,
+        grace_ends_at: billing.grace_ends_at,
+        membership_status: billing.membership_status,
+        days_until_due: billing.days_until_due,
         membership: {
-          status: membershipStatus,
-          endDate,
-          daysLeft,
+          status: billing.membership_status,
+          billing_anchor_day: billing.billing_anchor_day,
+          current_period_start: billing.current_period_start,
+          due_date: billing.due_date,
+          grace_ends_at: billing.grace_ends_at,
+          days_until_due: billing.days_until_due,
+          daysLeft: billing.days_until_due,
+          endDate: billing.due_date_date,
         },
         productSubscriptions: b.productSubscriptions,
         hasPOS: b.hasPOS,
@@ -249,6 +240,10 @@ export class SuperAdminService {
               },
             },
           },
+        },
+        memberships: {
+          include: { paymentProducts: true },
+          orderBy: { endDate: 'desc' },
         },
         productSubscriptions: true,
         industry: {
@@ -312,18 +307,25 @@ export class SuperAdminService {
         ? Number(((ordersDeliveredMonth / ordersCreatedMonth) * 100).toFixed(1))
         : 0;
 
-    const activeCoverages = await this.prisma.membershipPaymentProduct.findMany({
-      where: {
-        membershipPayment: {
-          businessId: id,
-          status: MembershipStatus.ACTIVE,
-          startDate: { lte: now },
-          endDate: { gte: now },
-        },
-      },
-      select: { businessProductSubscriptionId: true },
-    });
-    const activeCoveredSubIds = new Set(activeCoverages.map((c) => c.businessProductSubscriptionId));
+    const activeCoveredSubIds = new Set<string>();
+    for (const m of (business as any).memberships || []) {
+      if (m.status === MembershipStatus.CANCELLED) continue;
+      const anchor =
+        business.billingAnchorDay ?? getManaguaDateParts(m.startDate).day;
+      const dueDate = calculateDueDate(m.startDate, anchor);
+      const graceEndsAt = calculateGraceEndsAt(dueDate);
+      if (now < graceEndsAt) {
+        for (const pp of m.paymentProducts || []) {
+          activeCoveredSubIds.add(pp.businessProductSubscriptionId);
+        }
+      }
+    }
+
+    const billing = computeBusinessMembershipBilling(
+      business,
+      (business as any).memberships || [],
+      now,
+    );
 
     const resolvedProductSubscriptions = business.productSubscriptions.map((sub) => {
       const isRiders = business.businessType === BusinessType.EMPRESA_RIDERS;
@@ -414,6 +416,22 @@ export class SuperAdminService {
       trialEndsAt: (posSub as any)?.trialEndsAt ?? null,
       activeDevices,
       userUsage,
+      billing_anchor_day: billing.billing_anchor_day,
+      current_period_start: billing.current_period_start,
+      due_date: billing.due_date,
+      grace_ends_at: billing.grace_ends_at,
+      membership_status: billing.membership_status,
+      days_until_due: billing.days_until_due,
+      membership: {
+        status: billing.membership_status,
+        billing_anchor_day: billing.billing_anchor_day,
+        current_period_start: billing.current_period_start,
+        due_date: billing.due_date,
+        grace_ends_at: billing.grace_ends_at,
+        days_until_due: billing.days_until_due,
+        daysLeft: billing.days_until_due,
+        endDate: billing.due_date_date,
+      },
     };
   }
 
@@ -807,8 +825,10 @@ export class SuperAdminService {
           0,
         );
 
-        const startDate = now;
-        const endDate = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const nowParts = getManaguaDateParts(now);
+        const anchorDay = business.billingAnchorDay ?? nowParts.day;
+        const startDate = createManaguaDate(nowParts.year, nowParts.month, nowParts.day, 0, 0, 0, 0);
+        const endDate = calculateDueDate(startDate, anchorDay);
 
         membership = await tx.membership.create({
           data: {
@@ -883,7 +903,7 @@ export class SuperAdminService {
         role: result.encargado.role,
         isActive: result.encargado.isActive,
       },
-      membership: result.membership ? this.formatMembershipWithProducts(result.membership) : null,
+      membership: result.membership ? this.formatMembershipWithProducts(result.membership, result.business.billingAnchorDay ?? undefined) : null,
     };
   }
 
@@ -1576,7 +1596,7 @@ export class SuperAdminService {
     return logs.slice(0, 100);
   }
 
-  private formatMembershipWithProducts(membership: any) {
+  private formatMembershipWithProducts(membership: any, anchorDay?: number) {
     const paymentProducts = membership.paymentProducts || [];
     const products = paymentProducts.map((pp: any) => {
       const type = pp.businessProductSubscription?.productType;
@@ -1601,10 +1621,26 @@ export class SuperAdminService {
       };
     });
 
+    const anchor =
+      anchorDay ??
+      membership.business?.billingAnchorDay ??
+      (membership.startDate
+        ? getManaguaDateParts(new Date(membership.startDate)).day
+        : 1);
+    const startDate = membership.startDate
+      ? new Date(membership.startDate)
+      : new Date();
+    const dueDate = calculateDueDate(startDate, anchor);
+    const graceEndsAt = calculateGraceEndsAt(dueDate);
+
     return {
       ...membership,
       isUnitemized: products.length === 0,
       products,
+      billing_anchor_day: anchor,
+      current_period_start: toManaguaDateString(startDate),
+      due_date: toManaguaDateString(dueDate),
+      grace_ends_at: graceEndsAt.toISOString(),
     };
   }
 
@@ -1619,6 +1655,41 @@ export class SuperAdminService {
 
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
+    }
+
+    let anchorDay = business.billingAnchorDay;
+    if (!anchorDay) {
+      const oldest = await this.prisma.membership.findFirst({
+        where: { businessId: dto.businessId },
+        orderBy: { startDate: 'asc' },
+      });
+      anchorDay = oldest
+        ? getManaguaDateParts(oldest.startDate).day
+        : getManaguaDateParts(
+            dto.paidAt ? new Date(dto.paidAt) : (dto.startDate ? new Date(dto.startDate) : new Date()),
+          ).day;
+    }
+
+    // Regla 2: Un pago tardío NO mueve el ancla. Si paga el 12 de noviembre, el nuevo período sigue siendo 10 nov -> 10 dic.
+    const latest = await this.prisma.membership.findFirst({
+      where: { businessId: dto.businessId },
+      orderBy: { endDate: 'desc' },
+    });
+
+    let newStartDate: Date;
+    let newEndDate: Date;
+
+    if (latest) {
+      const prevDue = calculateDueDate(latest.startDate, anchorDay);
+      newStartDate = prevDue;
+      newEndDate = calculateDueDate(newStartDate, anchorDay);
+    } else {
+      const paidDate = dto.paidAt
+        ? new Date(dto.paidAt)
+        : (dto.startDate ? new Date(dto.startDate) : new Date());
+      const pParts = getManaguaDateParts(paidDate);
+      newStartDate = createManaguaDate(pParts.year, pParts.month, pParts.day, 0, 0, 0, 0);
+      newEndDate = calculateDueDate(newStartDate, anchorDay);
     }
 
     // Normalizar lista de productos
@@ -1663,8 +1734,8 @@ export class SuperAdminService {
       const membership = await tx.membership.create({
         data: {
           businessId: dto.businessId,
-          startDate: new Date(dto.startDate),
-          endDate: new Date(dto.endDate),
+          startDate: newStartDate,
+          endDate: newEndDate,
           amount: dto.amount,
           currency: dto.currency || 'USD',
           paymentMethod: dto.paymentMethod || 'TRANSFERENCIA',
@@ -1686,7 +1757,7 @@ export class SuperAdminService {
         },
         include: {
           business: {
-            select: { id: true, name: true, logoUrl: true },
+            select: { id: true, name: true, logoUrl: true, billingAnchorDay: true },
           },
           paymentProducts: {
             include: {
@@ -1698,9 +1769,19 @@ export class SuperAdminService {
         },
       });
 
-      // Si la membresía está ACTIVE y endDate >= now, activar cada suscripción de producto cubierta
+      if (!business.billingAnchorDay) {
+        await tx.business.update({
+          where: { id: dto.businessId },
+          data: { billingAnchorDay: anchorDay },
+        });
+      }
+
+      // Si la membresía está ACTIVE y no ha vencido su período de gracia, activar productos
       const now = new Date();
-      if (membership.status === MembershipStatus.ACTIVE && membership.endDate >= now) {
+      const dueDate = calculateDueDate(membership.startDate, anchorDay);
+      const graceEndsAt = calculateGraceEndsAt(dueDate);
+
+      if (membership.status === MembershipStatus.ACTIVE && now < graceEndsAt) {
         for (const item of productItems) {
           const sub = await tx.businessProductSubscription.findUnique({
             where: { id: item.businessProductSubscriptionId },
@@ -1750,7 +1831,7 @@ export class SuperAdminService {
     });
 
     this.logger.log(`[createMembership] OK membresía creada id=${result.id} (productos: ${productItems.length})`);
-    return this.formatMembershipWithProducts(result);
+    return this.formatMembershipWithProducts(result, anchorDay);
   }
 
   async uploadPaymentProof(id: string, file: Express.Multer.File) {
@@ -1936,7 +2017,7 @@ export class SuperAdminService {
       where: { businessId },
       include: {
         business: {
-          select: { id: true, name: true, logoUrl: true },
+          select: { id: true, name: true, logoUrl: true, billingAnchorDay: true, createdAt: true },
         },
         paymentProducts: {
           include: {
@@ -1949,7 +2030,9 @@ export class SuperAdminService {
       orderBy: { createdAt: 'desc' },
     });
 
-    return memberships.map((m) => this.formatMembershipWithProducts(m));
+    return memberships.map((m) =>
+      this.formatMembershipWithProducts(m, business.billingAnchorDay ?? undefined),
+    );
   }
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -1960,14 +2043,28 @@ export class SuperAdminService {
   async reconcileExpiredMemberships(targetDate: Date = new Date()): Promise<{ expiredMembershipsCount: number; deactivatedProductsCount: number }> {
     this.logger.log(`[reconcileExpiredMemberships] Verificando membresías vencidas a las ${targetDate.toISOString()}`);
 
-    const expiredMemberships = await this.prisma.membership.findMany({
+    const activeMemberships = await this.prisma.membership.findMany({
       where: {
         status: MembershipStatus.ACTIVE,
-        endDate: { lt: targetDate },
       },
       include: {
         paymentProducts: true,
+        business: {
+          select: {
+            id: true,
+            createdAt: true,
+            billingAnchorDay: true,
+          },
+        },
       },
+    });
+
+    const expiredMemberships = activeMemberships.filter((m) => {
+      const anchor =
+        m.business?.billingAnchorDay ?? getManaguaDateParts(m.startDate).day;
+      const dueDate = calculateDueDate(m.startDate, anchor);
+      const graceEndsAt = calculateGraceEndsAt(dueDate);
+      return targetDate >= graceEndsAt;
     });
 
     if (expiredMemberships.length === 0) {

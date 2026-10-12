@@ -31,6 +31,12 @@ export class UpdatePosSettingsDto {
   taxIncluded?: boolean;
 
   @IsOptional()
+  wholesale_enabled?: boolean;
+
+  @IsOptional()
+  wholesaleEnabled?: boolean;
+
+  @IsOptional()
   @IsString()
   @Length(1, 10)
   invoicePrefix?: string;

@@ -22,6 +22,12 @@ import { ActivateProductDto } from './dto/activate-product.dto';
 import { DeactivateProductDto } from './dto/deactivate-product.dto';
 import { CancelRenewalDto } from './dto/cancel-renewal.dto';
 import { DeactivateNowProductDto } from './dto/deactivate-now-product.dto';
+import {
+  calculateDueDate,
+  calculateGraceEndsAt,
+  computeBusinessMembershipBilling,
+  getManaguaDateParts,
+} from '../superadmin/utils/membership-billing.util';
 
 @Injectable()
 export class BusinessProductsService {
@@ -41,26 +47,59 @@ export class BusinessProductsService {
     productType: BusinessProductType,
     now: Date = new Date(),
   ): Promise<boolean> {
-    const coverage = await this.prisma.membershipPaymentProduct.findFirst({
+    const coverages = await this.prisma.membershipPaymentProduct.findMany({
       where: {
         membershipPayment: {
           businessId,
-          status: MembershipStatus.ACTIVE,
+          status: { in: [MembershipStatus.ACTIVE, MembershipStatus.EXPIRED] },
           startDate: { lte: now },
-          endDate: { gte: now },
         },
         businessProductSubscription: {
           businessId,
           productType,
         },
       },
-      select: { id: true },
+      include: {
+        membershipPayment: {
+          include: {
+            business: {
+              select: {
+                id: true,
+                createdAt: true,
+                billingAnchorDay: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: {
+        membershipPayment: {
+          endDate: 'desc',
+        },
+      },
     });
 
-    return !!coverage;
+    for (const c of coverages) {
+      const m = c.membershipPayment;
+      if (m.status === MembershipStatus.CANCELLED) continue;
+      const anchor =
+        m.business.billingAnchorDay ?? getManaguaDateParts(m.startDate).day;
+      const dueDate = calculateDueDate(m.startDate, anchor);
+      const graceEndsAt = calculateGraceEndsAt(dueDate);
+
+      if (now < graceEndsAt) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
-  async isActive(businessId: string, productType: BusinessProductType): Promise<boolean> {
+  async isActive(
+    businessId: string,
+    productType: BusinessProductType,
+    now: Date = new Date(),
+  ): Promise<boolean> {
     if (!businessId) return false;
 
     const subscription = await this.prisma.businessProductSubscription.findUnique({
@@ -84,7 +123,7 @@ export class BusinessProductsService {
       return true;
     }
 
-    return this.hasActiveMembershipCoverage(businessId, productType);
+    return this.hasActiveMembershipCoverage(businessId, productType, now);
   }
 
   async getProducts(businessId: string) {
@@ -113,30 +152,53 @@ export class BusinessProductsService {
     );
 
     const now = new Date();
-    const activeCoverages = await this.prisma.membershipPaymentProduct.findMany({
+    const coverages = await this.prisma.membershipPaymentProduct.findMany({
       where: {
         membershipPayment: {
           businessId,
-          status: MembershipStatus.ACTIVE,
+          status: { in: [MembershipStatus.ACTIVE, MembershipStatus.EXPIRED] },
           startDate: { lte: now },
-          endDate: { gte: now },
         },
         businessProductSubscription: {
           businessId,
         },
       },
-      select: {
+      include: {
+        membershipPayment: {
+          include: {
+            business: {
+              select: {
+                id: true,
+                createdAt: true,
+                billingAnchorDay: true,
+              },
+            },
+          },
+        },
         businessProductSubscription: {
           select: { productType: true },
         },
       },
+      orderBy: {
+        membershipPayment: {
+          endDate: 'desc',
+        },
+      },
     });
 
-    const coveredProductTypes = new Set(
-      activeCoverages
-        .map((c) => c.businessProductSubscription?.productType)
-        .filter(Boolean),
-    );
+    const coveredProductTypes = new Set<BusinessProductType>();
+    for (const c of coverages) {
+      const m = c.membershipPayment;
+      if (m.status === MembershipStatus.CANCELLED) continue;
+      const anchor =
+        m.business.billingAnchorDay ?? getManaguaDateParts(m.startDate).day;
+      const dueDate = calculateDueDate(m.startDate, anchor);
+      const graceEndsAt = calculateGraceEndsAt(dueDate);
+
+      if (now < graceEndsAt && c.businessProductSubscription?.productType) {
+        coveredProductTypes.add(c.businessProductSubscription.productType);
+      }
+    }
 
     const isDeliveryMembership = business.businessType === BusinessType.NEGOCIO;
     const isDeliveryActive = deliverySub?.status === BusinessProductStatus.ACTIVE &&
@@ -148,9 +210,32 @@ export class BusinessProductsService {
     const isCitasActive = citasSub?.status === BusinessProductStatus.ACTIVE &&
       coveredProductTypes.has(BusinessProductType.CITAS);
 
+    const allMemberships = await this.prisma.membership.findMany({
+      where: { businessId },
+      include: { paymentProducts: true },
+      orderBy: { endDate: 'desc' },
+    });
+    const billing = computeBusinessMembershipBilling(business, allMemberships, now);
+
     return {
       businessId: business.id,
       businessName: business.name,
+      billing_anchor_day: billing.billing_anchor_day,
+      current_period_start: billing.current_period_start,
+      due_date: billing.due_date,
+      grace_ends_at: billing.grace_ends_at,
+      membership_status: billing.membership_status,
+      days_until_due: billing.days_until_due,
+      membership: {
+        status: billing.membership_status,
+        billing_anchor_day: billing.billing_anchor_day,
+        current_period_start: billing.current_period_start,
+        due_date: billing.due_date,
+        grace_ends_at: billing.grace_ends_at,
+        days_until_due: billing.days_until_due,
+        daysLeft: billing.days_until_due,
+        endDate: billing.due_date_date,
+      },
       products: {
         DELIVERY: deliverySub
           ? {

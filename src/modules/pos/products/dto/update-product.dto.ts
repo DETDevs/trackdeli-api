@@ -39,6 +39,22 @@ export class UpdateProductDto {
 
   @IsOptional()
   @IsNumber()
+  wholesalePrice?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  wholesaleMinQty?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  wholesale_price?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  wholesale_min_qty?: number | null;
+
+  @IsOptional()
+  @IsNumber()
   @Min(0)
   cost?: number;
 

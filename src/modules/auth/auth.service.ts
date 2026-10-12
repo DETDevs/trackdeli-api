@@ -12,6 +12,7 @@ import { User, AuthProvider, BusinessProductType, UserRole } from '@prisma/clien
 import { FirebaseService } from '../notifications/firebase.service';
 import { PosDevicesService } from '../pos/devices/pos-devices.service';
 import { getSalonLabels, resolveSalonProfile } from '../pos/salon/salon-profile.util';
+import { computeBusinessMembershipBilling } from '../superadmin/utils/membership-billing.util';
 
 @Injectable()
 export class AuthService {
@@ -151,17 +152,39 @@ export class AuthService {
     if (user.businessId) {
       const b = await this.prisma.business.findUnique({
         where: { id: user.businessId },
-        select: { id: true, name: true, salonProfile: true, posVertical: true },
+        include: {
+          memberships: {
+            include: { paymentProducts: true },
+            orderBy: { endDate: 'desc' },
+          },
+        },
       });
       if (b) {
         salonProfile = resolveSalonProfile(b.salonProfile);
         salonLabels = getSalonLabels(salonProfile);
+        const billing = computeBusinessMembershipBilling(b, b.memberships);
         businessData = {
           id: b.id,
           name: b.name,
           salonProfile,
           salonLabels,
           posVertical: b.posVertical,
+          billing_anchor_day: billing.billing_anchor_day,
+          current_period_start: billing.current_period_start,
+          due_date: billing.due_date,
+          grace_ends_at: billing.grace_ends_at,
+          membership_status: billing.membership_status,
+          days_until_due: billing.days_until_due,
+          membership: {
+            status: billing.membership_status,
+            billing_anchor_day: billing.billing_anchor_day,
+            current_period_start: billing.current_period_start,
+            due_date: billing.due_date,
+            grace_ends_at: billing.grace_ends_at,
+            days_until_due: billing.days_until_due,
+            daysLeft: billing.days_until_due,
+            endDate: billing.due_date_date,
+          },
         };
       }
     }
@@ -529,17 +552,48 @@ export class AuthService {
     const salonProfile = resolveSalonProfile(user.business?.salonProfile);
     const salonLabels = getSalonLabels(salonProfile);
 
+    let businessData: any = null;
+    if (user.business) {
+      const b = await this.prisma.business.findUnique({
+        where: { id: user.business.id },
+        include: {
+          memberships: {
+            include: { paymentProducts: true },
+            orderBy: { endDate: 'desc' },
+          },
+        },
+      });
+      const billing = b ? computeBusinessMembershipBilling(b, b.memberships) : null;
+      businessData = {
+        ...user.business,
+        salonProfile,
+        salonLabels,
+        billing_anchor_day: billing?.billing_anchor_day ?? null,
+        current_period_start: billing?.current_period_start ?? null,
+        due_date: billing?.due_date ?? null,
+        grace_ends_at: billing?.grace_ends_at ?? null,
+        membership_status: billing?.membership_status ?? null,
+        days_until_due: billing?.days_until_due ?? null,
+        membership: billing
+          ? {
+              status: billing.membership_status,
+              billing_anchor_day: billing.billing_anchor_day,
+              current_period_start: billing.current_period_start,
+              due_date: billing.due_date,
+              grace_ends_at: billing.grace_ends_at,
+              days_until_due: billing.days_until_due,
+              daysLeft: billing.days_until_due,
+              endDate: billing.due_date_date,
+            }
+          : null,
+      };
+    }
+
     return {
       ...user,
       salonProfile,
       salonLabels,
-      business: user.business
-        ? {
-            ...user.business,
-            salonProfile,
-            salonLabels,
-          }
-        : null,
+      business: businessData,
     };
   }
 

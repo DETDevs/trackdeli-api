@@ -504,24 +504,29 @@ export class OfflineService {
   }
 
   async getCatalogSnapshot(businessId: string, since?: string) {
-    const categories = await this.prisma.category.findMany({
-      where: { businessId, isActive: true },
-      orderBy: { name: "asc" },
-    });
-
-    const products = await this.prisma.product.findMany({
-      where: { businessId, isActive: true },
-      include: {
-        category: true,
-        recipeComponents: {
-          select: {
-            componentProductId: true,
-            quantity: true,
+    const [categories, products, business] = await Promise.all([
+      this.prisma.category.findMany({
+        where: { businessId, isActive: true },
+        orderBy: { name: "asc" },
+      }),
+      this.prisma.product.findMany({
+        where: { businessId, isActive: true },
+        include: {
+          category: true,
+          recipeComponents: {
+            select: {
+              componentProductId: true,
+              quantity: true,
+            },
           },
         },
-      },
-      orderBy: { name: "asc" },
-    });
+        orderBy: { name: "asc" },
+      }),
+      this.prisma.business.findUnique({
+        where: { id: businessId },
+        select: { wholesaleEnabled: true },
+      }),
+    ]);
 
     let latestUpdate = new Date(0);
     for (const p of products) {
@@ -538,6 +543,8 @@ export class OfflineService {
         notModified: true,
         snapshotVersion,
         businessId,
+        wholesale_enabled: business?.wholesaleEnabled ?? false,
+        wholesaleEnabled: business?.wholesaleEnabled ?? false,
       };
     }
 
@@ -545,6 +552,8 @@ export class OfflineService {
       notModified: false,
       snapshotVersion,
       businessId,
+      wholesale_enabled: business?.wholesaleEnabled ?? false,
+      wholesaleEnabled: business?.wholesaleEnabled ?? false,
       categories,
       products: products.map((p) => {
         const isRecipe = Boolean(p.isRecipe);
@@ -554,6 +563,10 @@ export class OfflineService {
           stock: Number(p.stock),
           minStock: Number(p.minStock),
           maxStock: p.maxStock != null ? Number(p.maxStock) : null,
+          wholesale_price: p.wholesalePrice != null ? Number(p.wholesalePrice) : null,
+          wholesalePrice: p.wholesalePrice != null ? Number(p.wholesalePrice) : null,
+          wholesale_min_qty: p.wholesaleMinQty != null ? Number(p.wholesaleMinQty) : null,
+          wholesaleMinQty: p.wholesaleMinQty != null ? Number(p.wholesaleMinQty) : null,
           unit: p.unit || 'UND',
           trackInventory: p.trackStock,
           isRecipe,

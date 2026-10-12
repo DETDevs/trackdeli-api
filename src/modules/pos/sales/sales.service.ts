@@ -15,6 +15,7 @@ import { AuditService } from '../audit/audit.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { PosAction } from '../permissions/permissions.service';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
+import { resolveLineUnitPrice } from './utils/pricing.util';
 
 @Injectable()
 export class SalesService {
@@ -42,6 +43,8 @@ export class SalesService {
       items: (sale.items || []).map((i: any) => {
         const itemCopy = {
           ...i,
+          priceTier: i.priceTier || 'RETAIL',
+          price_tier: i.priceTier || 'RETAIL',
           returnedQty: i.returnedQty != null ? Number(new Prisma.Decimal(i.returnedQty.toString()).toDecimalPlaces(2)) : 0,
           returnableQty: Math.max(0, (i.quantity || 0) - (i.returnedQty || 0)),
         };
@@ -133,6 +136,7 @@ export class SalesService {
           posPhone: true,
           whatsappNumber: true,
           logoUrl: true,
+          wholesaleEnabled: true,
         },
       });
       if (!business) throw new NotFoundException("Negocio no encontrado");
@@ -151,6 +155,9 @@ export class SalesService {
       const processedItems: any[] = [];
 
       for (const item of dto.items) {
+        let priceTier = 'RETAIL';
+        let effectiveUnitPrice = item.unitPrice;
+
         if (item.productId) {
           const product = await tx.product.findFirst({
             where: { id: item.productId, businessId },
@@ -164,6 +171,25 @@ export class SalesService {
           });
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
           const requestedQty = validateProductQuantity(product.unit, item.quantity, product.name);
+
+          // 176a: Resolver precio unitario según regla de venta por mayor
+          const resolved = resolveLineUnitPrice(product, requestedQty, business);
+          priceTier = resolved.priceTier;
+
+          if (item.unitPrice !== undefined && item.unitPrice !== null) {
+            const diff = Math.abs(item.unitPrice - resolved.unitPrice);
+            if (diff > 0.01 && !policies.priceOverrideEnabled) {
+              throw new BadRequestException({
+                statusCode: 400,
+                error: 'Bad Request',
+                code: 'PRICE_MISMATCH',
+                message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${resolved.unitPrice}) para "${product.name}"`,
+              });
+            }
+            effectiveUnitPrice = item.unitPrice;
+          } else {
+            effectiveUnitPrice = resolved.unitPrice;
+          }
 
           if (product.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
             for (const comp of product.recipeComponents) {
@@ -235,14 +261,15 @@ export class SalesService {
         }
 
         const itemDiscount = item.discount || 0;
-        const itemSubtotal = item.unitPrice * item.quantity - itemDiscount;
+        const itemSubtotal = effectiveUnitPrice * item.quantity - itemDiscount;
         subtotal += itemSubtotal;
 
         processedItems.push({
           productId: item.productId || null,
           productName: item.productName,
           barcode: item.barcode || null,
-          unitPrice: item.unitPrice,
+          unitPrice: effectiveUnitPrice,
+          priceTier,
           quantity: item.quantity,
           discount: itemDiscount,
           subtotal: itemSubtotal,

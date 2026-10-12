@@ -2245,6 +2245,8 @@ WHERE a."customerId" = c."id"
       await this.ensureWebAdminColumns();
       await this.ensureKitchenModuleSchema();
       await this.ensureSplitOrderSchema();
+      await this.ensureMembershipBillingSchema();
+      await this.ensureWholesaleSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -2625,6 +2627,83 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 171a - Advertencia sincronizando esquema de división de cuentas: ${err.message}`);
+    }
+  }
+
+  /**
+   * 175a - Membresía con día de cobro fijo (ancla) y gracia de 3 días:
+   * - businesses: billing_anchor_day (integer null)
+   * Backfill: Si billing_anchor_day es NULL, deriva del día en America/Managua
+   * del primer pago de membresía o de la creación del negocio.
+   */
+  private async ensureMembershipBillingSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1750100)`);
+
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "billing_anchor_day" INTEGER`,
+          );
+
+          await tx.$executeRawUnsafe(`
+            UPDATE "businesses" b
+            SET "billing_anchor_day" = EXTRACT(DAY FROM (
+              SELECT COALESCE(
+                (SELECT m."startDate" FROM "memberships" m WHERE m."businessId" = b.id ORDER BY m."startDate" ASC LIMIT 1),
+                b."createdAt"
+              ) AT TIME ZONE 'America/Managua'
+            ))::INTEGER
+            WHERE b."billing_anchor_day" IS NULL
+          `);
+
+          this.logger.log(
+            `[PrismaService] ✓ 175a - Esquema de membresías con ancla y gracia sincronizado (businesses.billing_anchor_day).`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 175a - Advertencia sincronizando esquema de membresías: ${err.message}`);
+    }
+  }
+
+  /**
+   * 176a - Venta por mayor (precio por mayor según cantidad mínima, activable por negocio):
+   * - businesses: wholesale_enabled (boolean not null default false)
+   * - pos_products: wholesale_price (decimal null), wholesale_min_qty (decimal null)
+   * - pos_sale_items: price_tier (varchar(20) not null default 'RETAIL')
+   */
+  private async ensureWholesaleSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1760100)`);
+
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "wholesale_enabled" BOOLEAN NOT NULL DEFAULT false`,
+          );
+
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "wholesale_price" DECIMAL(12, 2)`,
+          );
+
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "wholesale_min_qty" DECIMAL(12, 3)`,
+          );
+
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "price_tier" VARCHAR(20) NOT NULL DEFAULT 'RETAIL'`,
+          );
+
+          this.logger.log(
+            `[PrismaService] ✓ 176a - Esquema de venta por mayor sincronizado (businesses.wholesale_enabled, pos_products.wholesale_*, pos_sale_items.price_tier).`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 176a - Advertencia sincronizando esquema de venta por mayor: ${err.message}`);
     }
   }
 

@@ -19,12 +19,12 @@ export class CreateMembershipDto {
   businessId: string;
 
   @IsDateString()
-  @IsNotEmpty()
-  startDate: string;
+  @IsOptional()
+  startDate?: string;
 
   @IsDateString()
-  @IsNotEmpty()
-  endDate: string;
+  @IsOptional()
+  endDate?: string;
 
   @IsNumber()
   @Min(0)

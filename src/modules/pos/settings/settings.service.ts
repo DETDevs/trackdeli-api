@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Logger, ForbiddenException, BadRequestException } from "@nestjs/common";
+import { Injectable, NotFoundException, Logger, ForbiddenException, BadRequestException, ConflictException } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { UpdatePosSettingsDto } from "./dto/update-pos-settings.dto";
 import { UserRole } from "@prisma/client";
@@ -17,7 +17,7 @@ export class SettingsService {
         id: true, name: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true, hasCitas: true,
         posVertical: true, salonProfile: true, gridColumns: true, gridRows: true,
         taxRate: true, taxEnabled: true, taxIncluded: true, currency: true, invoicePrefix: true, invoiceCounter: true,
-        posAddress: true, posPhone: true, posFooter: true,
+        posAddress: true, posPhone: true, posFooter: true, wholesaleEnabled: true,
         productSubscriptions: {
           where: { productType: { in: ['POS', 'CARTERA_COBRO', 'CITAS'] } },
           select: { productType: true, posVertical: true, status: true },
@@ -42,6 +42,8 @@ export class SettingsService {
       posVertical: resolvedPosVertical,
       salonProfile: resolvedSalonProfile,
       salonLabels: getSalonLabels(resolvedSalonProfile),
+      wholesale_enabled: Boolean(business.wholesaleEnabled),
+      wholesaleEnabled: Boolean(business.wholesaleEnabled),
     };
   }
 
@@ -143,6 +145,94 @@ export class SettingsService {
 
     this.logger.log(`[updateKitchenSettings] businessId=${businessId} kitchenMode=${normalizedMode}`);
     return { mode: normalizedMode };
+  }
+
+  async getWholesaleSettings(businessId: string) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: {
+        id: true,
+        posVertical: true,
+        salonProfile: true,
+        wholesaleEnabled: true,
+        industry: { select: { code: true } },
+      },
+    });
+    if (!business) throw new NotFoundException("Negocio no encontrado");
+
+    const isRestaurante = business.posVertical === 'RESTAURANTE';
+    const isTaller =
+      business.salonProfile === 'TALLER' || business.industry?.code === 'taller';
+    const available = !isRestaurante && !isTaller;
+
+    return {
+      available,
+      wholesale_enabled: available ? Boolean(business.wholesaleEnabled) : false,
+    };
+  }
+
+  async updateWholesaleSettings(
+    businessId: string,
+    dto: { wholesale_enabled?: boolean; wholesaleEnabled?: boolean; enabled?: boolean },
+    role: UserRole,
+    userId: string,
+  ) {
+    if (role !== UserRole.ENCARGADO && role !== UserRole.SUPERADMIN) {
+      throw new ForbiddenException(
+        "Solo el Encargado o Superadmin puede modificar la configuración de venta por mayor.",
+      );
+    }
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: {
+        id: true,
+        posVertical: true,
+        salonProfile: true,
+        wholesaleEnabled: true,
+        industry: { select: { code: true } },
+      },
+    });
+    if (!business) throw new NotFoundException("Negocio no encontrado");
+
+    const isRestaurante = business.posVertical === 'RESTAURANTE';
+    const isTaller =
+      business.salonProfile === 'TALLER' || business.industry?.code === 'taller';
+    const available = !isRestaurante && !isTaller;
+
+    const targetEnabled =
+      dto.wholesale_enabled !== undefined
+        ? Boolean(dto.wholesale_enabled)
+        : dto.wholesaleEnabled !== undefined
+        ? Boolean(dto.wholesaleEnabled)
+        : dto.enabled !== undefined
+        ? Boolean(dto.enabled)
+        : business.wholesaleEnabled;
+
+    if (!available && targetEnabled) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'NOT_AVAILABLE_FOR_PROFILE',
+        message:
+          'La venta por mayor solo está disponible para perfiles que no sean Restaurante ni Taller',
+      });
+    }
+
+    const updated = await this.prisma.business.update({
+      where: { id: businessId },
+      data: { wholesaleEnabled: available ? targetEnabled : false },
+      select: { wholesaleEnabled: true },
+    });
+
+    this.logger.log(
+      `[updateWholesaleSettings] businessId=${businessId} wholesaleEnabled=${updated.wholesaleEnabled} por usuario=${userId}`,
+    );
+
+    return {
+      available,
+      wholesale_enabled: updated.wholesaleEnabled,
+    };
   }
 }
 

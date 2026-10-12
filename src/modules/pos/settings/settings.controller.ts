@@ -57,5 +57,21 @@ export class SettingsController {
   ) {
     return this.service.updateKitchenSettings(resolveBusinessId(user, qBid), dto?.mode);
   }
+
+  @Get("wholesale")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  getWholesaleSettings(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
+    return this.service.getWholesaleSettings(resolveBusinessId(user, qBid));
+  }
+
+  @Patch("wholesale")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  updateWholesaleSettings(
+    @Body() dto: { wholesale_enabled?: boolean; wholesaleEnabled?: boolean; enabled?: boolean },
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.updateWholesaleSettings(resolveBusinessId(user, qBid), dto, user.role, user.sub);
+  }
 }
 

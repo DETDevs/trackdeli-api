@@ -10,6 +10,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { SKIP_MEMBERSHIP_KEY } from '../decorators/skip-membership.decorator';
 import { BusinessType, MembershipStatus, StatementStatus, UserRole } from '@prisma/client';
+import {
+  calculateDueDate,
+  calculateGraceEndsAt,
+  getManaguaDateParts,
+} from '../../modules/superadmin/utils/membership-billing.util';
 
 @Injectable()
 export class MembershipGuard implements CanActivate {
@@ -75,16 +80,39 @@ export class MembershipGuard implements CanActivate {
         }
       } else {
         const now = new Date();
-        const activeMembership = await this.prisma.membership.findFirst({
+        const memberships = await this.prisma.membership.findMany({
           where: {
             businessId: user.businessId,
-            status: MembershipStatus.ACTIVE,
+            status: { in: [MembershipStatus.ACTIVE, MembershipStatus.EXPIRED] },
             startDate: { lte: now },
-            endDate: { gte: now },
           },
+          include: {
+            business: {
+              select: {
+                id: true,
+                createdAt: true,
+                billingAnchorDay: true,
+              },
+            },
+          },
+          orderBy: { endDate: 'desc' },
         });
 
-        if (!activeMembership) {
+        let isAuthorized = false;
+        for (const m of memberships) {
+          if (m.status === MembershipStatus.CANCELLED) continue;
+          const anchor =
+            m.business.billingAnchorDay ?? getManaguaDateParts(m.startDate).day;
+          const dueDate = calculateDueDate(m.startDate, anchor);
+          const graceEndsAt = calculateGraceEndsAt(dueDate);
+
+          if (now < graceEndsAt) {
+            isAuthorized = true;
+            break;
+          }
+        }
+
+        if (!isAuthorized) {
           throw new HttpException(
             {
               statusCode: 402,

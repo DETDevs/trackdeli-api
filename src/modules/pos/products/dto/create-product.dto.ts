@@ -38,7 +38,22 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
+  wholesalePrice?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  wholesaleMinQty?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  wholesale_price?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  wholesale_min_qty?: number | null;
+
+  @IsOptional()
+  @IsNumber()
   cost?: number;
 
   @IsNotEmpty({ message: 'La categoría es obligatoria' })

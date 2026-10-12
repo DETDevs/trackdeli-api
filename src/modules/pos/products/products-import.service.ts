@@ -49,6 +49,8 @@ const CORE_TARGETS: ImportTarget[] = [
   { id: 'maxStock', label: 'Stock Máximo', kind: 'core', dataType: 'NUMBER', required: false },
   { id: 'unit', label: 'Unidad de Medida', kind: 'core', dataType: 'SELECT', options: ['UND', 'LT', 'GAL', 'KG', 'LB'], required: false },
   { id: 'supplierId', label: 'Proveedor', kind: 'core', dataType: 'TEXT', required: false },
+  { id: 'wholesalePrice', label: 'Precio por Mayor', kind: 'core', dataType: 'NUMBER', required: false },
+  { id: 'wholesaleMinQty', label: 'Cantidad Mínima por Mayor', kind: 'core', dataType: 'NUMBER', required: false },
   { id: 'isActive', label: 'Activo', kind: 'core', dataType: 'BOOLEAN', required: false },
 ];
 
@@ -216,7 +218,9 @@ export class ProductsImportService {
       description: ['descripcion', 'detalle', 'observaciones'],
       minStock: ['stock minimo', 'minimo'],
       maxStock: ['stock maximo', 'maximo'],
-      supplierId: ['proveedor']
+      supplierId: ['proveedor'],
+      wholesalePrice: ['precio por mayor', 'precio mayor', 'p. mayor', 'p mayor', 'mayor', 'precio mayorista'],
+      wholesaleMinQty: ['cantidad minima por mayor', 'cantidad minima mayor', 'cant minima mayor', 'minimo mayor', 'cant min mayor', 'min mayor'],
     };
 
     for (let i = 0; i < headers.length; i++) {
@@ -226,14 +230,36 @@ export class ProductsImportService {
       const normH = this.normalizeStr(h);
       let matchedTarget = '';
 
+      // 1. Exact match first (core label/aliases or dynamic label/id)
       for (const t of targets) {
         if (usedTargets.has(t.id)) continue;
-        if (t.kind === 'core' && aliases[t.id]?.some(a => normH.includes(this.normalizeStr(a)))) {
+        if (t.kind === 'core' && (this.normalizeStr(t.label) === normH || aliases[t.id]?.some(a => this.normalizeStr(a) === normH))) {
           matchedTarget = t.id;
           break;
         } else if (t.kind === 'dynamic' && (normH === this.normalizeStr(t.label) || normH === this.normalizeStr(t.id))) {
           matchedTarget = t.id;
           break;
+        }
+      }
+
+      // 2. Substring match prioritizing longer alias phrases
+      if (!matchedTarget) {
+        let bestTarget = '';
+        let bestMatchLen = 0;
+        for (const t of targets) {
+          if (usedTargets.has(t.id)) continue;
+          if (t.kind === 'core' && aliases[t.id]) {
+            for (const a of aliases[t.id]) {
+              const normA = this.normalizeStr(a);
+              if (normH.includes(normA) && normA.length > bestMatchLen) {
+                bestMatchLen = normA.length;
+                bestTarget = t.id;
+              }
+            }
+          }
+        }
+        if (bestTarget) {
+          matchedTarget = bestTarget;
         }
       }
 
@@ -300,7 +326,13 @@ export class ProductsImportService {
 
     const headers = rows[headerRow - 1] || [];
     
-    const targets = await this.getTargets(businessId);
+    const [targets, business] = await Promise.all([
+      this.getTargets(businessId),
+      this.prisma.business.findUnique({
+        where: { id: businessId },
+        select: { id: true, wholesaleEnabled: true },
+      }),
+    ]);
     const targetMap = new Map(targets.map(t => [t.id, t]));
     
     
@@ -385,6 +417,19 @@ export class ProductsImportService {
                rowError = `Columna '${h}': debe ser un número mayor o igual a 0.`;
                break;
              }
+          } else if (tgt.id === 'wholesalePrice') {
+             parsedVal = this.parseTolerantNumber(valStr);
+             if (isNaN(parsedVal) || parsedVal <= 0) {
+               rowError = `Columna '${h}': debe ser un número mayor a 0.`;
+               break;
+             }
+          } else if (tgt.id === 'wholesaleMinQty') {
+             parsedVal = this.parseTolerantNumber(valStr);
+             if (isNaN(parsedVal) || parsedVal < 2) {
+               rowError = `Columna '${h}': debe ser un número mayor o igual a 2.`;
+               break;
+             }
+             parsedVal = Math.round(parsedVal * 1000) / 1000;
           } else if (tgt.dataType === 'NUMBER') {
             parsedVal = this.parseTolerantNumber(valStr);
             if (isNaN(parsedVal)) {
@@ -451,6 +496,42 @@ export class ProductsImportService {
 
       let existing = skuKey ? productBySku.get(skuKey) : productByName.get(nameKey);
       if (!existing && !skuKey) existing = productByName.get(nameKey);
+
+      const hasWholesalePrice = payload.core.wholesalePrice !== undefined && payload.core.wholesalePrice !== null;
+      const hasWholesaleMinQty = payload.core.wholesaleMinQty !== undefined && payload.core.wholesaleMinQty !== null;
+
+      if (hasWholesalePrice || hasWholesaleMinQty) {
+        if (!business?.wholesaleEnabled) {
+          result.errors.push({
+            row: rowNum,
+            column: 'wholesalePrice',
+            message: 'Venta por mayor no está habilitada para este negocio.',
+          });
+          continue;
+        }
+
+        if (!hasWholesalePrice || !hasWholesaleMinQty) {
+          result.errors.push({
+            row: rowNum,
+            column: !hasWholesalePrice ? 'wholesalePrice' : 'wholesaleMinQty',
+            message: 'Debe especificar tanto el precio por mayor como la cantidad mínima.',
+          });
+          continue;
+        }
+
+        const effectivePrice = payload.core.price !== undefined
+          ? payload.core.price
+          : (existing ? Number(existing.price) : undefined);
+
+        if (effectivePrice !== undefined && payload.core.wholesalePrice >= effectivePrice) {
+          result.errors.push({
+            row: rowNum,
+            column: 'wholesalePrice',
+            message: 'El precio por mayor debe ser menor al precio normal.',
+          });
+          continue;
+        }
+      }
 
       if (payload.core.categoryId && typeof payload.core.categoryId === 'string') {
         const catName = payload.core.categoryId.trim();
@@ -591,6 +672,8 @@ export class ProductsImportService {
       else if (t.id === 'barcode') sampleRow[t.id] = "'123456789012";
       else if (t.id === 'price') sampleRow[t.id] = 100.50;
       else if (t.id === 'cost') sampleRow[t.id] = 50.00;
+      else if (t.id === 'wholesalePrice') sampleRow[t.id] = 85.00;
+      else if (t.id === 'wholesaleMinQty') sampleRow[t.id] = 6;
       else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive') sampleRow[t.id] = 'SI';
       else if (t.id === 'stock') sampleRow[t.id] = 10;
       else if (t.dataType === 'BOOLEAN') sampleRow[t.id] = 'SI';
@@ -612,7 +695,10 @@ export class ProductsImportService {
       let typeStr = t.dataType;
       if (t.dataType === 'SELECT') typeStr = `Opciones: ${t.options?.join(', ')}`;
       if (t.dataType === 'BOOLEAN') typeStr = 'SI / NO';
-      wsHelp.addRow({ col: t.label, req: t.required ? 'Sí' : 'No', type: typeStr, desc: '...' });
+      let desc = '...';
+      if (t.id === 'wholesalePrice') desc = 'Precio por mayor (opcional, menor al precio normal)';
+      else if (t.id === 'wholesaleMinQty') desc = 'Cantidad mínima para precio por mayor (mínimo 2)';
+      wsHelp.addRow({ col: t.label, req: t.required ? 'Sí' : 'No', type: typeStr, desc });
     }
 
     return workbook;

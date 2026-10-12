@@ -55,7 +55,7 @@ export class ProductsService {
     };
   }
 
-  private filterActiveAttributes(product: any, activeKeys: Set<string>, userRole?: string) {
+  private filterActiveAttributes(product: any, activeKeys: Set<string>, userRole?: string, wholesaleEnabled?: boolean) {
     if (!product) return product;
     const rawAttrs =
       product.attributes && typeof product.attributes === 'object' && !Array.isArray(product.attributes)
@@ -69,9 +69,23 @@ export class ProductsService {
       }
     }
 
+    const wholesale_price = product.wholesalePrice != null ? Number(product.wholesalePrice) : null;
+    const wholesale_min_qty = product.wholesaleMinQty != null ? Number(product.wholesaleMinQty) : null;
+    const isWholesaleEnabled = wholesaleEnabled !== undefined
+      ? Boolean(wholesaleEnabled)
+      : product.business?.wholesaleEnabled !== undefined
+      ? Boolean(product.business.wholesaleEnabled)
+      : false;
+
     const mapped = {
       ...this.mapProductWithInventory(product),
       attributes: filteredAttrs,
+      wholesalePrice: wholesale_price,
+      wholesaleMinQty: wholesale_min_qty,
+      wholesale_price,
+      wholesale_min_qty,
+      wholesale_enabled: isWholesaleEnabled,
+      wholesaleEnabled: isWholesaleEnabled,
     };
 
     if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
@@ -276,13 +290,18 @@ export class ProductsService {
       orderBy: { name: "asc" },
     });
 
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { wholesaleEnabled: true },
+    });
+
     if (filters?.lowStock) {
       return products
         .filter((p) => p.trackStock && Number(p.stock) <= Number(p.minStock))
-        .map((p) => this.filterActiveAttributes(p, activeKeys, userRole));
+        .map((p) => this.filterActiveAttributes(p, activeKeys, userRole, business?.wholesaleEnabled));
     }
 
-    return products.map((p) => this.filterActiveAttributes(p, activeKeys, userRole));
+    return products.map((p) => this.filterActiveAttributes(p, activeKeys, userRole, business?.wholesaleEnabled));
   }
 
   async findOne(id: string, businessId: string, userRole?: string) {
@@ -306,7 +325,12 @@ export class ProductsService {
     });
     const activeKeys = new Set(activeFields.map((f) => f.key));
 
-    return this.filterActiveAttributes(product, activeKeys, userRole);
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { wholesaleEnabled: true },
+    });
+
+    return this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled);
   }
 
   async findByBarcode(businessId: string, barcode: string, userRole?: string) {
@@ -330,7 +354,12 @@ export class ProductsService {
     });
     const activeKeys = new Set(activeFields.map((f) => f.key));
 
-    return this.filterActiveAttributes(product, activeKeys, userRole);
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { wholesaleEnabled: true },
+    });
+
+    return this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled);
   }
 
   async create(dto: CreateProductDto, businessId: string, userId?: string) {
@@ -396,11 +425,44 @@ export class ProductsService {
       dto.maxStock = validateProductQuantity(unit, dto.maxStock, dto.name);
     }
 
-    const { trackInventory, attributes: _ignored, ...productData } = dto;
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { wholesaleEnabled: true },
+    });
+
+    const rawWholesalePrice = dto.wholesalePrice !== undefined ? dto.wholesalePrice : dto.wholesale_price;
+    const rawWholesaleMinQty = dto.wholesaleMinQty !== undefined ? dto.wholesaleMinQty : dto.wholesale_min_qty;
+
+    if (rawWholesalePrice !== undefined || rawWholesaleMinQty !== undefined) {
+      if (rawWholesalePrice != null && rawWholesaleMinQty == null) {
+        throw new BadRequestException('Si se especifica precio por mayor, la cantidad mínima es obligatoria');
+      }
+      if (rawWholesaleMinQty != null && rawWholesalePrice == null) {
+        throw new BadRequestException('Si se especifica cantidad mínima por mayor, el precio por mayor es obligatorio');
+      }
+      if (rawWholesalePrice != null && rawWholesaleMinQty != null) {
+        if (!business?.wholesaleEnabled) {
+          throw new BadRequestException('La venta por mayor no está habilitada en este negocio');
+        }
+        if (rawWholesalePrice <= 0) {
+          throw new BadRequestException('El precio por mayor debe ser mayor a 0');
+        }
+        if (rawWholesaleMinQty < 2) {
+          throw new BadRequestException('La cantidad mínima para precio por mayor debe ser mayor o igual a 2');
+        }
+        if (rawWholesalePrice >= dto.price) {
+          throw new BadRequestException('El precio por mayor debe ser menor que el precio normal');
+        }
+      }
+    }
+
+    const { trackInventory, attributes: _ignored, wholesale_price: _wp, wholesale_min_qty: _wmq, ...productData } = dto as any;
 
     const product = await this.prisma.product.create({
       data: {
         ...productData,
+        wholesalePrice: rawWholesalePrice != null ? new Prisma.Decimal(rawWholesalePrice) : null,
+        wholesaleMinQty: rawWholesaleMinQty != null ? new Prisma.Decimal(rawWholesaleMinQty) : null,
         unit,
         type,
         trackStock,
@@ -444,7 +506,7 @@ export class ProductsService {
     });
     const activeKeys = new Set(activeFields.map((f) => f.key));
 
-    return this.filterActiveAttributes(product, activeKeys);
+    return this.filterActiveAttributes(product, activeKeys, undefined, business?.wholesaleEnabled);
   }
 
   async update(id: string, dto: UpdateProductDto, businessId: string, userId?: string) {
@@ -500,9 +562,49 @@ export class ProductsService {
       }
     }
 
-    const { trackInventory, attributes: incomingAttributes, ...updateData } = dto;
+    const { trackInventory, attributes: incomingAttributes, wholesale_price: _wp, wholesale_min_qty: _wmq, ...updateData } = dto as any;
     if (trackStock !== undefined) {
       (updateData as any).trackStock = trackStock;
+    }
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { wholesaleEnabled: true },
+    });
+
+    const rawWholesalePrice = dto.wholesalePrice !== undefined ? dto.wholesalePrice : dto.wholesale_price;
+    const rawWholesaleMinQty = dto.wholesaleMinQty !== undefined ? dto.wholesaleMinQty : dto.wholesale_min_qty;
+
+    let targetWholesalePrice = product.wholesalePrice != null ? Number(product.wholesalePrice) : null;
+    let targetWholesaleMinQty = product.wholesaleMinQty != null ? Number(product.wholesaleMinQty) : null;
+    if (rawWholesalePrice !== undefined) targetWholesalePrice = rawWholesalePrice;
+    if (rawWholesaleMinQty !== undefined) targetWholesaleMinQty = rawWholesaleMinQty;
+
+    if (rawWholesalePrice !== undefined || rawWholesaleMinQty !== undefined) {
+      if (targetWholesalePrice === null && targetWholesaleMinQty === null) {
+        (updateData as any).wholesalePrice = null;
+        (updateData as any).wholesaleMinQty = null;
+      } else if (targetWholesalePrice != null && targetWholesaleMinQty == null) {
+        throw new BadRequestException('Si se especifica precio por mayor, la cantidad mínima es obligatoria');
+      } else if (targetWholesaleMinQty != null && targetWholesalePrice == null) {
+        throw new BadRequestException('Si se especifica cantidad mínima por mayor, el precio por mayor es obligatorio');
+      } else if (targetWholesalePrice != null && targetWholesaleMinQty != null) {
+        if (!business?.wholesaleEnabled) {
+          throw new BadRequestException('La venta por mayor no está habilitada en este negocio');
+        }
+        if (targetWholesalePrice <= 0) {
+          throw new BadRequestException('El precio por mayor debe ser mayor a 0');
+        }
+        if (targetWholesaleMinQty < 2) {
+          throw new BadRequestException('La cantidad mínima para precio por mayor debe ser mayor o igual a 2');
+        }
+        const effectivePrice = dto.price !== undefined ? dto.price : product.price;
+        if (targetWholesalePrice >= effectivePrice) {
+          throw new BadRequestException('El precio por mayor debe ser menor que el precio normal');
+        }
+        (updateData as any).wholesalePrice = new Prisma.Decimal(targetWholesalePrice);
+        (updateData as any).wholesaleMinQty = new Prisma.Decimal(targetWholesaleMinQty);
+      }
     }
 
     const effectiveUnit = (dto.unit || product.unit || 'UND').trim().toUpperCase();
@@ -567,7 +669,7 @@ export class ProductsService {
     });
     const activeKeys = new Set(activeFields.map((f) => f.key));
 
-    return this.filterActiveAttributes(updated, activeKeys);
+    return this.filterActiveAttributes(updated, activeKeys, undefined, business?.wholesaleEnabled);
   }
 
   async remove(id: string, businessId: string) {
