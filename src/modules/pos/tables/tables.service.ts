@@ -40,35 +40,47 @@ export class TablesService {
   private readonly logger = new Logger(TablesService.name);
   private pinFailedAttempts = new Map<string, { count: number; resetAt: number }>();
 
-  private checkPinRateLimit(key: string) {
+  private checkPinRateLimit(keyOrKeys: string | string[]) {
+    const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys];
     const now = Date.now();
-    const record = this.pinFailedAttempts.get(key);
-    if (record && record.resetAt > now) {
-      if (record.count >= 5) {
-        throw new HttpException(
-          {
-            statusCode: HttpStatus.TOO_MANY_REQUESTS,
-            error: 'Too Many Requests',
-            message: 'Demasiados intentos fallidos. Intente de nuevo en 5 minutos.',
-          },
-          HttpStatus.TOO_MANY_REQUESTS,
-        );
+    for (const key of keys) {
+      if (!key) continue;
+      const record = this.pinFailedAttempts.get(key);
+      if (record && record.resetAt > now) {
+        if (record.count >= 5) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.TOO_MANY_REQUESTS,
+              error: 'Too Many Requests',
+              message: 'Demasiados intentos fallidos. Intente de nuevo en 5 minutos.',
+            },
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+        }
       }
     }
   }
 
-  private recordPinFailure(key: string) {
+  private recordPinFailure(keyOrKeys: string | string[]) {
+    const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys];
     const now = Date.now();
-    const record = this.pinFailedAttempts.get(key);
-    if (!record || record.resetAt <= now) {
-      this.pinFailedAttempts.set(key, { count: 1, resetAt: now + 5 * 60 * 1000 });
-    } else {
-      record.count += 1;
+    for (const key of keys) {
+      if (!key) continue;
+      const record = this.pinFailedAttempts.get(key);
+      if (!record || record.resetAt <= now) {
+        this.pinFailedAttempts.set(key, { count: 1, resetAt: now + 5 * 60 * 1000 });
+      } else {
+        record.count += 1;
+      }
     }
   }
 
-  private resetPinLimit(key: string) {
-    this.pinFailedAttempts.delete(key);
+  private resetPinLimit(keyOrKeys: string | string[]) {
+    const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys];
+    for (const key of keys) {
+      if (!key) continue;
+      this.pinFailedAttempts.delete(key);
+    }
   }
 
   constructor(
@@ -811,6 +823,7 @@ export class TablesService {
     tableId: string,
     itemId: string,
     dto: UpdateOrderItemDto,
+    user?: JwtPayload,
   ) {
     const order = await this.prisma.tableOrder.findFirst({
       where: { tableId, businessId, status: TableOrderStatus.OPEN },
@@ -826,8 +839,11 @@ export class TablesService {
       throw new NotFoundException('Ítem de pedido no encontrado');
     }
 
-    if (dto.quantity !== undefined && dto.quantity < Number(item.quantity)) {
-      if (item.kitchenRoundId) {
+    const currentQty = Number(item.quantity);
+    const isSent = Boolean(item.kitchenRoundId);
+
+    if (dto.quantity !== undefined && dto.quantity < currentQty) {
+      if (isSent) {
         throw new ForbiddenException({
           statusCode: 403,
           error: 'Forbidden',
@@ -836,8 +852,8 @@ export class TablesService {
       }
     }
 
-    if (dto.quantity <= 0) {
-      if (item.kitchenRoundId) {
+    if (dto.quantity !== undefined && dto.quantity <= 0) {
+      if (isSent) {
         throw new ForbiddenException({
           statusCode: 403,
           error: 'Forbidden',
@@ -845,17 +861,65 @@ export class TablesService {
         });
       }
       await this.prisma.tableOrderItem.delete({ where: { id: itemId } });
-    } else {
-      const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
-      const validQty = validateProductQuantity(product?.unit, dto.quantity, product?.name || item.productName);
-      await this.prisma.tableOrderItem.update({
-        where: { id: itemId },
-        data: {
-          quantity: validQty,
-          ...(dto.notes !== undefined && { notes: dto.notes.trim() || null }),
-        },
-      });
+      return this.getActiveTableOrder(businessId, tableId);
     }
+
+    const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
+
+    // 170d: Si el renglón ya fue enviado a cocina y se aumenta la cantidad,
+    // el renglón enviado conserva su cantidad original y la diferencia se convierte en un renglón nuevo sin enviar.
+    if (isSent && dto.quantity !== undefined && dto.quantity > currentQty) {
+      const targetQty = validateProductQuantity(product?.unit, dto.quantity, product?.name || item.productName);
+      const diffQty = round3(targetQty - currentQty);
+
+      if (diffQty > 0) {
+        const notesToMatch = dto.notes !== undefined ? (dto.notes?.trim() || null) : item.notes;
+        const existingUnsent = await this.prisma.tableOrderItem.findFirst({
+          where: {
+            tableOrderId: order.id,
+            productId: item.productId,
+            notes: notesToMatch,
+            kitchenRoundId: null,
+            subAccountId: item.subAccountId,
+          },
+        });
+
+        if (existingUnsent) {
+          await this.prisma.tableOrderItem.update({
+            where: { id: existingUnsent.id },
+            data: { quantity: round3(Number(existingUnsent.quantity) + diffQty) },
+          });
+        } else {
+          await this.prisma.tableOrderItem.create({
+            data: {
+              tableOrderId: order.id,
+              productId: item.productId,
+              productName: item.productName,
+              unitPrice: item.unitPrice,
+              quantity: diffQty,
+              notes: notesToMatch,
+              waiterId: user?.role === UserRole.WAITER ? user.sub : item.waiterId,
+              waiterName: user?.role === UserRole.WAITER ? (user.waiterName || null) : item.waiterName,
+              subAccountId: item.subAccountId,
+            },
+          });
+        }
+      }
+
+      return this.getActiveTableOrder(businessId, tableId);
+    }
+
+    const validQty = dto.quantity !== undefined
+      ? validateProductQuantity(product?.unit, dto.quantity, product?.name || item.productName)
+      : currentQty;
+
+    await this.prisma.tableOrderItem.update({
+      where: { id: itemId },
+      data: {
+        ...(dto.quantity !== undefined && !isSent && { quantity: validQty }),
+        ...(dto.notes !== undefined && { notes: dto.notes.trim() || null }),
+      },
+    });
 
     return this.getActiveTableOrder(businessId, tableId);
   }
@@ -2083,6 +2147,7 @@ export class TablesService {
     itemId: string,
     dto: VoidOrderItemDto,
     user: JwtPayload,
+    clientContext?: { deviceId?: string | null; ip?: string | null },
   ) {
     const order = await this.prisma.tableOrder.findFirst({
       where: { tableId, businessId, status: TableOrderStatus.OPEN },
@@ -2124,32 +2189,45 @@ export class TablesService {
           });
         }
 
-        const limiterKey = `${businessId}:${user.sub || 'unknown'}`;
-        this.checkPinRateLimit(limiterKey);
+        const limiterKeys: string[] = [];
+        if (user.sub) {
+          limiterKeys.push(`${businessId}:user:${user.sub}`);
+        }
+        if (clientContext?.deviceId) {
+          limiterKeys.push(`${businessId}:device:${clientContext.deviceId}`);
+        }
+        if (clientContext?.ip) {
+          limiterKeys.push(`${businessId}:ip:${clientContext.ip}`);
+        }
+        if (limiterKeys.length === 0) {
+          limiterKeys.push(`${businessId}:unknown`);
+        }
 
+        this.checkPinRateLimit(limiterKeys);
+
+        const cleanPin = dto.authorizerPin.trim();
+
+        // 170d: Solo CAJERO/ENCARGADO/SUPERADMIN con pinHash asignado (no contraseñas)
         const staffUsers = await this.prisma.user.findMany({
           where: {
             businessId,
             isActive: true,
             role: { in: [UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN] },
+            pinHash: { not: null },
           },
-          select: { id: true, name: true, role: true, passwordHash: true, pinHash: true },
+          select: { id: true, name: true, role: true, pinHash: true },
         });
 
         let matchedStaff: { id: string; name: string } | null = null;
         for (const staff of staffUsers) {
-          if (staff.pinHash && (await bcrypt.compare(dto.authorizerPin.trim(), staff.pinHash))) {
-            matchedStaff = staff;
-            break;
-          }
-          if (staff.passwordHash && (await bcrypt.compare(dto.authorizerPin.trim(), staff.passwordHash))) {
+          if (staff.pinHash && (await bcrypt.compare(cleanPin, staff.pinHash))) {
             matchedStaff = staff;
             break;
           }
         }
 
         if (!matchedStaff) {
-          this.recordPinFailure(limiterKey);
+          this.recordPinFailure(limiterKeys);
           this.logger.warn(`[voidOrderItem] PIN inválido de autorización para mesa ${tableId} por usuario ${user.sub}`);
           throw new ForbiddenException({
             statusCode: 403,
@@ -2158,7 +2236,7 @@ export class TablesService {
           });
         }
 
-        this.resetPinLimit(limiterKey);
+        this.resetPinLimit(limiterKeys);
         authorizedBy = matchedStaff.id;
       }
     }
@@ -2297,6 +2375,14 @@ export class TablesService {
         error: 'Conflict',
         code: 'SPLIT_HAS_PAID_ACCOUNTS',
         message: 'No se puede reiniciar la división porque ya existen subcuentas pagadas',
+      });
+    }
+
+    if (user?.role === UserRole.WAITER && (dto.discountPercent !== undefined || dto.discountAmount !== undefined)) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        message: 'Los meseros no tienen permiso para aplicar o modificar descuentos',
       });
     }
 
@@ -2868,6 +2954,14 @@ export class TablesService {
     dto: SetOrderDiscountDto,
     user: JwtPayload,
   ) {
+    if (user?.role === UserRole.WAITER) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        message: 'Los meseros no tienen permiso para aplicar o modificar descuentos',
+      });
+    }
+
     const order = await this.prisma.tableOrder.findFirst({
       where: { tableId, businessId, status: TableOrderStatus.OPEN },
     });

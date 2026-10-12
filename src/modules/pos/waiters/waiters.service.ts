@@ -274,6 +274,57 @@ export class WaitersService {
     };
   }
 
+  async validateAndHashPin(businessId: string, pin: string, excludeWaiterId?: string): Promise<string> {
+    const cleanPin = pin ? pin.toString().trim() : '';
+    if (!/^\d{4,6}$/.test(cleanPin)) {
+      throw new BadRequestException('El PIN debe tener entre 4 y 6 dígitos numéricos');
+    }
+
+    // 1. Comparar con otros meseros activos del mismo negocio con PIN
+    const otherWaiters = await this.prisma.waiter.findMany({
+      where: {
+        businessId,
+        active: true,
+        ...(excludeWaiterId && { id: { not: excludeWaiterId } }),
+      },
+      select: { id: true, pinHash: true },
+    });
+
+    for (const w of otherWaiters) {
+      if (w.pinHash && (await bcrypt.compare(cleanPin, w.pinHash))) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'PIN_IN_USE',
+          message: 'El PIN ingresado ya está en uso por otro colaborador',
+        });
+      }
+    }
+
+    // 2. Comparar con usuarios activos del mismo negocio con PIN
+    const users = await this.prisma.user.findMany({
+      where: {
+        businessId,
+        isActive: true,
+        pinHash: { not: null },
+      },
+      select: { id: true, pinHash: true },
+    });
+
+    for (const u of users) {
+      if (u.pinHash && (await bcrypt.compare(cleanPin, u.pinHash))) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'PIN_IN_USE',
+          message: 'El PIN ingresado ya está en uso por otro colaborador',
+        });
+      }
+    }
+
+    return bcrypt.hash(cleanPin, 10);
+  }
+
   async create(businessId: string, dto: CreateWaiterDto) {
     const existing = await this.prisma.waiter.findFirst({
       where: {
@@ -286,7 +337,7 @@ export class WaitersService {
       throw new ConflictException(`Ya existe un mesero con el nombre "${dto.name.trim()}" en este negocio`);
     }
 
-    const pinHash = await bcrypt.hash(dto.pin, 10);
+    const pinHash = await this.validateAndHashPin(businessId, dto.pin);
 
     const waiter = await this.prisma.waiter.create({
       data: {
@@ -334,7 +385,7 @@ export class WaitersService {
 
     let pinHash: string | undefined;
     if (dto.pin) {
-      pinHash = await bcrypt.hash(dto.pin, 10);
+      pinHash = await this.validateAndHashPin(businessId, dto.pin, id);
     }
 
     const updated = await this.prisma.waiter.update({

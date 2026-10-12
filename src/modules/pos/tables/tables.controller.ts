@@ -154,6 +154,7 @@ export class TablesController {
       tableId,
       itemId,
       dto,
+      user,
     );
   }
 
@@ -210,14 +211,18 @@ export class TablesController {
     @Param('itemId') itemId: string,
     @Body() dto: VoidOrderItemDto,
     @CurrentUser() user: JwtPayload,
+    @Req() req: any,
     @Query('businessId') qBid?: string,
   ) {
+    const deviceId = (req?.headers?.['x-device-id'] || req?.headers?.['X-Device-Id'] || req?.headers?.['x-pos-device-id'] || '').toString().trim() || null;
+    const ip = (req?.headers?.['x-forwarded-for'] || req?.socket?.remoteAddress || req?.ip || '').toString().trim() || null;
     return this.service.voidOrderItem(
       resolveBusinessId(user, qBid),
       tableId,
       itemId,
       dto,
       user,
+      { deviceId, ip },
     );
   }
 
@@ -340,7 +345,7 @@ export class TablesController {
   }
 
   @Post(':id/order/discount')
-  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   @HttpCode(HttpStatus.OK)
   setDiscount(
     @Param('id') tableId: string,

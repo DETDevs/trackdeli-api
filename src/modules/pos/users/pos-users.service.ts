@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException, UnprocessableEntityException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, UnprocessableEntityException, ConflictException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { UserQuotaService } from '../../users/user-quota.service';
 import { UserRole } from '@prisma/client';
@@ -22,8 +22,77 @@ export class PosUsersService {
     return result;
   }
 
+  async validateAndHashPin(businessId: string, pin: string, excludeUserId?: string): Promise<string> {
+    const cleanPin = pin ? pin.toString().trim() : '';
+    if (!/^\d{4,6}$/.test(cleanPin)) {
+      throw new BadRequestException('El PIN debe tener entre 4 y 6 dígitos numéricos');
+    }
+
+    // 1. Comparar con otros usuarios activos con PIN del mismo negocio
+    const otherUsers = await this.prisma.user.findMany({
+      where: {
+        businessId,
+        isActive: true,
+        ...(excludeUserId && { id: { not: excludeUserId } }),
+        pinHash: { not: null },
+      },
+      select: { id: true, pinHash: true },
+    });
+
+    for (const other of otherUsers) {
+      if (other.pinHash && (await bcrypt.compare(cleanPin, other.pinHash))) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'PIN_IN_USE',
+          message: 'El PIN ingresado ya está en uso por otro colaborador',
+        });
+      }
+    }
+
+    // 2. Comparar con meseros activos del mismo negocio con PIN
+    const waiters = await this.prisma.waiter.findMany({
+      where: {
+        businessId,
+        active: true,
+      },
+      select: { id: true, pinHash: true },
+    });
+
+    for (const w of waiters) {
+      if (w.pinHash && (await bcrypt.compare(cleanPin, w.pinHash))) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'PIN_IN_USE',
+          message: 'El PIN ingresado ya está en uso por otro colaborador',
+        });
+      }
+    }
+
+    return bcrypt.hash(cleanPin, 10);
+  }
+
+  async setUserPin(businessId: string, userId: string, pin: string, updaterId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, businessId, isActive: true },
+    });
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado en este negocio');
+    }
+
+    const pinHash = await this.validateAndHashPin(businessId, pin, userId);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { pinHash },
+    });
+
+    this.logger.log(`[setUserPin] updaterId=${updaterId} asignó PIN a userId=${userId} en businessId=${businessId}`);
+    return { success: true, message: 'PIN actualizado exitosamente' };
+  }
+
   async getUsers(businessId: string) {
-    const users = await this.prisma.user.findMany({
+    const rawUsers = await this.prisma.user.findMany({
       where: { businessId },
       select: {
         id: true,
@@ -32,10 +101,21 @@ export class PosUsersService {
         phone: true,
         role: true,
         isActive: true,
+        pinHash: true,
         createdAt: true,
       },
-      orderBy: { createdAt: 'asc' }
+      orderBy: { createdAt: 'asc' },
     });
+    const users = rawUsers.map((u) => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      phone: u.phone,
+      role: u.role,
+      isActive: u.isActive,
+      hasPin: Boolean(u.pinHash),
+      createdAt: u.createdAt,
+    }));
     const usage = await this.quotaService.getUsage(businessId);
     return { users, usage };
   }
@@ -52,7 +132,7 @@ export class PosUsersService {
 
     const tempPassword = this.generateTempPassword();
     const passwordHash = await bcrypt.hash(tempPassword, 10);
-    const pinHash = dto.pin ? await bcrypt.hash(dto.pin.toString().trim(), 10) : null;
+    const pinHash = dto.pin ? await this.validateAndHashPin(businessId, dto.pin) : null;
     const email = dto.email?.trim().toLowerCase();
 
     if (email) {
@@ -94,7 +174,7 @@ export class PosUsersService {
     if (dto.name) updateData.name = dto.name;
     if (dto.phone !== undefined) updateData.phone = dto.phone;
     if (dto.pin !== undefined) {
-      updateData.pinHash = dto.pin ? await bcrypt.hash(dto.pin.toString().trim(), 10) : null;
+      updateData.pinHash = dto.pin ? await this.validateAndHashPin(businessId, dto.pin, id) : null;
     }
 
     if (dto.role) {

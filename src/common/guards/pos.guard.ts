@@ -135,8 +135,7 @@ export class PosGuard implements CanActivate {
         (method === 'POST' && /^\/pos\/tables\/[^/]+\/order\/items\/[^/]+\/void$/.test(normalizedPath)) ||
         (method === 'PATCH' && /^\/pos\/tables\/[^/]+\/order\/items\/[^/]+$/.test(normalizedPath)) ||
         (method === 'DELETE' && /^\/pos\/tables\/[^/]+\/order\/items\/[^/]+$/.test(normalizedPath)) ||
-        (method === 'POST' && /^\/pos\/tables\/[^/]+\/order\/split\/(start|move|add-account|merge|undo)$/.test(normalizedPath)) ||
-        (method === 'POST' && /^\/pos\/tables\/[^/]+\/order\/discount$/.test(normalizedPath));
+        (method === 'POST' && /^\/pos\/tables\/[^/]+\/order\/split\/(start|move|add-account|merge|undo)$/.test(normalizedPath));
 
       if (!isAllowed) {
         throw new ForbiddenException(
