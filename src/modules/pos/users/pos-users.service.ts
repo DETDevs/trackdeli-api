@@ -52,6 +52,7 @@ export class PosUsersService {
 
     const tempPassword = this.generateTempPassword();
     const passwordHash = await bcrypt.hash(tempPassword, 10);
+    const pinHash = dto.pin ? await bcrypt.hash(dto.pin.toString().trim(), 10) : null;
     const email = dto.email?.trim().toLowerCase();
 
     if (email) {
@@ -67,6 +68,7 @@ export class PosUsersService {
         phone: dto.phone,
         role: dto.role,
         passwordHash,
+        pinHash,
         isActive: true,
       },
       select: {
@@ -91,6 +93,9 @@ export class PosUsersService {
     const updateData: any = {};
     if (dto.name) updateData.name = dto.name;
     if (dto.phone !== undefined) updateData.phone = dto.phone;
+    if (dto.pin !== undefined) {
+      updateData.pinHash = dto.pin ? await bcrypt.hash(dto.pin.toString().trim(), 10) : null;
+    }
 
     if (dto.role) {
       if (user.id === updaterId) {

@@ -27,6 +27,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { PosDevicesModule } from './devices/pos-devices.module';
 import { BackofficeModule } from './backoffice/backoffice.module';
 import { WorkshopModule } from './workshop/workshop.module';
+import { KitchenModule } from './kitchen/kitchen.module';
 
 @Module({
   imports: [
@@ -54,9 +55,10 @@ import { WorkshopModule } from './workshop/workshop.module';
     PosDevicesModule,
     BackofficeModule,
     WorkshopModule,
+    KitchenModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
-  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule],
+  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule],
 })
 export class PosModule {}

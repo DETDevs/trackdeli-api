@@ -114,5 +114,35 @@ export class SettingsService {
 
     return this.getSettings(businessId);
   }
+
+  async getKitchenSettings(businessId: string) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { kitchenMode: true },
+    });
+    if (!business) throw new NotFoundException("Negocio no encontrado");
+    return { mode: (business as any).kitchenMode || 'NONE' };
+  }
+
+  async updateKitchenSettings(businessId: string, mode?: string) {
+    const validModes = ['NONE', 'PRINT'];
+    const normalizedMode = (mode || '').toUpperCase().trim();
+    if (!validModes.includes(normalizedMode)) {
+      throw new BadRequestException("Modo de cocina no válido. Solo se permite NONE o PRINT");
+    }
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true },
+    });
+    if (!business) throw new NotFoundException("Negocio no encontrado");
+
+    await this.prisma.business.update({
+      where: { id: businessId },
+      data: { kitchenMode: normalizedMode } as any,
+    });
+
+    this.logger.log(`[updateKitchenSettings] businessId=${businessId} kitchenMode=${normalizedMode}`);
+    return { mode: normalizedMode };
+  }
 }
 

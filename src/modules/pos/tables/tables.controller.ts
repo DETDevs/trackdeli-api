@@ -31,6 +31,8 @@ import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
 import { CancelTableOrderDto } from './dto/cancel-table-order.dto';
 import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
 import { UpdateOrderAssignmentDto } from './dto/update-order-assignment.dto';
+import { SendToKitchenDto } from './dto/send-to-kitchen.dto';
+import { VoidOrderItemDto } from './dto/void-order-item.dto';
 
 @SkipMembershipCheck()
 @SkipWebAdminAccess()
@@ -161,6 +163,55 @@ export class TablesController {
       resolveBusinessId(user, qBid),
       tableId,
       itemId,
+    );
+  }
+
+  @Post(':id/order/send-to-kitchen')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @HttpCode(HttpStatus.OK)
+  sendToKitchen(
+    @Param('id') tableId: string,
+    @Body() dto: SendToKitchenDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.sendToKitchen(
+      resolveBusinessId(user, qBid),
+      tableId,
+      dto,
+      user,
+    );
+  }
+
+  @Get(':id/order/rounds')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  getTableOrderRounds(
+    @Param('id') tableId: string,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.getTableOrderRounds(
+      resolveBusinessId(user, qBid),
+      tableId,
+    );
+  }
+
+  @Post(':id/order/items/:itemId/void')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @HttpCode(HttpStatus.OK)
+  voidItem(
+    @Param('id') tableId: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: VoidOrderItemDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.voidOrderItem(
+      resolveBusinessId(user, qBid),
+      tableId,
+      itemId,
+      dto,
+      user,
     );
   }
 

@@ -41,5 +41,21 @@ export class SettingsController {
   ) {
     return this.service.updateSettings(resolveBusinessId(user, qBid), dto, user.role, user.sub);
   }
+
+  @Get("kitchen")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  getKitchenSettings(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
+    return this.service.getKitchenSettings(resolveBusinessId(user, qBid));
+  }
+
+  @Patch("kitchen")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  updateKitchenSettings(
+    @Body() dto: { mode: string },
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.updateKitchenSettings(resolveBusinessId(user, qBid), dto?.mode);
+  }
 }
 

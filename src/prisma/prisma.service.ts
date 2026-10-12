@@ -2243,6 +2243,7 @@ WHERE a."customerId" = c."id"
       await this.ensureProductTypeColumn();
       await this.ensureWebBillingColumns();
       await this.ensureWebAdminColumns();
+      await this.ensureKitchenModuleSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -2400,6 +2401,124 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 166a - Advertencia creando columnas de web admin: ${err.message}`);
+    }
+  }
+
+  /**
+   * 170a - Tablas y columnas para rondas de cocina ("Enviar a cocina"), cola de impresión de comandas y bitácora de anulaciones:
+   * - pos_products: send_to_kitchen (boolean not null default true)
+   * - businesses: kitchen_mode (varchar(20) not null default 'NONE')
+   * - users: pin_hash (varchar(100) null)
+   * - kitchen_rounds: tabla y sus índices
+   * - pos_table_order_items: kitchen_round_id (fk kitchen_rounds), sent_at (timestamp)
+   * - order_item_voids: tabla de auditoría de anulaciones
+   * DDL idempotente con advisory lock 1700100.
+   */
+  private async ensureKitchenModuleSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1700100)`);
+
+          // 1. Columnas en tablas existentes
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "send_to_kitchen" BOOLEAN NOT NULL DEFAULT true`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "kitchen_mode" VARCHAR(20) NOT NULL DEFAULT 'NONE'`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pin_hash" VARCHAR(100)`,
+          );
+
+          // 2. Tabla kitchen_rounds
+          await tx.$executeRawUnsafe(
+            `CREATE TABLE IF NOT EXISTS "kitchen_rounds" (
+              "id" TEXT NOT NULL,
+              "business_id" TEXT NOT NULL,
+              "table_order_id" TEXT NOT NULL,
+              "table_id" TEXT NOT NULL,
+              "number" INTEGER NOT NULL,
+              "type" VARCHAR(20) NOT NULL DEFAULT 'SEND',
+              "status" VARCHAR(20) NOT NULL DEFAULT 'SENT',
+              "print_status" VARCHAR(20) NOT NULL DEFAULT 'NOT_REQUIRED',
+              "print_attempts" INTEGER NOT NULL DEFAULT 0,
+              "printed_at" TIMESTAMP(3),
+              "claimed_by" VARCHAR(100),
+              "claimed_at" TIMESTAMP(3),
+              "created_by" VARCHAR(100),
+              "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "client_request_id" VARCHAR(100),
+              "items" JSONB NOT NULL DEFAULT '[]'::jsonb,
+              "reason" TEXT,
+              "authorized_by" VARCHAR(100),
+              CONSTRAINT "kitchen_rounds_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "kitchen_rounds_business_id_fkey" FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "kitchen_rounds_table_order_id_fkey" FOREIGN KEY ("table_order_id") REFERENCES "pos_table_orders"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "kitchen_rounds_table_id_fkey" FOREIGN KEY ("table_id") REFERENCES "pos_restaurant_tables"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            )`,
+          );
+
+          // Índices para kitchen_rounds
+          await tx.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "kitchen_rounds_pending_print_idx" ON "kitchen_rounds" ("business_id", "print_status", "created_at")`,
+          );
+          await tx.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "kitchen_rounds_table_order_idx" ON "kitchen_rounds" ("table_order_id", "number")`,
+          );
+          await tx.$executeRawUnsafe(
+            `CREATE UNIQUE INDEX IF NOT EXISTS "kitchen_rounds_biz_client_req_idx" ON "kitchen_rounds" ("business_id", "client_request_id") WHERE "client_request_id" IS NOT NULL`,
+          );
+
+          // 3. Columnas y FK en pos_table_order_items
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_table_order_items" ADD COLUMN IF NOT EXISTS "kitchen_round_id" TEXT`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_table_order_items" ADD COLUMN IF NOT EXISTS "sent_at" TIMESTAMP(3)`,
+          );
+          await tx.$executeRawUnsafe(
+            `DO $$ BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_table_order_items_kitchen_round_id_fkey') THEN
+                ALTER TABLE "pos_table_order_items" ADD CONSTRAINT "pos_table_order_items_kitchen_round_id_fkey" FOREIGN KEY ("kitchen_round_id") REFERENCES "kitchen_rounds"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+              END IF;
+            END $$;`,
+          );
+
+          // 4. Tabla order_item_voids
+          await tx.$executeRawUnsafe(
+            `CREATE TABLE IF NOT EXISTS "order_item_voids" (
+              "id" TEXT NOT NULL,
+              "business_id" TEXT NOT NULL,
+              "order_id" TEXT NOT NULL,
+              "table_id" TEXT,
+              "product_id" TEXT,
+              "product_name" VARCHAR(200) NOT NULL,
+              "quantity" DECIMAL(12, 3) NOT NULL,
+              "unit_price" DOUBLE PRECISION NOT NULL,
+              "was_sent" BOOLEAN NOT NULL,
+              "reason" TEXT NOT NULL,
+              "requested_by" VARCHAR(100) NOT NULL,
+              "authorized_by" VARCHAR(100),
+              "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "order_item_voids_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "order_item_voids_business_id_fkey" FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "order_item_voids_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "pos_table_orders"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            )`,
+          );
+
+          await tx.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "order_item_voids_business_id_order_id_idx" ON "order_item_voids" ("business_id", "order_id")`,
+          );
+
+          this.logger.log(
+            `[PrismaService] ✓ 170a - Esquema de rondas de cocina sincronizado (pos_products, businesses, kitchen_rounds, pos_table_order_items, order_item_voids).`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 170a - Advertencia sincronizando esquema de rondas de cocina: ${err.message}`);
     }
   }
 

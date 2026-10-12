@@ -2,10 +2,13 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { PosPaymentMethod, TableOrderStatus, TableShape, UserRole } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { JwtPayload } from '../../../common/types/jwt-payload.interface';
@@ -20,6 +23,8 @@ import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
 import { CancelTableOrderDto } from './dto/cancel-table-order.dto';
 import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
 import { UpdateOrderAssignmentDto } from './dto/update-order-assignment.dto';
+import { SendToKitchenDto } from './dto/send-to-kitchen.dto';
+import { VoidOrderItemDto } from './dto/void-order-item.dto';
 import { getSalonLabels } from '../salon/salon-profile.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 import { WorkshopService } from '../workshop/workshop.service';
@@ -27,6 +32,38 @@ import { WorkshopService } from '../workshop/workshop.service';
 @Injectable()
 export class TablesService {
   private readonly logger = new Logger(TablesService.name);
+  private pinFailedAttempts = new Map<string, { count: number; resetAt: number }>();
+
+  private checkPinRateLimit(key: string) {
+    const now = Date.now();
+    const record = this.pinFailedAttempts.get(key);
+    if (record && record.resetAt > now) {
+      if (record.count >= 5) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.TOO_MANY_REQUESTS,
+            error: 'Too Many Requests',
+            message: 'Demasiados intentos fallidos. Intente de nuevo en 5 minutos.',
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    }
+  }
+
+  private recordPinFailure(key: string) {
+    const now = Date.now();
+    const record = this.pinFailedAttempts.get(key);
+    if (!record || record.resetAt <= now) {
+      this.pinFailedAttempts.set(key, { count: 1, resetAt: now + 5 * 60 * 1000 });
+    } else {
+      record.count += 1;
+    }
+  }
+
+  private resetPinLimit(key: string) {
+    this.pinFailedAttempts.delete(key);
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -641,7 +678,7 @@ export class TablesService {
         items: {
           include: {
             product: {
-              select: { id: true, name: true, imageUrl: true, price: true, unit: true, stock: true },
+              select: { id: true, name: true, imageUrl: true, price: true, unit: true, stock: true, sendToKitchen: true },
             },
           },
           orderBy: { createdAt: 'asc' },
@@ -714,6 +751,7 @@ export class TablesService {
           tableOrderId: order.id,
           productId: product.id,
           notes: item.notes ? item.notes.trim() : null,
+          kitchenRoundId: null,
         },
       });
 
@@ -761,7 +799,24 @@ export class TablesService {
       throw new NotFoundException('Ítem de pedido no encontrado');
     }
 
+    if (dto.quantity !== undefined && dto.quantity < Number(item.quantity)) {
+      if (item.kitchenRoundId) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'AUTHORIZATION_REQUIRED',
+        });
+      }
+    }
+
     if (dto.quantity <= 0) {
+      if (item.kitchenRoundId) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'AUTHORIZATION_REQUIRED',
+        });
+      }
       await this.prisma.tableOrderItem.delete({ where: { id: itemId } });
     } else {
       const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
@@ -779,7 +834,30 @@ export class TablesService {
   }
 
   async deleteOrderItem(businessId: string, tableId: string, itemId: string) {
-    return this.updateOrderItem(businessId, tableId, itemId, { quantity: 0 });
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    const item = await this.prisma.tableOrderItem.findFirst({
+      where: { id: itemId, tableOrderId: order.id },
+    });
+    if (!item) {
+      throw new NotFoundException('Ítem de pedido no encontrado');
+    }
+
+    if (item.kitchenRoundId) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        message: 'AUTHORIZATION_REQUIRED',
+      });
+    }
+
+    await this.prisma.tableOrderItem.delete({ where: { id: itemId } });
+    return this.getActiveTableOrder(businessId, tableId);
   }
 
   async checkoutTableOrder(
@@ -1167,9 +1245,13 @@ export class TablesService {
         notes: item.notes,
         waiterId: item.waiterId || null,
         waiterName: item.waiterName || null,
+        kitchenRoundId: item.kitchenRoundId || null,
+        sentAt: item.sentAt || null,
+        isSent: Boolean(item.kitchenRoundId),
         product: item.product
           ? {
               ...item.product,
+              sendToKitchen: item.product.sendToKitchen !== false,
               stock: item.product.stock != null ? Number(item.product.stock) : undefined,
               unit: item.product.unit || 'UND',
             }
@@ -1450,5 +1532,310 @@ export class TablesService {
 
     return this.formatOrderResponse(updatedOrder);
   }
+
+  /**
+   * 170a - Envía a cocina los ítems sin ronda cuyo producto tenga send_to_kitchen = true.
+   * Crea una ronda con consecutivo por orden y marca los renglones como enviados.
+   * Idempotente por clientRequestId.
+   */
+  async sendToKitchen(
+    businessId: string,
+    tableId: string,
+    dto: SendToKitchenDto,
+    user: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { salonProfile: true, kitchenMode: true },
+    });
+    if (business?.salonProfile === 'TALLER') {
+      throw new BadRequestException('NOT_AVAILABLE');
+    }
+
+    if (dto.clientRequestId) {
+      const existingRound = await this.prisma.kitchenRound.findFirst({
+        where: {
+          businessId,
+          clientRequestId: dto.clientRequestId.trim(),
+        },
+      });
+      if (existingRound) {
+        return {
+          round: existingRound,
+          tableOrder: await this.getActiveTableOrder(businessId, tableId),
+        };
+      }
+    }
+
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      include: {
+        items: {
+          include: {
+            product: { select: { id: true, sendToKitchen: true } },
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    let candidates = order.items.filter((it) => !it.kitchenRoundId);
+    if (dto.itemIds && dto.itemIds.length > 0) {
+      candidates = candidates.filter((it) => dto.itemIds!.includes(it.id));
+    }
+
+    const itemsToSend = candidates.filter(
+      (it) => (it.product ? it.product.sendToKitchen !== false : true),
+    );
+
+    if (itemsToSend.length === 0) {
+      throw new BadRequestException('NOTHING_TO_SEND');
+    }
+
+    const lastRound = await this.prisma.kitchenRound.findFirst({
+      where: { tableOrderId: order.id },
+      orderBy: { number: 'desc' },
+    });
+    const roundNumber = (lastRound?.number || 0) + 1;
+
+    const kitchenMode = business?.kitchenMode || 'NONE';
+    const printStatus = kitchenMode === 'PRINT' ? 'PENDING' : 'NOT_REQUIRED';
+
+    const itemsJson = itemsToSend.map((item) => ({
+      id: item.id,
+      name: item.productName,
+      quantity: Number(item.quantity),
+      notes: item.notes || null,
+      productId: item.productId,
+    }));
+
+    const round = await this.prisma.$transaction(async (tx) => {
+      const createdRound = await tx.kitchenRound.create({
+        data: {
+          businessId,
+          tableOrderId: order.id,
+          tableId,
+          number: roundNumber,
+          type: 'SEND',
+          status: 'SENT',
+          printStatus,
+          createdBy: user.sub || user.waiterName || 'unknown',
+          clientRequestId: dto.clientRequestId?.trim() || null,
+          items: itemsJson,
+        },
+      });
+
+      const itemIdsToSend = itemsToSend.map((it) => it.id);
+      await tx.tableOrderItem.updateMany({
+        where: { id: { in: itemIdsToSend } },
+        data: {
+          kitchenRoundId: createdRound.id,
+          sentAt: new Date(),
+        },
+      });
+
+      return createdRound;
+    });
+
+    return {
+      round,
+      tableOrder: await this.getActiveTableOrder(businessId, tableId),
+    };
+  }
+
+  /**
+   * Obtiene las rondas de la orden de una mesa con su print_status.
+   */
+  async getTableOrderRounds(businessId: string, tableId: string) {
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      select: { id: true },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+    return this.prisma.kitchenRound.findMany({
+      where: { businessId, tableOrderId: order.id },
+      orderBy: { number: 'asc' },
+    });
+  }
+
+  /**
+   * Anula un ítem de pedido.
+   * Renglón sin enviar: libre sin PIN.
+   * Renglón enviado: requiere CAJERO/ENCARGADO/SUPERADMIN o authorizerPin válido de uno de ellos (no mesero).
+   * Límite de intentos: 5 por 5 minutos por usuario -> 429.
+   * Bitácora en order_item_voids. Si kitchenMode = PRINT, crea ronda VOID.
+   */
+  async voidOrderItem(
+    businessId: string,
+    tableId: string,
+    itemId: string,
+    dto: VoidOrderItemDto,
+    user: JwtPayload,
+  ) {
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    const item = await this.prisma.tableOrderItem.findFirst({
+      where: { id: itemId, tableOrderId: order.id },
+    });
+    if (!item) {
+      throw new NotFoundException('Ítem de pedido no encontrado');
+    }
+
+    const wasSent = Boolean(item.kitchenRoundId);
+    let authorizedBy: string | null = null;
+
+    if (!wasSent) {
+      authorizedBy = null;
+    } else {
+      if (!dto.reason || dto.reason.trim().length < 3) {
+        throw new BadRequestException('El motivo es obligatorio (mínimo 3 caracteres)');
+      }
+
+      const isStaffRole =
+        user.role === UserRole.CAJERO ||
+        user.role === UserRole.ENCARGADO ||
+        user.role === UserRole.SUPERADMIN;
+
+      if (isStaffRole) {
+        authorizedBy = user.sub;
+      } else {
+        if (!dto.authorizerPin || !dto.authorizerPin.trim()) {
+          throw new ForbiddenException({
+            statusCode: 403,
+            error: 'Forbidden',
+            message: 'AUTHORIZATION_REQUIRED',
+          });
+        }
+
+        const limiterKey = `${businessId}:${user.sub || 'unknown'}`;
+        this.checkPinRateLimit(limiterKey);
+
+        const staffUsers = await this.prisma.user.findMany({
+          where: {
+            businessId,
+            isActive: true,
+            role: { in: [UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN] },
+          },
+          select: { id: true, name: true, role: true, passwordHash: true, pinHash: true },
+        });
+
+        let matchedStaff: { id: string; name: string } | null = null;
+        for (const staff of staffUsers) {
+          if (staff.pinHash && (await bcrypt.compare(dto.authorizerPin.trim(), staff.pinHash))) {
+            matchedStaff = staff;
+            break;
+          }
+          if (staff.passwordHash && (await bcrypt.compare(dto.authorizerPin.trim(), staff.passwordHash))) {
+            matchedStaff = staff;
+            break;
+          }
+        }
+
+        if (!matchedStaff) {
+          this.recordPinFailure(limiterKey);
+          this.logger.warn(`[voidOrderItem] PIN inválido de autorización para mesa ${tableId} por usuario ${user.sub}`);
+          throw new ForbiddenException({
+            statusCode: 403,
+            error: 'Forbidden',
+            message: 'INVALID_AUTHORIZATION',
+          });
+        }
+
+        this.resetPinLimit(limiterKey);
+        authorizedBy = matchedStaff.id;
+      }
+    }
+
+    const currentQty = Number(item.quantity);
+    const voidQty =
+      dto.qty !== undefined && dto.qty > 0 && dto.qty < currentQty
+        ? round3(dto.qty)
+        : currentQty;
+    const remainingQty = round3(currentQty - voidQty);
+
+    if (remainingQty <= 0) {
+      await this.prisma.tableOrderItem.delete({ where: { id: item.id } });
+    } else {
+      await this.prisma.tableOrderItem.update({
+        where: { id: item.id },
+        data: { quantity: remainingQty },
+      });
+    }
+
+    await this.prisma.orderItemVoid.create({
+      data: {
+        businessId,
+        orderId: order.id,
+        tableId,
+        productId: item.productId,
+        productName: item.productName,
+        quantity: voidQty,
+        unitPrice: item.unitPrice,
+        wasSent,
+        reason: dto.reason?.trim() || 'Sin enviar',
+        requestedBy: user.sub || user.waiterName || 'unknown',
+        authorizedBy,
+      },
+    });
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { kitchenMode: true },
+    });
+
+    if (wasSent && business?.kitchenMode === 'PRINT') {
+      const lastRound = await this.prisma.kitchenRound.findFirst({
+        where: { tableOrderId: order.id },
+        orderBy: { number: 'desc' },
+      });
+      const roundNumber = (lastRound?.number || 0) + 1;
+
+      await this.prisma.kitchenRound.create({
+        data: {
+          businessId,
+          tableOrderId: order.id,
+          tableId,
+          number: roundNumber,
+          type: 'VOID',
+          status: 'SENT',
+          printStatus: 'PENDING',
+          createdBy: user.sub || user.waiterName || 'unknown',
+          items: [
+            {
+              id: item.id,
+              name: item.productName,
+              quantity: voidQty,
+              notes: item.notes || null,
+              productId: item.productId,
+              voidReason: dto.reason?.trim() || 'Anulado',
+            },
+          ],
+          reason: dto.reason?.trim() || null,
+          authorizedBy,
+        },
+      });
+    }
+
+    return {
+      success: true,
+      voided: {
+        itemId: item.id,
+        productName: item.productName,
+        quantity: voidQty,
+      },
+      tableOrder: await this.getActiveTableOrder(businessId, tableId),
+    };
+  }
 }
+
 

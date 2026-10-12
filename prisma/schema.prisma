@@ -340,6 +340,9 @@ model Business {
   creditStatements      CreditStatement[]
   productComponents     ProductComponent[]
   workshopVehicles      WorkshopVehicle[]
+  kitchenMode           String                  @default("NONE") @map("kitchen_mode") @db.VarChar(20)
+  kitchenRounds         KitchenRound[]
+  orderItemVoids        OrderItemVoid[]
 
   @@map("businesses")
 }
@@ -396,6 +399,7 @@ model User {
   email           String       @unique @db.VarChar(150)
   phone           String?      @db.VarChar(20)
   passwordHash    String?      @db.VarChar(255)
+  pinHash         String?      @map("pin_hash") @db.VarChar(100)
   authProvider    AuthProvider @default(EMAIL)
   profileComplete Boolean      @default(false)
   role            UserRole     @default(REPARTIDOR)
@@ -917,6 +921,7 @@ model Product {
   isRecipe    Boolean  @default(false)
   /// 160d: 'PRODUCT' | 'SERVICE'. Un SERVICE no controla stock propio (trackStock = false).
   type        String   @default("PRODUCT") @db.VarChar(10)
+  sendToKitchen Boolean @default(true) @map("send_to_kitchen")
   trackStock  Boolean  @default(true)
   stock       Decimal  @default(0) @db.Decimal(12, 3)
   minStock    Decimal  @default(5) @db.Decimal(12, 3)
@@ -1482,7 +1487,8 @@ model RestaurantTable {
   createdAt  DateTime         @default(now())
   updatedAt  DateTime         @updatedAt
 
-  orders     TableOrder[]
+  orders        TableOrder[]
+  kitchenRounds KitchenRound[]
 
   @@unique([businessId, number])
   @@index([businessId])
@@ -1518,7 +1524,9 @@ model TableOrder {
   cancelledByUserName String?         @db.VarChar(100)
   cancellationReason String?          @db.VarChar(500)
 
-  items      TableOrderItem[]
+  items          TableOrderItem[]
+  kitchenRounds  KitchenRound[]
+  orderItemVoids OrderItemVoid[]
 
   @@index([businessId, status])
   @@index([tableId, status])
@@ -1539,9 +1547,12 @@ model TableOrderItem {
   quantity     Decimal     @db.Decimal(12, 3)
   unitPrice    Float
   notes        String?
-  waiterId     String?     @db.VarChar(100)
-  waiterName   String?     @db.VarChar(100)
-  createdAt    DateTime    @default(now())
+  waiterId       String?       @db.VarChar(100)
+  waiterName     String?       @db.VarChar(100)
+  kitchenRoundId String?       @map("kitchen_round_id")
+  kitchenRound   KitchenRound? @relation(fields: [kitchenRoundId], references: [id], onDelete: SetNull)
+  sentAt         DateTime?     @map("sent_at")
+  createdAt      DateTime      @default(now())
 
   @@map("pos_table_order_items")
 }
@@ -1996,4 +2007,56 @@ model PlatformSetting {
   updatedAt       DateTime @default(now()) @updatedAt
 
   @@map("platform_settings")
+}
+
+model KitchenRound {
+  id              String           @id @default(uuid())
+  businessId      String           @map("business_id")
+  business        Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  tableOrderId    String           @map("table_order_id")
+  tableOrder      TableOrder       @relation(fields: [tableOrderId], references: [id], onDelete: Cascade)
+  tableId         String           @map("table_id")
+  table           RestaurantTable  @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  number          Int
+  type            String           @default("SEND") @db.VarChar(20)
+  status          String           @default("SENT") @db.VarChar(20)
+  printStatus     String           @default("NOT_REQUIRED") @map("print_status") @db.VarChar(20)
+  printAttempts   Int              @default(0) @map("print_attempts")
+  printedAt       DateTime?        @map("printed_at")
+  claimedBy       String?          @map("claimed_by") @db.VarChar(100)
+  claimedAt       DateTime?        @map("claimed_at")
+  createdBy       String?          @map("created_by") @db.VarChar(100)
+  createdAt       DateTime         @default(now()) @map("created_at")
+  clientRequestId String?          @map("client_request_id") @db.VarChar(100)
+  items           Json             @default("[]")
+  reason          String?
+  authorizedBy    String?          @map("authorized_by") @db.VarChar(100)
+
+  orderItems      TableOrderItem[]
+
+  @@unique([businessId, clientRequestId])
+  @@index([businessId, printStatus, createdAt])
+  @@index([tableOrderId, number])
+  @@map("kitchen_rounds")
+}
+
+model OrderItemVoid {
+  id           String      @id @default(uuid())
+  businessId   String      @map("business_id")
+  business     Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  orderId      String      @map("order_id")
+  order        TableOrder  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  tableId      String?     @map("table_id")
+  productId    String?     @map("product_id")
+  productName  String      @map("product_name") @db.VarChar(200)
+  quantity     Decimal     @db.Decimal(12, 3)
+  unitPrice    Float       @map("unit_price")
+  wasSent      Boolean     @map("was_sent")
+  reason       String
+  requestedBy  String      @map("requested_by") @db.VarChar(100)
+  authorizedBy String?     @map("authorized_by") @db.VarChar(100)
+  createdAt    DateTime    @default(now()) @map("created_at")
+
+  @@index([businessId, orderId])
+  @@map("order_item_voids")
 }

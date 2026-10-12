@@ -57,6 +57,10 @@ export class UpdateProductDto {
 
   @IsOptional()
   @IsBoolean()
+  sendToKitchen?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   trackInventory?: boolean;
 
   @IsOptional()
