@@ -33,6 +33,12 @@ import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
 import { UpdateOrderAssignmentDto } from './dto/update-order-assignment.dto';
 import { SendToKitchenDto } from './dto/send-to-kitchen.dto';
 import { VoidOrderItemDto } from './dto/void-order-item.dto';
+import { StartSplitDto } from './dto/start-split.dto';
+import { MoveSplitItemDto } from './dto/move-split-item.dto';
+import { AddSubAccountDto } from './dto/add-sub-account.dto';
+import { MergeSubAccountsDto } from './dto/merge-sub-accounts.dto';
+import { UndoSplitDto } from './dto/undo-split.dto';
+import { SetOrderDiscountDto } from './dto/set-order-discount.dto';
 
 @SkipMembershipCheck()
 @SkipWebAdminAccess()
@@ -271,6 +277,78 @@ export class TablesController {
       dto,
       user,
     );
+  }
+
+  @Post(':id/order/split/start')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @HttpCode(HttpStatus.OK)
+  startSplit(
+    @Param('id') tableId: string,
+    @Body() dto: StartSplitDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.startSplitOrder(resolveBusinessId(user, qBid), tableId, dto, user);
+  }
+
+  @Post(':id/order/split/move')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @HttpCode(HttpStatus.OK)
+  moveItem(
+    @Param('id') tableId: string,
+    @Body() dto: MoveSplitItemDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.moveSplitItem(resolveBusinessId(user, qBid), tableId, dto, user);
+  }
+
+  @Post(':id/order/split/add-account')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @HttpCode(HttpStatus.OK)
+  addSubAccount(
+    @Param('id') tableId: string,
+    @Body() dto: AddSubAccountDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.addSubAccount(resolveBusinessId(user, qBid), tableId, dto, user);
+  }
+
+  @Post(':id/order/split/merge')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @HttpCode(HttpStatus.OK)
+  mergeSubAccounts(
+    @Param('id') tableId: string,
+    @Body() dto: MergeSubAccountsDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.mergeSubAccounts(resolveBusinessId(user, qBid), tableId, dto, user);
+  }
+
+  @Post(':id/order/split/undo')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @HttpCode(HttpStatus.OK)
+  undoSplit(
+    @Param('id') tableId: string,
+    @Body() dto: UndoSplitDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.undoSplitOrder(resolveBusinessId(user, qBid), tableId, dto, user);
+  }
+
+  @Post(':id/order/discount')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @HttpCode(HttpStatus.OK)
+  setDiscount(
+    @Param('id') tableId: string,
+    @Body() dto: SetOrderDiscountDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.setOrderDiscount(resolveBusinessId(user, qBid), tableId, dto, user);
   }
 }
 

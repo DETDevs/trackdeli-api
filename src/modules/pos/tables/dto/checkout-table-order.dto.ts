@@ -6,6 +6,10 @@ import { PaymentDto } from '../../sales/dto/create-sale.dto';
 
 export class CheckoutTableOrderDto {
   @IsOptional()
+  @IsString()
+  subAccountId?: string;
+
+  @IsOptional()
   @IsEnum(PosPaymentMethod)
   paymentMethod?: PosPaymentMethod;
 

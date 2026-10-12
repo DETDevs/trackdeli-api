@@ -343,6 +343,8 @@ model Business {
   kitchenMode           String                  @default("NONE") @map("kitchen_mode") @db.VarChar(20)
   kitchenRounds         KitchenRound[]
   orderItemVoids        OrderItemVoid[]
+  orderSubAccounts      OrderSubAccount[]
+  orderSplitLogs        OrderSplitLog[]
 
   @@map("businesses")
 }
@@ -1033,6 +1035,8 @@ model Sale {
   channel        String?          @db.VarChar(20)
   deviceId       String?          @db.VarChar(100)
 
+  orderSubAccounts OrderSubAccount[]
+
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
@@ -1524,9 +1528,16 @@ model TableOrder {
   cancelledByUserName String?         @db.VarChar(100)
   cancellationReason String?          @db.VarChar(500)
 
+  splitVersion       Int               @default(0) @map("split_version")
+  splitMode          String?           @map("split_mode") @db.VarChar(20)
+  discountPercent    Decimal?          @default(0) @map("discount_percent") @db.Decimal(5, 2)
+  discountAmount     Decimal?          @default(0) @map("discount_amount") @db.Decimal(12, 2)
+
   items          TableOrderItem[]
   kitchenRounds  KitchenRound[]
   orderItemVoids OrderItemVoid[]
+  subAccounts    OrderSubAccount[]
+  splitLogs      OrderSplitLog[]
 
   @@index([businessId, status])
   @@index([tableId, status])
@@ -1552,6 +1563,8 @@ model TableOrderItem {
   kitchenRoundId String?       @map("kitchen_round_id")
   kitchenRound   KitchenRound? @relation(fields: [kitchenRoundId], references: [id], onDelete: SetNull)
   sentAt         DateTime?     @map("sent_at")
+  subAccountId   String?       @map("sub_account_id")
+  subAccount     OrderSubAccount? @relation(fields: [subAccountId], references: [id], onDelete: SetNull)
   createdAt      DateTime      @default(now())
 
   @@map("pos_table_order_items")
@@ -2059,4 +2072,41 @@ model OrderItemVoid {
 
   @@index([businessId, orderId])
   @@map("order_item_voids")
+}
+
+model OrderSubAccount {
+  id           String          @id @default(uuid())
+  businessId   String          @map("business_id")
+  business     Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  tableOrderId String          @map("table_order_id")
+  tableOrder   TableOrder      @relation(fields: [tableOrderId], references: [id], onDelete: Cascade)
+  label        String          @db.VarChar(100)
+  status       String          @default("OPEN") @db.VarChar(20)
+  saleId       String?         @map("sale_id")
+  sale         Sale?           @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  fixedAmount  Decimal?        @map("fixed_amount") @db.Decimal(12, 2)
+  createdBy    String          @map("created_by") @db.VarChar(100)
+  createdAt    DateTime        @default(now()) @map("created_at")
+
+  items        TableOrderItem[]
+
+  @@index([businessId])
+  @@index([tableOrderId])
+  @@map("order_sub_accounts")
+}
+
+model OrderSplitLog {
+  id           String     @id @default(uuid())
+  businessId   String     @map("business_id")
+  business     Business   @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  tableOrderId String     @map("table_order_id")
+  tableOrder   TableOrder @relation(fields: [tableOrderId], references: [id], onDelete: Cascade)
+  action       String     @db.VarChar(50)
+  userId       String     @map("user_id") @db.VarChar(100)
+  details      String?    @db.Text
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  @@index([businessId])
+  @@index([tableOrderId])
+  @@map("order_split_log")
 }

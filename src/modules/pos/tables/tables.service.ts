@@ -25,6 +25,12 @@ import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
 import { UpdateOrderAssignmentDto } from './dto/update-order-assignment.dto';
 import { SendToKitchenDto } from './dto/send-to-kitchen.dto';
 import { VoidOrderItemDto } from './dto/void-order-item.dto';
+import { StartSplitDto } from './dto/start-split.dto';
+import { MoveSplitItemDto } from './dto/move-split-item.dto';
+import { AddSubAccountDto } from './dto/add-sub-account.dto';
+import { MergeSubAccountsDto } from './dto/merge-sub-accounts.dto';
+import { UndoSplitDto } from './dto/undo-split.dto';
+import { SetOrderDiscountDto } from './dto/set-order-discount.dto';
 import { getSalonLabels } from '../salon/salon-profile.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 import { WorkshopService } from '../workshop/workshop.service';
@@ -624,6 +630,9 @@ export class TablesService {
         assignedWaiter: {
           select: { id: true, name: true },
         },
+        subAccounts: {
+          orderBy: { createdAt: 'asc' },
+        },
       },
     });
 
@@ -672,6 +681,11 @@ export class TablesService {
   }
 
   async getActiveTableOrder(businessId: string, tableId: string) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { taxRate: true },
+    });
+
     const order = await this.prisma.tableOrder.findFirst({
       where: { tableId, businessId, status: TableOrderStatus.OPEN },
       include: {
@@ -696,6 +710,9 @@ export class TablesService {
         assignedWaiter: {
           select: { id: true, name: true },
         },
+        subAccounts: {
+          orderBy: { createdAt: 'asc' },
+        },
       },
     });
 
@@ -703,7 +720,7 @@ export class TablesService {
       throw new NotFoundException('No hay un pedido abierto para esta mesa');
     }
 
-    return this.formatOrderResponse(order);
+    return this.formatOrderResponse(order, business?.taxRate || 0);
   }
 
   async addOrderItems(businessId: string, tableId: string, dto: AddOrderItemsDto, user?: JwtPayload) {
@@ -734,6 +751,15 @@ export class TablesService {
           openedByWaiterName,
         },
       });
+    }
+
+    let defaultSubAccountId: string | null = null;
+    if (order.splitMode === 'ITEMS') {
+      const firstOpen = await this.prisma.orderSubAccount.findFirst({
+        where: { tableOrderId: order.id, status: 'OPEN' },
+        orderBy: { createdAt: 'asc' },
+      });
+      defaultSubAccountId = firstOpen ? firstOpen.id : null;
     }
 
     for (const item of dto.items) {
@@ -771,6 +797,7 @@ export class TablesService {
             notes: item.notes?.trim() || null,
             waiterId,
             waiterName,
+            subAccountId: defaultSubAccountId,
           },
         });
       }
@@ -872,6 +899,9 @@ export class TablesService {
       where: { tableId, businessId, status: TableOrderStatus.OPEN },
       include: {
         items: true,
+        subAccounts: {
+          orderBy: { createdAt: 'asc' },
+        },
         table: {
           include: {
             zone: { select: { id: true, name: true } },
@@ -889,17 +919,254 @@ export class TablesService {
       throw new BadRequestException('El pedido de la mesa no contiene productos para facturar');
     }
 
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { taxRate: true, taxIncluded: true, taxEnabled: true, salonProfile: true },
+    });
+    const labels = getSalonLabels(business?.salonProfile);
+    const taxRate = business?.taxRate || 0;
+
+    const isSplit = Boolean(order.splitMode) || (order.subAccounts && order.subAccounts.length > 0);
+
+    // If order is split, subAccountId is required
+    if (isSplit && !dto.subAccountId) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'SUB_ACCOUNT_REQUIRED',
+        message: 'La orden está dividida, debe especificar subAccountId para cobrar',
+      });
+    }
+
+    if (dto.subAccountId) {
+      const subAccount = order.subAccounts.find((sa) => sa.id === dto.subAccountId);
+      if (!subAccount) {
+        throw new NotFoundException({
+          statusCode: 404,
+          error: 'Not Found',
+          code: 'SUB_ACCOUNT_NOT_FOUND',
+          message: 'Subcuenta no encontrada en la orden',
+        });
+      }
+
+      if (subAccount.status === 'PAID') {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'SUB_ACCOUNT_ALREADY_PAID',
+          message: 'Esta subcuenta ya fue pagada',
+        });
+      }
+
+      let saleDto: CreateSaleDto;
+
+      if (order.splitMode === 'ITEMS') {
+        const saItems = order.items.filter((i) => i.subAccountId === subAccount.id);
+        if (saItems.length === 0) {
+          throw new BadRequestException('La subcuenta no contiene productos para facturar');
+        }
+
+        let totalOrderSubtotal = 0;
+        for (const item of order.items) {
+          totalOrderSubtotal += Number(item.quantity) * Number(item.unitPrice);
+        }
+        totalOrderSubtotal = Math.round(totalOrderSubtotal * 100) / 100;
+
+        const discountPercent = Number(order.discountPercent || 0);
+        const discountAmountTotal = Number(order.discountAmount || 0);
+        let totalOrderDiscount = 0;
+        if (discountPercent > 0) {
+          totalOrderDiscount = Math.round(totalOrderSubtotal * (discountPercent / 100) * 100) / 100;
+        } else if (discountAmountTotal > 0) {
+          totalOrderDiscount = Math.min(totalOrderSubtotal, Math.round(discountAmountTotal * 100) / 100);
+        }
+
+        const sortedSubAccounts = [...order.subAccounts].sort(
+          (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+        );
+        const subAccountIdx = sortedSubAccounts.findIndex((sa) => sa.id === subAccount.id);
+        const isLastSubAccount = subAccountIdx === sortedSubAccounts.length - 1;
+
+        let saSubtotal = 0;
+        for (const item of saItems) {
+          saSubtotal += Number(item.quantity) * Number(item.unitPrice);
+        }
+        saSubtotal = Math.round(saSubtotal * 100) / 100;
+
+        let saDiscount = 0;
+        if (totalOrderSubtotal > 0 && totalOrderDiscount > 0) {
+          let accumulatedDiscount = 0;
+          for (let j = 0; j < sortedSubAccounts.length - 1; j++) {
+            const saJItems = order.items.filter((i) => i.subAccountId === sortedSubAccounts[j].id);
+            let subJ = 0;
+            for (const it of saJItems) subJ += Number(it.quantity) * Number(it.unitPrice);
+            subJ = Math.round(subJ * 100) / 100;
+            const discJ = Math.round(totalOrderDiscount * (subJ / totalOrderSubtotal) * 100) / 100;
+            if (j === subAccountIdx) {
+              saDiscount = discJ;
+            }
+            accumulatedDiscount += discJ;
+          }
+          if (isLastSubAccount) {
+            saDiscount = Math.round((totalOrderDiscount - accumulatedDiscount) * 100) / 100;
+          }
+        }
+
+        const taxable = Math.max(0, saSubtotal - saDiscount);
+        const taxAmount = Math.round(taxable * (taxRate / 100) * 100) / 100;
+        const total = Math.round((taxable + taxAmount) * 100) / 100;
+
+        const amountPaid = dto.amountPaid !== undefined ? dto.amountPaid : total;
+
+        saleDto = {
+          paymentMethod: dto.paymentMethod || PosPaymentMethod.EFECTIVO,
+          amountPaid,
+          discountAmount: saDiscount,
+          customerId: dto.customerId || order.customerId || undefined,
+          customerName: dto.customerName || order.customerName || undefined,
+          customerPhone: dto.customerPhone || order.customerPhone || undefined,
+          customerRuc: dto.customerRuc,
+          tableNumber: order.table?.number || undefined,
+          zoneName: order.table?.zone?.name || undefined,
+          waiterName: order.assignedWaiter?.name || order.openedByWaiterName || undefined,
+          vehicleInfo: order.vehicleInfo || undefined,
+          workshopVehicleId: order.workshopVehicleId || undefined,
+          cashRegisterId: dto.cashRegisterId,
+          notes: dto.notes
+            ? `${dto.notes} (${labels.table} ${order.table.number} - ${subAccount.label})`
+            : `${labels.table} ${order.table.number} (${subAccount.label})`,
+          reference: dto.reference || dto.paymentReference,
+          payments: dto.payments,
+          items: saItems.map((i) => ({
+            productId: i.productId,
+            productName: i.productName,
+            unitPrice: i.unitPrice,
+            quantity: round3(Number(i.quantity)),
+            discount: 0,
+          })),
+        };
+      } else {
+        // EQUAL mode
+        const fixedAmount = Number(subAccount.fixedAmount || 0);
+        let unitPrice = fixedAmount;
+        if (business?.taxEnabled && !business.taxIncluded && taxRate > 0) {
+          unitPrice = Math.round((fixedAmount / (1 + (taxRate / 100))) * 100) / 100;
+          const calcTax = Math.round(unitPrice * (taxRate / 100) * 100) / 100;
+          const calcTot = Math.round((unitPrice + calcTax) * 100) / 100;
+          const diff = Math.round((fixedAmount - calcTot) * 100) / 100;
+          if (diff !== 0) {
+            unitPrice = Math.round((unitPrice + diff) * 100) / 100;
+          }
+        }
+
+        const amountPaid = dto.amountPaid !== undefined ? dto.amountPaid : fixedAmount;
+
+        saleDto = {
+          paymentMethod: dto.paymentMethod || PosPaymentMethod.EFECTIVO,
+          amountPaid,
+          discountAmount: 0,
+          customerId: dto.customerId || order.customerId || undefined,
+          customerName: dto.customerName || order.customerName || undefined,
+          customerPhone: dto.customerPhone || order.customerPhone || undefined,
+          customerRuc: dto.customerRuc,
+          tableNumber: order.table?.number || undefined,
+          zoneName: order.table?.zone?.name || undefined,
+          waiterName: order.assignedWaiter?.name || order.openedByWaiterName || undefined,
+          vehicleInfo: order.vehicleInfo || undefined,
+          workshopVehicleId: order.workshopVehicleId || undefined,
+          cashRegisterId: dto.cashRegisterId,
+          notes: dto.notes
+            ? `${dto.notes} (${labels.table} ${order.table.number} - ${subAccount.label})`
+            : `${labels.table} ${order.table.number} (${subAccount.label})`,
+          reference: dto.reference || dto.paymentReference,
+          payments: dto.payments,
+          items: [
+            {
+              productId: undefined,
+              productName: `Consumo ${labels.table} ${order.table.number} (${subAccount.label})`,
+              unitPrice,
+              quantity: 1,
+              discount: 0,
+            },
+          ],
+        };
+      }
+
+      const sale = await this.salesService.create(saleDto, businessId, cashierId, userRole, clientInfo);
+
+      await this.prisma.orderSubAccount.update({
+        where: { id: subAccount.id },
+        data: {
+          status: 'PAID',
+          saleId: sale.id,
+        },
+      });
+
+      const remainingOpen = await this.prisma.orderSubAccount.count({
+        where: {
+          tableOrderId: order.id,
+          status: 'OPEN',
+        },
+      });
+
+      if (remainingOpen === 0) {
+        const closedOrder = await this.prisma.tableOrder.update({
+          where: { id: order.id },
+          data: {
+            status: TableOrderStatus.CLOSED,
+            closedAt: new Date(),
+            saleId: sale.id,
+          },
+        });
+
+        if (business?.salonProfile === 'TALLER') {
+          await this.prisma.restaurantTable.update({
+            where: { id: order.tableId },
+            data: { isActive: false },
+          });
+        }
+
+        this.logger.log(
+          `[checkoutTableOrder] Mesa ${order.table.number} - todas las subcuentas pagadas. Orden cerrada con éxito: saleId=${sale.id} orderId=${order.id}`,
+        );
+
+        return {
+          sale,
+          tableOrder: {
+            id: closedOrder.id,
+            tableId: closedOrder.tableId,
+            status: closedOrder.status,
+            closedAt: closedOrder.closedAt,
+            saleId: closedOrder.saleId,
+          },
+          allAccountsPaid: true,
+        };
+      } else {
+        this.logger.log(
+          `[checkoutTableOrder] Mesa ${order.table.number} - subcuenta "${subAccount.label}" pagada (quedan ${remainingOpen} abiertas). Venta: ${sale.id}`,
+        );
+
+        return {
+          sale,
+          tableOrder: {
+            id: order.id,
+            tableId: order.tableId,
+            status: order.status,
+            closedAt: null,
+            saleId: null,
+          },
+          remainingOpenAccounts: remainingOpen,
+          allAccountsPaid: false,
+        };
+      }
+    }
+
+    // Normal checkout (unsplit order)
     let subtotal = 0;
     for (const item of order.items) {
       subtotal += Number(item.quantity) * Number(item.unitPrice);
     }
 
-    const business = await this.prisma.business.findUnique({
-      where: { id: businessId },
-      select: { taxRate: true, salonProfile: true },
-    });
-    const labels = getSalonLabels(business?.salonProfile);
-    const taxRate = business?.taxRate || 0;
     const discountAmount = dto.discountAmount || 0;
     const taxable = Math.max(0, subtotal - discountAmount);
     const taxAmount = taxable * (taxRate / 100);
@@ -969,6 +1236,7 @@ export class TablesService {
         closedAt: closedOrder.closedAt,
         saleId: closedOrder.saleId,
       },
+      allAccountsPaid: true,
     };
   }
 
@@ -983,12 +1251,31 @@ export class TablesService {
       include: {
         items: true,
         table: true,
+        subAccounts: true,
       },
     });
 
     if (!order) {
       throw new BadRequestException('No hay un pedido abierto para cancelar en esta mesa');
     }
+
+    const hasPaidAccounts = order.subAccounts.some((sa) => sa.status === 'PAID');
+    if (hasPaidAccounts) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'SPLIT_HAS_PAID_ACCOUNTS',
+        message: 'No se puede cancelar una orden con subcuentas pagadas',
+      });
+    }
+
+    await this.prisma.tableOrderItem.updateMany({
+      where: { tableOrderId: order.id },
+      data: { subAccountId: null },
+    });
+    await this.prisma.orderSubAccount.deleteMany({
+      where: { tableOrderId: order.id },
+    });
 
     let cancelledByUserName: string | null = null;
     if (user?.sub) {
@@ -1226,7 +1513,7 @@ export class TablesService {
     };
   }
 
-  private formatOrderResponse(order: any) {
+  private formatOrderResponse(order: any, taxRate: number = 0) {
     let subtotal = 0;
     let itemsCount = 0;
 
@@ -1248,6 +1535,7 @@ export class TablesService {
         kitchenRoundId: item.kitchenRoundId || null,
         sentAt: item.sentAt || null,
         isSent: Boolean(item.kitchenRoundId),
+        subAccountId: item.subAccountId || null,
         product: item.product
           ? {
               ...item.product,
@@ -1259,6 +1547,116 @@ export class TablesService {
         createdAt: item.createdAt,
       };
     });
+
+    subtotal = Math.round(subtotal * 100) / 100;
+
+    const discountPercent = Number(order.discountPercent || 0);
+    const discountAmount = Number(order.discountAmount || 0);
+    let totalDiscount = 0;
+    if (discountPercent > 0) {
+      totalDiscount = Math.round(subtotal * (discountPercent / 100) * 100) / 100;
+    } else if (discountAmount > 0) {
+      totalDiscount = Math.min(subtotal, Math.round(discountAmount * 100) / 100);
+    }
+
+    const taxable = Math.max(0, subtotal - totalDiscount);
+    const taxTotal = Math.round(taxable * (taxRate / 100) * 100) / 100;
+    const orderTotal = Math.round((taxable + taxTotal) * 100) / 100;
+
+    // Formatear subcuentas con cálculo proporcional exacto al centavo
+    let formattedSubAccounts: any[] = [];
+    const rawSubAccounts = order.subAccounts || [];
+
+    if (rawSubAccounts.length > 0) {
+      if (order.splitMode === 'EQUAL') {
+        formattedSubAccounts = rawSubAccounts.map((sa: any) => {
+          const fixed = Number(sa.fixedAmount || 0);
+          return {
+            id: sa.id,
+            label: sa.label,
+            status: sa.status,
+            saleId: sa.saleId || null,
+            fixedAmount: fixed,
+            itemsCount: 0,
+            subtotal: fixed,
+            discount: 0,
+            tax: 0,
+            total: fixed,
+            createdBy: sa.createdBy,
+            createdAt: sa.createdAt,
+            items: [],
+          };
+        });
+      } else {
+        // Modo ITEMS
+        const itemsBySub = new Map<string, any[]>();
+        for (const sa of rawSubAccounts) {
+          itemsBySub.set(sa.id, []);
+        }
+        for (const fi of formattedItems) {
+          if (fi.subAccountId && itemsBySub.has(fi.subAccountId)) {
+            itemsBySub.get(fi.subAccountId)!.push(fi);
+          }
+        }
+
+        const sorted = [...rawSubAccounts].sort(
+          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+        );
+        let accDiscount = 0;
+        let accTax = 0;
+
+        formattedSubAccounts = sorted.map((sa: any, idx: number) => {
+          const saItems = itemsBySub.get(sa.id) || [];
+          let saSub = 0;
+          let saCount = 0;
+          for (const it of saItems) {
+            saSub += it.subtotal;
+            saCount += it.quantity;
+          }
+          saSub = Math.round(saSub * 100) / 100;
+
+          const isLast = idx === sorted.length - 1;
+          let saDisc = 0;
+          if (subtotal > 0 && totalDiscount > 0) {
+            if (isLast) {
+              saDisc = Math.round((totalDiscount - accDiscount) * 100) / 100;
+            } else {
+              saDisc = Math.round(totalDiscount * (saSub / subtotal) * 100) / 100;
+              accDiscount += saDisc;
+            }
+          }
+
+          const saTaxable = Math.max(0, saSub - saDisc);
+          let saTax = 0;
+          if (taxRate > 0) {
+            if (isLast) {
+              saTax = Math.round((taxTotal - accTax) * 100) / 100;
+            } else {
+              saTax = Math.round(saTaxable * (taxRate / 100) * 100) / 100;
+              accTax += saTax;
+            }
+          }
+
+          const saTot = Math.round((saTaxable + saTax) * 100) / 100;
+
+          return {
+            id: sa.id,
+            label: sa.label,
+            status: sa.status,
+            saleId: sa.saleId || null,
+            fixedAmount: sa.fixedAmount ? Number(sa.fixedAmount) : null,
+            itemsCount: saCount,
+            subtotal: saSub,
+            discount: saDisc,
+            tax: saTax,
+            total: saTot,
+            createdBy: sa.createdBy,
+            createdAt: sa.createdAt,
+            items: saItems,
+          };
+        });
+      }
+    }
 
     return {
       id: order.id,
@@ -1299,7 +1697,16 @@ export class TablesService {
           }
         : null,
       itemsCount,
-      subtotal: Math.round(subtotal * 100) / 100,
+      subtotal,
+      discountPercent,
+      discountAmount,
+      discountTotal: totalDiscount,
+      taxRate,
+      taxTotal,
+      total: orderTotal,
+      splitVersion: order.splitVersion !== undefined ? order.splitVersion : 0,
+      splitMode: order.splitMode || null,
+      subAccounts: formattedSubAccounts,
       items: formattedItems,
     };
   }
@@ -1835,6 +2242,652 @@ export class TablesService {
       },
       tableOrder: await this.getActiveTableOrder(businessId, tableId),
     };
+  }
+
+  /**
+   * 171a - Inicia la división de la orden de una mesa (ITEMS o EQUAL).
+   */
+  async startSplitOrder(
+    businessId: string,
+    tableId: string,
+    dto: StartSplitDto,
+    user: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { salonProfile: true, taxRate: true },
+    });
+    if (business?.salonProfile === 'TALLER') {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'NOT_AVAILABLE',
+        message: 'La división de cuentas no está disponible para el perfil Taller',
+      });
+    }
+
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      include: {
+        items: true,
+        subAccounts: true,
+      },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    if (order.items.length === 0) {
+      throw new BadRequestException('La orden no tiene productos para dividir');
+    }
+
+    if (dto.splitVersion !== undefined && dto.splitVersion !== order.splitVersion) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'SPLIT_VERSION_CONFLICT',
+        message: 'La cuenta fue modificada por otro usuario. Recargue para ver los cambios.',
+      });
+    }
+
+    const hasPaidAccounts = order.subAccounts.some((sa) => sa.status === 'PAID');
+    if (hasPaidAccounts) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'SPLIT_HAS_PAID_ACCOUNTS',
+        message: 'No se puede reiniciar la división porque ya existen subcuentas pagadas',
+      });
+    }
+
+    const discountPercent = dto.discountPercent !== undefined ? dto.discountPercent : Number(order.discountPercent || 0);
+    const discountAmount = dto.discountAmount !== undefined ? dto.discountAmount : Number(order.discountAmount || 0);
+
+    let orderSubtotal = 0;
+    for (const item of order.items) {
+      orderSubtotal += Number(item.quantity) * Number(item.unitPrice);
+    }
+    orderSubtotal = Math.round(orderSubtotal * 100) / 100;
+
+    let totalDiscount = 0;
+    if (discountPercent > 0) {
+      totalDiscount = Math.round(orderSubtotal * (discountPercent / 100) * 100) / 100;
+    } else if (discountAmount > 0) {
+      totalDiscount = Math.min(orderSubtotal, Math.round(discountAmount * 100) / 100);
+    }
+
+    const taxRate = business?.taxRate || 0;
+    const taxable = Math.max(0, orderSubtotal - totalDiscount);
+    const taxAmount = Math.round(taxable * (taxRate / 100) * 100) / 100;
+    const orderTotal = Math.round((taxable + taxAmount) * 100) / 100;
+
+    const newSplitVersion = order.splitVersion + 1;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.tableOrderItem.updateMany({
+        where: { tableOrderId: order.id },
+        data: { subAccountId: null },
+      });
+      await tx.orderSubAccount.deleteMany({
+        where: { tableOrderId: order.id },
+      });
+
+      if (dto.mode === 'ITEMS') {
+        const accountA = await tx.orderSubAccount.create({
+          data: {
+            businessId,
+            tableOrderId: order.id,
+            label: 'Cuenta A',
+            status: 'OPEN',
+            createdBy: user?.sub || 'system',
+          },
+        });
+        await tx.orderSubAccount.create({
+          data: {
+            businessId,
+            tableOrderId: order.id,
+            label: 'Cuenta B',
+            status: 'OPEN',
+            createdBy: user?.sub || 'system',
+          },
+        });
+
+        await tx.tableOrderItem.updateMany({
+          where: { tableOrderId: order.id },
+          data: { subAccountId: accountA.id },
+        });
+
+        await tx.tableOrder.update({
+          where: { id: order.id },
+          data: {
+            splitMode: 'ITEMS',
+            splitVersion: newSplitVersion,
+            discountPercent,
+            discountAmount,
+          },
+        });
+
+        await tx.orderSplitLog.create({
+          data: {
+            businessId,
+            tableOrderId: order.id,
+            action: 'SPLIT',
+            userId: user?.sub || 'system',
+            details: `División iniciada en modo ITEMS con Cuenta A y Cuenta B`,
+          },
+        });
+      } else {
+        const parts = dto.parts || 2;
+        if (parts < 2 || parts > 12) {
+          throw new BadRequestException('El número de partes debe ser entre 2 y 12');
+        }
+
+        const totalCents = Math.round(orderTotal * 100);
+        const baseCents = Math.floor(totalCents / parts);
+        const remainderCents = totalCents - baseCents * parts;
+
+        for (let i = 0; i < parts; i++) {
+          const partCents = i === parts - 1 ? baseCents + remainderCents : baseCents;
+          const fixedAmount = partCents / 100;
+          await tx.orderSubAccount.create({
+            data: {
+              businessId,
+              tableOrderId: order.id,
+              label: `Parte ${i + 1}`,
+              status: 'OPEN',
+              fixedAmount,
+              createdBy: user?.sub || 'system',
+            },
+          });
+        }
+
+        await tx.tableOrder.update({
+          where: { id: order.id },
+          data: {
+            splitMode: 'EQUAL',
+            splitVersion: newSplitVersion,
+            discountPercent,
+            discountAmount,
+          },
+        });
+
+        await tx.orderSplitLog.create({
+          data: {
+            businessId,
+            tableOrderId: order.id,
+            action: 'SPLIT',
+            userId: user?.sub || 'system',
+            details: `División iniciada en modo EQUAL en ${parts} partes (total: ${orderTotal})`,
+          },
+        });
+      }
+    });
+
+    return this.getActiveTableOrder(businessId, tableId);
+  }
+
+  /**
+   * 171a - Mueve un renglón (o cantidad) de una subcuenta a otra en modo ITEMS.
+   */
+  async moveSplitItem(
+    businessId: string,
+    tableId: string,
+    dto: MoveSplitItemDto,
+    user: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { salonProfile: true },
+    });
+    if (business?.salonProfile === 'TALLER') {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'NOT_AVAILABLE',
+        message: 'La división de cuentas no está disponible para el perfil Taller',
+      });
+    }
+
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      include: {
+        items: true,
+        subAccounts: true,
+      },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    if (order.splitMode !== 'ITEMS') {
+      throw new BadRequestException('Solo se pueden mover productos en modo ITEMS');
+    }
+
+    if (dto.splitVersion !== undefined && dto.splitVersion !== order.splitVersion) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'SPLIT_VERSION_CONFLICT',
+        message: 'La cuenta fue modificada por otro usuario. Recargue para ver los cambios.',
+      });
+    }
+
+    const destAccount = order.subAccounts.find((sa) => sa.id === dto.toSubAccountId);
+    if (!destAccount) {
+      throw new NotFoundException('Subcuenta de destino no encontrada');
+    }
+    if (destAccount.status !== 'OPEN') {
+      throw new BadRequestException('No se pueden mover productos a una subcuenta pagada');
+    }
+
+    const item = order.items.find((i) => i.id === dto.itemId);
+    if (!item) {
+      throw new NotFoundException('Ítem de pedido no encontrado');
+    }
+
+    const sourceAccount = order.subAccounts.find((sa) => sa.id === item.subAccountId);
+    if (sourceAccount && sourceAccount.status === 'PAID') {
+      throw new BadRequestException('No se pueden mover productos de una subcuenta pagada');
+    }
+
+    if (item.subAccountId === dto.toSubAccountId) {
+      return this.getActiveTableOrder(businessId, tableId);
+    }
+
+    const currentQty = Number(item.quantity);
+    const moveQty = dto.qty !== undefined ? round3(dto.qty) : currentQty;
+
+    if (moveQty <= 0 || moveQty > currentQty) {
+      throw new BadRequestException(`Cantidad inválida para mover (disponible: ${currentQty}, solicitado: ${moveQty})`);
+    }
+
+    const newSplitVersion = order.splitVersion + 1;
+
+    await this.prisma.$transaction(async (tx) => {
+      if (moveQty === currentQty) {
+        await tx.tableOrderItem.update({
+          where: { id: item.id },
+          data: { subAccountId: dto.toSubAccountId },
+        });
+      } else {
+        const remainingQty = round3(currentQty - moveQty);
+        await tx.tableOrderItem.update({
+          where: { id: item.id },
+          data: { quantity: remainingQty },
+        });
+
+        await tx.tableOrderItem.create({
+          data: {
+            tableOrderId: order.id,
+            productId: item.productId,
+            productName: item.productName,
+            unitPrice: item.unitPrice,
+            quantity: moveQty,
+            notes: item.notes,
+            waiterId: item.waiterId,
+            waiterName: item.waiterName,
+            kitchenRoundId: item.kitchenRoundId,
+            sentAt: item.sentAt,
+            subAccountId: dto.toSubAccountId,
+          },
+        });
+      }
+
+      await tx.tableOrder.update({
+        where: { id: order.id },
+        data: { splitVersion: newSplitVersion },
+      });
+
+      await tx.orderSplitLog.create({
+        data: {
+          businessId,
+          tableOrderId: order.id,
+          action: 'MOVE',
+          userId: user?.sub || 'system',
+          details: `Movido ${moveQty} de "${item.productName}" a "${destAccount.label}"`,
+        },
+      });
+    });
+
+    return this.getActiveTableOrder(businessId, tableId);
+  }
+
+  /**
+   * 171a - Agrega una subcuenta adicional a la orden dividida (máximo 12).
+   */
+  async addSubAccount(
+    businessId: string,
+    tableId: string,
+    dto: AddSubAccountDto,
+    user: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { salonProfile: true, taxRate: true },
+    });
+    if (business?.salonProfile === 'TALLER') {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'NOT_AVAILABLE',
+        message: 'La división de cuentas no está disponible para el perfil Taller',
+      });
+    }
+
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      include: {
+        items: true,
+        subAccounts: { orderBy: { createdAt: 'asc' } },
+      },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    if (!order.splitMode) {
+      throw new BadRequestException('La cuenta no ha sido dividida aún');
+    }
+
+    if (dto.splitVersion !== undefined && dto.splitVersion !== order.splitVersion) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'SPLIT_VERSION_CONFLICT',
+        message: 'La cuenta fue modificada por otro usuario. Recargue para ver los cambios.',
+      });
+    }
+
+    if (order.subAccounts.length >= 12) {
+      throw new BadRequestException('Máximo 12 subcuentas permitidas');
+    }
+
+    const nextIndex = order.subAccounts.length;
+    const label = dto.label?.trim() || (order.splitMode === 'ITEMS' ? `Cuenta ${String.fromCharCode(65 + nextIndex)}` : `Parte ${nextIndex + 1}`);
+
+    const newSplitVersion = order.splitVersion + 1;
+
+    await this.prisma.$transaction(async (tx) => {
+      if (order.splitMode === 'ITEMS') {
+        await tx.orderSubAccount.create({
+          data: {
+            businessId,
+            tableOrderId: order.id,
+            label,
+            status: 'OPEN',
+            createdBy: user?.sub || 'system',
+          },
+        });
+      } else {
+        const openAccounts = order.subAccounts.filter((sa) => sa.status === 'OPEN');
+        let remainingTotal = 0;
+        for (const sa of openAccounts) {
+          remainingTotal += Number(sa.fixedAmount || 0);
+        }
+        remainingTotal = Math.round(remainingTotal * 100) / 100;
+
+        const totalOpen = openAccounts.length + 1;
+        const totalCents = Math.round(remainingTotal * 100);
+        const baseCents = Math.floor(totalCents / totalOpen);
+        const remainderCents = totalCents - baseCents * totalOpen;
+
+        for (let i = 0; i < openAccounts.length; i++) {
+          const partCents = baseCents;
+          await tx.orderSubAccount.update({
+            where: { id: openAccounts[i].id },
+            data: { fixedAmount: partCents / 100 },
+          });
+        }
+
+        const lastPartCents = baseCents + remainderCents;
+        await tx.orderSubAccount.create({
+          data: {
+            businessId,
+            tableOrderId: order.id,
+            label,
+            status: 'OPEN',
+            fixedAmount: lastPartCents / 100,
+            createdBy: user?.sub || 'system',
+          },
+        });
+      }
+
+      await tx.tableOrder.update({
+        where: { id: order.id },
+        data: { splitVersion: newSplitVersion },
+      });
+
+      await tx.orderSplitLog.create({
+        data: {
+          businessId,
+          tableOrderId: order.id,
+          action: 'ADD_ACCOUNT',
+          userId: user?.sub || 'system',
+          details: `Agregada subcuenta "${label}"`,
+        },
+      });
+    });
+
+    return this.getActiveTableOrder(businessId, tableId);
+  }
+
+  /**
+   * 171a - Junta dos subcuentas abiertas en una sola.
+   */
+  async mergeSubAccounts(
+    businessId: string,
+    tableId: string,
+    dto: MergeSubAccountsDto,
+    user: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { salonProfile: true },
+    });
+    if (business?.salonProfile === 'TALLER') {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'NOT_AVAILABLE',
+        message: 'La división de cuentas no está disponible para el perfil Taller',
+      });
+    }
+
+    if (dto.fromSubAccountId === dto.toSubAccountId) {
+      throw new BadRequestException('Las subcuentas origen y destino deben ser distintas');
+    }
+
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      include: {
+        items: true,
+        subAccounts: true,
+      },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    if (dto.splitVersion !== undefined && dto.splitVersion !== order.splitVersion) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'SPLIT_VERSION_CONFLICT',
+        message: 'La cuenta fue modificada por otro usuario. Recargue para ver los cambios.',
+      });
+    }
+
+    const fromAccount = order.subAccounts.find((sa) => sa.id === dto.fromSubAccountId);
+    const toAccount = order.subAccounts.find((sa) => sa.id === dto.toSubAccountId);
+
+    if (!fromAccount || !toAccount) {
+      throw new NotFoundException('Una o ambas subcuentas no fueron encontradas');
+    }
+
+    if (fromAccount.status !== 'OPEN' || toAccount.status !== 'OPEN') {
+      throw new BadRequestException('Solo se pueden combinar subcuentas abiertas');
+    }
+
+    const newSplitVersion = order.splitVersion + 1;
+
+    await this.prisma.$transaction(async (tx) => {
+      if (order.splitMode === 'ITEMS') {
+        await tx.tableOrderItem.updateMany({
+          where: { tableOrderId: order.id, subAccountId: fromAccount.id },
+          data: { subAccountId: toAccount.id },
+        });
+      } else {
+        const newFixedAmount = Math.round((Number(toAccount.fixedAmount || 0) + Number(fromAccount.fixedAmount || 0)) * 100) / 100;
+        await tx.orderSubAccount.update({
+          where: { id: toAccount.id },
+          data: { fixedAmount: newFixedAmount },
+        });
+      }
+
+      await tx.orderSubAccount.delete({
+        where: { id: fromAccount.id },
+      });
+
+      await tx.tableOrder.update({
+        where: { id: order.id },
+        data: { splitVersion: newSplitVersion },
+      });
+
+      await tx.orderSplitLog.create({
+        data: {
+          businessId,
+          tableOrderId: order.id,
+          action: 'MERGE',
+          userId: user?.sub || 'system',
+          details: `Subcuenta "${fromAccount.label}" combinada en "${toAccount.label}"`,
+        },
+      });
+    });
+
+    return this.getActiveTableOrder(businessId, tableId);
+  }
+
+  /**
+   * 171a - Deshace ("rebobina") la división de la orden volviendo a una cuenta única normal.
+   * Si alguna subcuenta ya está pagada -> 409 SPLIT_HAS_PAID_ACCOUNTS.
+   */
+  async undoSplitOrder(
+    businessId: string,
+    tableId: string,
+    dto: UndoSplitDto,
+    user: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { salonProfile: true },
+    });
+    if (business?.salonProfile === 'TALLER') {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'NOT_AVAILABLE',
+        message: 'La división de cuentas no está disponible para el perfil Taller',
+      });
+    }
+
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      include: {
+        items: true,
+        subAccounts: true,
+      },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    if (dto.splitVersion !== undefined && dto.splitVersion !== order.splitVersion) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'SPLIT_VERSION_CONFLICT',
+        message: 'La cuenta fue modificada por otro usuario. Recargue para ver los cambios.',
+      });
+    }
+
+    const paidAccounts = order.subAccounts.filter((sa) => sa.status === 'PAID');
+    if (paidAccounts.length > 0) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'SPLIT_HAS_PAID_ACCOUNTS',
+        message: 'No se puede deshacer la división porque hay subcuentas pagadas',
+        paidAccounts: paidAccounts.map((sa) => ({
+          id: sa.id,
+          label: sa.label,
+          saleId: sa.saleId,
+        })),
+      });
+    }
+
+    const newSplitVersion = order.splitVersion + 1;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.tableOrderItem.updateMany({
+        where: { tableOrderId: order.id },
+        data: { subAccountId: null },
+      });
+
+      await tx.orderSubAccount.deleteMany({
+        where: { tableOrderId: order.id },
+      });
+
+      await tx.tableOrder.update({
+        where: { id: order.id },
+        data: {
+          splitMode: null,
+          splitVersion: newSplitVersion,
+        },
+      });
+
+      await tx.orderSplitLog.create({
+        data: {
+          businessId,
+          tableOrderId: order.id,
+          action: 'UNDO',
+          userId: user?.sub || 'system',
+          details: 'División deshecha. La orden vuelve a ser cuenta única normal.',
+        },
+      });
+    });
+
+    return this.getActiveTableOrder(businessId, tableId);
+  }
+
+  /**
+   * 171a - Establece el descuento a nivel de orden.
+   */
+  async setOrderDiscount(
+    businessId: string,
+    tableId: string,
+    dto: SetOrderDiscountDto,
+    user: JwtPayload,
+  ) {
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    const discountPercent = dto.discountPercent !== undefined ? dto.discountPercent : 0;
+    const discountAmount = dto.discountAmount !== undefined ? dto.discountAmount : 0;
+
+    await this.prisma.tableOrder.update({
+      where: { id: order.id },
+      data: {
+        discountPercent,
+        discountAmount,
+        splitVersion: { increment: 1 },
+      },
+    });
+
+    return this.getActiveTableOrder(businessId, tableId);
   }
 }
 

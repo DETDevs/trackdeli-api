@@ -2244,6 +2244,7 @@ WHERE a."customerId" = c."id"
       await this.ensureWebBillingColumns();
       await this.ensureWebAdminColumns();
       await this.ensureKitchenModuleSchema();
+      await this.ensureSplitOrderSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -2519,6 +2520,111 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 170a - Advertencia sincronizando esquema de rondas de cocina: ${err.message}`);
+    }
+  }
+
+  /**
+   * 171a - Tablas y columnas para división de cuentas de mesas (por productos o en partes iguales),
+   * cobro por subcuenta y deshacer ("rebobinar") división:
+   * - pos_table_orders: split_version (int not null default 0), split_mode (varchar(20) null),
+   *   discount_percent (decimal(5,2) default 0), discount_amount (decimal(12,2) default 0)
+   * - order_sub_accounts: id, business_id, table_order_id, label, status, sale_id, fixed_amount, created_by, created_at
+   * - pos_table_order_items: sub_account_id (fk order_sub_accounts)
+   * - order_split_log: id, business_id, table_order_id, action, user_id, details, created_at
+   * DDL idempotente con advisory lock 1710100.
+   */
+  private async ensureSplitOrderSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1710100)`);
+
+          // 1. Columnas en pos_table_orders
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "split_version" INTEGER NOT NULL DEFAULT 0`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "split_mode" VARCHAR(20)`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "discount_percent" DECIMAL(5, 2) DEFAULT 0`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_table_orders" ADD COLUMN IF NOT EXISTS "discount_amount" DECIMAL(12, 2) DEFAULT 0`,
+          );
+
+          // 2. Tabla order_sub_accounts
+          await tx.$executeRawUnsafe(
+            `CREATE TABLE IF NOT EXISTS "order_sub_accounts" (
+              "id" TEXT NOT NULL,
+              "business_id" TEXT NOT NULL,
+              "table_order_id" TEXT NOT NULL,
+              "label" VARCHAR(100) NOT NULL,
+              "status" VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+              "sale_id" TEXT,
+              "fixed_amount" DECIMAL(12, 2),
+              "created_by" VARCHAR(100) NOT NULL,
+              "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "order_sub_accounts_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "order_sub_accounts_business_id_fkey" FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "order_sub_accounts_table_order_id_fkey" FOREIGN KEY ("table_order_id") REFERENCES "pos_table_orders"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "order_sub_accounts_sale_id_fkey" FOREIGN KEY ("sale_id") REFERENCES "pos_sales"("id") ON DELETE SET NULL ON UPDATE CASCADE
+            )`,
+          );
+
+          await tx.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "order_sub_accounts_business_id_idx" ON "order_sub_accounts"("business_id")`,
+          );
+          await tx.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "order_sub_accounts_table_order_id_idx" ON "order_sub_accounts"("table_order_id")`,
+          );
+
+          // 3. Columna sub_account_id en pos_table_order_items
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_table_order_items" ADD COLUMN IF NOT EXISTS "sub_account_id" TEXT`,
+          );
+          await tx.$executeRawUnsafe(
+            `DO $$ BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_table_order_items_sub_account_id_fkey') THEN
+                ALTER TABLE "pos_table_order_items" ADD CONSTRAINT "pos_table_order_items_sub_account_id_fkey" FOREIGN KEY ("sub_account_id") REFERENCES "order_sub_accounts"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+              END IF;
+            END $$;`,
+          );
+          await tx.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "pos_table_order_items_sub_account_id_idx" ON "pos_table_order_items"("sub_account_id")`,
+          );
+
+          // 4. Tabla order_split_log
+          await tx.$executeRawUnsafe(
+            `CREATE TABLE IF NOT EXISTS "order_split_log" (
+              "id" TEXT NOT NULL,
+              "business_id" TEXT NOT NULL,
+              "table_order_id" TEXT NOT NULL,
+              "action" VARCHAR(50) NOT NULL,
+              "user_id" VARCHAR(100) NOT NULL,
+              "details" TEXT,
+              "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "order_split_log_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "order_split_log_business_id_fkey" FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "order_split_log_table_order_id_fkey" FOREIGN KEY ("table_order_id") REFERENCES "pos_table_orders"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            )`,
+          );
+
+          await tx.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "order_split_log_business_id_idx" ON "order_split_log"("business_id")`,
+          );
+          await tx.$executeRawUnsafe(
+            `CREATE INDEX IF NOT EXISTS "order_split_log_table_order_id_idx" ON "order_split_log"("table_order_id")`,
+          );
+
+          this.logger.log(
+            `[PrismaService] ✓ 171a - Esquema de división de cuentas sincronizado (pos_table_orders, order_sub_accounts, pos_table_order_items, order_split_log).`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 171a - Advertencia sincronizando esquema de división de cuentas: ${err.message}`);
     }
   }
 
