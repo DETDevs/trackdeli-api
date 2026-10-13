@@ -28,6 +28,7 @@ import {
   computeBusinessMembershipBilling,
   createManaguaDate,
   getManaguaDateParts,
+  parseManaguaDate,
   toManaguaDateString,
 } from './utils/membership-billing.util';
 
@@ -863,6 +864,11 @@ export class SuperAdminService {
           },
         });
 
+        await tx.business.update({
+          where: { id: business.id },
+          data: { billingAnchorDay: anchorDay },
+        });
+
         this.logger.log(
           `[createBusiness] Membresía inicial creada id=${membership.id}, monto=$${totalAmount}, productos=${membershipPaymentProducts.length}`,
         );
@@ -1624,7 +1630,9 @@ export class SuperAdminService {
     const anchor =
       anchorDay ??
       membership.business?.billingAnchorDay ??
-      (membership.startDate
+      (membership.paidAt
+        ? getManaguaDateParts(new Date(membership.paidAt)).day
+        : membership.startDate
         ? getManaguaDateParts(new Date(membership.startDate)).day
         : 1);
     const startDate = membership.startDate
@@ -1663,11 +1671,10 @@ export class SuperAdminService {
         where: { businessId: dto.businessId },
         orderBy: { startDate: 'asc' },
       });
-      anchorDay = oldest
-        ? getManaguaDateParts(oldest.startDate).day
-        : getManaguaDateParts(
-            dto.paidAt ? new Date(dto.paidAt) : (dto.startDate ? new Date(dto.startDate) : new Date()),
-          ).day;
+      const anchorSource = oldest
+        ? (oldest.paidAt ?? oldest.startDate)
+        : (parseManaguaDate(dto.paidAt) || parseManaguaDate(dto.startDate) || new Date());
+      anchorDay = getManaguaDateParts(anchorSource).day;
     }
 
     // Regla 2: Un pago tardío NO mueve el ancla. Si paga el 12 de noviembre, el nuevo período sigue siendo 10 nov -> 10 dic.
@@ -1684,9 +1691,10 @@ export class SuperAdminService {
       newStartDate = prevDue;
       newEndDate = calculateDueDate(newStartDate, anchorDay);
     } else {
-      const paidDate = dto.paidAt
-        ? new Date(dto.paidAt)
-        : (dto.startDate ? new Date(dto.startDate) : new Date());
+      const paidDate =
+        parseManaguaDate(dto.paidAt) ||
+        parseManaguaDate(dto.startDate) ||
+        new Date();
       const pParts = getManaguaDateParts(paidDate);
       newStartDate = createManaguaDate(pParts.year, pParts.month, pParts.day, 0, 0, 0, 0);
       newEndDate = calculateDueDate(newStartDate, anchorDay);
@@ -1739,7 +1747,7 @@ export class SuperAdminService {
           amount: dto.amount,
           currency: dto.currency || 'USD',
           paymentMethod: dto.paymentMethod || 'TRANSFERENCIA',
-          paidAt: dto.paidAt ? new Date(dto.paidAt) : new Date(),
+          paidAt: parseManaguaDate(dto.paidAt) || new Date(),
           notes: dto.notes,
           status: dto.status || MembershipStatus.ACTIVE,
           createdBy,

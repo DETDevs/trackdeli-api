@@ -73,6 +73,26 @@ export function toManaguaDateString(date: Date): string {
 }
 
 /**
+ * Parsea de manera segura una fecha dada como string o Date.
+ * Si es un string en formato 'YYYY-MM-DD', se interpreta como medianoche en America/Managua (-06:00)
+ * para evitar el desplazamiento de -1 día ocasionado por el parseo UTC de JavaScript.
+ */
+export function parseManaguaDate(input: string | Date | null | undefined): Date | null {
+  if (!input) return null;
+  if (input instanceof Date) return isNaN(input.getTime()) ? null : input;
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      const [y, m, d] = trimmed.split('-').map(Number);
+      return createManaguaDate(y, m, d, 0, 0, 0, 0);
+    }
+    const d = new Date(trimmed);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+/**
  * Crea una fecha con hora exacta en America/Managua (offset -06:00).
  */
 export function createManaguaDate(
@@ -192,6 +212,7 @@ export function computeBusinessMembershipBilling(
     startDate: Date;
     endDate: Date;
     status: string;
+    paidAt?: Date | null;
     createdAt?: Date;
   }>,
   now: Date = new Date(),
@@ -225,9 +246,12 @@ export function computeBusinessMembershipBilling(
     (a, b) => a.startDate.getTime() - b.startDate.getTime(),
   )[0];
 
+  // Regla 4: El ancla es el día del pago registrado (paidAt) en America/Managua.
+  // Si no hay paidAt, se recurre a startDate o a createdAt del negocio.
+  const anchorSource = oldest.paidAt ?? oldest.startDate ?? business.createdAt;
   const anchorDay =
     business.billingAnchorDay ??
-    getManaguaDateParts(oldest.startDate).day;
+    getManaguaDateParts(anchorSource).day;
 
   // El período actual inicia en la fecha de inicio del último pago registrado
   const periodStart = latest.startDate;

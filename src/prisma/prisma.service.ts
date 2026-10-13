@@ -8,10 +8,12 @@ import {
   PosVertical,
   BusinessType,
   ProductFieldDataType,
+  MembershipStatus,
   Prisma,
 } from '@prisma/client';
 import { slugify } from '../common/utils/slug.util';
 import { traceContext } from '../common/trace-context';
+import { calculateDueDate } from '../modules/superadmin/utils/membership-billing.util';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
@@ -2631,10 +2633,13 @@ WHERE a."customerId" = c."id"
   }
 
   /**
-   * 175a - Membresía con día de cobro fijo (ancla) y gracia de 3 días:
+   * 175a / 175c / 175d - Membresía con día de cobro fijo (ancla) y gracia de 3 días:
    * - businesses: billing_anchor_day (integer null)
-   * Backfill: Si billing_anchor_day es NULL, deriva del día en America/Managua
-   * del primer pago de membresía o de la creación del negocio.
+   * Reglas de seguridad:
+   * 1. billing_anchor_day: llenar únicamente donde es NULL (nunca sobreescribir valores existentes).
+   * 2. endDate: corrección única de la membresía mensual vigente (la última activa por negocio),
+   *    controlada por el marcador de migración '_system_migrations' para no volver a correr ni pisar
+   *    ajustes manuales posteriores. No toca membresías anuales, canceladas ni historial cerrado.
    */
   private async ensureMembershipBillingSchema(): Promise<void> {
     try {
@@ -2646,25 +2651,101 @@ WHERE a."customerId" = c."id"
             `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "billing_anchor_day" INTEGER`,
           );
 
+          // 175d-api: Llenar ancla únicamente donde es NULL (nunca sobreescribir un valor existente).
+          // Deriva el ancla en America/Managua convirtiendo correctamente desde UTC:
+          // ((timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua')
+          // El pago registrado (paidAt) tiene prioridad sobre startDate y createdAt.
           await tx.$executeRawUnsafe(`
             UPDATE "businesses" b
             SET "billing_anchor_day" = EXTRACT(DAY FROM (
-              SELECT COALESCE(
-                (SELECT m."startDate" FROM "memberships" m WHERE m."businessId" = b.id ORDER BY m."startDate" ASC LIMIT 1),
-                b."createdAt"
-              ) AT TIME ZONE 'America/Managua'
+              ((
+                COALESCE(
+                  (SELECT m."paidAt" FROM "memberships" m WHERE m."businessId" = b.id AND m."paidAt" IS NOT NULL ORDER BY m."startDate" ASC LIMIT 1),
+                  (SELECT m."startDate" FROM "memberships" m WHERE m."businessId" = b.id ORDER BY m."startDate" ASC LIMIT 1),
+                  b."createdAt"
+                ) AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua'
+              )
             ))::INTEGER
             WHERE b."billing_anchor_day" IS NULL
           `);
 
+          // 175d-api: Marcador de migración de control para corrección única de endDate
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "_system_migrations" (
+              "id" VARCHAR(100) PRIMARY KEY,
+              "executed_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+          `);
+
+          const migrationRun: any[] = await tx.$queryRawUnsafe(
+            `SELECT 1 FROM "_system_migrations" WHERE "id" = '175d_fix_membership_due_dates'`,
+          );
+
+          if (migrationRun.length === 0) {
+            // Corregir solo la membresía mensual vigente (la última activa por negocio)
+            // No tocar membresías anuales, canceladas ni historial cerrado
+            const businesses = await tx.business.findMany({
+              where: {
+                billingAnchorDay: { not: null },
+                memberships: { some: { status: MembershipStatus.ACTIVE } },
+              },
+              select: {
+                id: true,
+                billingAnchorDay: true,
+              },
+            });
+
+            let correctedCount = 0;
+            for (const b of businesses) {
+              if (!b.billingAnchorDay) continue;
+
+              // Obtener únicamente la última membresía activa (vigente)
+              const latestMembership = await tx.membership.findFirst({
+                where: {
+                  businessId: b.id,
+                  status: MembershipStatus.ACTIVE,
+                },
+                orderBy: { startDate: 'desc' },
+              });
+
+              if (!latestMembership) continue;
+
+              const durationDays =
+                (latestMembership.endDate.getTime() - latestMembership.startDate.getTime()) /
+                (1000 * 60 * 60 * 24);
+
+              // Solo membresías mensuales (~1 mes, descartando anuales de ~365 días o ciclos especiales)
+              if (durationDays >= 25 && durationDays <= 35) {
+                const expected = calculateDueDate(latestMembership.startDate, b.billingAnchorDay);
+                if (latestMembership.endDate.getTime() !== expected.getTime()) {
+                  await tx.membership.update({
+                    where: { id: latestMembership.id },
+                    data: { endDate: expected },
+                  });
+                  correctedCount++;
+                }
+              }
+            }
+
+            await tx.$executeRawUnsafe(`
+              INSERT INTO "_system_migrations" ("id")
+              VALUES ('175d_fix_membership_due_dates')
+              ON CONFLICT DO NOTHING
+            `);
+
+            this.logger.log(
+              `[PrismaService] ✓ 175d - Corrección de membresías ejecutada: ${correctedCount} membresía(s) vigente(s) actualizada(s).`,
+            );
+          }
+
           this.logger.log(
-            `[PrismaService] ✓ 175a - Esquema de membresías con ancla y gracia sincronizado (businesses.billing_anchor_day).`,
+            `[PrismaService] ✓ 175d - Esquema de membresías con ancla y gracia sincronizado.`,
           );
         },
         { timeout: 60000 },
       );
     } catch (err: any) {
-      this.logger.warn(`[PrismaService] ⚠ 175a - Advertencia sincronizando esquema de membresías: ${err.message}`);
+      this.logger.warn(`[PrismaService] ⚠ 175d - Advertencia sincronizando esquema de membresías: ${err.message}`);
     }
   }
 

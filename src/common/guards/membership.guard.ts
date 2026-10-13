@@ -102,7 +102,10 @@ export class MembershipGuard implements CanActivate {
         for (const m of memberships) {
           if (m.status === MembershipStatus.CANCELLED) continue;
           const anchor =
-            m.business.billingAnchorDay ?? getManaguaDateParts(m.startDate).day;
+            m.business.billingAnchorDay ??
+            (m.paidAt
+              ? getManaguaDateParts(m.paidAt).day
+              : getManaguaDateParts(m.startDate).day);
           const dueDate = calculateDueDate(m.startDate, anchor);
           const graceEndsAt = calculateGraceEndsAt(dueDate);
 
