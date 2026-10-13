@@ -2677,29 +2677,60 @@ WHERE a."customerId" = c."id"
             )
           `);
 
-          const migrationRun: any[] = await tx.$queryRawUnsafe(
-            `SELECT 1 FROM "_system_migrations" WHERE "id" = '175d_fix_membership_due_dates'`,
+          // 175e-api: Migración única para corregir anclas mal calculadas en producción
+          const migration175eRun: any[] = await tx.$queryRawUnsafe(
+            `SELECT 1 FROM "_system_migrations" WHERE "id" = '175e_recompute_billing_anchors'`,
           );
 
-          if (migrationRun.length === 0) {
-            // Corregir solo la membresía mensual vigente (la última activa por negocio)
-            // No tocar membresías anuales, canceladas ni historial cerrado
-            const businesses = await tx.business.findMany({
+          if (migration175eRun.length === 0) {
+            // 2.a Para todos los negocios con membresías: recalcular billing_anchor_day con la derivación UTC -> Managua
+            // y actualizar solo donde el valor guardado difiere del correcto.
+            const updatedBusinesses: any[] = await tx.$queryRawUnsafe(`
+              UPDATE "businesses" b
+              SET "billing_anchor_day" = EXTRACT(DAY FROM (
+                ((
+                  COALESCE(
+                    (SELECT m."paidAt" FROM "memberships" m WHERE m."businessId" = b.id AND m."paidAt" IS NOT NULL ORDER BY m."startDate" ASC LIMIT 1),
+                    (SELECT m."startDate" FROM "memberships" m WHERE m."businessId" = b.id ORDER BY m."startDate" ASC LIMIT 1),
+                    b."createdAt"
+                  ) AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua'
+                )
+              ))::INTEGER
+              WHERE EXISTS (SELECT 1 FROM "memberships" m WHERE m."businessId" = b.id)
+                AND (
+                  b."billing_anchor_day" IS NULL
+                  OR b."billing_anchor_day" != EXTRACT(DAY FROM (
+                    ((
+                      COALESCE(
+                        (SELECT m."paidAt" FROM "memberships" m WHERE m."businessId" = b.id AND m."paidAt" IS NOT NULL ORDER BY m."startDate" ASC LIMIT 1),
+                        (SELECT m."startDate" FROM "memberships" m WHERE m."businessId" = b.id ORDER BY m."startDate" ASC LIMIT 1),
+                        b."createdAt"
+                      ) AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua'
+                    )
+                  ))::INTEGER
+                )
+              RETURNING b.id, b.name, b."billing_anchor_day";
+            `);
+
+            // 2.b Para cada negocio: recalcular endDate de la última membresía ACTIVE mensual
+            // con duración entre 25 y 35 días, usando calculateDueDate(startDate, billing_anchor_day), solo donde difiere.
+            const businessesWithActiveMem = await tx.business.findMany({
               where: {
                 billingAnchorDay: { not: null },
                 memberships: { some: { status: MembershipStatus.ACTIVE } },
               },
               select: {
                 id: true,
+                name: true,
                 billingAnchorDay: true,
               },
             });
 
-            let correctedCount = 0;
-            for (const b of businesses) {
+            const updatedMembershipsList: Array<{ businessName: string; membershipId: string; newEndDate: Date }> = [];
+
+            for (const b of businessesWithActiveMem) {
               if (!b.billingAnchorDay) continue;
 
-              // Obtener únicamente la última membresía activa (vigente)
               const latestMembership = await tx.membership.findFirst({
                 where: {
                   businessId: b.id,
@@ -2714,7 +2745,7 @@ WHERE a."customerId" = c."id"
                 (latestMembership.endDate.getTime() - latestMembership.startDate.getTime()) /
                 (1000 * 60 * 60 * 24);
 
-              // Solo membresías mensuales (~1 mes, descartando anuales de ~365 días o ciclos especiales)
+              // Solo membresías mensuales (~1 mes). No toca anuales, canceladas ni historial.
               if (durationDays >= 25 && durationDays <= 35) {
                 const expected = calculateDueDate(latestMembership.startDate, b.billingAnchorDay);
                 if (latestMembership.endDate.getTime() !== expected.getTime()) {
@@ -2722,24 +2753,35 @@ WHERE a."customerId" = c."id"
                     where: { id: latestMembership.id },
                     data: { endDate: expected },
                   });
-                  correctedCount++;
+                  updatedMembershipsList.push({
+                    businessName: b.name,
+                    membershipId: latestMembership.id,
+                    newEndDate: expected,
+                  });
                 }
               }
             }
 
+            // 2.d Registrar el marcador
             await tx.$executeRawUnsafe(`
               INSERT INTO "_system_migrations" ("id")
-              VALUES ('175d_fix_membership_due_dates')
+              VALUES ('175e_recompute_billing_anchors')
               ON CONFLICT DO NOTHING
             `);
 
             this.logger.log(
-              `[PrismaService] ✓ 175d - Corrección de membresías ejecutada: ${correctedCount} membresía(s) vigente(s) actualizada(s).`,
+              `[PrismaService] ✓ 175e - Migración única ejecutada: ${updatedBusinesses.length} negocio(s) y ${updatedMembershipsList.length} membresía(s) corregidos.`,
             );
+            if (updatedBusinesses.length > 0) {
+              const bizSummary = updatedBusinesses
+                .map((b: any) => `${b.name} (ancla -> ${b.billing_anchor_day})`)
+                .join(', ');
+              this.logger.log(`[PrismaService] 175e - Negocios con ancla corregida: ${bizSummary}`);
+            }
           }
 
           this.logger.log(
-            `[PrismaService] ✓ 175d - Esquema de membresías con ancla y gracia sincronizado.`,
+            `[PrismaService] ✓ 175e - Esquema de membresías con ancla y gracia sincronizado.`,
           );
         },
         { timeout: 60000 },
