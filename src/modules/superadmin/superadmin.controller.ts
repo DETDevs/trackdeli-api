@@ -37,6 +37,8 @@ import { DEFAULT_PLATFORM } from '../client-version/client-version.constants';
 import { UpdateDeviceDto } from '../pos/devices/dto/update-device.dto';
 import { UpdatePosSubscriptionDto } from '../pos/devices/dto/update-pos-subscription.dto';
 
+import { BusinessesQueryDto } from './dto/businesses-query.dto';
+
 @Controller('superadmin')
 @UseGuards(SuperAdminGuard)
 export class SuperAdminController {
@@ -53,9 +55,14 @@ export class SuperAdminController {
     return this.latencyDiagnosticsService.getDiagnostics();
   }
 
+  @Get('summary')
+  async getSummary() {
+    return this.superAdminService.getSummary();
+  }
+
   @Get('businesses')
-  async getBusinesses() {
-    return this.superAdminService.getBusinesses();
+  async getBusinesses(@Query() query: BusinessesQueryDto) {
+    return this.superAdminService.getBusinesses(query);
   }
 
   @Get('businesses/:id/memberships')

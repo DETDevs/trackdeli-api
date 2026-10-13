@@ -30,7 +30,10 @@ import {
   getManaguaDateParts,
   parseManaguaDate,
   toManaguaDateString,
+  isOperationallyActive,
+  DerivedMembershipStatus,
 } from './utils/membership-billing.util';
+import { BusinessesQueryDto } from './dto/businesses-query.dto';
 
 function generateBusinessCredentials(businessName: string): {
   email: string;
@@ -63,7 +66,7 @@ const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.INCIDENCIA,
 ];
 
-import { UserQuotaService } from '../users/user-quota.service';
+import { UserQuotaService, BASE_USER_LIMIT } from '../users/user-quota.service';
 
 @Injectable()
 export class SuperAdminService {
@@ -76,58 +79,96 @@ export class SuperAdminService {
     private readonly auditService: AuditService,
   ) { }
 
-  async getBusinesses(simulatedDate?: Date) {
-    this.logger.log('[getBusinesses] Obteniendo lista de negocios con métricas');
-
-    const now = simulatedDate ? new Date(simulatedDate) : new Date();
+  private async fetchEnrichedBusinesses(now: Date = new Date()) {
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const businesses = await this.prisma.business.findMany({
-      include: {
-        _count: {
-          select: {
-            orders: true,
-            users: {
-              where: { role: UserRole.ENCARGADO },
+    const [businesses, deviceStats, userStats, saleStats] = await Promise.all([
+      this.prisma.business.findMany({
+        include: {
+          _count: {
+            select: {
+              orders: true,
+              users: {
+                where: { role: UserRole.ENCARGADO },
+              },
             },
           },
-        },
-        orders: {
-          select: {
-            id: true,
-            status: true,
-            createdAt: true,
+          orders: {
+            select: {
+              id: true,
+              status: true,
+              createdAt: true,
+            },
+          },
+          memberships: {
+            orderBy: [{ endDate: 'desc' }, { startDate: 'desc' }],
+          },
+          productSubscriptions: {
+            select: {
+              id: true,
+              productType: true,
+              status: true,
+              posVertical: true,
+              posMonthlyFee: true,
+              maxDevices: true,
+              carteraMonthlyFee: true,
+              citasMonthlyFee: true,
+              deliveryMonthlyFee: true,
+              autoRenew: true,
+              renewalCanceledAt: true,
+              backofficeTier: true,
+              trialHours: true,
+              trialStartedAt: true,
+              trialEndsAt: true,
+              webBillingEnabled: true,
+              webBillingMonthlyUsd: true,
+            },
+          },
+          industry: {
+            select: { id: true, code: true, name: true },
           },
         },
-        memberships: {
-          orderBy: { endDate: 'desc' },
-        },
-        productSubscriptions: {
-          select: {
-            id: true,
-            productType: true,
-            status: true,
-            posVertical: true,
-            posMonthlyFee: true,
-            maxDevices: true,
-            carteraMonthlyFee: true,
-            citasMonthlyFee: true,
-            deliveryMonthlyFee: true,
-            autoRenew: true,
-            renewalCanceledAt: true,
-            backofficeTier: true,
-            trialHours: true,
-            trialStartedAt: true,
-            trialEndsAt: true,
-          },
-        },
-        industry: {
-          select: { id: true, code: true, name: true },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.$queryRawUnsafe<Array<{
+        businessId: string;
+        lastSeenAt: Date | null;
+        activeDesktopDevices: number;
+        activeDevices: number;
+      }>>(`
+        SELECT "businessId",
+               MAX("lastSeenAt") as "lastSeenAt",
+               COUNT(CASE WHEN "status" = 'ACTIVE' AND "category" = 'DESKTOP' THEN 1 END)::INTEGER as "activeDesktopDevices",
+               COUNT(CASE WHEN "status" = 'ACTIVE' THEN 1 END)::INTEGER as "activeDevices"
+        FROM "pos_devices"
+        GROUP BY "businessId"
+      `),
+      this.prisma.$queryRawUnsafe<Array<{
+        businessId: string;
+        activeUsers: number;
+      }>>(`
+        SELECT "businessId",
+               COUNT(*)::INTEGER as "activeUsers"
+        FROM "users"
+        WHERE "isActive" = true
+        GROUP BY "businessId"
+      `),
+      this.prisma.$queryRawUnsafe<Array<{
+        businessId: string;
+        lastSaleAt: Date | null;
+      }>>(`
+        SELECT "businessId",
+               MAX(COALESCE("occurredAt", "createdAt")) as "lastSaleAt"
+        FROM "pos_sales"
+        WHERE "status" = 'COMPLETED'
+        GROUP BY "businessId"
+      `),
+    ]);
+
+    const deviceMap = new Map<string, any>(deviceStats.map((d) => [d.businessId, d]));
+    const userMap = new Map<string, number>(userStats.map((u) => [u.businessId, u.activeUsers]));
+    const saleMap = new Map<string, Date | null>(saleStats.map((s) => [s.businessId, s.lastSaleAt]));
 
     return businesses.map((b) => {
       const ordersToday = b.orders.filter((o) => o.createdAt >= startOfDay).length;
@@ -143,9 +184,103 @@ export class SuperAdminService {
       );
       const hasDeliveryContracted = deliverySub?.status === 'ACTIVE';
 
+      const posSub = (b.productSubscriptions as any[])?.find(
+        (s: any) => s.productType === 'POS',
+      );
+
+      const isTrial = Boolean(
+        posSub &&
+          (
+            (posSub.trialHours !== null && posSub.trialStartedAt === null) ||
+            (posSub.trialEndsAt !== null && new Date(posSub.trialEndsAt) > now)
+          ) &&
+          (b.memberships.length === 0 || !b.memberships.some((m) => m.paidAt && m.status === MembershipStatus.ACTIVE)),
+      );
+
+      let monthlyAmount = 0;
+      const activeMem = b.memberships.find(
+        (m) => m.status === MembershipStatus.ACTIVE && Number(m.amount) > 0,
+      );
+      if (activeMem) {
+        const durationDays =
+          (activeMem.endDate.getTime() - activeMem.startDate.getTime()) /
+          (1000 * 60 * 60 * 24);
+        if (durationDays > 300) {
+          monthlyAmount = Math.round((Number(activeMem.amount) / 12) * 100) / 100;
+        } else {
+          monthlyAmount = Number(activeMem.amount);
+        }
+      } else {
+        for (const sub of b.productSubscriptions as any[]) {
+          if (sub.status === 'ACTIVE') {
+            if (sub.productType === 'POS') {
+              monthlyAmount += Number(sub.posMonthlyFee || 0);
+              if (sub.webBillingEnabled && sub.webBillingMonthlyUsd) {
+                monthlyAmount += Number(sub.webBillingMonthlyUsd);
+              }
+            } else if (sub.productType === 'DELIVERY') {
+              monthlyAmount += Number(sub.deliveryMonthlyFee || 0);
+            } else if (sub.productType === 'CARTERA_COBRO') {
+              monthlyAmount += Number(sub.carteraMonthlyFee || 0);
+            } else if (sub.productType === 'CITAS') {
+              monthlyAmount += Number(sub.citasMonthlyFee || 0);
+            }
+          }
+        }
+      }
+      monthlyAmount = Math.round(monthlyAmount * 100) / 100;
+
+      const products = (b.productSubscriptions as any[]).map((s) => {
+        let fee = 0;
+        if (s.productType === 'POS') {
+          fee = Number(s.posMonthlyFee || 0) + (s.webBillingEnabled && s.webBillingMonthlyUsd ? Number(s.webBillingMonthlyUsd) : 0);
+        } else if (s.productType === 'DELIVERY') {
+          fee = Number(s.deliveryMonthlyFee || 0);
+        } else if (s.productType === 'CARTERA_COBRO') {
+          fee = Number(s.carteraMonthlyFee || 0);
+        } else if (s.productType === 'CITAS') {
+          fee = Number(s.citasMonthlyFee || 0);
+        }
+
+        const name =
+          s.productType === 'DELIVERY'
+            ? 'Delivery'
+            : s.productType === 'POS'
+            ? 'POS'
+            : s.productType === 'CARTERA_COBRO'
+            ? 'Cartera de Cobro'
+            : s.productType === 'CITAS'
+            ? 'Citas'
+            : s.productType;
+
+        return {
+          id: s.id,
+          type: s.productType,
+          status: s.status,
+          name,
+          fee,
+        };
+      });
+
+      const dev = deviceMap.get(b.id);
+      const devices = {
+        active: dev?.activeDesktopDevices || dev?.activeDevices || 0,
+        allowed: posSub?.maxDevices ?? null,
+      };
+
+      const users = {
+        active: userMap.get(b.id) || 0,
+        limit: BASE_USER_LIMIT + (b.extraUserSlots || 0),
+      };
+
+      const lastSeenAt = dev?.lastSeenAt ? new Date(dev.lastSeenAt).toISOString() : null;
+      const rawLastSale = saleMap.get(b.id);
+      const lastSaleAt = rawLastSale ? new Date(rawLastSale).toISOString() : null;
+
       return {
         id: b.id,
         name: b.name,
+        slug: b.slug,
         type: b.type,
         logoUrl: b.logoUrl,
         latitude: b.latitude,
@@ -174,10 +309,10 @@ export class SuperAdminService {
         tracksBatches: b.tracksBatches,
         posVertical: b.posVertical,
         salonProfile: b.salonProfile,
-        maxDevices: ((b.productSubscriptions as any[])?.find((s: any) => s.productType === 'POS'))?.maxDevices ?? null,
-        trialHours: ((b.productSubscriptions as any[])?.find((s: any) => s.productType === 'POS'))?.trialHours ?? null,
-        trialStartedAt: ((b.productSubscriptions as any[])?.find((s: any) => s.productType === 'POS'))?.trialStartedAt ?? null,
-        trialEndsAt: ((b.productSubscriptions as any[])?.find((s: any) => s.productType === 'POS'))?.trialEndsAt ?? null,
+        maxDevices: posSub?.maxDevices ?? null,
+        trialHours: posSub?.trialHours ?? null,
+        trialStartedAt: posSub?.trialStartedAt ?? null,
+        trialEndsAt: posSub?.trialEndsAt ?? null,
         createdAt: b.createdAt,
         _count: {
           orders: b._count.orders,
@@ -207,8 +342,386 @@ export class SuperAdminService {
         hasTrackDeli: hasDeliveryContracted,
         hasCarteraCobro: b.hasCarteraCobro,
         hasCitas: b.hasCitas,
+
+        // Nuevos campos 178a
+        monthly_amount: monthlyAmount,
+        is_trial: isTrial,
+        products,
+        devices,
+        users,
+        last_seen_at: lastSeenAt,
+        last_sale_at: lastSaleAt,
       };
     });
+  }
+
+  async getSummary() {
+    this.logger.log('[getSummary] Calculando resumen de cobros y negocios');
+
+    const now = new Date();
+    const nowParts = getManaguaDateParts(now);
+    const startOfMonthManagua = createManaguaDate(
+      nowParts.year,
+      nowParts.month,
+      1,
+      0,
+      0,
+      0,
+      0,
+    );
+
+    const enriched = await this.fetchEnrichedBusinesses(now);
+
+    // MRR: suma de tarifa mensual de negocios activos no en prueba cuyo estado no sea VENCIDO ni NOT_CONTRACTED
+    let mrr = 0;
+    for (const b of enriched) {
+      if (
+        b.isActive &&
+        !b.is_trial &&
+        b.membership_status !== 'VENCIDO' &&
+        b.membership_status !== 'NOT_CONTRACTED'
+      ) {
+        mrr += b.monthly_amount;
+      }
+    }
+    mrr = Math.round(mrr * 100) / 100;
+
+    // due_next_7_days: membresías que vencen en los próximos 7 días (incluye hoy: days_until_due >= 0 && <= 7)
+    let dueNext7DaysCount = 0;
+    let dueNext7DaysAmount = 0;
+    for (const b of enriched) {
+      if (
+        b.isActive &&
+        !b.is_trial &&
+        b.days_until_due !== null &&
+        b.days_until_due >= 0 &&
+        b.days_until_due <= 7
+      ) {
+        dueNext7DaysCount++;
+        dueNext7DaysAmount += b.monthly_amount;
+      }
+    }
+    dueNext7DaysAmount = Math.round(dueNext7DaysAmount * 100) / 100;
+
+    // in_grace: cantidad y monto de negocios EN_GRACIA
+    let inGraceCount = 0;
+    let inGraceAmount = 0;
+    for (const b of enriched) {
+      if (b.isActive && b.membership_status === 'EN_GRACIA') {
+        inGraceCount++;
+        inGraceAmount += b.monthly_amount;
+      }
+    }
+    inGraceAmount = Math.round(inGraceAmount * 100) / 100;
+
+    // overdue: cantidad y monto de negocios VENCIDO
+    let overdueCount = 0;
+    let overdueAmount = 0;
+    for (const b of enriched) {
+      if (b.isActive && b.membership_status === 'VENCIDO') {
+        overdueCount++;
+        overdueAmount += b.monthly_amount;
+      }
+    }
+    overdueAmount = Math.round(overdueAmount * 100) / 100;
+
+    // active_businesses: total activos y new_this_month
+    const activeBiz = enriched.filter((b) => b.isActive);
+    const newThisMonth = activeBiz.filter((b) => b.createdAt >= startOfMonthManagua).length;
+
+    // trials: cantidad de negocios en prueba
+    const trialsCount = enriched.filter((b) => b.isActive && b.is_trial).length;
+
+    // by_type: cantidad de negocios por tipo de negocio/vertical
+    const byType: Record<string, number> = {};
+    for (const b of activeBiz) {
+      const key = b.posVertical || b.type || (b.industry as any)?.name || 'OTROS';
+      byType[key] = (byType[key] || 0) + 1;
+    }
+
+    // pending_collections: lista ordenada por urgencia (VENCIDO, EN_GRACIA, POR_VENCER, luego los demás)
+    const priorityMap: Record<string, number> = {
+      VENCIDO: 1,
+      EN_GRACIA: 2,
+      POR_VENCER: 3,
+      NOT_CONTRACTED: 4,
+      VIGENTE: 5,
+    };
+    const pendingCollections = enriched
+      .filter((b) =>
+        b.isActive &&
+        ['VENCIDO', 'EN_GRACIA', 'POR_VENCER'].includes(b.membership_status),
+      )
+      .sort((a, b) => {
+        const diff = (priorityMap[a.membership_status] || 9) - (priorityMap[b.membership_status] || 9);
+        if (diff !== 0) return diff;
+        return (a.days_until_due ?? 0) - (b.days_until_due ?? 0);
+      })
+      .map((b) => ({
+        id: b.id,
+        name: b.name,
+        status: b.membership_status,
+        due_date: b.due_date,
+        days_until_due: b.days_until_due,
+        amount: b.monthly_amount,
+      }));
+
+    // recent_payments: últimos 10 pagos registrados
+    const recentMemberships = await this.prisma.membership.findMany({
+      where: {
+        status: { not: MembershipStatus.CANCELLED },
+      },
+      orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }],
+      take: 10,
+      include: {
+        business: {
+          select: { id: true, name: true },
+        },
+      },
+    });
+
+    const recentPayments = recentMemberships.map((m) => ({
+      id: m.id,
+      business_id: m.businessId,
+      business_name: m.business?.name || 'Desconocido',
+      amount: Number(m.amount),
+      currency: m.currency,
+      payment_method: m.paymentMethod,
+      payment_proof_url: m.paymentProofUrl || null,
+      paid_at: m.paidAt ? m.paidAt.toISOString() : m.createdAt.toISOString(),
+      period: `${toManaguaDateString(m.startDate)} — ${toManaguaDateString(m.endDate)}`,
+    }));
+
+    // inactive_adoption: negocios activos sin actividad en 7 días según señal real (last_sale)
+    const inactiveAdoptionList: Array<{
+      id: string;
+      name: string;
+      signal: 'last_sale';
+      last_activity_at: string | null;
+      days_inactive: number;
+    }> = [];
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    for (const b of activeBiz) {
+      if (b.membership_status === 'VENCIDO') continue;
+      if (b.last_sale_at) {
+        const saleDate = new Date(b.last_sale_at);
+        if (saleDate < sevenDaysAgo) {
+          const daysInactive = Math.max(0, Math.floor((now.getTime() - saleDate.getTime()) / (1000 * 60 * 60 * 24)));
+          inactiveAdoptionList.push({
+            id: b.id,
+            name: b.name,
+            signal: 'last_sale',
+            last_activity_at: b.last_sale_at,
+            days_inactive: daysInactive,
+          });
+        }
+      } else {
+        const createdDaysAgo = Math.max(0, Math.floor((now.getTime() - b.createdAt.getTime()) / (1000 * 60 * 60 * 24)));
+        if (createdDaysAgo >= 7) {
+          inactiveAdoptionList.push({
+            id: b.id,
+            name: b.name,
+            signal: 'last_sale',
+            last_activity_at: null,
+            days_inactive: createdDaysAgo,
+          });
+        }
+      }
+    }
+    inactiveAdoptionList.sort((a, b) => b.days_inactive - a.days_inactive);
+
+    // delivery: opcional si existe al menos un negocio con Delivery activo
+    const deliveryBizCount = activeBiz.filter((b) =>
+      b.productSubscriptions.some(
+        (s: any) => s.productType === 'DELIVERY' && s.status === 'ACTIVE',
+      ),
+    ).length;
+
+    let deliverySummary = null;
+    if (deliveryBizCount > 0) {
+      const ridersActive = await this.prisma.user.count({
+        where: { role: UserRole.REPARTIDOR, isActive: true, isAvailable: true },
+      });
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const ordersToday = await this.prisma.order.count({
+        where: { createdAt: { gte: startOfDay } },
+      });
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const [created30, delivered30] = await Promise.all([
+        this.prisma.order.count({ where: { createdAt: { gte: thirtyDaysAgo } } }),
+        this.prisma.order.count({
+          where: { status: OrderStatus.ENTREGADO, createdAt: { gte: thirtyDaysAgo } },
+        }),
+      ]);
+      const deliveryRate30 = created30 > 0 ? Number(((delivered30 / created30) * 100).toFixed(1)) : 0;
+
+      deliverySummary = {
+        active_businesses_count: deliveryBizCount,
+        active_riders: ridersActive,
+        orders_today: ordersToday,
+        delivery_rate_30d: deliveryRate30,
+      };
+    }
+
+    return {
+      mrr,
+      due_next_7_days: {
+        count: dueNext7DaysCount,
+        amount: dueNext7DaysAmount,
+      },
+      in_grace: {
+        count: inGraceCount,
+        amount: inGraceAmount,
+      },
+      overdue: {
+        count: overdueCount,
+        amount: overdueAmount,
+      },
+      active_businesses: {
+        total: activeBiz.length,
+        new_this_month: newThisMonth,
+      },
+      trials: trialsCount,
+      by_type: byType,
+      pending_collections: pendingCollections,
+      recent_payments: recentPayments,
+      inactive_adoption: {
+        signal: 'last_sale' as const,
+        businesses: inactiveAdoptionList,
+      },
+      delivery: deliverySummary,
+    };
+  }
+
+  async getBusinesses(queryOrDate?: BusinessesQueryDto | Date) {
+    this.logger.log('[getBusinesses] Obteniendo lista de negocios con métricas');
+
+    let query: BusinessesQueryDto | undefined;
+    let simulatedDate: Date | undefined;
+    if (queryOrDate instanceof Date) {
+      simulatedDate = queryOrDate;
+    } else if (queryOrDate) {
+      query = queryOrDate;
+    }
+
+    const now = simulatedDate ? new Date(simulatedDate) : new Date();
+    const all = await this.fetchEnrichedBusinesses(now);
+
+    const counters = {
+      all: all.length,
+      activo: all.filter(
+        (b) => b.isActive && (isOperationallyActive(b.membership_status) || b.is_trial),
+      ).length,
+      por_vencer: all.filter((b) => b.isActive && b.membership_status === 'POR_VENCER').length,
+      en_gracia: all.filter((b) => b.isActive && b.membership_status === 'EN_GRACIA').length,
+      vencido: all.filter((b) => b.isActive && b.membership_status === 'VENCIDO').length,
+      prueba: all.filter((b) => b.isActive && b.is_trial).length,
+      inactivo: all.filter((b) => !b.isActive).length,
+    };
+
+    let filtered = [...all];
+
+    // Filtro por status
+    if (query?.status) {
+      const s = query.status.toLowerCase().trim();
+      if (s === 'por_vencer') {
+        filtered = filtered.filter((b) => b.isActive && b.membership_status === 'POR_VENCER');
+      } else if (s === 'en_gracia') {
+        filtered = filtered.filter((b) => b.isActive && b.membership_status === 'EN_GRACIA');
+      } else if (s === 'vencido') {
+        filtered = filtered.filter((b) => b.isActive && b.membership_status === 'VENCIDO');
+      } else if (s === 'prueba') {
+        filtered = filtered.filter((b) => b.isActive && b.is_trial);
+      } else if (s === 'inactivo') {
+        filtered = filtered.filter((b) => !b.isActive);
+      } else if (s === 'activo') {
+        filtered = filtered.filter(
+          (b) => b.isActive && (isOperationallyActive(b.membership_status) || b.is_trial),
+        );
+      }
+    }
+
+    // Filtro por búsqueda
+    if (query?.search) {
+      const q = query.search.toLowerCase().trim();
+      filtered = filtered.filter((b) => {
+        const name = (b.name || '').toLowerCase();
+        const slug = (b.slug || '').toLowerCase();
+        const phone = (b.posPhone || '').toLowerCase();
+        const address = (b.posAddress || '').toLowerCase();
+        const id = (b.id || '').toLowerCase();
+        return (
+          name.includes(q) ||
+          slug.includes(q) ||
+          phone.includes(q) ||
+          address.includes(q) ||
+          id.includes(q)
+        );
+      });
+    }
+
+    // Filtro por tipo/vertical
+    if (query?.type) {
+      const t = query.type.toLowerCase().trim();
+      filtered = filtered.filter((b) => {
+        const bType = (b.type || '').toLowerCase();
+        const bVertical = (b.posVertical || '').toLowerCase();
+        const indCode = ((b.industry as any)?.code || '').toLowerCase();
+        const indName = ((b.industry as any)?.name || '').toLowerCase();
+        return (
+          bType.includes(t) ||
+          bVertical.includes(t) ||
+          indCode.includes(t) ||
+          indName.includes(t)
+        );
+      });
+    }
+
+    // Ordenamiento (por defecto due_date asc)
+    const sortBy = query?.sortBy || 'due_date';
+    const isDesc = query?.order?.toLowerCase() === 'desc';
+
+    filtered.sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === 'due_date') {
+        if (!a.due_date && !b.due_date) cmp = 0;
+        else if (!a.due_date) cmp = 1;
+        else if (!b.due_date) cmp = -1;
+        else cmp = a.due_date.localeCompare(b.due_date);
+      } else if (sortBy === 'name') {
+        cmp = (a.name || '').localeCompare(b.name || '');
+      } else if (sortBy === 'createdAt') {
+        cmp = a.createdAt.getTime() - b.createdAt.getTime();
+      } else if (sortBy === 'monthly_amount') {
+        cmp = a.monthly_amount - b.monthly_amount;
+      } else if (sortBy === 'last_seen_at') {
+        if (!a.last_seen_at && !b.last_seen_at) cmp = 0;
+        else if (!a.last_seen_at) cmp = 1;
+        else if (!b.last_seen_at) cmp = -1;
+        else cmp = a.last_seen_at.localeCompare(b.last_seen_at);
+      } else if (sortBy === 'last_sale_at') {
+        if (!a.last_sale_at && !b.last_sale_at) cmp = 0;
+        else if (!a.last_sale_at) cmp = 1;
+        else if (!b.last_sale_at) cmp = -1;
+        else cmp = a.last_sale_at.localeCompare(b.last_sale_at);
+      }
+
+      if (cmp === 0) {
+        cmp = (a.name || '').localeCompare(b.name || '');
+      }
+
+      return isDesc ? -cmp : cmp;
+    });
+
+    if (query?.format === 'array') {
+      return filtered;
+    }
+
+    return {
+      data: filtered,
+      counters,
+    };
   }
 
   async getBusinessById(id: string) {
