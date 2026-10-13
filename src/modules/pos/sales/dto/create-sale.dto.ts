@@ -1,5 +1,5 @@
 import {
-  IsArray, IsEnum, IsNumber, IsOptional, IsString, Min, ValidateNested,
+  IsArray, IsBoolean, IsEnum, IsNumber, IsOptional, IsString, Min, ValidateNested,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { PosPaymentMethod } from "@prisma/client";
@@ -38,6 +38,12 @@ export class CreateSaleItemDto {
   @IsNumber()
   @Min(0)
   discount?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  subtotal?: number;
 }
 
 export class PaymentDto {
@@ -74,6 +80,10 @@ export class CreateSaleDto {
   @IsOptional()
   @IsString()
   cashRegisterId?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isSplitSale?: boolean;
 
   @IsArray()
   @ValidateNested({ each: true })

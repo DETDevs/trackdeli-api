@@ -11,6 +11,7 @@ export function validateProductQuantity(
   unit: string | undefined | null,
   quantity: number,
   productName?: string,
+  allowFractions = false,
 ): number {
   if (typeof quantity !== 'number' || isNaN(quantity)) {
     throw new BadRequestException({
@@ -24,7 +25,7 @@ export function validateProductQuantity(
   const rounded = round3(quantity);
   const normalizedUnit = (unit || 'UND').trim().toUpperCase();
 
-  if (normalizedUnit === 'UND') {
+  if (normalizedUnit === 'UND' && !allowFractions) {
     // La cantidad debe ser un número entero estricto
     if (!Number.isInteger(rounded) || Math.abs(rounded - Math.round(rounded)) > 1e-6) {
       throw new BadRequestException({
@@ -35,7 +36,7 @@ export function validateProductQuantity(
       });
     }
   } else {
-    // Para LT, GAL, KG, LB se aceptan hasta 3 decimales y mínimo 0.001
+    // Para LT, GAL, KG, LB (y UND en ventas divididas) se aceptan hasta 3 decimales y mínimo 0.001
     if (rounded < 0.001) {
       throw new BadRequestException({
         statusCode: 400,

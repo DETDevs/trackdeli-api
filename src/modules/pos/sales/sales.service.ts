@@ -170,7 +170,7 @@ export class SalesService {
             },
           });
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
-          const requestedQty = validateProductQuantity(product.unit, item.quantity, product.name);
+          const requestedQty = validateProductQuantity(product.unit, item.quantity, product.name, Boolean(dto.isSplitSale));
 
           // 176a: Resolver precio unitario según regla de venta por mayor
           const resolved = resolveLineUnitPrice(product, requestedQty, business);
@@ -178,7 +178,7 @@ export class SalesService {
 
           if (item.unitPrice !== undefined && item.unitPrice !== null) {
             const diff = Math.abs(item.unitPrice - resolved.unitPrice);
-            if (diff > 0.01 && !policies.priceOverrideEnabled) {
+            if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale) {
               throw new BadRequestException({
                 statusCode: 400,
                 error: 'Bad Request',
@@ -261,7 +261,9 @@ export class SalesService {
         }
 
         const itemDiscount = item.discount || 0;
-        const itemSubtotal = effectiveUnitPrice * item.quantity - itemDiscount;
+        const itemSubtotal = (dto.isSplitSale && item.subtotal !== undefined)
+          ? item.subtotal
+          : (effectiveUnitPrice * item.quantity - itemDiscount);
         subtotal += itemSubtotal;
 
         processedItems.push({

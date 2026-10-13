@@ -34,6 +34,11 @@ import { SetOrderDiscountDto } from './dto/set-order-discount.dto';
 import { getSalonLabels } from '../salon/salon-profile.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 import { WorkshopService } from '../workshop/workshop.service';
+import {
+  formatTableDisplayName,
+  sortSubAccountsDeterministically,
+  calculateEqualSplitItems,
+} from './split-equal.util';
 
 @Injectable()
 export class TablesService {
@@ -695,7 +700,7 @@ export class TablesService {
   async getActiveTableOrder(businessId: string, tableId: string) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { taxRate: true },
+      select: { taxRate: true, taxEnabled: true, taxIncluded: true },
     });
 
     const order = await this.prisma.tableOrder.findFirst({
@@ -732,7 +737,7 @@ export class TablesService {
       throw new NotFoundException('No hay un pedido abierto para esta mesa');
     }
 
-    return this.formatOrderResponse(order, business?.taxRate || 0);
+    return this.formatOrderResponse(order, business?.taxRate || 0, business);
   }
 
   async addOrderItems(businessId: string, tableId: string, dto: AddOrderItemsDto, user?: JwtPayload) {
@@ -1097,8 +1102,8 @@ export class TablesService {
           workshopVehicleId: order.workshopVehicleId || undefined,
           cashRegisterId: dto.cashRegisterId,
           notes: dto.notes
-            ? `${dto.notes} (${labels.table} ${order.table.number} - ${subAccount.label})`
-            : `${labels.table} ${order.table.number} (${subAccount.label})`,
+            ? `${dto.notes} (${formatTableDisplayName(labels.table, order.table?.number)} - ${subAccount.label})`
+            : `${formatTableDisplayName(labels.table, order.table?.number)} (${subAccount.label})`,
           reference: dto.reference || dto.paymentReference,
           payments: dto.payments,
           items: saItems.map((i) => ({
@@ -1110,25 +1115,29 @@ export class TablesService {
           })),
         };
       } else {
-        // EQUAL mode
-        const fixedAmount = Number(subAccount.fixedAmount || 0);
-        let unitPrice = fixedAmount;
-        if (business?.taxEnabled && !business.taxIncluded && taxRate > 0) {
-          unitPrice = Math.round((fixedAmount / (1 + (taxRate / 100))) * 100) / 100;
-          const calcTax = Math.round(unitPrice * (taxRate / 100) * 100) / 100;
-          const calcTot = Math.round((unitPrice + calcTax) * 100) / 100;
-          const diff = Math.round((fixedAmount - calcTot) * 100) / 100;
-          if (diff !== 0) {
-            unitPrice = Math.round((unitPrice + diff) * 100) / 100;
-          }
-        }
+        // EQUAL mode: 171e Prorrateo determinístico de productos reales
+        const splitResult = calculateEqualSplitItems(
+          order,
+          order.subAccounts,
+          subAccount.id,
+          business,
+        );
 
-        const amountPaid = dto.amountPaid !== undefined ? dto.amountPaid : fixedAmount;
+        const tableDisplay = formatTableDisplayName(labels.table, order.table?.number);
+        const partLabel = subAccount.label.includes(' de ')
+          ? subAccount.label
+          : `${subAccount.label} de ${order.subAccounts.length}`;
+        const finalNotes = dto.notes
+          ? `${dto.notes} (${tableDisplay} - ${partLabel})`
+          : `${tableDisplay} (${partLabel})`;
+
+        const amountPaid = dto.amountPaid !== undefined ? dto.amountPaid : splitResult.fixedAmount;
 
         saleDto = {
+          isSplitSale: true,
           paymentMethod: dto.paymentMethod || PosPaymentMethod.EFECTIVO,
           amountPaid,
-          discountAmount: 0,
+          discountAmount: splitResult.saDiscount,
           customerId: dto.customerId || order.customerId || undefined,
           customerName: dto.customerName || order.customerName || undefined,
           customerPhone: dto.customerPhone || order.customerPhone || undefined,
@@ -1139,20 +1148,10 @@ export class TablesService {
           vehicleInfo: order.vehicleInfo || undefined,
           workshopVehicleId: order.workshopVehicleId || undefined,
           cashRegisterId: dto.cashRegisterId,
-          notes: dto.notes
-            ? `${dto.notes} (${labels.table} ${order.table.number} - ${subAccount.label})`
-            : `${labels.table} ${order.table.number} (${subAccount.label})`,
+          notes: finalNotes,
           reference: dto.reference || dto.paymentReference,
           payments: dto.payments,
-          items: [
-            {
-              productId: undefined,
-              productName: `Consumo ${labels.table} ${order.table.number} (${subAccount.label})`,
-              unitPrice,
-              quantity: 1,
-              discount: 0,
-            },
-          ],
+          items: splitResult.items,
         };
       }
 
@@ -1253,8 +1252,8 @@ export class TablesService {
       workshopVehicleId: order.workshopVehicleId || undefined,
       cashRegisterId: dto.cashRegisterId,
       notes: dto.notes
-        ? `${dto.notes} (${labels.table} ${order.table.number})`
-        : `${labels.table} ${order.table.number}`,
+        ? `${dto.notes} (${formatTableDisplayName(labels.table, order.table?.number)})`
+        : formatTableDisplayName(labels.table, order.table?.number),
       reference: dto.reference || dto.paymentReference,
       payments: dto.payments,
       items: order.items.map((i) => ({
@@ -1577,7 +1576,11 @@ export class TablesService {
     };
   }
 
-  private formatOrderResponse(order: any, taxRate: number = 0) {
+  private formatOrderResponse(
+    order: any,
+    taxRate: number = 0,
+    business?: { taxRate?: number | null; taxEnabled?: boolean | null; taxIncluded?: boolean | null } | null,
+  ) {
     let subtotal = 0;
     let itemsCount = 0;
 
@@ -1633,23 +1636,53 @@ export class TablesService {
 
     if (rawSubAccounts.length > 0) {
       if (order.splitMode === 'EQUAL') {
-        formattedSubAccounts = rawSubAccounts.map((sa: any) => {
+        const sorted = sortSubAccountsDeterministically(rawSubAccounts);
+        formattedSubAccounts = sorted.map((sa: any) => {
           const fixed = Number(sa.fixedAmount || 0);
-          return {
-            id: sa.id,
-            label: sa.label,
-            status: sa.status,
-            saleId: sa.saleId || null,
-            fixedAmount: fixed,
-            itemsCount: 0,
-            subtotal: fixed,
-            discount: 0,
-            tax: 0,
-            total: fixed,
-            createdBy: sa.createdBy,
-            createdAt: sa.createdAt,
-            items: [],
-          };
+          try {
+            const splitResult = calculateEqualSplitItems(order, sorted, sa.id, business);
+            const saTaxable = Math.max(0, splitResult.targetSubtotal - splitResult.saDiscount);
+            let saTax = 0;
+            const effectiveTaxRate = business?.taxRate ?? taxRate;
+            if (effectiveTaxRate > 0) {
+              if (business?.taxIncluded) {
+                saTax = Math.round((saTaxable - saTaxable / (1 + effectiveTaxRate / 100)) * 100) / 100;
+              } else {
+                saTax = Math.round(saTaxable * (effectiveTaxRate / 100) * 100) / 100;
+              }
+            }
+            return {
+              id: sa.id,
+              label: sa.label,
+              status: sa.status,
+              saleId: sa.saleId || null,
+              fixedAmount: fixed,
+              itemsCount: splitResult.items.length,
+              subtotal: splitResult.targetSubtotal,
+              discount: splitResult.saDiscount,
+              tax: saTax,
+              total: fixed,
+              createdBy: sa.createdBy,
+              createdAt: sa.createdAt,
+              items: splitResult.items,
+            };
+          } catch {
+            return {
+              id: sa.id,
+              label: sa.label,
+              status: sa.status,
+              saleId: sa.saleId || null,
+              fixedAmount: fixed,
+              itemsCount: 0,
+              subtotal: fixed,
+              discount: 0,
+              tax: 0,
+              total: fixed,
+              createdBy: sa.createdBy,
+              createdAt: sa.createdAt,
+              items: [],
+            };
+          }
         });
       } else {
         // Modo ITEMS
