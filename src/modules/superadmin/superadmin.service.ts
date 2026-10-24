@@ -1493,6 +1493,17 @@ export class SuperAdminService {
     const phoneToUpdate = dto.posPhone !== undefined ? dto.posPhone : dto.phone;
     const logoToUpdate = dto.logoUrl !== undefined ? dto.logoUrl : dto.logo;
 
+    if (dto.tracksBatches === false) {
+      const activeBatchesCount = await this.prisma.productBatch.count({
+        where: { businessId: id, quantity: { gt: 0 } },
+      });
+      if (activeBatchesCount > 0 && dto.confirm !== true) {
+        throw new BadRequestException(
+          'El negocio tiene lotes con existencias activas. Para desactivar el control de lotes confirme la acción.',
+        );
+      }
+    }
+
     const updated = await this.prisma.business.update({
       where: { id },
       data: {

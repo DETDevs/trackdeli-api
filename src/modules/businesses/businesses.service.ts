@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UpdateBusinessDto } from './dto/update-business.dto';
 import { BusinessResponseDto } from './dto/business-response.dto';
@@ -73,6 +73,17 @@ export class BusinessesService {
 
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
+    }
+
+    if (dto.tracksBatches === false) {
+      const activeBatchesCount = await this.prisma.productBatch.count({
+        where: { businessId: id, quantity: { gt: 0 } },
+      });
+      if (activeBatchesCount > 0 && dto.confirm !== true) {
+        throw new BadRequestException(
+          'El negocio tiene lotes con existencias activas. Para desactivar el control de lotes confirme la acción.',
+        );
+      }
     }
 
     const updated = await this.prisma.business.update({

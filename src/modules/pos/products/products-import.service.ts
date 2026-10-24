@@ -590,7 +590,7 @@ export class ProductsImportService {
       if (business?.tracksBatches) {
         if (lotNumber || expiryDate) {
           payload.core.tracksBatches = true;
-        } else if (payload.core.trackStock !== false && payload.core.stock !== undefined && payload.core.stock > 0) {
+        } else if (existing?.tracksBatches && payload.core.trackStock !== false && payload.core.stock !== undefined && payload.core.stock > 0) {
           payload.core.tracksBatches = true;
           result.warnings.push({
             row: rowNum,
@@ -728,6 +728,23 @@ export class ProductsImportService {
                 batchId,
               },
             });
+          } else if (business?.tracksBatches && p.tracksBatches && item.lotNumber) {
+            const currentStock = Number(p.stock);
+            if (currentStock > 0) {
+              const existingBatch = await tx.productBatch.findFirst({
+                where: { businessId, productId: p.id, batchNumber: item.lotNumber },
+              });
+              if (!existingBatch) {
+                await this.batchesService.receive(tx, {
+                  businessId,
+                  productId: p.id,
+                  batchNumber: item.lotNumber,
+                  expiryDate: item.expiryDate,
+                  qty: currentStock,
+                  cost: p.cost ? Number(p.cost) : null,
+                });
+              }
+            }
           }
           result.updated++;
         }

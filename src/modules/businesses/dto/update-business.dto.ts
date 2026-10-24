@@ -180,5 +180,9 @@ export class UpdateBusinessDto {
   @IsOptional()
   @IsBoolean()
   tracksBatches?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  confirm?: boolean;
 }
 
