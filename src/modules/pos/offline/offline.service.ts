@@ -749,7 +749,7 @@ export class OfflineService {
       }),
       this.prisma.business.findUnique({
         where: { id: businessId },
-        select: { wholesaleEnabled: true },
+        select: { wholesaleEnabled: true, tracksBatches: true },
       }),
     ]);
 
@@ -770,6 +770,8 @@ export class OfflineService {
         businessId,
         wholesale_enabled: business?.wholesaleEnabled ?? false,
         wholesaleEnabled: business?.wholesaleEnabled ?? false,
+        tracks_batches: business?.tracksBatches ?? false,
+        tracksBatches: business?.tracksBatches ?? false,
       };
     }
 
@@ -779,6 +781,8 @@ export class OfflineService {
       businessId,
       wholesale_enabled: business?.wholesaleEnabled ?? false,
       wholesaleEnabled: business?.wholesaleEnabled ?? false,
+      tracks_batches: business?.tracksBatches ?? false,
+      tracksBatches: business?.tracksBatches ?? false,
       categories,
       products: products.map((p) => {
         const isRecipe = Boolean(p.isRecipe);

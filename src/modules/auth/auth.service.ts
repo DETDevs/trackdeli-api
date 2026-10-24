@@ -169,6 +169,7 @@ export class AuthService {
           salonProfile,
           salonLabels,
           posVertical: b.posVertical,
+          tracksBatches: b.tracksBatches ?? false,
           billing_anchor_day: billing.billing_anchor_day,
           current_period_start: billing.current_period_start,
           due_date: billing.due_date,
@@ -540,6 +541,7 @@ export class AuthService {
             longitude: true,
             salonProfile: true,
             posVertical: true,
+            tracksBatches: true,
           },
         },
       },
@@ -566,6 +568,7 @@ export class AuthService {
       const billing = b ? computeBusinessMembershipBilling(b, b.memberships) : null;
       businessData = {
         ...user.business,
+        tracksBatches: user.business.tracksBatches ?? false,
         salonProfile,
         salonLabels,
         billing_anchor_day: billing?.billing_anchor_day ?? null,

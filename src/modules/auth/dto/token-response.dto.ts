@@ -23,6 +23,7 @@ export class TokenResponseDto {
       salonProfile?: string | null;
       salonLabels?: any;
       posVertical?: string | null;
+      tracksBatches?: boolean;
     } | null;
     salonProfile?: string | null;
     salonLabels?: any;
