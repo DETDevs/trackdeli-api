@@ -2250,6 +2250,7 @@ WHERE a."customerId" = c."id"
       await this.ensureMembershipBillingSchema();
       await this.ensureWholesaleSchema();
       await this.ensureFinancesSchema();
+      await this.ensurePrintAuditAndReceiptSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -2989,6 +2990,94 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 183a - Advertencia sincronizando esquema de Finanzas: ${err.message}`);
+    }
+  }
+
+  /**
+   * 184a - Auditoría de impresiones y configuración del ticket por negocio
+   * - pos_print_events: id, businessId, documentType, documentId, eventType, copies, status, sequence, isReprint, userId, deviceId, stationName, cashRegisterId, reason, clientEventId, occurredAt, createdAt
+   * - pos_receipt_settings: id, businessId, logoImage, showLogo, headerLines, footerLines, showBusinessName, showAddress, showPhone, showTaxId, showCashier, showCustomer, showTaxBreakdown, paperWidthMm, updatedAt, updatedById
+   * DDL idempotente con advisory lock 1840100.
+   */
+  private async ensurePrintAuditAndReceiptSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1840100)`);
+
+          // 1. Tabla pos_print_events
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_print_events" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "documentType" VARCHAR(50) NOT NULL,
+              "documentId" VARCHAR(100) NOT NULL,
+              "eventType" VARCHAR(20) NOT NULL,
+              "copies" TEXT[] NOT NULL DEFAULT '{}',
+              "status" VARCHAR(20) NOT NULL,
+              "sequence" INTEGER NOT NULL DEFAULT 1,
+              "isReprint" BOOLEAN NOT NULL DEFAULT false,
+              "userId" TEXT NOT NULL,
+              "deviceId" VARCHAR(100),
+              "stationName" VARCHAR(100),
+              "cashRegisterId" VARCHAR(100),
+              "reason" VARCHAR(300),
+              "clientEventId" VARCHAR(100) NOT NULL,
+              "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_print_events_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_print_events_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_print_events_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_print_events_businessId_clientEventId_key" ON "pos_print_events"("businessId", "clientEventId");
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_print_events_businessId_documentType_documentId_idx" ON "pos_print_events"("businessId", "documentType", "documentId");
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_print_events_businessId_occurredAt_idx" ON "pos_print_events"("businessId", "occurredAt");
+          `);
+
+          // 2. Tabla pos_receipt_settings
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_receipt_settings" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "logoImage" TEXT,
+              "showLogo" BOOLEAN NOT NULL DEFAULT false,
+              "headerLines" TEXT[] NOT NULL DEFAULT '{}',
+              "footerLines" TEXT[] NOT NULL DEFAULT '{}',
+              "showBusinessName" BOOLEAN NOT NULL DEFAULT true,
+              "showAddress" BOOLEAN NOT NULL DEFAULT true,
+              "showPhone" BOOLEAN NOT NULL DEFAULT true,
+              "showTaxId" BOOLEAN NOT NULL DEFAULT true,
+              "showCashier" BOOLEAN NOT NULL DEFAULT true,
+              "showCustomer" BOOLEAN NOT NULL DEFAULT true,
+              "showTaxBreakdown" BOOLEAN NOT NULL DEFAULT true,
+              "paperWidthMm" INTEGER NOT NULL DEFAULT 80,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedById" TEXT,
+              CONSTRAINT "pos_receipt_settings_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_receipt_settings_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_receipt_settings_updatedById_fkey" FOREIGN KEY ("updatedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_receipt_settings_businessId_key" ON "pos_receipt_settings"("businessId");
+          `);
+
+          this.logger.log(
+            `[PrismaService] ✓ 184a - Esquema de Auditoría de Impresiones y Configuración de Ticket sincronizado (pos_print_events, pos_receipt_settings).`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 184a - Advertencia sincronizando esquema de Auditoría de Impresiones: ${err.message}`);
     }
   }
 

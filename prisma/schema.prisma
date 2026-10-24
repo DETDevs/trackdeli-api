@@ -360,6 +360,10 @@ model Business {
   expenseCategories     ExpenseCategory[]
   expenses              Expense[]
 
+  // Auditoría de impresiones y configuración de ticket (184a)
+  printEvents           PosPrintEvent[]
+  receiptSettings       PosReceiptSettings?
+
   @@map("businesses")
 }
 
@@ -465,6 +469,10 @@ model User {
   supplierPaymentsVoided SupplierPayment[]   @relation("SupplierPaymentsVoided")
   expensesCreated        Expense[]           @relation("UserExpenses")
   expensesVoided         Expense[]           @relation("UserVoidedExpenses")
+
+  // Auditoría de impresiones y configuración de ticket (184a)
+  printEvents            PosPrintEvent[]     @relation("PrintEventsUser")
+  updatedReceiptSettings PosReceiptSettings[] @relation("ReceiptSettingsUpdatedBy")
 
   // Password audit relations
   passwordChangesReceived PasswordChangeLog[] @relation("PasswordChangesReceived")
@@ -2234,3 +2242,58 @@ model OrderSplitLog {
   @@index([tableOrderId])
   @@map("order_split_log")
 }
+
+// ═══════════════════════════════════════════════
+// 184a — AUDITORÍA DE IMPRESIONES Y TICKET
+// ═══════════════════════════════════════════════
+
+model PosPrintEvent {
+  id             String    @id @default(uuid())
+  businessId     String
+  business       Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  documentType   String    @db.VarChar(50)
+  documentId     String    @db.VarChar(100)
+  eventType      String    @db.VarChar(20)
+  copies         String[]  @default([])
+  status         String    @db.VarChar(20)
+  sequence       Int       @default(1)
+  isReprint      Boolean   @default(false)
+  userId         String
+  user           User      @relation("PrintEventsUser", fields: [userId], references: [id])
+  deviceId       String?   @db.VarChar(100)
+  stationName    String?   @db.VarChar(100)
+  cashRegisterId String?   @db.VarChar(100)
+  reason         String?   @db.VarChar(300)
+  clientEventId  String    @db.VarChar(100)
+  occurredAt     DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+
+  @@unique([businessId, clientEventId])
+  @@index([businessId, documentType, documentId])
+  @@index([businessId, occurredAt])
+  @@map("pos_print_events")
+}
+
+model PosReceiptSettings {
+  id               String    @id @default(uuid())
+  businessId       String    @unique
+  business         Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  logoImage        String?   @db.Text
+  showLogo         Boolean   @default(false)
+  headerLines      String[]  @default([])
+  footerLines      String[]  @default([])
+  showBusinessName Boolean   @default(true)
+  showAddress      Boolean   @default(true)
+  showPhone        Boolean   @default(true)
+  showTaxId        Boolean   @default(true)
+  showCashier      Boolean   @default(true)
+  showCustomer     Boolean   @default(true)
+  showTaxBreakdown Boolean   @default(true)
+  paperWidthMm     Int       @default(80)
+  updatedAt        DateTime  @default(now()) @updatedAt
+  updatedById      String?
+  updatedBy        User?     @relation("ReceiptSettingsUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("pos_receipt_settings")
+}
+
