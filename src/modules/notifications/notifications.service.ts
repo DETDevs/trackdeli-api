@@ -6,6 +6,7 @@ import { FirebaseMultipleSendResult, FirebaseService } from './firebase.service'
 import { NotificationChannel, NotificationLogStatus, NotificationLog } from '@prisma/client';
 import { NotificationExecutionService } from './services/notification-execution.service';
 import { NotificationVariables } from './templates/notification-template.registry';
+import { attachSafeRedisErrorHandler, logThrottledRedisError } from '../../common/utils/redis.util';
 
 export interface DispatchNotificationDto {
   businessId?: string;
@@ -33,9 +34,7 @@ export class NotificationsService implements OnModuleInit {
 
   onModuleInit() {
     if (this.notificationsQueue) {
-      this.notificationsQueue.on('error', (err) => {
-        this.logger.warn(`[NotificationsService] Advertencia en cola Bull/Redis: ${err.message}`);
-      });
+      attachSafeRedisErrorHandler(this.notificationsQueue, 'NotificationsQueue', this.logger);
     }
   }
 
@@ -391,9 +390,7 @@ export class NotificationsService implements OnModuleInit {
         enqueued = true;
       }
     } catch (err: any) {
-      this.logger.warn(
-        `[NotificationsService] ⚠ No se pudo encolar en Bull/Redis (${err.message}). Ejecutando en segundo plano de respaldo.`,
-      );
+      logThrottledRedisError('NotificationsService:Queue', err, this.logger);
     }
 
     // 3. Fallback asíncrono inmediato si Redis no está disponible, para no bloquear el endpoint ni fallar la transacción

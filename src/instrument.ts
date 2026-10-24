@@ -1,5 +1,9 @@
 import 'dotenv/config';
 import * as Sentry from '@sentry/nestjs';
+import { setupGlobalRedisSafety } from './common/utils/redis.util';
+
+// 193: Proteger el proceso contra excepciones no capturadas de Redis
+setupGlobalRedisSafety();
 
 Sentry.init({
   dsn: process.env.SENTRY_DSN,

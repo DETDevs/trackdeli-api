@@ -2,11 +2,17 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/commo
 import { PrismaService } from '../../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import {
+  isRedisEnabled,
+  attachSafeRedisErrorHandler,
+  getOptimizedRedisOptions,
+  logThrottledRedisError,
+} from '../../common/utils/redis.util';
 
 @Injectable()
 export class TrackingService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TrackingService.name);
-  private redis: Redis;
+  private redis: Redis | null = null;
 
   constructor(
     private prisma: PrismaService,
@@ -14,47 +20,47 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
-    this.redis = new Redis({
-      host: this.config.get<string>('REDIS_HOST', 'localhost'),
-      port: parseInt(this.config.get<string>('REDIS_PORT') || '6379'),
-      password: this.config.get<string>('REDIS_PASSWORD'),
-      tls: this.config.get<string>('REDIS_TLS') === 'true' ? {} : undefined,
-      enableReadyCheck: false,
-      maxRetriesPerRequest: 1,
-      retryStrategy: (times: number) => {
-        if (times > 50) return 30000;
-        return Math.min(times * 1000, 30000);
-      },
-    });
+    if (!isRedisEnabled(this.config)) {
+      this.redis = null;
+      this.logger.log('[TrackingService] Redis deshabilitado. Operando sin caché de Redis.');
+      return;
+    }
 
-    this.redis.on('error', (err) => {
-      this.logger.warn(`[TrackingService] Advertencia de conexión Redis: ${err.message}`);
-    });
+    const redisConf = getOptimizedRedisOptions(this.config);
+    this.redis = redisConf.url
+      ? new Redis(redisConf.url, { ...redisConf.options, maxRetriesPerRequest: 1 })
+      : new Redis({ ...redisConf.options, maxRetriesPerRequest: 1 });
+
+    attachSafeRedisErrorHandler(this.redis, 'TrackingService', this.logger);
   }
 
   onModuleDestroy() {
     if (this.redis) {
-      this.redis.disconnect();
+      try {
+        this.redis.disconnect();
+      } catch {}
     }
   }
 
   async saveLastPosition(orderId: string, lat: number, lng: number, speed?: number): Promise<void> {
+    if (!this.redis) return;
     try {
       const key = `last_position:${orderId}`;
       const value = JSON.stringify({ lat, lng, speed, timestamp: new Date().toISOString() });
       await this.redis.setex(key, 7200, value);
     } catch (err: any) {
-      this.logger.warn(`[TrackingService] No se pudo guardar última posición en Redis para orden ${orderId}: ${err.message}`);
+      logThrottledRedisError('TrackingService:saveLastPosition', err, this.logger);
     }
   }
 
   async getLastPosition(orderId: string): Promise<{ lat: number; lng: number; speed?: number; timestamp: string } | null> {
+    if (!this.redis) return null;
     try {
       const key = `last_position:${orderId}`;
       const value = await this.redis.get(key);
       return value ? JSON.parse(value) : null;
     } catch (err: any) {
-      this.logger.warn(`[TrackingService] No se pudo obtener última posición de Redis para orden ${orderId}: ${err.message}`);
+      logThrottledRedisError('TrackingService:getLastPosition', err, this.logger);
       return null;
     }
   }
@@ -70,17 +76,19 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     let shouldSave = true;
 
-    try {
-      const snapshotKey = `last_snapshot:${orderId}`;
-      const lastSnapshot = await this.redis.get(snapshotKey);
+    if (this.redis) {
+      try {
+        const snapshotKey = `last_snapshot:${orderId}`;
+        const lastSnapshot = await this.redis.get(snapshotKey);
 
-      if (lastSnapshot && now - parseInt(lastSnapshot) < 30000) {
-        shouldSave = false;
-      } else {
-        await this.redis.setex(snapshotKey, 60, now.toString());
+        if (lastSnapshot && now - parseInt(lastSnapshot) < 30000) {
+          shouldSave = false;
+        } else {
+          await this.redis.setex(snapshotKey, 60, now.toString());
+        }
+      } catch (err: any) {
+        logThrottledRedisError('TrackingService:saveSnapshot', err, this.logger);
       }
-    } catch (err: any) {
-      this.logger.warn(`[TrackingService] Error en snapshot de Redis (${err.message}). Continuando con guardado en BD.`);
     }
 
     if (shouldSave) {
@@ -213,17 +221,19 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     bizLng: number | null;
   } | null> {
     const key = `geofence_meta:${orderId}`;
-    try {
-      const cached = await this.redis.get(key);
-      if (cached) {
-        try {
-          return JSON.parse(cached);
-        } catch (err) {
-          this.logger.warn(`[getGeofenceMeta] Error parseando JSON de caché para orderId=${orderId}`);
+    if (this.redis) {
+      try {
+        const cached = await this.redis.get(key);
+        if (cached) {
+          try {
+            return JSON.parse(cached);
+          } catch (err) {
+            this.logger.warn(`[getGeofenceMeta] Error parseando JSON de caché para orderId=${orderId}`);
+          }
         }
+      } catch (err: any) {
+        logThrottledRedisError('TrackingService:getGeofenceMeta', err, this.logger);
       }
-    } catch (err: any) {
-      this.logger.warn(`[TrackingService] Error al leer geofence_meta en Redis: ${err.message}`);
     }
 
     const order = await this.prisma.order.findUnique({
@@ -252,20 +262,23 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       bizLng: order.business?.longitude ? Number(order.business.longitude) : null,
     };
 
-    try {
-      await this.redis.setex(key, 7200, JSON.stringify(meta));
-    } catch (err: any) {
-      // Ignorar fallo de escritura en caché
+    if (this.redis) {
+      try {
+        await this.redis.setex(key, 7200, JSON.stringify(meta));
+      } catch (err: any) {
+        // Ignorar fallo de escritura en caché
+      }
     }
     return meta;
   }
 
   async setGeofenceMeta(orderId: string, meta: any): Promise<void> {
+    if (!this.redis) return;
     try {
       const key = `geofence_meta:${orderId}`;
       await this.redis.setex(key, 7200, JSON.stringify(meta));
     } catch (err: any) {
-      this.logger.warn(`[TrackingService] Error al guardar geofence_meta en Redis: ${err.message}`);
+      logThrottledRedisError('TrackingService:setGeofenceMeta', err, this.logger);
     }
   }
 
@@ -278,10 +291,11 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   }
 
   async invalidateGeofenceMeta(orderId: string): Promise<void> {
+    if (!this.redis) return;
     try {
       await this.redis.del(`geofence_meta:${orderId}`);
     } catch (err: any) {
-      this.logger.warn(`[TrackingService] Error al invalidar geofence_meta: ${err.message}`);
+      logThrottledRedisError('TrackingService:invalidateGeofenceMeta', err, this.logger);
     }
   }
 
@@ -298,10 +312,12 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     if (meta.status === 'EN_CAMINO_AL_NEGOCIO' && meta.bizLat && meta.bizLng) {
       const geofenceBizKey = `geofence_biz_triggered:${orderId}`;
       let alreadyTriggeredBiz = null;
-      try {
-        alreadyTriggeredBiz = await this.redis.get(geofenceBizKey);
-      } catch (err: any) {
-        this.logger.warn(`[TrackingService] Error leyendo geofenceBizKey: ${err.message}`);
+      if (this.redis) {
+        try {
+          alreadyTriggeredBiz = await this.redis.get(geofenceBizKey);
+        } catch (err: any) {
+          logThrottledRedisError('TrackingService:checkGeofenceBiz', err, this.logger);
+        }
       }
 
       if (!alreadyTriggeredBiz) {
@@ -314,9 +330,11 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
         );
 
         if (isNearBiz) {
-          try {
-            await this.redis.setex(geofenceBizKey, 3600, '1');
-          } catch (err: any) {}
+          if (this.redis) {
+            try {
+              await this.redis.setex(geofenceBizKey, 3600, '1');
+            } catch (err: any) {}
+          }
 
           await this.prisma.order.update({
             where: { id: orderId },
@@ -341,10 +359,12 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
 
     const geofenceKey = `geofence_triggered:${orderId}`;
     let alreadyTriggered = null;
-    try {
-      alreadyTriggered = await this.redis.get(geofenceKey);
-    } catch (err: any) {
-      this.logger.warn(`[TrackingService] Error leyendo geofenceKey: ${err.message}`);
+    if (this.redis) {
+      try {
+        alreadyTriggered = await this.redis.get(geofenceKey);
+      } catch (err: any) {
+        logThrottledRedisError('TrackingService:checkGeofenceDest', err, this.logger);
+      }
     }
     if (alreadyTriggered) return;
 
@@ -358,9 +378,11 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
 
     if (!isNear) return;
 
-    try {
-      await this.redis.setex(geofenceKey, 3600, '1');
-    } catch (err: any) {}
+    if (this.redis) {
+      try {
+        await this.redis.setex(geofenceKey, 3600, '1');
+      } catch (err: any) {}
+    }
 
     await this.prisma.order.update({
       where: { id: orderId },
@@ -382,14 +404,16 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   }
 
   async cleanupGeofenceFlag(orderId: string): Promise<void> {
+    if (!this.redis) return;
     try {
       await this.redis.del(`geofence_triggered:${orderId}`);
     } catch (err: any) {
-      this.logger.warn(`[TrackingService] Error al limpiar geofence_triggered: ${err.message}`);
+      logThrottledRedisError('TrackingService:cleanupGeofenceFlag', err, this.logger);
     }
   }
 
   async cleanupOrderRedisKeys(orderId: string): Promise<void> {
+    if (!this.redis) return;
     try {
       await this.redis.del(
         `last_position:${orderId}`,
@@ -399,7 +423,7 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
         `geofence_meta:${orderId}`,
       );
     } catch (err: any) {
-      this.logger.warn(`[TrackingService] Error al limpiar llaves de orden ${orderId} en Redis: ${err.message}`);
+      logThrottledRedisError('TrackingService:cleanupOrderKeys', err, this.logger);
     }
   }
 
@@ -407,16 +431,18 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     let shouldUpdateDb = true;
 
-    try {
-      const lastUpdateKey = `last_user_loc_update:${userId}`;
-      const lastUpdate = await this.redis.get(lastUpdateKey);
-      if (lastUpdate && now - parseInt(lastUpdate) < 10000) {
-        shouldUpdateDb = false;
-      } else {
-        await this.redis.setex(lastUpdateKey, 10, now.toString());
+    if (this.redis) {
+      try {
+        const lastUpdateKey = `last_user_loc_update:${userId}`;
+        const lastUpdate = await this.redis.get(lastUpdateKey);
+        if (lastUpdate && now - parseInt(lastUpdate) < 10000) {
+          shouldUpdateDb = false;
+        } else {
+          await this.redis.setex(lastUpdateKey, 10, now.toString());
+        }
+      } catch (err: any) {
+        // Si Redis falla, procedemos a actualizar directamente en Postgres
       }
-    } catch (err: any) {
-      // Si Redis falla, procedemos a actualizar directamente en Postgres
     }
 
     if (shouldUpdateDb) {

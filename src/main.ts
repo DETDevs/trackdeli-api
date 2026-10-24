@@ -3,7 +3,7 @@ import * as Sentry from '@sentry/nestjs';
 
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { ValidationPipe, Logger, RequestMethod } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TraceInterceptor } from './common/interceptors/trace.interceptor';
@@ -28,6 +28,26 @@ async function bootstrap() {
         .filter(Boolean)
     : [];
 
+  const trackingUrl = configService.get<string>('TRACKING_URL');
+  if (trackingUrl) {
+    try {
+      const trackingOrigin = new URL(trackingUrl).origin;
+      if (!originsArray.includes(trackingOrigin)) {
+        originsArray.push(trackingOrigin);
+      }
+    } catch {}
+  }
+
+  const receiptPublicUrl = configService.get<string>('RECEIPT_PUBLIC_URL');
+  if (receiptPublicUrl) {
+    try {
+      const receiptOrigin = new URL(receiptPublicUrl).origin;
+      if (!originsArray.includes(receiptOrigin)) {
+        originsArray.push(receiptOrigin);
+      }
+    } catch {}
+  }
+
   const isProduction = configService.get<string>('NODE_ENV') === 'production';
   if (isProduction && originsArray.length === 0) {
     throw new Error('CORS_ORIGINS debe contener orígenes válidos en producción.');
@@ -39,12 +59,7 @@ async function bootstrap() {
     credentials: true,
   });
 
-  app.setGlobalPrefix('api/v1', {
-    exclude: [
-      { path: 'r/:token', method: RequestMethod.GET },
-      { path: 'r/:token/pdf', method: RequestMethod.GET },
-    ],
-  });
+  app.setGlobalPrefix('api/v1');
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -57,12 +72,7 @@ async function bootstrap() {
   app.useGlobalInterceptors(new TraceInterceptor(), new LoggingInterceptor(), new DecimalToNumberInterceptor());
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  app.use((req: any, res: any, next: any) => {
-    if (!req.path.startsWith('/r/')) {
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    }
-    next();
-  });
+  app.use((req: any, res: any, next: any) => { res.setHeader('Content-Type', 'application/json; charset=utf-8'); next(); });
   const port = configService.get<number>('PORT') || 3000;
   await app.listen(port);
   Logger.log(`Application is running on: await app.getUrl()`, 'Bootstrap');

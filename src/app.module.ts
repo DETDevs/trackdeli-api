@@ -37,29 +37,25 @@ import { HealthController } from './health.controller';
 import { CustomThrottlerGuard } from './common/guards/custom-throttler.guard';
 import { WebAdminAccessGuard } from './common/guards/web-admin-access.guard';
 
-@Module({
-  imports: [
-    SentryModule.forRoot(),
-    ConfigModule.forRoot({
-      isGlobal: true,
-      validationSchema: envValidationSchema,
-    }),
+import { isRedisEnabled, attachSafeRedisErrorHandler, getOptimizedRedisOptions } from './common/utils/redis.util';
+
+const isRedisOn = isRedisEnabled();
+
+const appImports: any[] = [
+  SentryModule.forRoot(),
+  ConfigModule.forRoot({
+    isGlobal: true,
+    validationSchema: envValidationSchema,
+  }),
+];
+
+if (isRedisOn) {
+  appImports.push(
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => {
         const logger = new Logger('BullModule');
-        const redisOpts = {
-          host: configService.get<string>('REDIS_HOST', 'localhost'),
-          port: configService.get<number>('REDIS_PORT', 6379),
-          password: configService.get<string>('REDIS_PASSWORD') || undefined,
-          tls: configService.get<string>('REDIS_TLS') === 'true' ? {} : undefined,
-          maxRetriesPerRequest: null,
-          enableReadyCheck: false,
-          retryStrategy: (times: number) => {
-            if (times > 50) return 30000;
-            return Math.min(times * 1000, 30000);
-          },
-        };
+        const redisConf = getOptimizedRedisOptions(configService);
 
         let sharedClient: any = null;
         let sharedSubscriber: any = null;
@@ -67,28 +63,28 @@ import { WebAdminAccessGuard } from './common/guards/web-admin-access.guard';
         const getOrCreateSharedClient = (type: 'client' | 'subscriber') => {
           if (type === 'client') {
             if (!sharedClient) {
-              sharedClient = new Redis(redisOpts);
-              sharedClient.on('error', (err: any) => {
-                logger.warn(`[Bull client] Advertencia de conexión Redis: ${err.message}`);
-              });
+              sharedClient = redisConf.url
+                ? new Redis(redisConf.url, redisConf.options)
+                : new Redis(redisConf.options);
+              attachSafeRedisErrorHandler(sharedClient, 'Bull client', logger);
             }
             return sharedClient;
           }
           if (type === 'subscriber') {
             if (!sharedSubscriber) {
-              sharedSubscriber = new Redis(redisOpts);
-              sharedSubscriber.on('error', (err: any) => {
-                logger.warn(`[Bull subscriber] Advertencia de conexión Redis: ${err.message}`);
-              });
+              sharedSubscriber = redisConf.url
+                ? new Redis(redisConf.url, redisConf.options)
+                : new Redis(redisConf.options);
+              attachSafeRedisErrorHandler(sharedSubscriber, 'Bull subscriber', logger);
             }
             return sharedSubscriber;
           }
           return null;
         };
 
-        const drainDelay = Number(configService.get<number>('BULL_DRAIN_DELAY', 30));
-        const guardInterval = Number(configService.get<number>('BULL_GUARD_INTERVAL', 60000));
-        const stalledInterval = Number(configService.get<number>('BULL_STALLED_INTERVAL', 60000));
+        const drainDelay = Number(configService.get<number>('BULL_DRAIN_DELAY', 60));
+        const guardInterval = Number(configService.get<number>('BULL_GUARD_INTERVAL', 300000));
+        const stalledInterval = Number(configService.get<number>('BULL_STALLED_INTERVAL', 300000));
         const lockDuration = Number(configService.get<number>('BULL_LOCK_DURATION', 60000));
 
         logger.log(
@@ -96,7 +92,7 @@ import { WebAdminAccessGuard } from './common/guards/web-admin-access.guard';
         );
 
         return {
-          redis: redisOpts,
+          redis: redisConf.options,
           createClient: (type: string, opts: any) => {
             switch (type) {
               case 'client':
@@ -104,25 +100,26 @@ import { WebAdminAccessGuard } from './common/guards/web-admin-access.guard';
               case 'subscriber':
                 return getOrCreateSharedClient('subscriber');
               case 'bclient': {
-                const bclient = new Redis({
-                  ...opts,
+                const bclientOpts = {
+                  ...(redisConf.options || {}),
+                  ...(opts || {}),
                   maxRetriesPerRequest: null,
-                  enableReadyCheck: false,
-                  retryStrategy: (times: number) => {
-                    if (times > 50) return 30000;
-                    return Math.min(times * 1000, 30000);
-                  },
-                });
-                bclient.on('error', (err: any) => {
-                  logger.warn(`[Bull bclient] Advertencia de conexión Redis: ${err.message}`);
-                });
+                };
+                const bclient = redisConf.url
+                  ? new Redis(redisConf.url, bclientOpts)
+                  : new Redis(bclientOpts);
+                attachSafeRedisErrorHandler(bclient, 'Bull bclient', logger);
                 return bclient;
               }
               default: {
-                const fallbackClient = new Redis(opts);
-                fallbackClient.on('error', (err: any) => {
-                  logger.warn(`[Bull ${type}] Advertencia de conexión Redis: ${err.message}`);
-                });
+                const fallbackOpts = {
+                  ...(redisConf.options || {}),
+                  ...(opts || {}),
+                };
+                const fallbackClient = redisConf.url
+                  ? new Redis(redisConf.url, fallbackOpts)
+                  : new Redis(fallbackOpts);
+                attachSafeRedisErrorHandler(fallbackClient, `Bull ${type}`, logger);
                 return fallbackClient;
               }
             }
@@ -148,6 +145,17 @@ import { WebAdminAccessGuard } from './common/guards/web-admin-access.guard';
       },
       inject: [ConfigService],
     }),
+  );
+} else {
+  Logger.log(
+    '[AppModule] Redis deshabilitado (REDIS_ENABLED=false o sin REDIS_URL). Operando en modo directo/memoria sin colas Bull.',
+    'AppModule',
+  );
+}
+
+@Module({
+  imports: [
+    ...appImports,
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {

@@ -13,6 +13,12 @@ import Redis from 'ioredis';
 import { ConfigService } from '@nestjs/config';
 import { TrackingService } from './tracking.service';
 import { Logger } from '@nestjs/common';
+import {
+  isRedisEnabled,
+  attachSafeRedisErrorHandler,
+  getOptimizedRedisOptions,
+  logThrottledRedisError,
+} from '../../common/utils/redis.util';
 
 @WebSocketGateway({
   namespace: '/tracking',
@@ -35,29 +41,21 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
   ) { }
 
   async afterInit(server: Server) {
+    if (!isRedisEnabled(this.config)) {
+      this.logger.log('[TrackingGateway] Redis deshabilitado. Operando con WebSocket adapter en memoria.');
+      return;
+    }
+
     try {
-      const redisOptions = {
-        host: this.config.get<string>('REDIS_HOST', 'localhost'),
-        port: parseInt(this.config.get<string>('REDIS_PORT') || '6379'),
-        password: this.config.get<string>('REDIS_PASSWORD'),
-        tls: this.config.get<string>('REDIS_TLS') === 'true' ? {} : undefined,
-        enableReadyCheck: false,
-        maxRetriesPerRequest: 1,
-        retryStrategy: (times: number) => {
-          if (times > 50) return 30000;
-          return Math.min(times * 1000, 30000);
-        },
-      };
+      const redisConf = getOptimizedRedisOptions(this.config);
 
-      const pubClient = new Redis(redisOptions);
-      const subClient = pubClient.duplicate();
+      const pubClient = redisConf.url
+        ? new Redis(redisConf.url, { ...redisConf.options, maxRetriesPerRequest: null })
+        : new Redis({ ...redisConf.options, maxRetriesPerRequest: null });
+      const subClient = pubClient.duplicate({ maxRetriesPerRequest: null });
 
-      pubClient.on('error', (err: any) => {
-        this.logger.warn(`[TrackingGateway] Advertencia Redis pubClient: ${err.message}`);
-      });
-      subClient.on('error', (err: any) => {
-        this.logger.warn(`[TrackingGateway] Advertencia Redis subClient: ${err.message}`);
-      });
+      attachSafeRedisErrorHandler(pubClient, 'TrackingGateway pubClient', this.logger);
+      attachSafeRedisErrorHandler(subClient, 'TrackingGateway subClient', this.logger);
 
       const ioServer = (server as any).server || server;
       if (typeof ioServer.adapter === 'function') {
@@ -67,7 +65,8 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
         this.logger.error('Cannot configure Redis adapter: adapter() method not found on server');
       }
     } catch (err: any) {
-      this.logger.error(`[TrackingGateway] Error inicializando Redis adapter: ${err.message}. Continuando con memoria local.`);
+      logThrottledRedisError('TrackingGateway:afterInit', err, this.logger);
+      this.logger.warn('[TrackingGateway] Continuando con memoria local.');
     }
   }
 

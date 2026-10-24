@@ -15,14 +15,15 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { UploadService } from '../../upload/upload.service';
 import { generateShortCode } from '../../../common/utils/short-code.util';
 
-function escapeHtml(str: any): string {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+export interface PublicReceiptDto {
+  status: 'ACTIVE' | 'EXPIRED' | 'REVOKED';
+  businessName: string;
+  folio: string;
+  saleDate: Date;
+  total: number;
+  currency: string;
+  expiresAt: Date;
+  pdfUrl?: string;
 }
 
 @Injectable()
@@ -36,34 +37,54 @@ export class ReceiptLinksService {
   ) {}
 
   /**
-   * Resuelve la URL base pública para los enlaces /r/:token con fallback ordenado.
+   * Resuelve la URL base de la API para construir la URL absoluta del endpoint PDF (/api/v1/public/receipts/:token/pdf).
    */
-  getBaseUrl(req?: any): string {
-    const configured = this.configService.get<string>('RECEIPT_PUBLIC_URL');
-    if (configured && configured.trim()) {
-      return configured.trim().replace(/\/+$/, '');
-    }
-    if (req && req.get) {
-      const host = req.get('host');
-      const proto = req.protocol || 'http';
+  getApiBaseUrl(req?: any): string {
+    if (req) {
+      const getHeader = (name: string) => {
+        if (typeof req.get === 'function') {
+          return req.get(name);
+        }
+        return req.headers ? req.headers[name.toLowerCase()] : undefined;
+      };
+
+      const forwardedProto = getHeader('x-forwarded-proto');
+      const forwardedHost = getHeader('x-forwarded-host');
+      const host = forwardedHost || getHeader('host');
+      const proto = forwardedProto || req.protocol || 'http';
       if (host) return `${proto}://${host}`;
     }
-    const trackingUrl = this.configService.get<string>('TRACKING_URL');
-    if (trackingUrl && trackingUrl.trim()) {
-      return trackingUrl.trim().replace(/\/+$/, '');
+    const apiUrl = this.configService.get<string>('API_URL');
+    if (apiUrl && apiUrl.trim()) {
+      return apiUrl.trim().replace(/\/+$/, '');
     }
     return 'http://localhost:3000';
   }
 
   /**
-   * Sube un PDF generado por el desktop a R2 y genera o reutiliza un enlace seguro /r/:token (90 días).
+   * Resuelve la URL base de la web pública (tracking) configurada en RECEIPT_PUBLIC_URL.
+   * Si no está definida, lanza un error y no utiliza dominios internos por fallback.
+   */
+  getReceiptPublicBaseUrl(): string {
+    const receiptPublicUrl = this.configService.get<string>('RECEIPT_PUBLIC_URL');
+    if (!receiptPublicUrl || !receiptPublicUrl.trim()) {
+      this.logger.error(
+        '[ReceiptLinksService] Variable RECEIPT_PUBLIC_URL no está configurada en el servidor. ' +
+        'No se puede generar el enlace público para comprobantes.',
+      );
+      throw new BadRequestException('Enlace no configurado: RECEIPT_PUBLIC_URL no está definida en el servidor');
+    }
+    return receiptPublicUrl.trim().replace(/\/+$/, '');
+  }
+
+  /**
+   * Sube un PDF generado por el desktop a R2 y genera o reutiliza un enlace seguro /comprobante/:token (90 días).
    */
   async uploadReceiptPdf(
     saleId: string,
     businessId: string,
     userId: string,
     file?: Express.Multer.File,
-    req?: any,
   ) {
     if (!file || !file.buffer) {
       throw new BadRequestException('Archivo PDF no proporcionado');
@@ -81,7 +102,10 @@ export class ReceiptLinksService {
       throw new BadRequestException('El archivo no es un documento PDF válido');
     }
 
-    // 3. Buscar venta y validar pertenencia y estado
+    // 3. Validar configuración obligatoria de RECEIPT_PUBLIC_URL antes de cualquier operación
+    const publicWebBaseUrl = this.getReceiptPublicBaseUrl();
+
+    // 4. Buscar venta y validar pertenencia y estado
     const sale = await this.prisma.sale.findUnique({
       where: { id: saleId },
       include: {
@@ -104,10 +128,9 @@ export class ReceiptLinksService {
       throw new BadRequestException('No se puede generar comprobante para una venta anulada');
     }
 
-    const baseUrl = this.getBaseUrl(req);
     const now = new Date();
 
-    // 4. Si la venta ya tiene un enlace vigente, reutilizarlo (no subir otro a R2)
+    // 5. Si la venta ya tiene un enlace vigente, reutilizarlo (no subir otro a R2)
     const existingLink = sale.receiptLink;
     const isVigente = existingLink && !existingLink.revokedAt && existingLink.expiresAt > now;
 
@@ -115,12 +138,12 @@ export class ReceiptLinksService {
       this.logger.log(`[uploadReceiptPdf] Reutilizando enlace vigente para venta ${sale.id} (token=${existingLink.token})`);
       return {
         token: existingLink.token,
-        url: `${baseUrl}/r/${existingLink.token}`,
+        url: `${publicWebBaseUrl}/comprobante/${existingLink.token}`,
         expiresAt: existingLink.expiresAt,
       };
     }
 
-    // 5. Si no tiene o está vencido/revocado, generar nuevo token (16 caracteres CSPRNG) y subir a R2
+    // 6. Si no tiene o está vencido/revocado, generar nuevo token (16 caracteres CSPRNG) y subir a R2
     const token = generateShortCode(16);
     const objectKey = `receipts/${sale.businessId}/${sale.id}-${uuidv4()}.pdf`;
 
@@ -181,15 +204,15 @@ export class ReceiptLinksService {
 
     return {
       token: saved.token,
-      url: `${baseUrl}/r/${saved.token}`,
+      url: `${publicWebBaseUrl}/comprobante/${saved.token}`,
       expiresAt: saved.expiresAt,
     };
   }
 
   /**
-   * Obtiene la información para la página pública /r/:token usando únicamente el snapshot guardado.
+   * Obtiene la información en formato JSON para el frontend web (GET /api/v1/public/receipts/:token).
    */
-  async getPublicReceiptData(token: string) {
+  async getPublicReceiptData(token: string, req?: any): Promise<PublicReceiptDto> {
     const link = await this.prisma.posReceiptLink.findUnique({
       where: { token },
       select: {
@@ -205,15 +228,36 @@ export class ReceiptLinksService {
     });
 
     if (!link) {
-      return { status: 'NOT_FOUND' as const };
+      throw new NotFoundException('Comprobante no encontrado');
     }
 
     const now = new Date();
-    if (link.revokedAt !== null || link.expiresAt <= now) {
-      return { status: 'EXPIRED_OR_REVOKED' as const, link };
+    let status: 'ACTIVE' | 'EXPIRED' | 'REVOKED';
+
+    if (link.revokedAt !== null) {
+      status = 'REVOKED';
+    } else if (link.expiresAt <= now) {
+      status = 'EXPIRED';
+    } else {
+      status = 'ACTIVE';
     }
 
-    return { status: 'ACTIVE' as const, link };
+    const baseResponse: PublicReceiptDto = {
+      status,
+      businessName: link.businessName,
+      folio: link.folio,
+      saleDate: link.saleDate,
+      total: link.total,
+      currency: link.currency,
+      expiresAt: link.expiresAt,
+    };
+
+    if (status === 'ACTIVE') {
+      const apiBase = this.getApiBaseUrl(req);
+      baseResponse.pdfUrl = `${apiBase}/api/v1/public/receipts/${link.token}/pdf`;
+    }
+
+    return baseResponse;
   }
 
   /**
@@ -232,7 +276,7 @@ export class ReceiptLinksService {
     if (link.revokedAt !== null || link.expiresAt <= now) {
       throw new HttpException(
         'Este comprobante ya no está disponible. Pídele al negocio que te lo envíe de nuevo.',
-        HttpStatus.GONE,
+        HttpStatus.GONE, // 410
       );
     }
 
@@ -258,7 +302,7 @@ export class ReceiptLinksService {
     const safeFolio = (link.folio || 'venta').replace(/[^a-zA-Z0-9_\-]/g, '_');
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="Comprobante-${safeFolio}.pdf"`);
-    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.setHeader('X-Robots-Tag', 'noindex');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
     if (contentLength) {
@@ -333,7 +377,7 @@ export class ReceiptLinksService {
    */
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async cleanupExpiredReceipts(): Promise<{ cleanedCount: number }> {
-    this.logger.log('[ReceiptLinksService] Iniciando limpieza de comprobantes vencidos en R2...');
+    this.logger.log('[ReceiptLinksService] Iniciando limpieza diaria de comprobantes vencidos en R2...');
     try {
       const now = new Date();
       const expiredLinks = await this.prisma.posReceiptLink.findMany({
@@ -367,261 +411,5 @@ export class ReceiptLinksService {
       this.logger.error(`[ReceiptLinksService] Error en limpieza de comprobantes: ${err.message}`, err.stack);
       return { cleanedCount: 0 };
     }
-  }
-
-  /**
-   * Renderiza la página HTML liviana y móvil primero para /r/:token sin frameworks.
-   */
-  renderReceiptHtml(data: {
-    status: 'ACTIVE' | 'EXPIRED_OR_REVOKED' | 'NOT_FOUND';
-    link?: any;
-  }): string {
-    const isNotFound = data.status === 'NOT_FOUND';
-    const isExpiredOrRevoked = data.status === 'EXPIRED_OR_REVOKED';
-    const link = data.link;
-
-    let bodyContent = '';
-
-    if (isNotFound) {
-      bodyContent = `
-        <div class="card status-card">
-          <div class="icon-badge icon-warning">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          </div>
-          <h1 class="card-title">Comprobante no encontrado</h1>
-          <p class="card-text">El enlace ingresado no es válido o no existe.</p>
-        </div>
-      `;
-    } else if (isExpiredOrRevoked) {
-      bodyContent = `
-        <div class="card status-card">
-          <div class="icon-badge icon-warning">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-          </div>
-          <h1 class="card-title">Comprobante no disponible</h1>
-          <p class="card-text">Este comprobante ya no está disponible. Pídele al negocio que te lo envíe de nuevo.</p>
-        </div>
-      `;
-    } else {
-      const formattedDate = link?.saleDate
-        ? new Date(link.saleDate).toLocaleDateString('es-ES', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-          })
-        : '';
-      const formattedTotal = Number(link?.total || 0).toLocaleString('es-NI', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      });
-
-      bodyContent = `
-        <div class="card">
-          <header class="header">
-            <h2 class="business-name">${escapeHtml(link?.businessName)}</h2>
-            <div class="doc-badge">Comprobante de venta</div>
-          </header>
-
-          <div class="divider"></div>
-
-          <div class="details-list">
-            <div class="detail-row">
-              <span class="detail-label">Folio</span>
-              <span class="detail-value font-mono">#${escapeHtml(link?.folio)}</span>
-            </div>
-            <div class="detail-row">
-              <span class="detail-label">Fecha</span>
-              <span class="detail-value">${escapeHtml(formattedDate)}</span>
-            </div>
-            <div class="detail-row total-row">
-              <span class="detail-label">Total</span>
-              <span class="detail-value total-value">${escapeHtml(link?.currency)} ${formattedTotal}</span>
-            </div>
-          </div>
-
-          <div class="action-section">
-            <a href="/r/${escapeHtml(link?.token)}/pdf" class="btn btn-primary" target="_blank" rel="noopener">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-              Ver / descargar PDF
-            </a>
-          </div>
-
-          <footer class="footer-note">
-            Documento digital emitido por el negocio.
-          </footer>
-        </div>
-      `;
-    }
-
-    return `<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="robots" content="noindex, nofollow" />
-  <meta name="referrer" content="no-referrer" />
-  <title>Comprobante de venta</title>
-  <style>
-    *, *::before, *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background-color: #f3f4f6;
-      color: #1f2937;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 16px;
-      -webkit-font-smoothing: antialiased;
-    }
-    .card {
-      background: #ffffff;
-      width: 100%;
-      max-width: 440px;
-      border-radius: 16px;
-      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
-      padding: 28px 24px;
-      border: 1px solid #e5e7eb;
-    }
-    .status-card {
-      text-align: center;
-      padding: 40px 24px;
-    }
-    .icon-badge {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      margin-bottom: 20px;
-    }
-    .icon-warning {
-      background-color: #fef3c7;
-      color: #d97706;
-    }
-    .card-title {
-      font-size: 1.25rem;
-      font-weight: 700;
-      color: #111827;
-      margin-bottom: 10px;
-    }
-    .card-text {
-      font-size: 0.95rem;
-      color: #4b5563;
-      line-height: 1.5;
-    }
-    .header {
-      text-align: center;
-      margin-bottom: 20px;
-    }
-    .business-name {
-      font-size: 1.35rem;
-      font-weight: 700;
-      color: #111827;
-      line-height: 1.3;
-      word-break: break-word;
-    }
-    .doc-badge {
-      display: inline-block;
-      margin-top: 8px;
-      padding: 4px 12px;
-      border-radius: 20px;
-      background-color: #f3f4f6;
-      color: #4b5563;
-      font-size: 0.8rem;
-      font-weight: 600;
-      letter-spacing: 0.025em;
-      text-transform: uppercase;
-    }
-    .divider {
-      height: 1px;
-      background-color: #e5e7eb;
-      margin: 18px 0;
-    }
-    .details-list {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-    }
-    .detail-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 0.95rem;
-    }
-    .detail-label {
-      color: #6b7280;
-      font-weight: 500;
-    }
-    .detail-value {
-      color: #111827;
-      font-weight: 600;
-      text-align: right;
-    }
-    .font-mono {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    }
-    .total-row {
-      padding-top: 14px;
-      border-top: 1px dashed #e5e7eb;
-      margin-top: 4px;
-    }
-    .total-row .detail-label {
-      font-size: 1.05rem;
-      font-weight: 700;
-      color: #111827;
-    }
-    .total-value {
-      font-size: 1.35rem;
-      font-weight: 800;
-      color: #059669;
-    }
-    .action-section {
-      margin-top: 28px;
-    }
-    .btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      width: 100%;
-      padding: 14px 20px;
-      border-radius: 12px;
-      font-size: 1rem;
-      font-weight: 600;
-      text-decoration: none;
-      transition: background-color 0.15s ease, transform 0.05s ease;
-      cursor: pointer;
-    }
-    .btn:active {
-      transform: scale(0.98);
-    }
-    .btn-primary {
-      background-color: #2563eb;
-      color: #ffffff;
-      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
-    }
-    .btn-primary:hover {
-      background-color: #1d4ed8;
-    }
-    .footer-note {
-      text-align: center;
-      font-size: 0.78rem;
-      color: #9ca3af;
-      margin-top: 20px;
-    }
-  </style>
-</head>
-<body>
-  ${bodyContent}
-</body>
-</html>`;
   }
 }

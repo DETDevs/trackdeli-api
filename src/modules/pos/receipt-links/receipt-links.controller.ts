@@ -3,7 +3,6 @@ import {
   Param,
   Post,
   Query,
-  Req,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -27,7 +26,7 @@ export class ReceiptLinksController {
   constructor(private readonly service: ReceiptLinksService) {}
 
   /**
-   * Sube el comprobante de venta en PDF generado por el desktop a R2 y devuelve enlace público /r/:token
+   * Sube el comprobante de venta en PDF generado por el desktop a R2 y devuelve enlace público /comprobante/:token
    */
   @Post(':id/receipt-pdf')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 500 * 1024 } }))
@@ -35,11 +34,10 @@ export class ReceiptLinksController {
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,
     @CurrentUser() user: JwtPayload,
-    @Req() req: any,
     @Query('businessId') qBid?: string,
   ) {
     const businessId = resolveBusinessId(user, qBid);
-    return this.service.uploadReceiptPdf(id, businessId, user.sub, file, req);
+    return this.service.uploadReceiptPdf(id, businessId, user.sub, file);
   }
 
   /**

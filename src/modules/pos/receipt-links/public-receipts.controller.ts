@@ -1,8 +1,8 @@
 import {
   Controller,
   Get,
-  HttpStatus,
   Param,
+  Req,
   Res,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
@@ -15,32 +15,17 @@ import { ReceiptLinksService } from './receipt-links.service';
 @SkipClientVersionCheck()
 @SkipMembershipCheck()
 @Throttle({ default: { limit: 30, ttl: 60000 } })
-@Controller('r')
+@Controller('public/receipts')
 export class PublicReceiptsController {
   constructor(private readonly service: ReceiptLinksService) {}
 
   /**
-   * Página pública liviana para ver el comprobante digital de venta (rate limit 30/min por IP).
+   * Endpoint público que devuelve los datos del comprobante en formato JSON para la web tracking.
+   * Rate limit: 30 req/min por IP.
    */
   @Get(':token')
-  async viewReceiptPage(@Param('token') token: string, @Res() res: any) {
-    const data = await this.service.getPublicReceiptData(token);
-    const html = this.service.renderReceiptHtml(data);
-
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-
-    if (data.status === 'NOT_FOUND') {
-      return res.status(HttpStatus.NOT_FOUND).send(html);
-    }
-
-    if (data.status === 'EXPIRED_OR_REVOKED') {
-      return res.status(HttpStatus.GONE).send(html); // HTTP 410
-    }
-
-    return res.status(HttpStatus.OK).send(html);
+  async getPublicReceipt(@Param('token') token: string, @Req() req: any) {
+    return this.service.getPublicReceiptData(token, req);
   }
 
   /**
