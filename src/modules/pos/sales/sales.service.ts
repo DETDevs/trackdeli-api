@@ -476,7 +476,7 @@ export class SalesService {
           BusinessProductType.CARTERA_COBRO,
         );
         if (!isCarteraActive) {
-          throw new ForbiddenException('Este negocio no tiene Cartera de Cobro contratada');
+          throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
         }
 
         let customer: any = null;
@@ -817,11 +817,12 @@ export class SalesService {
         const customer = await tx.customer.findFirst({
           where: { id: dto.customerId, businessId },
         });
-        if (customer) {
-          customerId = customer.id;
-          if (!customerName) customerName = customer.name;
-          if (!customerPhone) customerPhone = customer.phone;
+        if (!customer) {
+          throw new BadRequestException("Cliente no encontrado o no pertenece a este negocio");
         }
+        customerId = customer.id;
+        if (!customerName) customerName = customer.name;
+        if (!customerPhone) customerPhone = customer.phone;
       } else if (dto.customerPhone || customerPhone) {
         const cleanPhone = (dto.customerPhone || customerPhone || '').trim();
         let customer = await tx.customer.findUnique({

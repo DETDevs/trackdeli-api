@@ -122,7 +122,7 @@ export class ReportsService {
       BusinessProductType.CARTERA_COBRO,
     );
     if (!isCarteraActive) {
-      throw new ForbiddenException('Este negocio no tiene Cartera de Cobro contratada');
+      throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
     }
   }
 
@@ -428,22 +428,29 @@ export class ReportsService {
       prevTo = new Date(curFrom.getTime() - 1);
       prevFrom = new Date(prevTo.getTime() - diffMs);
     } else if (period === 'week') {
-      curTo = nowUtc;
-      curFrom = new Date(nowUtc.getTime() - 7 * 24 * 60 * 60 * 1000);
-      prevTo = curFrom;
-      prevFrom = new Date(prevTo.getTime() - 7 * 24 * 60 * 60 * 1000);
+      // 192a: Lunes a hoy vs los mismos días de la semana pasada (ej. lun-sáb vs lun-sáb)
+      const dayOfWeek = nowManagua.getUTCDay(); // 0 is Sunday, 1 is Monday, ..., 6 is Saturday
+      const daysSinceMonday = (dayOfWeek + 6) % 7;
+      curFrom = createUtcDateFromManagua(y, m, d - daysSinceMonday, 0, 0, 0, 0);
+      curTo = createUtcDateFromManagua(y, m, d, 23, 59, 59, 999);
+      prevFrom = createUtcDateFromManagua(y, m, d - daysSinceMonday - 7, 0, 0, 0, 0);
+      prevTo = createUtcDateFromManagua(y, m, d - 7, 23, 59, 59, 999);
     } else if (period === 'month') {
+      // 192a: Del 1 a hoy vs los mismos días del mes anterior
       curFrom = createUtcDateFromManagua(y, m, 1, 0, 0, 0, 0);
-      curTo = nowUtc;
-      const prevMonthYear = m === 0 ? y - 1 : y;
-      const prevMonth = m === 0 ? 11 : m - 1;
-      prevFrom = createUtcDateFromManagua(prevMonthYear, prevMonth, 1, 0, 0, 0, 0);
-      prevTo = new Date(curFrom.getTime() - 1);
+      curTo = createUtcDateFromManagua(y, m, d, 23, 59, 59, 999);
+      prevFrom = createUtcDateFromManagua(y, m - 1, 1, 0, 0, 0, 0);
+      const lastDayOfPrevMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      const prevD = Math.min(d, lastDayOfPrevMonth);
+      prevTo = createUtcDateFromManagua(y, m - 1, prevD, 23, 59, 59, 999);
     } else if (period === 'year') {
+      // 192a: Del 1 de enero a hoy vs el mismo rango del año anterior
       curFrom = createUtcDateFromManagua(y, 0, 1, 0, 0, 0, 0);
-      curTo = nowUtc;
+      curTo = createUtcDateFromManagua(y, m, d, 23, 59, 59, 999);
       prevFrom = createUtcDateFromManagua(y - 1, 0, 1, 0, 0, 0, 0);
-      prevTo = new Date(curFrom.getTime() - 1);
+      const lastDayOfPrevYearMonth = new Date(Date.UTC(y - 1, m + 1, 0)).getUTCDate();
+      const prevD = Math.min(d, lastDayOfPrevYearMonth);
+      prevTo = createUtcDateFromManagua(y - 1, m, prevD, 23, 59, 59, 999);
     } else {
       // 'today' is default
       curFrom = createUtcDateFromManagua(y, m, d, 0, 0, 0, 0);
@@ -1197,6 +1204,7 @@ export class ReportsService {
       comparison: {
         previousPeriod: { from: range.previous.fromIso, to: range.previous.toIso },
         netSalesChange: calcChange(currentSales.netSales, prevSales.netSales),
+        costOfGoodsSoldChange: calcChange(costOfGoodsSold, prevMetrics.totalCost),
         grossProfitChange: calcChange(grossProfit, prevGrossProfit),
         operatingProfitChange: calcChange(operatingProfit, prevOperatingProfit),
         interestIncomeChange: calcChange(interestIncome, prevInterestIncome),

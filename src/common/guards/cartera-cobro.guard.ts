@@ -26,7 +26,7 @@ export class CarteraCobroGuard implements CanActivate {
 
     if (user.role === UserRole.REPARTIDOR) {
       throw new ForbiddenException(
-        'Acceso denegado - el modulo de Cartera de Cobro no esta disponible para repartidores',
+        'Acceso denegado - el modulo de Finanzas no esta disponible para repartidores',
       );
     }
 
@@ -65,7 +65,7 @@ export class CarteraCobroGuard implements CanActivate {
     if (!businessId) {
       if (user.role === UserRole.SUPERADMIN) {
         throw new BadRequestException(
-          'Debe especificar el parámetro ?businessId=xxx para consultar este recurso de Cartera de Cobro como SuperAdmin.',
+          'Debe especificar el parámetro ?businessId=xxx para consultar este recurso de Finanzas como SuperAdmin.',
         );
       }
       throw new ForbiddenException('Sin negocio asociado');
@@ -86,7 +86,7 @@ export class CarteraCobroGuard implements CanActivate {
     );
 
     if (!isCarteraActive) {
-      throw new ForbiddenException('Este negocio no tiene Cartera de Cobro contratada');
+      throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
     }
 
     return true;

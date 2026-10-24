@@ -49,7 +49,7 @@ export class CreditService {
       BusinessProductType.CARTERA_COBRO,
     );
     if (!isCarteraActive) {
-      throw new ForbiddenException('Este negocio no tiene Cartera de Cobro contratada');
+      throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
     }
   }
 

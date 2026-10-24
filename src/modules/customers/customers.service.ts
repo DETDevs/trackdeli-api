@@ -76,15 +76,21 @@ export class CustomersService {
       return [];
     }
 
-    const business = await this.prisma.business.findUnique({
-      where: { id: businessId },
-      select: { customerLocationMaxDays: true },
-    });
+    const [business, hasCartera] = await Promise.all([
+      this.prisma.business.findUnique({
+        where: { id: businessId },
+        select: { customerLocationMaxDays: true },
+      }),
+      this.businessProductsService.isActive(
+        businessId,
+        BusinessProductType.CARTERA_COBRO,
+      ),
+    ]);
     const maxDays = business?.customerLocationMaxDays ?? 30;
 
     const where: Prisma.CustomerWhereInput = {
       businessId,
-      ...(groupId && groupId.trim() ? { groupId: groupId.trim() } : {}),
+      ...(hasCartera && groupId && groupId.trim() ? { groupId: groupId.trim() } : {}),
       OR: [
         { name: { contains: trimmed, mode: 'insensitive' } },
         { phone: { contains: trimmed, mode: 'insensitive' } },
@@ -104,8 +110,8 @@ export class CustomersService {
       name: c.name,
       phone: c.phone,
       ruc: c.ruc ?? null,
-      creditLimit: c.creditLimit ?? null,
-      groupId: c.groupId ?? null,
+      creditLimit: hasCartera ? (c.creditLimit ?? null) : null,
+      groupId: hasCartera ? (c.groupId ?? null) : null,
       externalCode: c.externalCode ?? null,
       lastLatitude: c.lastLatitude,
       lastLongitude: c.lastLongitude,
@@ -125,23 +131,29 @@ export class CustomersService {
       throw new BadRequestException('El número de teléfono es requerido');
     }
 
-    const customer = await this.prisma.customer.findUnique({
-      where: {
-        businessId_phone: {
-          businessId,
-          phone: trimmed,
+    const [customer, business, hasCartera] = await Promise.all([
+      this.prisma.customer.findUnique({
+        where: {
+          businessId_phone: {
+            businessId,
+            phone: trimmed,
+          },
         },
-      },
-    });
+      }),
+      this.prisma.business.findUnique({
+        where: { id: businessId },
+        select: { customerLocationMaxDays: true },
+      }),
+      this.businessProductsService.isActive(
+        businessId,
+        BusinessProductType.CARTERA_COBRO,
+      ),
+    ]);
 
     if (!customer) {
       throw new NotFoundException('Cliente no encontrado');
     }
 
-    const business = await this.prisma.business.findUnique({
-      where: { id: businessId },
-      select: { customerLocationMaxDays: true },
-    });
     const maxDays = business?.customerLocationMaxDays ?? 30;
 
     return {
@@ -150,8 +162,8 @@ export class CustomersService {
       name: customer.name,
       phone: customer.phone,
       ruc: customer.ruc ?? null,
-      creditLimit: customer.creditLimit ?? null,
-      groupId: customer.groupId ?? null,
+      creditLimit: hasCartera ? (customer.creditLimit ?? null) : null,
+      groupId: hasCartera ? (customer.groupId ?? null) : null,
       externalCode: customer.externalCode ?? null,
       lastLatitude: customer.lastLatitude,
       lastLongitude: customer.lastLongitude,
@@ -210,6 +222,20 @@ export class CustomersService {
       }
     }
 
+    const hasCartera = await this.businessProductsService.isActive(
+      businessId,
+      BusinessProductType.CARTERA_COBRO,
+    );
+
+    if (!hasCartera) {
+      if (dto.creditLimit !== undefined && dto.creditLimit !== null) {
+        throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
+      }
+      if (dto.groupId) {
+        throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
+      }
+    }
+
     if (dto.groupId) {
       const group = await this.prisma.creditGroup.findFirst({
         where: { id: dto.groupId, businessId },
@@ -227,8 +253,8 @@ export class CustomersService {
         email: dto.email?.trim() || null,
         notes: dto.notes?.trim() || null,
         ruc: dto.ruc?.trim() || null,
-        creditLimit: dto.creditLimit !== undefined ? dto.creditLimit : null,
-        groupId: dto.groupId || null,
+        creditLimit: hasCartera && dto.creditLimit !== undefined ? dto.creditLimit : null,
+        groupId: hasCartera ? (dto.groupId || null) : null,
         externalCode: dto.externalCode?.trim() || null,
         lastAddressText: dto.address?.trim() || null,
       },
@@ -245,9 +271,9 @@ export class CustomersService {
       name: customer.name,
       phone: customer.phone,
       ruc: customer.ruc ?? null,
-      creditLimit: customer.creditLimit ?? null,
-      groupId: customer.groupId ?? null,
-      group: customer.group ?? null,
+      creditLimit: hasCartera ? (customer.creditLimit ?? null) : null,
+      groupId: hasCartera ? (customer.groupId ?? null) : null,
+      group: hasCartera ? (customer.group ?? null) : null,
       externalCode: customer.externalCode ?? null,
       lastLatitude: customer.lastLatitude,
       lastLongitude: customer.lastLongitude,
@@ -792,8 +818,16 @@ export class CustomersService {
       businessId,
     };
 
+    const hasCartera = await this.businessProductsService.isActive(
+      businessId,
+      BusinessProductType.CARTERA_COBRO,
+    );
+
     // Filtro por groupId si viene especificado
     if (options.groupId && options.groupId.trim()) {
+      if (!hasCartera) {
+        throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
+      }
       const targetGroupId = options.groupId.trim();
       const group = await this.prisma.creditGroup.findFirst({
         where: { id: targetGroupId, businessId },
@@ -822,9 +856,10 @@ export class CustomersService {
 
     // Filtro por saldo pendiente (onlyWithBalance)
     const isOnlyWithBalance =
-      options.onlyWithBalance === true ||
-      options.onlyWithBalance === 'true' ||
-      options.onlyWithBalance === '1';
+      hasCartera &&
+      (options.onlyWithBalance === true ||
+        options.onlyWithBalance === 'true' ||
+        options.onlyWithBalance === '1');
 
     if (isOnlyWithBalance) {
       where.creditAccounts = {
@@ -880,11 +915,13 @@ export class CustomersService {
 
     const isCajero = userRole === UserRole.CAJERO;
     const items = customers.map((c) => {
-      const currentBalance = (c.creditAccounts || []).reduce(
-        (sum, ca) => sum + (Number(ca.balance) || 0),
-        0,
-      );
-      const roundedBalance = Math.round(currentBalance * 100) / 100;
+      const currentBalance = hasCartera
+        ? (c.creditAccounts || []).reduce(
+            (sum, ca) => sum + (Number(ca.balance) || 0),
+            0,
+          )
+        : 0;
+      const roundedBalance = hasCartera ? Math.round(currentBalance * 100) / 100 : null;
       return {
         id: c.id,
         businessId: c.businessId,
@@ -893,14 +930,14 @@ export class CustomersService {
         email: c.email ?? null,
         notes: c.notes ?? null,
         ruc: isCajero ? null : (c.ruc ?? null),
-        creditLimit: isCajero
+        creditLimit: !hasCartera || isCajero
           ? null
           : c.creditLimit !== null && c.creditLimit !== undefined
           ? Number(c.creditLimit)
           : null,
-        groupId: c.groupId ?? null,
+        groupId: hasCartera ? (c.groupId ?? null) : null,
         externalCode: c.externalCode ?? null,
-        group: c.group ?? null,
+        group: hasCartera ? (c.group ?? null) : null,
         isBlocked: c.isBlocked,
         consecutiveNoShows: c.consecutiveNoShows,
         lastAddressText: c.lastAddressText ?? null,
@@ -908,7 +945,10 @@ export class CustomersService {
         balance: roundedBalance,
         createdAt: c.createdAt,
         updatedAt: c.updatedAt,
-        _count: c._count,
+        _count: {
+          ...c._count,
+          creditAccounts: hasCartera ? c._count.creditAccounts : 0,
+        },
       };
     });
 
@@ -941,18 +981,24 @@ export class CustomersService {
   }
 
   async findById(businessId: string, id: string) {
-    const customer = await this.prisma.customer.findFirst({
-      where: { id, businessId },
-      include: {
-        _count: {
-          select: {
-            appointments: true,
-            creditAccounts: true,
-            sales: true,
+    const [customer, hasCartera] = await Promise.all([
+      this.prisma.customer.findFirst({
+        where: { id, businessId },
+        include: {
+          _count: {
+            select: {
+              appointments: true,
+              creditAccounts: true,
+              sales: true,
+            },
           },
         },
-      },
-    });
+      }),
+      this.businessProductsService.isActive(
+        businessId,
+        BusinessProductType.CARTERA_COBRO,
+      ),
+    ]);
 
     if (!customer) {
       throw new NotFoundException('Cliente no encontrado');
@@ -1002,10 +1048,13 @@ export class CustomersService {
 
     return {
       ...customer,
+      creditLimit: hasCartera ? customer.creditLimit : null,
+      groupId: hasCartera ? customer.groupId : null,
       orders,
       sales,
       _count: {
         ...customer._count,
+        creditAccounts: hasCartera ? customer._count.creditAccounts : 0,
         orders: ordersCount,
       },
     };
@@ -1144,7 +1193,7 @@ export class CustomersService {
         phone: customer.phone,
         email: customer.email,
         notes: customer.notes,
-        creditLimit: customer.creditLimit,
+        creditLimit: isCarteraActive ? customer.creditLimit : null,
         ruc: customer.ruc,
         isBlocked: customer.isBlocked,
         consecutiveNoShows: customer.consecutiveNoShows,
@@ -1183,6 +1232,20 @@ export class CustomersService {
 
     if (!customer) {
       throw new NotFoundException('Cliente no encontrado');
+    }
+
+    const hasCartera = await this.businessProductsService.isActive(
+      businessId,
+      BusinessProductType.CARTERA_COBRO,
+    );
+
+    if (!hasCartera) {
+      if (dto.creditLimit !== undefined && dto.creditLimit !== null) {
+        throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
+      }
+      if (dto.groupId !== undefined && dto.groupId !== null) {
+        throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
+      }
     }
 
     if (dto.phone && dto.phone.trim() !== customer.phone) {
@@ -1230,7 +1293,7 @@ export class CustomersService {
     const hasNewCoords = dto.latitude != null && dto.longitude != null;
     const now = new Date();
 
-    return this.prisma.customer.update({
+    const updated = await this.prisma.customer.update({
       where: { id },
       data: {
         ...(dto.name !== undefined && { name: dto.name.trim() }),
@@ -1239,9 +1302,9 @@ export class CustomersService {
         ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
         ...(dto.ruc !== undefined && { ruc: dto.ruc?.trim() || null }),
         ...(dto.creditLimit !== undefined && {
-          creditLimit: dto.creditLimit,
+          creditLimit: hasCartera ? dto.creditLimit : null,
         }),
-        ...(dto.groupId !== undefined && { groupId: dto.groupId || null }),
+        ...(dto.groupId !== undefined && { groupId: hasCartera ? (dto.groupId || null) : null }),
         ...(dto.externalCode !== undefined && { externalCode: dto.externalCode?.trim() || null }),
         ...(dto.address !== undefined && {
           lastAddressText: dto.address?.trim() || null,
@@ -1261,6 +1324,16 @@ export class CustomersService {
         },
       },
     });
+
+    if (!hasCartera) {
+      return {
+        ...updated,
+        creditLimit: null,
+        groupId: null,
+        group: null,
+      };
+    }
+    return updated;
   }
 
   async getByCode(businessId: string, code: string, userRole?: string) {
@@ -1348,60 +1421,70 @@ export class CustomersService {
       });
     }
 
-    // Saldo actual del cliente en cuentas activas de crédito
-    const debtAgg = await this.prisma.creditAccount.aggregate({
-      where: {
-        customerId: customer.id,
-        businessId,
-        status: { in: [CreditAccountStatus.PENDING, CreditAccountStatus.PARTIALLY_PAID, CreditAccountStatus.OVERDUE] },
-      },
-      _sum: { balance: true },
-    });
-    const balance = debtAgg._sum.balance ? Math.round(Number(debtAgg._sum.balance) * 100) / 100 : 0;
+    const hasCartera = await this.businessProductsService.isActive(
+      businessId,
+      BusinessProductType.CARTERA_COBRO,
+    );
 
+    // Saldo actual del cliente en cuentas activas de crédito solo si tiene Cartera de Cobro
+    let balance: number | null = null;
     let availableCredit: number | null = null;
-    if (customer.creditLimit !== null && customer.creditLimit !== undefined) {
-      availableCredit = Math.max(0, Math.round((Number(customer.creditLimit) - balance) * 100) / 100);
-    }
-
     let groupInfo: any = null;
-    if (customer.group) {
-      const groupLimit = customer.group.creditLimit !== null && customer.group.creditLimit !== undefined
-        ? Number(customer.group.creditLimit)
-        : null;
 
-      let groupBalance = 0;
-      let groupAvailable: number | null = null;
+    if (hasCartera) {
+      const debtAgg = await this.prisma.creditAccount.aggregate({
+        where: {
+          customerId: customer.id,
+          businessId,
+          status: { in: [CreditAccountStatus.PENDING, CreditAccountStatus.PARTIALLY_PAID, CreditAccountStatus.OVERDUE] },
+        },
+        _sum: { balance: true },
+      });
+      const numBalance = debtAgg._sum.balance ? Math.round(Number(debtAgg._sum.balance) * 100) / 100 : 0;
+      balance = numBalance;
 
-      if (groupLimit !== null) {
-        const groupDebtAgg = await this.prisma.creditAccount.aggregate({
-          where: {
-            customer: { groupId: customer.group.id },
-            businessId,
-            status: { in: [CreditAccountStatus.PENDING, CreditAccountStatus.PARTIALLY_PAID, CreditAccountStatus.OVERDUE] },
-          },
-          _sum: { balance: true },
-        });
-        groupBalance = groupDebtAgg._sum.balance ? Math.round(Number(groupDebtAgg._sum.balance) * 100) / 100 : 0;
-        groupAvailable = Math.max(0, Math.round((groupLimit - groupBalance) * 100) / 100);
-
-        if (availableCredit !== null) {
-          availableCredit = Math.min(availableCredit, groupAvailable);
-        } else {
-          availableCredit = groupAvailable;
-        }
+      if (customer.creditLimit !== null && customer.creditLimit !== undefined) {
+        availableCredit = Math.max(0, Math.round((Number(customer.creditLimit) - numBalance) * 100) / 100);
       }
 
-      groupInfo = {
-        id: customer.group.id,
-        name: customer.group.name,
-        taxId: customer.group.taxId ?? null,
-        billingCycle: customer.group.billingCycle,
-        creditLimit: groupLimit,
-        balance: groupBalance,
-        availableCredit: groupAvailable,
-        isActive: customer.group.isActive,
-      };
+      if (customer.group) {
+        const groupLimit = customer.group.creditLimit !== null && customer.group.creditLimit !== undefined
+          ? Number(customer.group.creditLimit)
+          : null;
+
+        let groupBalance = 0;
+        let groupAvailable: number | null = null;
+
+        if (groupLimit !== null) {
+          const groupDebtAgg = await this.prisma.creditAccount.aggregate({
+            where: {
+              customer: { groupId: customer.group.id },
+              businessId,
+              status: { in: [CreditAccountStatus.PENDING, CreditAccountStatus.PARTIALLY_PAID, CreditAccountStatus.OVERDUE] },
+            },
+            _sum: { balance: true },
+          });
+          groupBalance = groupDebtAgg._sum.balance ? Math.round(Number(groupDebtAgg._sum.balance) * 100) / 100 : 0;
+          groupAvailable = Math.max(0, Math.round((groupLimit - groupBalance) * 100) / 100);
+
+          if (availableCredit !== null) {
+            availableCredit = Math.min(availableCredit, groupAvailable);
+          } else {
+            availableCredit = groupAvailable;
+          }
+        }
+
+        groupInfo = {
+          id: customer.group.id,
+          name: customer.group.name,
+          taxId: customer.group.taxId ?? null,
+          billingCycle: customer.group.billingCycle,
+          creditLimit: groupLimit,
+          balance: groupBalance,
+          availableCredit: groupAvailable,
+          isActive: customer.group.isActive,
+        };
+      }
     }
 
     // Privacidad para rol CAJERO: solo lo indispensable para cobrar
@@ -1412,8 +1495,8 @@ export class CustomersService {
         externalCode: customer.externalCode ?? null,
         currentBalance: balance,
         availableCredit,
-        creditLimit: customer.creditLimit !== null && customer.creditLimit !== undefined ? Number(customer.creditLimit) : null,
-        creditGroup: customer.group
+        creditLimit: hasCartera && customer.creditLimit !== null && customer.creditLimit !== undefined ? Number(customer.creditLimit) : null,
+        creditGroup: hasCartera && customer.group
           ? {
               id: customer.group.id,
               name: customer.group.name,
@@ -1432,11 +1515,11 @@ export class CustomersService {
       address: customer.lastAddressText ?? null,
       ruc: customer.ruc ?? null,
       externalCode: customer.externalCode ?? null,
-      creditLimit: customer.creditLimit !== null && customer.creditLimit !== undefined ? Number(customer.creditLimit) : null,
+      creditLimit: hasCartera && customer.creditLimit !== null && customer.creditLimit !== undefined ? Number(customer.creditLimit) : null,
       balance,
       currentBalance: balance,
       availableCredit,
-      groupId: customer.groupId ?? null,
+      groupId: hasCartera ? (customer.groupId ?? null) : null,
       creditGroup: groupInfo,
       group: groupInfo,
       createdAt: customer.createdAt,

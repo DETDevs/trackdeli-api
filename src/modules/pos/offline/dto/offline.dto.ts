@@ -77,6 +77,10 @@ export class SyncOfflineSaleItemDto {
 
   @IsOptional()
   @IsString()
+  customerId?: string;
+
+  @IsOptional()
+  @IsString()
   customerName?: string;
 
   @IsOptional()

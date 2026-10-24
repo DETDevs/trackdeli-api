@@ -559,6 +559,17 @@ export class OfflineService {
             finalNotes += ' [Discrepancia: Venta a crédito offline sin cuenta por cobrar: registrar manualmente]';
           }
 
+          let customerId: string | null = null;
+          if (saleDto.customerId) {
+            const existingCustomer = await tx.customer.findFirst({
+              where: { id: saleDto.customerId, businessId },
+              select: { id: true },
+            });
+            if (existingCustomer) {
+              customerId = existingCustomer.id;
+            }
+          }
+
           const createdSale = await tx.sale.create({
             data: {
               businessId,
@@ -573,6 +584,7 @@ export class OfflineService {
               hasNegativeStock: discrepancies.length > 0,
               clientGeneratedId: saleDto.clientGeneratedId,
               posTerminalId: terminal?.id || null,
+              customerId,
               customerName: saleDto.customerName || null,
               customerPhone: saleDto.customerPhone || null,
               customerRuc: saleDto.customerRuc || null,
