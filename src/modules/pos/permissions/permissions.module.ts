@@ -6,6 +6,6 @@ import { PoliciesModule } from '../policies/policies.module';
 @Module({
   imports: [PoliciesModule],
   providers: [PosPermissionsService, PosPermissionsGuard],
-  exports: [PosPermissionsService, PosPermissionsGuard],
+  exports: [PosPermissionsService, PosPermissionsGuard, PoliciesModule],
 })
 export class PosPermissionsModule {}
