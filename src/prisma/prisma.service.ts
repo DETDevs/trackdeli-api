@@ -2249,6 +2249,7 @@ WHERE a."customerId" = c."id"
       await this.ensureSplitOrderSchema();
       await this.ensureMembershipBillingSchema();
       await this.ensureWholesaleSchema();
+      await this.ensureFinancesSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -2827,6 +2828,167 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 176a - Advertencia sincronizando esquema de venta por mayor: ${err.message}`);
+    }
+  }
+
+  /**
+   * 183a - Módulo de Finanzas (cuentas por pagar, abonos a proveedores, gastos operativos por categoría):
+   * - Enum PayableAccountStatus (PENDING, PARTIALLY_PAID, PAID, CANCELLED)
+   * - pos_payable_accounts: id, businessId, purchaseId (unique), supplierId, originalAmount, balance, status, dueDate, notes, createdAt, updatedAt
+   * - pos_supplier_payments: id, payableAccountId, amount, paymentMethod, paidAt, notes, paidByUserId, cashMovementId, isVoided, voidedAt, voidedById, voidReason, createdAt
+   * - pos_expense_categories: id, businessId, name, description, color, isDefault, isActive, createdAt, updatedAt
+   * - pos_expenses: id, businessId, categoryId, amount, description, expenseDate, paymentMethod, receiptNumber, cashRegisterId, cashMovementId, createdById, isVoided, voidedAt, voidedById, voidReason, createdAt, updatedAt
+   * DDL idempotente con advisory lock 1830100.
+   */
+  private async ensureFinancesSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1830100)`);
+
+          // 1. Enum PayableAccountStatus
+          await tx.$executeRawUnsafe(`
+            DO $$ BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'PayableAccountStatus') THEN
+                CREATE TYPE "PayableAccountStatus" AS ENUM ('PENDING', 'PARTIALLY_PAID', 'PAID', 'CANCELLED');
+              END IF;
+            END $$;
+          `);
+
+          // 2. Tabla pos_payable_accounts
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_payable_accounts" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "purchaseId" TEXT NOT NULL,
+              "supplierId" TEXT NOT NULL,
+              "originalAmount" DECIMAL(12, 2) NOT NULL,
+              "balance" DECIMAL(12, 2) NOT NULL,
+              "status" "PayableAccountStatus" NOT NULL DEFAULT 'PENDING',
+              "dueDate" TIMESTAMP(3) NOT NULL,
+              "notes" TEXT,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_payable_accounts_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_payable_accounts_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_payable_accounts_purchaseId_fkey" FOREIGN KEY ("purchaseId") REFERENCES "pos_purchases"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_payable_accounts_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "pos_suppliers"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_payable_accounts_purchaseId_key" ON "pos_payable_accounts"("purchaseId");
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_payable_accounts_businessId_status_dueDate_idx" ON "pos_payable_accounts"("businessId", "status", "dueDate");
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_payable_accounts_businessId_supplierId_idx" ON "pos_payable_accounts"("businessId", "supplierId");
+          `);
+
+          // 3. Tabla pos_supplier_payments
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_supplier_payments" (
+              "id" TEXT NOT NULL,
+              "payableAccountId" TEXT NOT NULL,
+              "amount" DECIMAL(12, 2) NOT NULL,
+              "paymentMethod" "PosPaymentMethod" NOT NULL DEFAULT 'EFECTIVO',
+              "paidAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "notes" TEXT,
+              "paidByUserId" TEXT NOT NULL,
+              "cashMovementId" TEXT,
+              "isVoided" BOOLEAN NOT NULL DEFAULT false,
+              "voidedAt" TIMESTAMP(3),
+              "voidedById" TEXT,
+              "voidReason" VARCHAR(300),
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_supplier_payments_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_supplier_payments_payableAccountId_fkey" FOREIGN KEY ("payableAccountId") REFERENCES "pos_payable_accounts"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+              CONSTRAINT "pos_supplier_payments_paidByUserId_fkey" FOREIGN KEY ("paidByUserId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+              CONSTRAINT "pos_supplier_payments_voidedById_fkey" FOREIGN KEY ("voidedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+              CONSTRAINT "pos_supplier_payments_cashMovementId_fkey" FOREIGN KEY ("cashMovementId") REFERENCES "pos_cash_movements"("id") ON DELETE SET NULL ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_supplier_payments_cashMovementId_key" ON "pos_supplier_payments"("cashMovementId");
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_supplier_payments_payableAccountId_idx" ON "pos_supplier_payments"("payableAccountId");
+          `);
+
+          // 4. Tabla pos_expense_categories
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_expense_categories" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "name" VARCHAR(100) NOT NULL,
+              "description" VARCHAR(255),
+              "color" VARCHAR(20),
+              "isDefault" BOOLEAN NOT NULL DEFAULT false,
+              "isActive" BOOLEAN NOT NULL DEFAULT true,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_expense_categories_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_expense_categories_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_expense_categories_businessId_name_key" ON "pos_expense_categories"("businessId", "name");
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_expense_categories_businessId_isActive_idx" ON "pos_expense_categories"("businessId", "isActive");
+          `);
+
+          // 5. Tabla pos_expenses
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_expenses" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "categoryId" TEXT NOT NULL,
+              "amount" DECIMAL(12, 2) NOT NULL,
+              "description" VARCHAR(300) NOT NULL,
+              "expenseDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "paymentMethod" "PosPaymentMethod" NOT NULL DEFAULT 'EFECTIVO',
+              "receiptNumber" VARCHAR(100),
+              "cashRegisterId" TEXT,
+              "cashMovementId" TEXT,
+              "createdById" TEXT NOT NULL,
+              "isVoided" BOOLEAN NOT NULL DEFAULT false,
+              "voidedAt" TIMESTAMP(3),
+              "voidedById" TEXT,
+              "voidReason" VARCHAR(300),
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_expenses_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_expenses_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_expenses_categoryId_fkey" FOREIGN KEY ("categoryId") REFERENCES "pos_expense_categories"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+              CONSTRAINT "pos_expenses_cashRegisterId_fkey" FOREIGN KEY ("cashRegisterId") REFERENCES "pos_cash_registers"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+              CONSTRAINT "pos_expenses_cashMovementId_fkey" FOREIGN KEY ("cashMovementId") REFERENCES "pos_cash_movements"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+              CONSTRAINT "pos_expenses_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+              CONSTRAINT "pos_expenses_voidedById_fkey" FOREIGN KEY ("voidedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_expenses_cashMovementId_key" ON "pos_expenses"("cashMovementId");
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_expenses_businessId_expenseDate_idx" ON "pos_expenses"("businessId", "expenseDate");
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_expenses_businessId_categoryId_idx" ON "pos_expenses"("businessId", "categoryId");
+          `);
+
+          this.logger.log(
+            `[PrismaService] ✓ 183a - Esquema de Finanzas sincronizado (pos_payable_accounts, pos_supplier_payments, pos_expense_categories, pos_expenses).`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 183a - Advertencia sincronizando esquema de Finanzas: ${err.message}`);
     }
   }
 

@@ -935,6 +935,197 @@ export class ReportsService {
     };
   }
 
+  async getIncomeStatement(businessId: string, period?: string, from?: string, to?: string) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
+
+    const SOURCES = ['PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR', 'UNKNOWN'] as const;
+    const r2 = (n: any) => Math.round((Number(n) || 0) * 100) / 100;
+
+    const computeSalesAgg = async (fromDt: Date, toDt: Date) => {
+      const rows: any[] = await this.prisma.$queryRaw`
+        SELECT
+          COALESCE(SUM(s.subtotal), 0)::float AS "grossSales",
+          COALESCE(SUM(s."discountAmount"), 0)::float AS "discounts",
+          COALESCE(SUM(refunds.net_refund), 0)::float AS "returns",
+          COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS "netSales"
+        FROM pos_sales s
+        LEFT JOIN (
+          SELECT "saleId", SUM("refundAmount" - COALESCE("taxRefunded", 0)) AS net_refund
+          FROM pos_sale_returns
+          WHERE "businessId" = ${businessId}
+          GROUP BY "saleId"
+        ) refunds ON refunds."saleId" = s.id
+        WHERE s."businessId" = ${businessId}
+          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+          AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt};
+      `;
+      const row = rows[0] || {};
+      const grossSales = r2(row.grossSales || 0);
+      const discounts = r2(row.discounts || 0);
+      const returns = r2(row.returns || 0);
+      const netSales = r2(row.netSales || 0);
+      return { grossSales, discounts, returns, netSales };
+    };
+
+    const computeProfitMetrics = async (fromDt: Date, toDt: Date) => {
+      const rows: any[] = await this.prisma.$queryRaw`
+        WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
+        ${this.getProfitItemsSql(businessId, fromDt, toDt)}
+        SELECT
+          cost_source AS source,
+          COALESCE(SUM(line_revenue), 0)::float AS revenue,
+          COALESCE(SUM(unit_cost * net_qty), 0)::float AS cost,
+          COUNT(*) FILTER (WHERE NOT is_orphan)::int AS lines,
+          COALESCE(SUM(line_revenue) FILTER (WHERE is_orphan), 0)::float AS "orphanRevenue"
+        FROM item_sales
+        WHERE net_qty > 0
+        GROUP BY cost_source;
+      `;
+
+      const bySource: Record<string, { revenue: number; cost: number; lines: number }> = {};
+      for (const s of SOURCES) bySource[s] = { revenue: 0, cost: 0, lines: 0 };
+      for (const r of rows) {
+        if (!bySource[r.source]) continue;
+        bySource[r.source] = { revenue: r2(r.revenue), cost: r2(r.cost), lines: r.lines };
+      }
+
+      const covered = ['PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR'];
+      const totalRevenue = r2(SOURCES.reduce((a, s) => a + bySource[s].revenue, 0));
+      const coveredRevenue = r2(covered.reduce((a, s) => a + bySource[s].revenue, 0));
+      const coveragePercent = totalRevenue > 0
+        ? Math.round((coveredRevenue / totalRevenue) * 10000) / 100
+        : 100;
+
+      const totalCost = r2(covered.reduce((a, s) => a + bySource[s].cost, 0));
+      return {
+        totalRevenue,
+        coveredRevenue,
+        coveragePercent,
+        totalCost,
+      };
+    };
+
+    const computeExpensesAgg = async (fromDt: Date, toDt: Date) => {
+      const expenses = await this.prisma.expense.findMany({
+        where: {
+          businessId,
+          isVoided: false,
+          expenseDate: {
+            gte: fromDt,
+            lte: toDt,
+          },
+        },
+        include: {
+          category: true,
+        },
+      });
+
+      const catMap = new Map<string, { categoryId: string; category: string; amount: number }>();
+      let total = 0;
+
+      for (const e of expenses) {
+        const amt = Number(e.amount);
+        total += amt;
+        const catId = e.categoryId;
+        const catName = e.category?.name || 'Varios';
+        const existing = catMap.get(catId);
+        if (existing) {
+          existing.amount += amt;
+        } else {
+          catMap.set(catId, { categoryId: catId, category: catName, amount: amt });
+        }
+      }
+
+      const totalExpenses = r2(total);
+      const byCategory = Array.from(catMap.values())
+        .map((c) => ({
+          categoryId: c.categoryId,
+          category: c.category,
+          amount: r2(c.amount),
+          percent: totalExpenses > 0 ? Math.round((c.amount / totalExpenses) * 10000) / 100 : 0,
+        }))
+        .sort((a, b) => b.amount - a.amount);
+
+      return {
+        total: totalExpenses,
+        byCategory,
+      };
+    };
+
+    const [currentSales, currentMetrics, currentExpenses] = await Promise.all([
+      computeSalesAgg(startDate, endDate),
+      computeProfitMetrics(startDate, endDate),
+      computeExpensesAgg(startDate, endDate),
+    ]);
+
+    const missing: any[] = await this.prisma.$queryRaw`
+      WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
+      ${this.getProfitItemsSql(businessId, startDate, endDate)}
+      SELECT
+        product_id AS id,
+        product_name AS name,
+        SUM(net_qty)::float AS "quantitySold",
+        SUM(line_revenue)::float AS "totalSold"
+      FROM item_sales
+      WHERE cost_source = 'UNKNOWN' AND net_qty > 0 AND NOT is_orphan
+      GROUP BY product_id, product_name;
+    `;
+
+    const costOfGoodsSold = currentMetrics.totalCost;
+    const grossProfit = r2(currentSales.netSales - costOfGoodsSold);
+    const grossMarginPercent = currentSales.netSales > 0
+      ? Math.round((grossProfit / currentSales.netSales) * 10000) / 100
+      : 0;
+
+    const operatingProfit = r2(grossProfit - currentExpenses.total);
+    const operatingMarginPercent = currentSales.netSales > 0
+      ? Math.round((operatingProfit / currentSales.netSales) * 10000) / 100
+      : 0;
+
+    const isPartial = currentMetrics.coveragePercent < 100;
+
+    const [prevSales, prevMetrics, prevExpenses] = await Promise.all([
+      computeSalesAgg(range.previous.from, range.previous.to),
+      computeProfitMetrics(range.previous.from, range.previous.to),
+      computeExpensesAgg(range.previous.from, range.previous.to),
+    ]);
+
+    const prevGrossProfit = r2(prevSales.netSales - prevMetrics.totalCost);
+    const prevOperatingProfit = r2(prevGrossProfit - prevExpenses.total);
+
+    const calcChange = (curr: number, prev: number): number | null => {
+      if (prev === 0) return null;
+      return Math.round(((curr - prev) / Math.abs(prev)) * 10000) / 100;
+    };
+
+    return {
+      period: { from: range.current.fromIso, to: range.current.toIso },
+      grossSales: currentSales.grossSales,
+      discounts: currentSales.discounts,
+      returns: currentSales.returns,
+      netSales: currentSales.netSales,
+      costOfGoodsSold,
+      grossProfit,
+      grossMarginPercent,
+      operatingExpenses: currentExpenses,
+      operatingProfit,
+      operatingMarginPercent,
+      isPartial,
+      coverage: {
+        coveragePercent: currentMetrics.coveragePercent,
+        missingCostCount: missing.length,
+      },
+      comparison: {
+        previousPeriod: { from: range.previous.fromIso, to: range.previous.toIso },
+        netSalesChange: calcChange(currentSales.netSales, prevSales.netSales),
+        grossProfitChange: calcChange(grossProfit, prevGrossProfit),
+        operatingProfitChange: calcChange(operatingProfit, prevOperatingProfit),
+      },
+    };
+  }
+
   async getSalesByTime(businessId: string, period?: string, from?: string, to?: string) {
     const range = this.resolveDateRange(period, from, to);
     const startDate = range.current.from;

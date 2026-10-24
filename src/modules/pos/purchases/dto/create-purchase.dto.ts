@@ -10,6 +10,7 @@ import {
   IsInt,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PosPaymentMethod } from '@prisma/client';
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
 
 export class PurchaseItemDto {
@@ -47,6 +48,27 @@ export class CreatePurchaseDto {
   @IsOptional()
   @IsBoolean()
   force?: boolean;
+
+  @IsOptional()
+  @IsString()
+  paymentCondition?: 'CONTADO' | 'CREDITO';
+
+  @IsOptional()
+  @IsString()
+  dueDate?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  downPayment?: number;
+
+  @IsOptional()
+  @IsString()
+  downPaymentMethod?: PosPaymentMethod;
+
+  @IsOptional()
+  @IsBoolean()
+  deductFromCurrentShift?: boolean;
 
   @IsArray()
   @ArrayMinSize(1)

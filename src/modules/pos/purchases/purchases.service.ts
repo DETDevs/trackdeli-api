@@ -4,12 +4,23 @@ import {
   BadRequestException,
   ConflictException,
   UnprocessableEntityException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
-import { Prisma, PurchaseStatus, StockMovementType, UserRole } from '@prisma/client';
+import {
+  Prisma,
+  PurchaseStatus,
+  StockMovementType,
+  UserRole,
+  BusinessProductType,
+  PayableAccountStatus,
+  PosPaymentMethod,
+  MovementType,
+} from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { PoliciesService } from '../policies/policies.service';
 import { AuditService } from '../audit/audit.service';
+import { BusinessProductsService } from '../../business-products/business-products.service';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { VoidPurchaseDto } from './dto/void-purchase.dto';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
@@ -22,6 +33,7 @@ export class PurchasesService {
     private readonly prisma: PrismaService,
     private readonly policiesService: PoliciesService,
     private readonly auditService: AuditService,
+    private readonly businessProductsService: BusinessProductsService,
   ) {}
 
   async create(dto: CreatePurchaseDto, businessId: string, userId: string) {
@@ -35,6 +47,48 @@ export class PurchasesService {
           message: 'La compra debe contener al menos un ítem.',
         },
       });
+    }
+
+    const isCredit = dto.paymentCondition === 'CREDITO';
+    if (isCredit) {
+      if (!dto.supplierId) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'SUPPLIER_REQUIRED_FOR_CREDIT',
+          message: 'Debe especificar un proveedor para registrar una compra a crédito.',
+        });
+      }
+      if (!dto.dueDate) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'DUE_DATE_REQUIRED_FOR_CREDIT',
+          message: 'La fecha de vencimiento es obligatoria para compras a crédito.',
+        });
+      }
+      const dueDateParsed = new Date(dto.dueDate);
+      if (isNaN(dueDateParsed.getTime())) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'INVALID_DUE_DATE',
+          message: 'La fecha de vencimiento no es válida.',
+        });
+      }
+
+      const hasFinanzas = await this.businessProductsService.isActive(
+        businessId,
+        BusinessProductType.CARTERA_COBRO,
+      );
+      if (!hasFinanzas) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'FINANZAS_MODULE_REQUIRED',
+          message: 'Este negocio no tiene el módulo de Finanzas contratado para realizar compras a crédito.',
+        });
+      }
     }
 
     if (dto.supplierId) {
@@ -84,7 +138,46 @@ export class PurchasesService {
       calculatedTotalDec = calculatedTotalDec.plus(itemSubtotal);
     }
 
+    let downPaymentDec = new Prisma.Decimal(0);
+    const downPaymentMethod = dto.downPaymentMethod || PosPaymentMethod.EFECTIVO;
+    const deductFromShift = Boolean(dto.deductFromCurrentShift);
+
+    if (isCredit && dto.downPayment !== undefined && dto.downPayment !== null) {
+      downPaymentDec = new Prisma.Decimal(dto.downPayment);
+      if (downPaymentDec.isNaN() || downPaymentDec.lte(0)) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'INVALID_DOWN_PAYMENT',
+          message: 'El anticipo debe ser mayor a 0.',
+        });
+      }
+      if (downPaymentDec.gte(calculatedTotalDec)) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'INVALID_DOWN_PAYMENT',
+          message: 'El anticipo debe ser menor al total de la compra. Si abona el total completo, use condición CONTADO.',
+        });
+      }
+    }
+
     const result = await this.prisma.$transaction(async (tx) => {
+      let openShift: any = null;
+      if (isCredit && deductFromShift && downPaymentDec.gt(0) && downPaymentMethod === PosPaymentMethod.EFECTIVO) {
+        openShift = await tx.cashRegister.findFirst({
+          where: { businessId, cashierId: userId, status: 'OPEN' },
+        });
+        if (!openShift) {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            code: 'NO_OPEN_CASH_SHIFT',
+            message: 'No hay un turno de caja abierto para registrar la salida de efectivo del anticipo.',
+          });
+        }
+      }
+
       const purchase = await tx.purchase.create({
         data: {
           businessId,
@@ -177,6 +270,59 @@ export class PurchasesService {
         });
       }
 
+      // If credit purchase, create PayableAccount and optional down payment
+      if (isCredit) {
+        const initialBalance = calculatedTotalDec.minus(downPaymentDec);
+        const payableStatus = downPaymentDec.gt(0)
+          ? PayableAccountStatus.PARTIALLY_PAID
+          : PayableAccountStatus.PENDING;
+
+        const payable = await tx.payableAccount.create({
+          data: {
+            businessId,
+            purchaseId: purchase.id,
+            supplierId: dto.supplierId!,
+            originalAmount: calculatedTotalDec,
+            balance: initialBalance,
+            status: payableStatus,
+            dueDate: new Date(dto.dueDate!),
+            notes: dto.notes ? dto.notes.trim() : null,
+          },
+        });
+
+        if (downPaymentDec.gt(0)) {
+          let cashMovementId: string | null = null;
+          if (deductFromShift && downPaymentMethod === PosPaymentMethod.EFECTIVO && openShift) {
+            const cm = await tx.cashMovement.create({
+              data: {
+                businessId,
+                cashRegisterId: openShift.id,
+                userId,
+                type: MovementType.SALIDA,
+                amount: downPaymentDec,
+                concept: `Anticipo compra factura ${trimmedInvoice || purchase.id}`,
+                currency: 'NIO',
+                exchangeRate: new Prisma.Decimal(1),
+                amountBase: downPaymentDec,
+              },
+            });
+            cashMovementId = cm.id;
+          }
+
+          await tx.supplierPayment.create({
+            data: {
+              payableAccountId: payable.id,
+              amount: downPaymentDec,
+              paymentMethod: downPaymentMethod,
+              paidAt: new Date(),
+              notes: 'Anticipo compra',
+              paidByUserId: userId,
+              cashMovementId,
+            },
+          });
+        }
+      }
+
       await this.auditService.record(
         {
           businessId,
@@ -190,6 +336,8 @@ export class PurchasesService {
             supplierId: dto.supplierId,
             total: Number(calculatedTotalDec),
             itemsCount: dto.items.length,
+            isCredit,
+            downPayment: Number(downPaymentDec),
           },
         },
         tx as any,
@@ -201,6 +349,15 @@ export class PurchasesService {
           supplier: true,
           createdBy: { select: { id: true, name: true, email: true } },
           items: { include: { product: true } },
+          payableAccount: {
+            include: {
+              payments: {
+                include: {
+                  paidByUser: { select: { id: true, name: true } },
+                },
+              },
+            },
+          },
         },
       });
     });
@@ -254,6 +411,34 @@ export class PurchasesService {
           message: {
             code: 'PURCHASE_ALREADY_VOIDED',
             message: 'Esta compra ya fue anulada previamente.',
+          },
+        });
+      }
+
+      // Check if purchase has an associated payable account
+      const payable = await tx.payableAccount.findUnique({
+        where: { purchaseId: id },
+        include: {
+          payments: {
+            where: { isVoided: false },
+          },
+        },
+      });
+
+      if (payable) {
+        if (payable.payments.length > 0) {
+          throw new UnprocessableEntityException({
+            statusCode: 422,
+            error: 'Unprocessable Entity',
+            code: 'PURCHASE_HAS_ACTIVE_PAYMENTS',
+            message: 'No se puede anular una compra con abonos activos en cuentas por pagar. Anule los abonos primero.',
+          });
+        }
+
+        await tx.payableAccount.update({
+          where: { id: payable.id },
+          data: {
+            status: PayableAccountStatus.CANCELLED,
           },
         });
       }
@@ -353,6 +538,15 @@ export class PurchasesService {
           createdBy: { select: { id: true, name: true, email: true } },
           voidedBy: { select: { id: true, name: true, email: true } },
           items: { include: { product: true } },
+          payableAccount: {
+            include: {
+              payments: {
+                include: {
+                  paidByUser: { select: { id: true, name: true } },
+                },
+              },
+            },
+          },
         },
       });
 
@@ -419,6 +613,15 @@ export class PurchasesService {
           createdBy: { select: { id: true, name: true, email: true } },
           voidedBy: { select: { id: true, name: true, email: true } },
           items: { include: { product: true } },
+          payableAccount: {
+            include: {
+              payments: {
+                include: {
+                  paidByUser: { select: { id: true, name: true } },
+                },
+              },
+            },
+          },
         },
       }),
     ]);
@@ -442,6 +645,15 @@ export class PurchasesService {
         createdBy: { select: { id: true, name: true, email: true } },
         voidedBy: { select: { id: true, name: true, email: true } },
         items: { include: { product: true } },
+        payableAccount: {
+          include: {
+            payments: {
+              include: {
+                paidByUser: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
       },
     });
 
@@ -469,6 +681,18 @@ export class PurchasesService {
         unitCost: Number(new Prisma.Decimal(i.unitCost != null ? i.unitCost.toString() : 0).toDecimalPlaces(2)),
         subtotal: Number(new Prisma.Decimal(i.subtotal != null ? i.subtotal.toString() : 0).toDecimalPlaces(2)),
       })),
+      payableAccount: purchase.payableAccount
+        ? {
+            ...purchase.payableAccount,
+            originalAmount: Number(new Prisma.Decimal(purchase.payableAccount.originalAmount != null ? purchase.payableAccount.originalAmount.toString() : 0).toDecimalPlaces(2)),
+            balance: Number(new Prisma.Decimal(purchase.payableAccount.balance != null ? purchase.payableAccount.balance.toString() : 0).toDecimalPlaces(2)),
+            payments: (purchase.payableAccount.payments || []).map((p: any) => ({
+              ...p,
+              amount: Number(new Prisma.Decimal(p.amount != null ? p.amount.toString() : 0).toDecimalPlaces(2)),
+              paidBy: p.paidByUser,
+            })),
+          }
+        : null,
     };
   }
 }

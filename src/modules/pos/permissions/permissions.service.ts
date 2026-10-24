@@ -22,6 +22,9 @@ export enum PosAction {
   GROUP_STATEMENT = 'GROUP_STATEMENT',
   GROUP_SETTLE = 'GROUP_SETTLE',
   CREDIT_LIMIT_OVERRIDE = 'CREDIT_LIMIT_OVERRIDE',
+  GESTION_GASTOS = 'GESTION_GASTOS',
+  PAGAR_PROVEEDOR = 'PAGAR_PROVEEDOR',
+  VER_RESULTADOS = 'VER_RESULTADOS',
 }
 
 @Injectable()
@@ -73,6 +76,9 @@ export class PosPermissionsService {
         case PosAction.GROUP_STATEMENT:
         case PosAction.GROUP_SETTLE:
         case PosAction.CREDIT_LIMIT_OVERRIDE:
+        case PosAction.GESTION_GASTOS:
+        case PosAction.PAGAR_PROVEEDOR:
+        case PosAction.VER_RESULTADOS:
           return false;
         default:
           return false;

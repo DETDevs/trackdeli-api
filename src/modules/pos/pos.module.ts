@@ -28,6 +28,8 @@ import { PosDevicesModule } from './devices/pos-devices.module';
 import { BackofficeModule } from './backoffice/backoffice.module';
 import { WorkshopModule } from './workshop/workshop.module';
 import { KitchenModule } from './kitchen/kitchen.module';
+import { PayablesModule } from './payables/payables.module';
+import { ExpensesModule } from './expenses/expenses.module';
 
 @Module({
   imports: [
@@ -56,9 +58,11 @@ import { KitchenModule } from './kitchen/kitchen.module';
     BackofficeModule,
     WorkshopModule,
     KitchenModule,
+    PayablesModule,
+    ExpensesModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
-  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule],
+  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule],
 })
 export class PosModule {}

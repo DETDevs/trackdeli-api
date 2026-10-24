@@ -140,6 +140,18 @@ export class ReportsController {
     return this.service.getProfit(resolveBusinessId(user, qBid), period, from, to);
   }
 
+  @UseGuards(CarteraCobroGuard)
+  @Get("income-statement")
+  incomeStatement(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getIncomeStatement(resolveBusinessId(user, qBid), period, from, to);
+  }
+
   @Get("sales-by-time")
   salesByTime(
     @CurrentUser() user: JwtPayload,

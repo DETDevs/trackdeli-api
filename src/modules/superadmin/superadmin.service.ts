@@ -1243,7 +1243,7 @@ export class SuperAdminService {
       if (hasCarteraCobro) {
         const carteraFee = dto.carteraMonthlyFee !== undefined && dto.carteraMonthlyFee !== null
           ? Number(dto.carteraMonthlyFee)
-          : 29.99;
+          : 30;
 
         const carteraSub = await tx.businessProductSubscription.create({
           data: {

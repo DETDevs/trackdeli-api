@@ -5,9 +5,16 @@ import { PrismaModule } from '../../../prisma/prisma.module';
 import { PoliciesModule } from '../policies/policies.module';
 import { AuditModule } from '../audit/audit.module';
 import { IdempotencyModule } from '../idempotency/idempotency.module';
+import { BusinessProductsModule } from '../../business-products/business-products.module';
 
 @Module({
-  imports: [PrismaModule, PoliciesModule, AuditModule, IdempotencyModule],
+  imports: [
+    PrismaModule,
+    PoliciesModule,
+    AuditModule,
+    IdempotencyModule,
+    BusinessProductsModule,
+  ],
   controllers: [PurchasesController],
   providers: [PurchasesService],
   exports: [PurchasesService],

@@ -169,6 +169,13 @@ enum PurchaseStatus {
   VOIDED
 }
 
+enum PayableAccountStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
 enum InventoryAdjustmentType {
   COUNT
   SHRINKAGE
@@ -348,6 +355,11 @@ model Business {
   orderSubAccounts      OrderSubAccount[]
   orderSplitLogs        OrderSplitLog[]
 
+  // Finanzas
+  payableAccounts       PayableAccount[]
+  expenseCategories     ExpenseCategory[]
+  expenses              Expense[]
+
   @@map("businesses")
 }
 
@@ -447,6 +459,12 @@ model User {
   voidedPurchases       Purchase[]          @relation("UserVoidedPurchases")
   inventoryAdjustments  InventoryAdjustment[] @relation("UserAdjustments")
   approvedInventoryAdjustments InventoryAdjustment[] @relation("UserApprovedAdjustments")
+
+  // Finanzas relations
+  supplierPaymentsPaid   SupplierPayment[]   @relation("SupplierPaymentsPaid")
+  supplierPaymentsVoided SupplierPayment[]   @relation("SupplierPaymentsVoided")
+  expensesCreated        Expense[]           @relation("UserExpenses")
+  expensesVoided         Expense[]           @relation("UserVoidedExpenses")
 
   // Password audit relations
   passwordChangesReceived PasswordChangeLog[] @relation("PasswordChangesReceived")
@@ -896,6 +914,7 @@ model Supplier {
   isActive   Boolean    @default(true)
   products   Product[]
   purchases  Purchase[]
+  payableAccounts PayableAccount[]
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @default(now()) @updatedAt
 
@@ -1287,6 +1306,7 @@ model CashRegister {
   sales         Sale[]
   movements     CashMovement[]
   payments      PosPayment[]
+  expenses      Expense[]
 
   createdAt     DateTime   @default(now())
 
@@ -1311,6 +1331,9 @@ model CashMovement {
   amountBase     Decimal      @default(0) @db.Decimal(12,2)
 
   createdAt      DateTime     @default(now())
+
+  supplierPayment SupplierPayment?
+  expense         Expense?
 
   @@map("pos_cash_movements")
 }
@@ -1351,6 +1374,7 @@ model Purchase {
   voidReason    String?        @db.VarChar(500)
   items         PurchaseItem[]
   costHistories ProductCostHistory[]
+  payableAccount PayableAccount?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
@@ -1388,6 +1412,101 @@ model ProductCostHistory {
 
   @@index([productId, date])
   @@map("pos_product_cost_history")
+}
+
+model PayableAccount {
+  id             String               @id @default(uuid())
+  businessId     String
+  business       Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  purchaseId     String               @unique
+  purchase       Purchase             @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  supplierId     String
+  supplier       Supplier             @relation(fields: [supplierId], references: [id])
+  originalAmount Decimal              @db.Decimal(12, 2)
+  balance        Decimal              @db.Decimal(12, 2)
+  status         PayableAccountStatus @default(PENDING)
+  dueDate        DateTime
+  notes          String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  payments       SupplierPayment[]
+
+  @@index([businessId, status, dueDate])
+  @@index([businessId, supplierId])
+  @@map("pos_payable_accounts")
+}
+
+model SupplierPayment {
+  id               String           @id @default(uuid())
+  payableAccountId String
+  payableAccount   PayableAccount   @relation(fields: [payableAccountId], references: [id], onDelete: Restrict)
+  amount           Decimal          @db.Decimal(12, 2)
+  paymentMethod    PosPaymentMethod @default(EFECTIVO)
+  paidAt           DateTime         @default(now())
+  notes            String?
+  paidByUserId     String
+  paidByUser       User             @relation("SupplierPaymentsPaid", fields: [paidByUserId], references: [id])
+  cashMovementId   String?          @unique
+  cashMovement     CashMovement?    @relation(fields: [cashMovementId], references: [id], onDelete: SetNull)
+  isVoided         Boolean          @default(false)
+  voidedAt         DateTime?
+  voidedById       String?
+  voidedBy         User?            @relation("SupplierPaymentsVoided", fields: [voidedById], references: [id])
+  voidReason       String?          @db.VarChar(300)
+  createdAt        DateTime         @default(now())
+
+  @@index([payableAccountId])
+  @@map("pos_supplier_payments")
+}
+
+model ExpenseCategory {
+  id          String    @id @default(uuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name        String    @db.VarChar(100)
+  description String?   @db.VarChar(255)
+  color       String?   @db.VarChar(20)
+  isDefault   Boolean   @default(false)
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  expenses    Expense[]
+
+  @@unique([businessId, name])
+  @@index([businessId, isActive])
+  @@map("pos_expense_categories")
+}
+
+model Expense {
+  id             String           @id @default(uuid())
+  businessId     String
+  business       Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  categoryId     String
+  category       ExpenseCategory  @relation(fields: [categoryId], references: [id])
+  amount         Decimal          @db.Decimal(12, 2)
+  description    String           @db.VarChar(300)
+  expenseDate    DateTime         @default(now())
+  paymentMethod  PosPaymentMethod @default(EFECTIVO)
+  receiptNumber  String?          @db.VarChar(100)
+  cashRegisterId String?
+  cashRegister   CashRegister?    @relation(fields: [cashRegisterId], references: [id], onDelete: SetNull)
+  cashMovementId String?          @unique
+  cashMovement   CashMovement?    @relation(fields: [cashMovementId], references: [id], onDelete: SetNull)
+  createdById    String
+  createdBy      User             @relation("UserExpenses", fields: [createdById], references: [id])
+  isVoided       Boolean          @default(false)
+  voidedAt       DateTime?
+  voidedById     String?
+  voidedBy       User?            @relation("UserVoidedExpenses", fields: [voidedById], references: [id])
+  voidReason     String?          @db.VarChar(300)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([businessId, expenseDate])
+  @@index([businessId, categoryId])
+  @@map("pos_expenses")
 }
 
 model InventoryAdjustment {
