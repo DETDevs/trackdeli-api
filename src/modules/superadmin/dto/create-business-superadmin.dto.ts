@@ -141,6 +141,10 @@ export class CreateBusinessSuperAdminDto {
   @Min(0)
   citasMonthlyFee?: number;
 
+  @IsOptional()
+  @IsBoolean()
+  tracksBatches?: boolean;
+
   @IsObject()
   @IsOptional()
   @ValidateNested()

@@ -24,6 +24,14 @@ export class PurchaseItemDto {
   @IsNumber()
   @Min(0)
   unitCost: number;
+
+  @IsOptional()
+  @IsString()
+  lotNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  expiryDate?: string;
 }
 
 export class CreatePurchaseDto {

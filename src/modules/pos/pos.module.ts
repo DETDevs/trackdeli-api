@@ -31,6 +31,7 @@ import { KitchenModule } from './kitchen/kitchen.module';
 import { PayablesModule } from './payables/payables.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { PrintAuditModule } from './print-audit/print-audit.module';
+import { BatchesModule } from './batches/batches.module';
 
 @Module({
   imports: [
@@ -62,9 +63,11 @@ import { PrintAuditModule } from './print-audit/print-audit.module';
     PayablesModule,
     ExpensesModule,
     PrintAuditModule,
+    BatchesModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
-  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule, PrintAuditModule],
+  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule, PrintAuditModule, BatchesModule],
 })
 export class PosModule {}
+

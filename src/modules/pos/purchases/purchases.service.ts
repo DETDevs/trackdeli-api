@@ -25,6 +25,8 @@ import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { VoidPurchaseDto } from './dto/void-purchase.dto';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
+import { BatchesService } from '../batches/batches.service';
+
 @Injectable()
 export class PurchasesService {
   private readonly logger = new Logger(PurchasesService.name);
@@ -34,6 +36,7 @@ export class PurchasesService {
     private readonly policiesService: PoliciesService,
     private readonly auditService: AuditService,
     private readonly businessProductsService: BusinessProductsService,
+    private readonly batchesService: BatchesService,
   ) {}
 
   async create(dto: CreatePurchaseDto, businessId: string, userId: string) {
@@ -191,6 +194,11 @@ export class PurchasesService {
         },
       });
 
+      const business = await tx.business.findUnique({
+        where: { id: businessId },
+        select: { id: true, tracksBatches: true },
+      });
+
       for (const item of dto.items) {
         // Lock product row to prevent race conditions
         await tx.$queryRaw`SELECT id FROM pos_products WHERE id = ${item.productId} FOR UPDATE`;
@@ -210,16 +218,33 @@ export class PurchasesService {
           });
         }
 
+        const isTracked = this.batchesService.isTracked(business, product);
+
+        if (isTracked) {
+          if (!item.lotNumber || !item.lotNumber.trim()) {
+            throw new BadRequestException(
+              `El producto "${product.name}" tiene control de lotes activado; el número de lote es obligatorio.`,
+            );
+          }
+          if (!item.expiryDate) {
+            throw new BadRequestException(
+              `El producto "${product.name}" tiene control de lotes activado; la fecha de vencimiento es obligatoria.`,
+            );
+          }
+        }
+
         const validQty = validateProductQuantity(product.unit, item.quantity, product.name);
         const unitCostDec = new Prisma.Decimal(item.unitCost);
         const itemSubtotal = new Prisma.Decimal(validQty).times(unitCostDec);
-        await tx.purchaseItem.create({
+        const createdPurchaseItem = await tx.purchaseItem.create({
           data: {
             purchaseId: purchase.id,
             productId: product.id,
             quantity: validQty,
             unitCost: unitCostDec,
             subtotal: itemSubtotal,
+            lotNumber: item.lotNumber ? item.lotNumber.trim() : null,
+            expiryDate: item.expiryDate ? new Date(item.expiryDate) : null,
           },
         });
 
@@ -228,14 +253,32 @@ export class PurchasesService {
         const oldCostDec = product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null;
         const newCostNum = Number(unitCostDec);
 
+        let createdBatchId: string | null = null;
         if (product.trackStock) {
-          await tx.product.update({
-            where: { id: product.id },
-            data: {
-              stock: { increment: validQty },
+          if (isTracked) {
+            const batch = await this.batchesService.receive(tx, {
+              businessId,
+              productId: product.id,
+              batchNumber: item.lotNumber!,
+              expiryDate: item.expiryDate,
+              qty: validQty,
               cost: newCostNum,
-            },
-          });
+              purchaseItemId: createdPurchaseItem.id,
+            });
+            createdBatchId = batch.id;
+            await tx.product.update({
+              where: { id: product.id },
+              data: { cost: newCostNum },
+            });
+          } else {
+            await tx.product.update({
+              where: { id: product.id },
+              data: {
+                stock: { increment: validQty },
+                cost: newCostNum,
+              },
+            });
+          }
 
           await tx.stockMovement.create({
             data: {
@@ -249,6 +292,7 @@ export class PurchasesService {
               cost: unitCostDec,
               concept: `Compra factura ${trimmedInvoice || 'S/N'}`,
               reference: purchase.id,
+              batchId: createdBatchId,
             },
           });
         } else {
@@ -471,18 +515,54 @@ export class PurchasesService {
         }
       }
 
+      const business = await tx.business.findUnique({
+        where: { id: purchase.businessId },
+        select: { id: true, tracksBatches: true },
+      });
+
       // Revert stock and handle cost history
       for (const item of purchase.items) {
         const product = await tx.product.findUniqueOrThrow({ where: { id: item.productId } });
         const qty = round3(Number(item.quantity));
         const stockBefore = Number(product.stock);
         const stockAfter = round3(stockBefore - qty);
+        const isTracked = this.batchesService.isTracked(business, product);
+
+        let batchIdForMovement: string | null = null;
 
         if (product.trackStock) {
-          await tx.product.update({
-            where: { id: product.id },
-            data: { stock: { decrement: qty } },
-          });
+          if (isTracked) {
+            const batch = (await tx.productBatch.findFirst({
+              where: { businessId: purchase.businessId, productId: product.id, purchaseItemId: item.id },
+            })) || (item.lotNumber ? await tx.productBatch.findFirst({
+              where: { businessId: purchase.businessId, productId: product.id, batchNumber: item.lotNumber },
+            }) : null);
+
+            if (batch) {
+              batchIdForMovement = batch.id;
+              if (Number(batch.quantity) < qty) {
+                throw new BadRequestException(
+                  `No se puede anular la compra: el lote "${batch.batchNumber}" ya tiene unidades vendidas (disponible en lote: ${batch.quantity}, comprado: ${qty})`,
+                );
+              }
+              await tx.productBatch.update({
+                where: { id: batch.id },
+                data: { quantity: { decrement: qty } },
+              });
+              await this.batchesService.syncProductStock(tx, product.id);
+            } else {
+              await this.batchesService.adjust(tx, {
+                businessId: purchase.businessId,
+                productId: product.id,
+                delta: -qty,
+              });
+            }
+          } else {
+            await tx.product.update({
+              where: { id: product.id },
+              data: { stock: { decrement: qty } },
+            });
+          }
 
           await tx.stockMovement.create({
             data: {
@@ -496,6 +576,7 @@ export class PurchasesService {
               cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
               concept: `Anulación compra ${purchase.invoiceNumber || purchase.id}: ${dto.reason.trim()}`,
               reference: purchase.id,
+              batchId: batchIdForMovement,
             },
           });
         }

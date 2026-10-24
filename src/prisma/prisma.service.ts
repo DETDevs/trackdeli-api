@@ -2251,6 +2251,7 @@ WHERE a."customerId" = c."id"
       await this.ensureWholesaleSchema();
       await this.ensureFinancesSchema();
       await this.ensurePrintAuditAndReceiptSchema();
+      await this.ensureBatchesSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -3057,6 +3058,7 @@ WHERE a."customerId" = c."id"
               "showCashier" BOOLEAN NOT NULL DEFAULT true,
               "showCustomer" BOOLEAN NOT NULL DEFAULT true,
               "showTaxBreakdown" BOOLEAN NOT NULL DEFAULT true,
+              "showBatches" BOOLEAN NOT NULL DEFAULT false,
               "paperWidthMm" INTEGER NOT NULL DEFAULT 80,
               "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
               "updatedById" TEXT,
@@ -3070,6 +3072,10 @@ WHERE a."customerId" = c."id"
             CREATE UNIQUE INDEX IF NOT EXISTS "pos_receipt_settings_businessId_key" ON "pos_receipt_settings"("businessId");
           `);
 
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_receipt_settings" ADD COLUMN IF NOT EXISTS "showBatches" BOOLEAN NOT NULL DEFAULT false;
+          `);
+
           this.logger.log(
             `[PrismaService] ✓ 184a - Esquema de Auditoría de Impresiones y Configuración de Ticket sincronizado (pos_print_events, pos_receipt_settings).`,
           );
@@ -3078,6 +3084,115 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 184a - Advertencia sincronizando esquema de Auditoría de Impresiones: ${err.message}`);
+    }
+  }
+
+  /**
+   * 186a: DDL idempotente para Control de Lotes y Vencimientos (pos_product_batches, pos_sale_item_batches).
+   * DDL con advisory lock 1860100.
+   */
+  private async ensureBatchesSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1860100)`);
+
+          // 1. pos_products.tracksBatches
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "tracksBatches" BOOLEAN NOT NULL DEFAULT false;
+          `);
+
+          // 2. pos_purchase_items.lotNumber and expiryDate
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_purchase_items" ADD COLUMN IF NOT EXISTS "lotNumber" VARCHAR(100);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_purchase_items" ADD COLUMN IF NOT EXISTS "expiryDate" DATE;
+          `);
+
+          // 3. pos_product_batches
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_product_batches" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "productId" TEXT NOT NULL,
+              "batchNumber" VARCHAR(100) NOT NULL,
+              "expiryDate" DATE,
+              "quantity" NUMERIC(12, 3) NOT NULL DEFAULT 0,
+              "cost" NUMERIC(12, 4),
+              "purchaseItemId" TEXT,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_product_batches_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_product_batches_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_product_batches_productId_fkey" FOREIGN KEY ("productId") REFERENCES "pos_products"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_product_batches_purchaseItemId_fkey" FOREIGN KEY ("purchaseItemId") REFERENCES "pos_purchase_items"("id") ON DELETE SET NULL ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_product_batches_businessId_productId_batchNumber_key"
+              ON "pos_product_batches"("businessId", "productId", "batchNumber");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_product_batches_businessId_expiryDate_idx"
+              ON "pos_product_batches"("businessId", "expiryDate");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_product_batches_businessId_productId_quantity_idx"
+              ON "pos_product_batches"("businessId", "productId", "quantity");
+          `);
+
+          // 4. pos_sale_item_batches
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_sale_item_batches" (
+              "id" TEXT NOT NULL,
+              "saleItemId" TEXT NOT NULL,
+              "batchId" TEXT NOT NULL,
+              "quantity" NUMERIC(12, 3) NOT NULL,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_sale_item_batches_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_sale_item_batches_saleItemId_fkey" FOREIGN KEY ("saleItemId") REFERENCES "pos_sale_items"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_sale_item_batches_batchId_fkey" FOREIGN KEY ("batchId") REFERENCES "pos_product_batches"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_sale_item_batches_saleItemId_idx"
+              ON "pos_sale_item_batches"("saleItemId");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_sale_item_batches_batchId_idx"
+              ON "pos_sale_item_batches"("batchId");
+          `);
+
+          // 5. pos_stock_movements.batchId
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_stock_movements" ADD COLUMN IF NOT EXISTS "batchId" TEXT;
+          `);
+          await tx.$executeRawUnsafe(`
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'pos_stock_movements_batchId_fkey'
+              ) THEN
+                ALTER TABLE "pos_stock_movements" ADD CONSTRAINT "pos_stock_movements_batchId_fkey"
+                  FOREIGN KEY ("batchId") REFERENCES "pos_product_batches"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+              END IF;
+            END $$;
+          `);
+
+          this.logger.log(
+            `[PrismaService] ✓ 186a - Esquema de Lotes y Vencimientos sincronizado`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 186a - Advertencia sincronizando esquema de Lotes y Vencimientos: ${err.message}`);
     }
   }
 
@@ -3670,6 +3785,7 @@ WHERE a."customerId" = c."id"
           code: 'farmacia',
           name: 'Farmacia',
           posVertical: PosVertical.RETAIL,
+          tracksBatches: true,
           order: 4,
           fields: [
             { key: 'laboratorio', label: 'Laboratorio', dataType: ProductFieldDataType.TEXT, order: 1 },
@@ -3748,12 +3864,14 @@ WHERE a."customerId" = c."id"
             name: item.name,
             posVertical: item.posVertical,
             order: item.order,
+            ...((item as any).tracksBatches !== undefined ? { tracksBatches: (item as any).tracksBatches } : {}),
           },
           create: {
             code: item.code,
             name: item.name,
             posVertical: item.posVertical,
             order: item.order,
+            tracksBatches: (item as any).tracksBatches ?? false,
           },
         });
 

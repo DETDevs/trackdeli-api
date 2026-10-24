@@ -60,6 +60,10 @@ export class UpdateReceiptSettingsDto {
   showTaxBreakdown?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  showBatches?: boolean;
+
+  @IsOptional()
   @IsIn([58, 80], { message: 'paperWidthMm solo puede ser 58 u 80' })
   paperWidthMm?: number;
 }

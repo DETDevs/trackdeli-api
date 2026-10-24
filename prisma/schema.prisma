@@ -327,6 +327,7 @@ model Business {
   posExchangeRates PosExchangeRate[]
   saleReturns      SaleReturn[]
   posDevices       PosDevice[]
+  productBatches   ProductBatch[]
 
   // Subscripciones de Productos y Auditoría
   productSubscriptions BusinessProductSubscription[]
@@ -959,6 +960,7 @@ model Product {
   stock       Decimal  @default(0) @db.Decimal(12, 3)
   minStock    Decimal  @default(5) @db.Decimal(12, 3)
   maxStock    Decimal? @db.Decimal(12, 3)
+  tracksBatches Boolean @default(false)
 
   isActive    Boolean   @default(true)
   attributes  Json      @default("{}")
@@ -973,6 +975,7 @@ model Product {
   inventoryAdjustments   InventoryAdjustment[]
   recipeComponents       ProductComponent[]    @relation("ParentProductComponents")
   usedInRecipes          ProductComponent[]    @relation("ComponentProductUsages")
+  batches                ProductBatch[]
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -1094,7 +1097,8 @@ model SaleItem {
   subtotal    Float
   returnedQty Float    @default(0)
 
-  returnItems SaleReturnItem[]
+  returnItems      SaleReturnItem[]
+  batchAllocations SaleItemBatch[]
 
   @@index([saleId])
   @@map("pos_sale_items")
@@ -1397,10 +1401,14 @@ model PurchaseItem {
   purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
   productId  String
   product    Product  @relation(fields: [productId], references: [id])
-  quantity   Decimal  @db.Decimal(12, 3)
-  unitCost   Decimal  @db.Decimal(12, 4)
-  subtotal   Decimal  @db.Decimal(12, 2)
-  createdAt  DateTime @default(now())
+  quantity   Decimal   @db.Decimal(12, 3)
+  unitCost   Decimal   @db.Decimal(12, 4)
+  subtotal   Decimal   @db.Decimal(12, 2)
+  lotNumber  String?   @db.VarChar(100)
+  expiryDate DateTime? @db.Date
+  createdAt  DateTime  @default(now())
+
+  batches    ProductBatch[]
 
   @@index([purchaseId])
   @@map("pos_purchase_items")
@@ -1554,6 +1562,8 @@ model StockMovement {
   cost        Decimal?          @db.Decimal(12, 4)
   concept     String            @db.VarChar(300)
   reference   String?           @db.VarChar(100)
+  batchId     String?
+  batch       ProductBatch?     @relation(fields: [batchId], references: [id], onDelete: SetNull)
 
   createdAt   DateTime          @default(now())
 
@@ -2289,11 +2299,50 @@ model PosReceiptSettings {
   showCashier      Boolean   @default(true)
   showCustomer     Boolean   @default(true)
   showTaxBreakdown Boolean   @default(true)
+  showBatches      Boolean   @default(false)
   paperWidthMm     Int       @default(80)
   updatedAt        DateTime  @default(now()) @updatedAt
   updatedById      String?
   updatedBy        User?     @relation("ReceiptSettingsUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
 
   @@map("pos_receipt_settings")
+}
+
+model ProductBatch {
+  id             String          @id @default(uuid())
+  businessId     String
+  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  batchNumber    String          @db.VarChar(100)
+  expiryDate     DateTime?       @db.Date
+  quantity       Decimal         @default(0) @db.Decimal(12, 3)
+  cost           Decimal?        @db.Decimal(12, 4)
+  purchaseItemId String?
+  purchaseItem   PurchaseItem?   @relation(fields: [purchaseItemId], references: [id], onDelete: SetNull)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  saleAllocations SaleItemBatch[]
+  stockMovements  StockMovement[]
+
+  @@unique([businessId, productId, batchNumber])
+  @@index([businessId, expiryDate])
+  @@index([businessId, productId, quantity])
+  @@map("pos_product_batches")
+}
+
+model SaleItemBatch {
+  id         String       @id @default(uuid())
+  saleItemId String
+  saleItem   SaleItem     @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+  batchId    String
+  batch      ProductBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  quantity   Decimal      @db.Decimal(12, 3)
+  createdAt  DateTime     @default(now())
+
+  @@index([saleItemId])
+  @@index([batchId])
+  @@map("pos_sale_item_batches")
 }
 

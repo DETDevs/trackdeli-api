@@ -17,6 +17,8 @@ import { PosAction } from '../permissions/permissions.service';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 import { resolveLineUnitPrice } from './utils/pricing.util';
 
+import { BatchesService } from '../batches/batches.service';
+
 @Injectable()
 export class SalesService {
   private readonly logger = new Logger(SalesService.name);
@@ -28,6 +30,7 @@ export class SalesService {
     private readonly exchangeRateService: ExchangeRateService,
     private readonly auditService: AuditService,
     private readonly approvalsService: ApprovalsService,
+    private readonly batchesService: BatchesService,
   ) {}
 
   private formatSale(sale: any, userRole?: string) {
@@ -47,6 +50,11 @@ export class SalesService {
           price_tier: i.priceTier || 'RETAIL',
           returnedQty: i.returnedQty != null ? Number(new Prisma.Decimal(i.returnedQty.toString()).toDecimalPlaces(2)) : 0,
           returnableQty: Math.max(0, (i.quantity || 0) - (i.returnedQty || 0)),
+          batches: (i.batchAllocations || []).map((ba: any) => ({
+            batchNumber: ba.batch?.batchNumber,
+            expiryDate: ba.batch?.expiryDate,
+            quantity: Number(ba.quantity),
+          })),
         };
         if (itemCopy.product) {
           if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
@@ -137,6 +145,7 @@ export class SalesService {
           whatsappNumber: true,
           logoUrl: true,
           wholesaleEnabled: true,
+          tracksBatches: true,
         },
       });
       if (!business) throw new NotFoundException("Negocio no encontrado");
@@ -878,6 +887,8 @@ export class SalesService {
               },
             },
           });
+          const lineSaleItem = sale.items.find((si) => si.productId === item.productId);
+
           if (product?.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
             const lineQty = round3(item.quantity);
             for (const comp of product.recipeComponents) {
@@ -887,48 +898,122 @@ export class SalesService {
                 const currentComp = await tx.product.findUnique({ where: { id: compProd.id } });
                 const stockBefore = currentComp ? Number(currentComp.stock) : 0;
                 const stockAfter = round3(stockBefore - deductQty);
+                const isCompTracked = this.batchesService.isTracked(business, compProd);
 
-                await tx.product.update({
-                  where: { id: compProd.id },
-                  data: { stock: { decrement: deductQty } },
-                });
-
-                await tx.stockMovement.create({
-                  data: {
+                if (isCompTracked) {
+                  const allocations = await this.batchesService.allocateFefo(tx, {
                     businessId,
                     productId: compProd.id,
-                    userId: cashierId,
-                    type: "VENTA",
-                    quantity: -deductQty,
-                    stockBefore,
-                    stockAfter,
-                    concept: `Consumo receta: ${product.name}`,
-                    reference: sale.id,
-                  },
-                });
+                    qty: deductQty,
+                  });
+
+                  if (lineSaleItem && allocations.length > 0) {
+                    await tx.saleItemBatch.createMany({
+                      data: allocations.map((a) => ({
+                        saleItemId: lineSaleItem.id,
+                        batchId: a.batchId,
+                        quantity: a.quantity,
+                      })),
+                    });
+                  }
+
+                  for (const a of allocations) {
+                    await tx.stockMovement.create({
+                      data: {
+                        businessId,
+                        productId: compProd.id,
+                        userId: cashierId,
+                        type: 'VENTA',
+                        quantity: -a.quantity,
+                        stockBefore,
+                        stockAfter,
+                        concept: `Consumo receta: ${product.name} (Lote: ${a.batchNumber})`,
+                        reference: sale.id,
+                        batchId: a.batchId,
+                      },
+                    });
+                  }
+                } else {
+                  await tx.product.update({
+                    where: { id: compProd.id },
+                    data: { stock: { decrement: deductQty } },
+                  });
+
+                  await tx.stockMovement.create({
+                    data: {
+                      businessId,
+                      productId: compProd.id,
+                      userId: cashierId,
+                      type: 'VENTA',
+                      quantity: -deductQty,
+                      stockBefore,
+                      stockAfter,
+                      concept: `Consumo receta: ${product.name}`,
+                      reference: sale.id,
+                    },
+                  });
+                }
               }
             }
           } else if (product?.trackStock) {
             const qty = round3(item.quantity);
             const stockBefore = Number(product.stock);
             const stockAfter = round3(stockBefore - qty);
-            await tx.product.update({
-              where: { id: item.productId },
-              data: { stock: { decrement: qty } },
-            });
-            await tx.stockMovement.create({
-              data: {
+            const isTracked = this.batchesService.isTracked(business, product);
+
+            if (isTracked) {
+              const allocations = await this.batchesService.allocateFefo(tx, {
                 businessId,
                 productId: item.productId,
-                userId: cashierId,
-                type: "VENTA",
-                quantity: -qty,
-                stockBefore,
-                stockAfter,
-                concept: stockAfter < 0 ? `Venta ${invoiceNumber} (Stock Negativo)` : `Venta ${invoiceNumber}`,
-                reference: sale.id,
-              },
-            });
+                qty,
+              });
+
+              if (lineSaleItem && allocations.length > 0) {
+                await tx.saleItemBatch.createMany({
+                  data: allocations.map((a) => ({
+                    saleItemId: lineSaleItem.id,
+                    batchId: a.batchId,
+                    quantity: a.quantity,
+                  })),
+                });
+              }
+
+              for (const a of allocations) {
+                await tx.stockMovement.create({
+                  data: {
+                    businessId,
+                    productId: item.productId,
+                    userId: cashierId,
+                    type: 'VENTA',
+                    quantity: -a.quantity,
+                    stockBefore,
+                    stockAfter,
+                    concept: `Venta ${invoiceNumber} (Lote: ${a.batchNumber})`,
+                    reference: sale.id,
+                    batchId: a.batchId,
+                  },
+                });
+              }
+            } else {
+              await tx.product.update({
+                where: { id: item.productId },
+                data: { stock: { decrement: qty } },
+              });
+
+              await tx.stockMovement.create({
+                data: {
+                  businessId,
+                  productId: item.productId,
+                  userId: cashierId,
+                  type: 'VENTA',
+                  quantity: -qty,
+                  stockBefore,
+                  stockAfter,
+                  concept: stockAfter < 0 ? `Venta ${invoiceNumber} (Stock Negativo)` : `Venta ${invoiceNumber}`,
+                  reference: sale.id,
+                },
+              });
+            }
           }
         }
       }
@@ -1002,6 +1087,17 @@ export class SalesService {
                 name: true,
                 price: true,
                 barcode: true,
+              },
+            },
+            batchAllocations: {
+              select: {
+                quantity: true,
+                batch: {
+                  select: {
+                    batchNumber: true,
+                    expiryDate: true,
+                  },
+                },
               },
             },
           },
@@ -1108,6 +1204,7 @@ export class SalesService {
                   barcode: true,
                   trackStock: true,
                   isRecipe: true,
+                  tracksBatches: true,
                   recipeComponents: {
                     include: {
                       componentProduct: {
@@ -1116,6 +1213,7 @@ export class SalesService {
                           name: true,
                           stock: true,
                           trackStock: true,
+                          tracksBatches: true,
                         },
                       },
                     },
@@ -1174,6 +1272,11 @@ export class SalesService {
         throw new BadRequestException('Solo se pueden anular ventas completadas');
       }
 
+      const business = await tx.business.findUnique({
+        where: { id: businessId },
+        select: { id: true, tracksBatches: true },
+      });
+
       // 2. Stock replenishment
       for (const item of sale.items) {
         if (item.productId && item.product?.isRecipe && item.product.recipeComponents && item.product.recipeComponents.length > 0) {
@@ -1185,11 +1288,16 @@ export class SalesService {
               const currentComp = await tx.product.findUnique({ where: { id: compProd.id } });
               const stockBefore = currentComp ? Number(currentComp.stock) : 0;
               const stockAfter = round3(stockBefore + returnQty);
+              const isCompTracked = this.batchesService.isTracked(business, compProd);
 
-              await tx.product.update({
-                where: { id: compProd.id },
-                data: { stock: { increment: returnQty } },
-              });
+              if (isCompTracked) {
+                await this.batchesService.returnToBatches(tx, item.id, returnQty);
+              } else {
+                await tx.product.update({
+                  where: { id: compProd.id },
+                  data: { stock: { increment: returnQty } },
+                });
+              }
 
               await tx.stockMovement.create({
                 data: {
@@ -1211,11 +1319,16 @@ export class SalesService {
           const currentProd = await tx.product.findUnique({ where: { id: item.productId } });
           const stockBefore = currentProd ? Number(currentProd.stock) : 0;
           const stockAfter = round3(stockBefore + qty);
+          const isTracked = this.batchesService.isTracked(business, item.product);
 
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { stock: { increment: qty } },
-          });
+          if (isTracked) {
+            await this.batchesService.returnToBatches(tx, item.id, qty);
+          } else {
+            await tx.product.update({
+              where: { id: item.productId },
+              data: { stock: { increment: qty } },
+            });
+          }
 
           await tx.stockMovement.create({
             data: {
@@ -1462,6 +1575,7 @@ export class SalesService {
                   barcode: true,
                   trackStock: true,
                   isRecipe: true,
+                  tracksBatches: true,
                   recipeComponents: {
                     include: {
                       componentProduct: {
@@ -1470,6 +1584,7 @@ export class SalesService {
                           name: true,
                           stock: true,
                           trackStock: true,
+                          tracksBatches: true,
                         },
                       },
                     },
@@ -1807,6 +1922,11 @@ export class SalesService {
         }
       }
 
+      const business = await tx.business.findUnique({
+        where: { id: businessId },
+        select: { id: true, tracksBatches: true },
+      });
+
       // Restock and Stock Movements
       for (const line of returnLinesData) {
         const saleItem = line.saleItem;
@@ -1826,10 +1946,17 @@ export class SalesService {
 
               if (line.restock) {
                 const stockAfter = round3(stockBefore + compQty);
-                await tx.product.update({
-                  where: { id: compProd.id },
-                  data: { stock: { increment: compQty } },
-                });
+                const isCompTracked = this.batchesService.isTracked(business, compProd);
+
+                if (isCompTracked) {
+                  await this.batchesService.returnToBatches(tx, saleItem.id, compQty);
+                } else {
+                  await tx.product.update({
+                    where: { id: compProd.id },
+                    data: { stock: { increment: compQty } },
+                  });
+                }
+
                 await tx.stockMovement.create({
                   data: {
                     businessId,
@@ -1867,10 +1994,17 @@ export class SalesService {
 
           if (line.restock) {
             const stockAfter = round3(stockBefore + qty);
-            await tx.product.update({
-              where: { id: saleItem.productId },
-              data: { stock: { increment: qty } },
-            });
+            const isTracked = this.batchesService.isTracked(business, saleItem.product);
+
+            if (isTracked) {
+              await this.batchesService.returnToBatches(tx, saleItem.id, qty);
+            } else {
+              await tx.product.update({
+                where: { id: saleItem.productId },
+                data: { stock: { increment: qty } },
+              });
+            }
+
             await tx.stockMovement.create({
               data: {
                 businessId,

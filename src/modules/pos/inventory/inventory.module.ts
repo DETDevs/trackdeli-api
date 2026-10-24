@@ -7,6 +7,7 @@ import { ApprovalsModule } from '../approvals/approvals.module';
 import { AuditModule } from '../audit/audit.module';
 import { PosPermissionsModule } from '../permissions/permissions.module';
 import { IdempotencyModule } from '../idempotency/idempotency.module';
+import { BatchesModule } from '../batches/batches.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { IdempotencyModule } from '../idempotency/idempotency.module';
     AuditModule,
     PosPermissionsModule,
     IdempotencyModule,
+    BatchesModule,
   ],
   controllers: [InventoryController],
   providers: [InventoryService],

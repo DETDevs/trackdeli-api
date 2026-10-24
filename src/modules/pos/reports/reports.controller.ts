@@ -10,13 +10,17 @@ import { Roles } from "../../../common/decorators/roles.decorator";
 import { UserRole } from "@prisma/client";
 import { resolveBusinessId } from "../pos.utils";
 import { ReportsService } from "./reports.service";
+import { BatchesService } from "../batches/batches.service";
 
 @SkipMembershipCheck()
 @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
 @UseGuards(JwtAuthGuard, PosGuard, RolesGuard)
 @Controller(["pos/reports", "reports"])
 export class ReportsController {
-  constructor(private readonly service: ReportsService) {}
+  constructor(
+    private readonly service: ReportsService,
+    private readonly batchesService: BatchesService,
+  ) {}
 
   @Get()
   overview(
@@ -206,5 +210,61 @@ export class ReportsController {
     @Query("businessId") qBid?: string,
   ) {
     return this.service.getWorkshopReport(resolveBusinessId(user, qBid), period, from, to);
+  }
+
+  /**
+   * GET /pos/reports/batch-traceability?batchId=... o ?productId=...&batchNumber=...
+   * Trazabilidad completa de un lote (recibido, ventas, devoluciones, mermas, saldo).
+   */
+  @Get("batch-traceability")
+  batchTraceability(
+    @CurrentUser() user: JwtPayload,
+    @Query("batchId") batchId?: string,
+    @Query("productId") productId?: string,
+    @Query("batchNumber") batchNumber?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.batchesService.getBatchTraceability(resolveBusinessId(user, qBid), {
+      batchId,
+      productId,
+      batchNumber,
+    });
+  }
+
+  /**
+   * GET /pos/reports/sales-by-batch?from=...&to=...&productId=...
+   * Ventas del periodo agrupadas por producto y lote.
+   */
+  @Get("sales-by-batch")
+  salesByBatch(
+    @CurrentUser() user: JwtPayload,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("productId") productId?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.batchesService.getSalesByBatch(resolveBusinessId(user, qBid), {
+      from,
+      to,
+      productId,
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 20,
+    });
+  }
+
+  /**
+   * GET /pos/reports/expired-loss?from=...&to=...
+   * Mermas por vencimiento del periodo con cálculo de pérdida.
+   */
+  @Get("expired-loss")
+  expiredLoss(
+    @CurrentUser() user: JwtPayload,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.batchesService.getExpiredLoss(resolveBusinessId(user, qBid), { from, to });
   }
 }

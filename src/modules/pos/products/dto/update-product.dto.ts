@@ -107,4 +107,12 @@ export class UpdateProductDto {
   @IsOptional()
   @IsIn(['PRODUCT', 'SERVICE'], { message: 'El tipo debe ser PRODUCT o SERVICE' })
   type?: 'PRODUCT' | 'SERVICE';
+
+  @IsOptional()
+  @IsBoolean()
+  tracksBatches?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  confirm?: boolean;
 }

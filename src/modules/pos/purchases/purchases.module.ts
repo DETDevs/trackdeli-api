@@ -6,6 +6,7 @@ import { PoliciesModule } from '../policies/policies.module';
 import { AuditModule } from '../audit/audit.module';
 import { IdempotencyModule } from '../idempotency/idempotency.module';
 import { BusinessProductsModule } from '../../business-products/business-products.module';
+import { BatchesModule } from '../batches/batches.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { BusinessProductsModule } from '../../business-products/business-product
     AuditModule,
     IdempotencyModule,
     BusinessProductsModule,
+    BatchesModule,
   ],
   controllers: [PurchasesController],
   providers: [PurchasesService],

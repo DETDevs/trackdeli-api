@@ -1,4 +1,4 @@
-import { IsString, MinLength, IsOptional, IsNumber, Min, IsBoolean, IsNotEmpty, IsIn } from 'class-validator';
+import { IsString, MinLength, IsOptional, IsNumber, Min, IsBoolean, IsNotEmpty, IsIn, IsDateString, MaxLength } from 'class-validator';
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
 import { ALLOWED_PRODUCT_UNITS } from '../product-unit.util';
 
@@ -101,4 +101,17 @@ export class CreateProductDto {
   @IsOptional()
   @IsIn(['PRODUCT', 'SERVICE'], { message: 'El tipo debe ser PRODUCT o SERVICE' })
   type?: 'PRODUCT' | 'SERVICE';
+
+  @IsOptional()
+  @IsBoolean()
+  tracksBatches?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  initialLotNumber?: string;
+
+  @IsOptional()
+  @IsDateString({}, { message: 'initialExpiryDate debe ser una fecha válida (AAAA-MM-DD o ISO)' })
+  initialExpiryDate?: string;
 }

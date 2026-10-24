@@ -176,5 +176,9 @@ export class UpdateBusinessDto {
   @IsString()
   @MaxLength(50)
   timezone?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  tracksBatches?: boolean;
 }
 

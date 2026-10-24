@@ -14,6 +14,8 @@ import {
 } from "./dto/offline.dto";
 import { validateProductQuantity, round3 } from "../products/product-unit.util";
 
+import { BatchesService } from "../batches/batches.service";
+
 @Injectable()
 export class OfflineService {
   private readonly logger = new Logger(OfflineService.name);
@@ -21,6 +23,7 @@ export class OfflineService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly trackingGateway: TrackingGateway,
+    private readonly batchesService: BatchesService,
   ) {}
 
   async checkEligibility(
@@ -204,7 +207,7 @@ export class OfflineService {
         const syncResult = await this.prisma.$transaction(async (tx) => {
           const business = await tx.business.findUnique({
             where: { id: businessId },
-            select: { invoicePrefix: true, invoiceCounter: true, taxRate: true, currency: true },
+            select: { invoicePrefix: true, invoiceCounter: true, taxRate: true, currency: true, tracksBatches: true },
           });
           if (!business) throw new NotFoundException("Negocio no encontrado");
 
@@ -217,6 +220,7 @@ export class OfflineService {
           let subtotal = 0;
           const processedItems: any[] = [];
           const discrepancies: any[] = [];
+          const pendingAllocations: Array<{ productId: string; allocations: any[] }> = [];
 
           for (const item of saleDto.items) {
             const itemDiscount = item.discount || 0;
@@ -258,32 +262,109 @@ export class OfflineService {
                     const expectedStock = Number(compProd.stock);
                     const resultingStock = round3(expectedStock - deductQty);
 
-                    if (expectedStock < deductQty) {
-                      discrepancies.push({
-                        productId: compProd.id,
-                        expectedStock,
-                        resultingStock,
-                      });
-                    }
-
-                    await tx.product.update({
-                      where: { id: compProd.id },
-                      data: { stock: { decrement: deductQty } },
-                    });
-
-                    await tx.stockMovement.create({
-                      data: {
+                    const isCompTracked = this.batchesService.isTracked(business, compProd);
+                    if (isCompTracked) {
+                      const allocRes = await this.batchesService.allocateOffline(tx, {
                         businessId,
                         productId: compProd.id,
-                        userId: cashierId,
-                        type: "VENTA",
-                        quantity: -deductQty,
-                        stockBefore: expectedStock,
-                        stockAfter: resultingStock,
-                        concept: `Consumo receta: ${product.name}`,
-                        reference: saleDto.clientGeneratedId,
-                      },
-                    });
+                        qty: deductQty,
+                      });
+
+                      if (allocRes.allocations.length > 0) {
+                        pendingAllocations.push({ productId: product.id, allocations: allocRes.allocations });
+                      }
+
+                      for (const a of allocRes.allocations) {
+                        const concept = a.isExpired
+                          ? `Consumo receta: ${product.name} (Lote vencido: ${a.batchNumber})`
+                          : `Consumo receta: ${product.name} (Lote: ${a.batchNumber})`;
+
+                        await tx.stockMovement.create({
+                          data: {
+                            businessId,
+                            productId: compProd.id,
+                            userId: cashierId,
+                            type: "VENTA",
+                            quantity: -a.quantity,
+                            stockBefore: expectedStock,
+                            stockAfter: Math.max(0, round3(expectedStock - a.quantity)),
+                            concept,
+                            reference: saleDto.clientGeneratedId,
+                            batchId: a.batchId,
+                          },
+                        });
+                      }
+
+                      if (allocRes.unallocatedQty > 0) {
+                        await tx.stockMovement.create({
+                          data: {
+                            businessId,
+                            productId: compProd.id,
+                            userId: cashierId,
+                            type: "VENTA",
+                            quantity: -allocRes.unallocatedQty,
+                            stockBefore: expectedStock,
+                            stockAfter: 0,
+                            concept: `Consumo receta: ${product.name} (Sin lote asignado por stock insuficiente)`,
+                            reference: saleDto.clientGeneratedId,
+                            batchId: null,
+                          },
+                        });
+
+                        discrepancies.push({
+                          productId: compProd.id,
+                          productName: compProd.name || product.name,
+                          expectedStock: round3(deductQty - allocRes.unallocatedQty),
+                          resultingStock: 0,
+                          message: `Insumo "${compProd.name}": ${allocRes.unallocatedQty} sin lote asignado por stock insuficiente`,
+                          notes: `Venta offline ${invoiceNumber}: ${allocRes.unallocatedQty} unidad(es) de insumo "${compProd.name}" sin lote asignado por stock insuficiente`,
+                        });
+                      }
+
+                      if (allocRes.hasExpiredAllocations) {
+                        const expiredList = allocRes.allocations
+                          .filter((a) => a.isExpired)
+                          .map((a) => `${a.batchNumber} (${a.quantity})`)
+                          .join(', ');
+                        discrepancies.push({
+                          productId: compProd.id,
+                          productName: compProd.name || product.name,
+                          expectedStock,
+                          resultingStock: Math.max(0, round3(expectedStock - allocRes.totalAllocated)),
+                          message: `Insumo "${compProd.name}": salida de lote(s) vencido(s): ${expiredList}`,
+                          notes: `Venta offline ${invoiceNumber}: consumo de insumo "${compProd.name}" con salida de lote(s) vencido(s): ${expiredList}`,
+                        });
+                      }
+                    } else {
+                      if (expectedStock < deductQty) {
+                        discrepancies.push({
+                          productId: compProd.id,
+                          productName: compProd.name || product.name,
+                          expectedStock,
+                          resultingStock,
+                          message: `Consumo receta: stock insuficiente para "${compProd.name}"`,
+                          notes: `Venta offline ${invoiceNumber}: consumo receta stock insuficiente para "${compProd.name}" (disponible: ${expectedStock}, requerido: ${deductQty})`,
+                        });
+                      }
+                      await tx.product.update({
+                        where: { id: compProd.id },
+                        data: { stock: { decrement: deductQty } },
+                      });
+
+                      await tx.stockMovement.create({
+                        data: {
+                          businessId,
+                          productId: compProd.id,
+                          userId: cashierId,
+                          type: "VENTA",
+                          quantity: -deductQty,
+                          stockBefore: expectedStock,
+                          stockAfter: resultingStock,
+                          concept: `Consumo receta: ${product.name}`,
+                          reference: saleDto.clientGeneratedId,
+                        },
+                      });
+                    }
 
                     // Actualizar en memoria para líneas posteriores
                     compProd.stock = resultingStock as any;
@@ -294,32 +375,109 @@ export class OfflineService {
                 const expectedStock = Number(product.stock);
                 const resultingStock = round3(expectedStock - qty);
 
-                if (expectedStock < qty) {
-                  discrepancies.push({
-                    productId: product.id,
-                    expectedStock,
-                    resultingStock,
-                  });
-                }
-
-                await tx.product.update({
-                  where: { id: product.id },
-                  data: { stock: { decrement: qty } },
-                });
-
-                await tx.stockMovement.create({
-                  data: {
+                const isTracked = this.batchesService.isTracked(business, product);
+                if (isTracked) {
+                  const allocRes = await this.batchesService.allocateOffline(tx, {
                     businessId,
                     productId: product.id,
-                    userId: cashierId,
-                    type: "VENTA",
-                    quantity: -qty,
-                    stockBefore: expectedStock,
-                    stockAfter: resultingStock,
-                    concept: `Venta offline ${invoiceNumber}`,
-                    reference: saleDto.clientGeneratedId,
-                  },
-                });
+                    qty,
+                  });
+
+                  if (allocRes.allocations.length > 0) {
+                    pendingAllocations.push({ productId: product.id, allocations: allocRes.allocations });
+                  }
+
+                  for (const a of allocRes.allocations) {
+                    const concept = a.isExpired
+                      ? `Venta offline ${invoiceNumber} (Lote vencido: ${a.batchNumber})`
+                      : `Venta offline ${invoiceNumber} (Lote: ${a.batchNumber})`;
+
+                    await tx.stockMovement.create({
+                      data: {
+                        businessId,
+                        productId: product.id,
+                        userId: cashierId,
+                        type: "VENTA",
+                        quantity: -a.quantity,
+                        stockBefore: expectedStock,
+                        stockAfter: Math.max(0, round3(expectedStock - a.quantity)),
+                        concept,
+                        reference: saleDto.clientGeneratedId,
+                        batchId: a.batchId,
+                      },
+                    });
+                  }
+
+                  if (allocRes.unallocatedQty > 0) {
+                    await tx.stockMovement.create({
+                      data: {
+                        businessId,
+                        productId: product.id,
+                        userId: cashierId,
+                        type: "VENTA",
+                        quantity: -allocRes.unallocatedQty,
+                        stockBefore: expectedStock,
+                        stockAfter: 0,
+                        concept: `Venta offline ${invoiceNumber} (Sin lote asignado por stock insuficiente)`,
+                        reference: saleDto.clientGeneratedId,
+                        batchId: null,
+                      },
+                    });
+
+                    discrepancies.push({
+                      productId: product.id,
+                      productName: product.name,
+                      expectedStock: round3(qty - allocRes.unallocatedQty),
+                      resultingStock: 0,
+                      message: `Producto "${product.name}": ${allocRes.unallocatedQty} sin lote asignado por stock insuficiente`,
+                      notes: `Venta offline ${invoiceNumber}: ${allocRes.unallocatedQty} unidad(es) de "${product.name}" sin lote asignado por falta de stock`,
+                    });
+                  }
+
+                  if (allocRes.hasExpiredAllocations) {
+                    const expiredList = allocRes.allocations
+                      .filter((a) => a.isExpired)
+                      .map((a) => `${a.batchNumber} (${a.quantity})`)
+                      .join(', ');
+                    discrepancies.push({
+                      productId: product.id,
+                      productName: product.name,
+                      expectedStock,
+                      resultingStock: Math.max(0, round3(expectedStock - allocRes.totalAllocated)),
+                      message: `Producto "${product.name}": salida de lote(s) vencido(s): ${expiredList}`,
+                      notes: `Venta offline ${invoiceNumber}: salida de lote(s) vencido(s) para "${product.name}": ${expiredList}`,
+                    });
+                  }
+                } else {
+                  if (expectedStock < qty) {
+                    discrepancies.push({
+                      productId: product.id,
+                      productName: product.name,
+                      expectedStock,
+                      resultingStock,
+                      message: `Stock insuficiente para "${product.name}" (disponible: ${expectedStock}, solicitado: ${qty})`,
+                      notes: `Venta offline ${invoiceNumber}: stock insuficiente (disponible: ${expectedStock}, requerido: ${qty})`,
+                    });
+                  }
+                  await tx.product.update({
+                    where: { id: product.id },
+                    data: { stock: { decrement: qty } },
+                  });
+
+                  await tx.stockMovement.create({
+                    data: {
+                      businessId,
+                      productId: product.id,
+                      userId: cashierId,
+                      type: "VENTA",
+                      quantity: -qty,
+                      stockBefore: expectedStock,
+                      stockAfter: resultingStock,
+                      concept: `Venta offline ${invoiceNumber}`,
+                      reference: saleDto.clientGeneratedId,
+                    },
+                  });
+                }
 
                 product.stock = resultingStock as any;
               }
@@ -428,6 +586,24 @@ export class OfflineService {
             },
           });
 
+          if (pendingAllocations.length > 0) {
+            const createdItems = await tx.saleItem.findMany({
+              where: { saleId: createdSale.id },
+            });
+            for (const pa of pendingAllocations) {
+              const lineItem = createdItems.find((ci) => ci.productId === pa.productId);
+              if (lineItem && pa.allocations.length > 0) {
+                await tx.saleItemBatch.createMany({
+                  data: pa.allocations.map((a: any) => ({
+                    saleItemId: lineItem.id,
+                    batchId: a.batchId,
+                    quantity: a.quantity,
+                  })),
+                });
+              }
+            }
+          }
+
           for (const disc of discrepancies) {
             await tx.inventoryDiscrepancy.create({
               data: {
@@ -436,7 +612,7 @@ export class OfflineService {
                 saleId: createdSale.id,
                 expectedStock: disc.expectedStock,
                 resultingStock: disc.resultingStock,
-                notes: `Venta offline ${invoiceNumber}: stock insuficiente (disponible: ${disc.expectedStock}, requerido: ${disc.expectedStock - disc.resultingStock})`,
+                notes: disc.notes || disc.message || `Venta offline ${invoiceNumber}: stock insuficiente (disponible: ${disc.expectedStock}, requerido: ${disc.expectedStock - disc.resultingStock})`,
               },
             });
           }

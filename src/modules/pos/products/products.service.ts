@@ -16,6 +16,8 @@ import { AdjustStockDto } from "./dto/adjust-stock.dto";
 import { SetRecipeComponentsDto } from "./dto/set-recipe-components.dto";
 import { validateProductQuantity, round3 } from "./product-unit.util";
 
+import { BatchesService } from '../batches/batches.service';
+
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
@@ -23,6 +25,7 @@ export class ProductsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly batchesService: BatchesService,
   ) { }
 
   private mapProductWithInventory(product: any) {
@@ -456,7 +459,15 @@ export class ProductsService {
       }
     }
 
-    const { trackInventory, attributes: _ignored, wholesale_price: _wp, wholesale_min_qty: _wmq, ...productData } = dto as any;
+    const {
+      trackInventory,
+      attributes: _ignored,
+      wholesale_price: _wp,
+      wholesale_min_qty: _wmq,
+      initialLotNumber,
+      initialExpiryDate,
+      ...productData
+    } = dto as any;
 
     const product = await this.prisma.product.create({
       data: {
@@ -473,7 +484,30 @@ export class ProductsService {
     });
 
     const initialStock = Number(product.stock);
+    let initialBatchId: string | null = null;
+
     if (product.trackStock && initialStock > 0) {
+      if (dto.tracksBatches) {
+        const customBatch = dto.initialLotNumber
+          ? {
+              batchNumber: dto.initialLotNumber.trim(),
+              expiryDate: dto.initialExpiryDate ? new Date(dto.initialExpiryDate) : null,
+            }
+          : undefined;
+
+        const batch = await this.batchesService.ensureInitialBatch(
+          this.prisma,
+          businessId,
+          product.id,
+          initialStock,
+          product.cost != null ? Number(product.cost) : null,
+          customBatch,
+        );
+        if (batch) {
+          initialBatchId = batch.id;
+        }
+      }
+
       let resolvedUserId = userId;
       if (!resolvedUserId || resolvedUserId === 'system') {
         const fallbackUser = await this.prisma.user.findFirst({
@@ -495,6 +529,7 @@ export class ProductsService {
             stockAfter: initialStock,
             cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
             concept: 'Stock inicial',
+            batchId: initialBatchId,
           },
         });
       }
@@ -562,7 +597,31 @@ export class ProductsService {
       }
     }
 
-    const { trackInventory, attributes: incomingAttributes, wholesale_price: _wp, wholesale_min_qty: _wmq, ...updateData } = dto as any;
+    if (dto.tracksBatches !== undefined) {
+      if (dto.tracksBatches === true && !product.tracksBatches) {
+        const currentStock = Number(product.stock);
+        if (currentStock > 0) {
+          await this.batchesService.ensureInitialBatch(
+            this.prisma,
+            businessId,
+            product.id,
+            currentStock,
+            product.cost != null ? Number(product.cost) : null,
+          );
+        }
+      } else if (dto.tracksBatches === false && product.tracksBatches) {
+        const activeBatchesCount = await this.prisma.productBatch.count({
+          where: { businessId, productId: product.id, quantity: { gt: 0 } },
+        });
+        if (activeBatchesCount > 0 && dto.confirm !== true) {
+          throw new BadRequestException(
+            'El producto tiene lotes con stock activo. Para desactivar el control de lotes envíe confirm: true',
+          );
+        }
+      }
+    }
+
+    const { trackInventory, attributes: incomingAttributes, wholesale_price: _wp, wholesale_min_qty: _wmq, confirm: _confirm, ...updateData } = dto as any;
     if (trackStock !== undefined) {
       (updateData as any).trackStock = trackStock;
     }
@@ -694,7 +753,23 @@ export class ProductsService {
         );
       }
 
-      await tx.product.update({ where: { id: productId }, data: { stock: stockAfter } });
+      const business = await tx.business.findUnique({
+        where: { id: businessId },
+        select: { id: true, tracksBatches: true },
+      });
+      const isTracked = this.batchesService.isTracked(business, product);
+
+      let adjustedBatchId: string | null = null;
+      if (isTracked) {
+        const res = await this.batchesService.adjust(tx, {
+          businessId,
+          productId,
+          delta: signedQty,
+        });
+        if (res) adjustedBatchId = res.batchId;
+      } else {
+        await tx.product.update({ where: { id: productId }, data: { stock: stockAfter } });
+      }
 
       const movement = await tx.stockMovement.create({
         data: {
@@ -708,6 +783,7 @@ export class ProductsService {
           cost: dto.cost != null ? new Prisma.Decimal(dto.cost.toString()) : null,
           concept: dto.concept,
           reference: dto.reference,
+          batchId: adjustedBatchId,
         },
       });
 

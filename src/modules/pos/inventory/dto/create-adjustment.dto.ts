@@ -37,4 +37,8 @@ export class CreateAdjustmentDto {
   @IsOptional()
   @IsString()
   approvalToken?: string;
+
+  @IsOptional()
+  @IsString()
+  batchId?: string;
 }

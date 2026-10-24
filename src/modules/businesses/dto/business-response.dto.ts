@@ -45,6 +45,8 @@ export class BusinessResponseDto {
   posPhone?: string | null;
   posFooter?: string | null;
 
+  tracksBatches?: boolean;
+
   createdAt: Date;
 }
 

@@ -602,6 +602,7 @@ export class PrintAuditService {
       showCashier: true,
       showCustomer: true,
       showTaxBreakdown: true,
+      showBatches: false,
       paperWidthMm: 80,
       updatedAt: null,
       updatedById: null,
@@ -728,6 +729,7 @@ export class PrintAuditService {
         showCashier: dto.showCashier ?? true,
         showCustomer: dto.showCustomer ?? true,
         showTaxBreakdown: dto.showTaxBreakdown ?? true,
+        showBatches: dto.showBatches ?? false,
         paperWidthMm: dto.paperWidthMm ?? 80,
         updatedById: userId,
       },
@@ -745,6 +747,7 @@ export class PrintAuditService {
         ...(dto.showTaxBreakdown !== undefined
           ? { showTaxBreakdown: dto.showTaxBreakdown }
           : {}),
+        ...(dto.showBatches !== undefined ? { showBatches: dto.showBatches } : {}),
         ...(dto.paperWidthMm !== undefined ? { paperWidthMm: dto.paperWidthMm } : {}),
         updatedById: userId,
         updatedAt: new Date(),

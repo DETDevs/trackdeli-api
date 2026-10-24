@@ -16,6 +16,8 @@ import { CreateAdjustmentDto } from './dto/create-adjustment.dto';
 import { BatchCountDto } from './dto/batch-count.dto';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
+import { BatchesService } from '../batches/batches.service';
+
 @Injectable()
 export class InventoryService {
   private readonly logger = new Logger(InventoryService.name);
@@ -25,6 +27,7 @@ export class InventoryService {
     private readonly policiesService: PoliciesService,
     private readonly approvalsService: ApprovalsService,
     private readonly auditService: AuditService,
+    private readonly batchesService: BatchesService,
   ) {}
 
   async createAdjustment(
@@ -161,10 +164,30 @@ export class InventoryService {
         });
       }
 
-      await tx.product.update({
-        where: { id: product.id },
-        data: { stock: stockAfter },
+      const business = await tx.business.findUnique({
+        where: { id: businessId },
+        select: { id: true, tracksBatches: true },
       });
+      const isTracked = this.batchesService.isTracked(business, product);
+
+      let adjustedBatchId: string | null = null;
+      if (isTracked) {
+        const adjustRes = await this.batchesService.adjust(tx, {
+          businessId,
+          productId: product.id,
+          delta: qtyDelta,
+          type: dto.type,
+          batchId: dto.batchId,
+        });
+        if (adjustRes) {
+          adjustedBatchId = adjustRes.batchId;
+        }
+      } else {
+        await tx.product.update({
+          where: { id: product.id },
+          data: { stock: stockAfter },
+        });
+      }
 
       const costAtTimeDec = product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null;
       const costImpactDec = costAtTimeDec != null
@@ -202,6 +225,7 @@ export class InventoryService {
           cost: costAtTimeDec,
           concept: `Ajuste ${dto.type}: ${dto.reason.trim()}`,
           reference: adjustment.id,
+          batchId: adjustedBatchId,
         },
       });
 
@@ -340,10 +364,29 @@ export class InventoryService {
           });
         }
 
-        await tx.product.update({
-          where: { id: product.id },
-          data: { stock: stockAfter },
+        const business = await tx.business.findUnique({
+          where: { id: businessId },
+          select: { id: true, tracksBatches: true },
         });
+        const isTracked = this.batchesService.isTracked(business, product);
+
+        let batchIdForMovement: string | null = null;
+        if (isTracked) {
+          const adjRes = await this.batchesService.adjust(tx, {
+            businessId,
+            productId: product.id,
+            delta: qtyDelta,
+            type: InventoryAdjustmentType.COUNT,
+          });
+          if (adjRes) {
+            batchIdForMovement = adjRes.batchId;
+          }
+        } else {
+          await tx.product.update({
+            where: { id: product.id },
+            data: { stock: stockAfter },
+          });
+        }
 
         const costAtTimeDec = product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null;
         const costImpactDec = costAtTimeDec != null
@@ -377,6 +420,7 @@ export class InventoryService {
             cost: costAtTimeDec,
             concept: `Conteo físico: ${dto.reason.trim()}`,
             reference: adjustment.id,
+            batchId: batchIdForMovement,
           },
         });
 

@@ -1,6 +1,7 @@
 import { Injectable, UnprocessableEntityException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ProductsService } from './products.service';
+import { BatchesService } from '../batches/batches.service';
 import { ProductFieldDataType, StockMovementType, Prisma } from '@prisma/client';
 import * as exceljs from 'exceljs';
 import { parse } from 'csv-parse/sync';
@@ -61,6 +62,7 @@ export class ProductsImportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly productsService: ProductsService,
+    private readonly batchesService: BatchesService,
   ) {}
 
   private normalizeStr(str: any): string {
@@ -122,10 +124,16 @@ export class ProductsImportService {
   }
 
   async getTargets(businessId: string): Promise<ImportTarget[]> {
-    const fields = await this.prisma.productFieldDefinition.findMany({
-      where: { businessId, isActive: true },
-      orderBy: { order: 'asc' },
-    });
+    const [fields, business] = await Promise.all([
+      this.prisma.productFieldDefinition.findMany({
+        where: { businessId, isActive: true },
+        orderBy: { order: 'asc' },
+      }),
+      this.prisma.business.findUnique({
+        where: { id: businessId },
+        select: { tracksBatches: true },
+      }),
+    ]);
     
     const dynamicTargets: ImportTarget[] = fields.map((f) => ({
       id: f.key,
@@ -136,7 +144,14 @@ export class ProductsImportService {
       options: f.options as string[],
     }));
 
-    return [...CORE_TARGETS, ...dynamicTargets];
+    const batchTargets: ImportTarget[] = business?.tracksBatches
+      ? [
+          { id: 'lotNumber', label: 'Lote', kind: 'core', dataType: 'TEXT', required: false },
+          { id: 'expiryDate', label: 'Fecha de Vencimiento', kind: 'core', dataType: 'DATE', required: false },
+        ]
+      : [];
+
+    return [...CORE_TARGETS, ...batchTargets, ...dynamicTargets];
   }
 
   async analyzeFile(businessId: string, fileBuffer: Buffer, mimetype: string, originalname: string): Promise<AnalyzeResult> {
@@ -221,6 +236,8 @@ export class ProductsImportService {
       supplierId: ['proveedor'],
       wholesalePrice: ['precio por mayor', 'precio mayor', 'p. mayor', 'p mayor', 'mayor', 'precio mayorista'],
       wholesaleMinQty: ['cantidad minima por mayor', 'cantidad minima mayor', 'cant minima mayor', 'minimo mayor', 'cant min mayor', 'min mayor'],
+      lotNumber: ['lote', 'batch', 'nro lote', 'numero lote', 'no lote'],
+      expiryDate: ['fecha de vencimiento', 'vencimiento', 'fecha vencimiento', 'caducidad', 'vence', 'expiracion'],
     };
 
     for (let i = 0; i < headers.length; i++) {
@@ -330,7 +347,7 @@ export class ProductsImportService {
       this.getTargets(businessId),
       this.prisma.business.findUnique({
         where: { id: businessId },
-        select: { id: true, wholesaleEnabled: true },
+        select: { id: true, wholesaleEnabled: true, tracksBatches: true },
       }),
     ]);
     const targetMap = new Map(targets.map(t => [t.id, t]));
@@ -556,7 +573,31 @@ export class ProductsImportService {
       }
       
       if (payload.appendDesc.length > 0) {
-        payload.core.description = [payload.core.description || existing?.description || '', ...payload.appendDesc].filter(Boolean).join(' \\n');
+        payload.core.description = [payload.core.description || existing?.description || '', ...payload.appendDesc].filter(Boolean).join(' \n');
+      }
+
+      let lotNumber: string | null = null;
+      let expiryDate: Date | null = null;
+      if (payload.core.lotNumber !== undefined) {
+        lotNumber = payload.core.lotNumber ? String(payload.core.lotNumber).trim() : null;
+        delete payload.core.lotNumber;
+      }
+      if (payload.core.expiryDate !== undefined) {
+        expiryDate = payload.core.expiryDate ? new Date(payload.core.expiryDate) : null;
+        delete payload.core.expiryDate;
+      }
+
+      if (business?.tracksBatches) {
+        if (lotNumber || expiryDate) {
+          payload.core.tracksBatches = true;
+        } else if (payload.core.trackStock !== false && payload.core.stock !== undefined && payload.core.stock > 0) {
+          payload.core.tracksBatches = true;
+          result.warnings.push({
+            row: rowNum,
+            column: 'lotNumber',
+            message: 'Producto con existencias sin lote especificado: se asignará al lote INICIAL.',
+          });
+        }
       }
 
       try {
@@ -586,10 +627,10 @@ export class ProductsImportService {
           if (isUnchanged) {
             result.unchanged++;
           } else {
-            toUpdate.push({ id: existing.id, rowNum, data: { ...coreUpdate, attributes: mergedAttrs }, stockDiff, oldStock: currentStockNum });
+            toUpdate.push({ id: existing.id, rowNum, data: { ...coreUpdate, attributes: mergedAttrs }, stockDiff, oldStock: currentStockNum, lotNumber, expiryDate });
           }
         } else {
-          toCreate.push({ rowNum, data: { ...payload.core, attributes: mergedAttrs, businessId } });
+          toCreate.push({ rowNum, data: { ...payload.core, attributes: mergedAttrs, businessId }, lotNumber, expiryDate });
         }
       } catch (e: any) {
         result.errors.push({ row: rowNum, column: '', message: e.message || 'Error validando atributos.' });
@@ -600,37 +641,93 @@ export class ProductsImportService {
       await this.prisma.$transaction(async (tx) => {
         for (const item of toCreate) {
           const p = await tx.product.create({ data: item.data });
-          if (p.trackStock && Number(p.stock) > 0) {
-             await tx.stockMovement.create({
-               data: {
-                 businessId,
-                 productId: p.id,
-                 userId,
-                 type: StockMovementType.INITIAL,
-                 quantity: p.stock,
-                 stockBefore: 0,
-                 stockAfter: p.stock,
-                 concept: 'Importación de catálogo (inicial)',
-               }
-             });
+          const stockNum = Number(p.stock);
+          if (p.trackStock && stockNum > 0) {
+            let batchId: string | null = null;
+            if (business?.tracksBatches && p.tracksBatches) {
+              if (item.lotNumber) {
+                const batch = await this.batchesService.receive(tx, {
+                  businessId,
+                  productId: p.id,
+                  batchNumber: item.lotNumber,
+                  expiryDate: item.expiryDate,
+                  qty: stockNum,
+                  cost: p.cost ? Number(p.cost) : null,
+                });
+                batchId = batch.id;
+              } else {
+                const batch = await this.batchesService.ensureInitialBatch(
+                  tx,
+                  businessId,
+                  p.id,
+                  stockNum,
+                  p.cost ? Number(p.cost) : null,
+                );
+                batchId = batch?.id || null;
+              }
+            }
+            await tx.stockMovement.create({
+              data: {
+                businessId,
+                productId: p.id,
+                userId,
+                type: StockMovementType.INITIAL,
+                quantity: p.stock,
+                stockBefore: 0,
+                stockAfter: p.stock,
+                concept: 'Importación de catálogo (inicial)',
+                batchId,
+              },
+            });
           }
           result.created++;
         }
         for (const item of toUpdate) {
           const p = await tx.product.update({ where: { id: item.id }, data: item.data });
           if (item.stockDiff !== 0) {
-             await tx.stockMovement.create({
-               data: {
-                 businessId,
-                 productId: p.id,
-                 userId,
-                 type: StockMovementType.AJUSTE,
-                 quantity: item.stockDiff,
-                 stockBefore: item.oldStock,
-                 stockAfter: p.stock,
-                 concept: 'Importación de catálogo (edición manual)',
-               }
-             });
+            let batchId: string | null = null;
+            if (business?.tracksBatches && p.tracksBatches) {
+              if (item.stockDiff > 0) {
+                if (item.lotNumber) {
+                  const batch = await this.batchesService.receive(tx, {
+                    businessId,
+                    productId: p.id,
+                    batchNumber: item.lotNumber,
+                    expiryDate: item.expiryDate,
+                    qty: item.stockDiff,
+                    cost: p.cost ? Number(p.cost) : null,
+                  });
+                  batchId = batch.id;
+                } else {
+                  const adj = await this.batchesService.adjust(tx, {
+                    businessId,
+                    productId: p.id,
+                    delta: item.stockDiff,
+                  });
+                  batchId = adj?.batchId || null;
+                }
+              } else {
+                const adj = await this.batchesService.adjust(tx, {
+                  businessId,
+                  productId: p.id,
+                  delta: item.stockDiff,
+                });
+                batchId = adj?.batchId || null;
+              }
+            }
+            await tx.stockMovement.create({
+              data: {
+                businessId,
+                productId: p.id,
+                userId,
+                type: StockMovementType.AJUSTE,
+                quantity: item.stockDiff,
+                stockBefore: item.oldStock,
+                stockAfter: p.stock,
+                concept: 'Importación de catálogo (edición manual)',
+                batchId,
+              },
+            });
           }
           result.updated++;
         }
@@ -654,7 +751,14 @@ export class ProductsImportService {
     } else if (industryId) {
       const ind = await this.prisma.industry.findUnique({ where: { id: industryId }, include: { fieldTemplates: { orderBy: { order: 'asc' } } }});
       if (!ind) throw new BadRequestException('Industria no encontrada');
-      targets = [...CORE_TARGETS, ...ind.fieldTemplates.map(f => ({
+      const isTracksBatches = ind.tracksBatches || ind.code === 'farmacia';
+      const batchTargets: ImportTarget[] = isTracksBatches
+        ? [
+            { id: 'lotNumber', label: 'Lote', kind: 'core', dataType: 'TEXT', required: false },
+            { id: 'expiryDate', label: 'Fecha de Vencimiento', kind: 'core', dataType: 'DATE', required: false },
+          ]
+        : [];
+      targets = [...CORE_TARGETS, ...batchTargets, ...ind.fieldTemplates.map(f => ({
         id: f.key, label: f.label, kind: 'dynamic' as const, dataType: f.dataType, required: f.required, options: f.options as string[]
       }))];
     } else {
@@ -676,6 +780,8 @@ export class ProductsImportService {
       else if (t.id === 'wholesaleMinQty') sampleRow[t.id] = 6;
       else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive') sampleRow[t.id] = 'SI';
       else if (t.id === 'stock') sampleRow[t.id] = 10;
+      else if (t.id === 'lotNumber') sampleRow[t.id] = 'LT-2026-001';
+      else if (t.id === 'expiryDate') sampleRow[t.id] = '2026-12-31';
       else if (t.dataType === 'BOOLEAN') sampleRow[t.id] = 'SI';
       else if (t.dataType === 'NUMBER') sampleRow[t.id] = 1;
       else if (t.dataType === 'DATE') sampleRow[t.id] = '2026-10-01';
@@ -698,6 +804,8 @@ export class ProductsImportService {
       let desc = '...';
       if (t.id === 'wholesalePrice') desc = 'Precio por mayor (opcional, menor al precio normal)';
       else if (t.id === 'wholesaleMinQty') desc = 'Cantidad mínima para precio por mayor (mínimo 2)';
+      else if (t.id === 'lotNumber') desc = 'Número o código de lote (opcional). Si se omite y hay existencias, se asignará al lote INICIAL.';
+      else if (t.id === 'expiryDate') desc = 'Fecha de vencimiento en formato AAAA-MM-DD o serial de Excel (opcional).';
       wsHelp.addRow({ col: t.label, req: t.required ? 'Sí' : 'No', type: typeStr, desc });
     }
 
@@ -718,7 +826,11 @@ export class ProductsImportService {
 
     const products = await this.prisma.product.findMany({
       where: { businessId },
-      include: { category: true, supplier: true }
+      include: {
+        category: true,
+        supplier: true,
+        batches: { where: { quantity: { gt: 0 } }, orderBy: { expiryDate: 'asc' } },
+      }
     });
 
     for (const p of products) {
@@ -730,6 +842,11 @@ export class ProductsImportService {
            if (t.id === 'categoryId') row[t.id] = p.category?.name || '';
            else if (t.id === 'supplierId') row[t.id] = p.supplier?.name || '';
            else if (t.id === 'sku' || t.id === 'barcode') row[t.id] = p[t.id] || '';
+           else if (t.id === 'lotNumber') row[t.id] = (p as any).batches?.[0]?.batchNumber || '';
+           else if (t.id === 'expiryDate') {
+             const exp = (p as any).batches?.[0]?.expiryDate;
+             row[t.id] = exp ? exp.toISOString().split('T')[0] : '';
+           }
            else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive') {
              row[t.id] = (p as any)[t.id] ? 'SI' : 'NO';
            } else {
