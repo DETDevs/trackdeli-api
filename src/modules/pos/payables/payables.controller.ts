@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PosGuard } from '../../../common/guards/pos.guard';
+import { RolesGuard } from '../../../common/guards/roles.guard';
 import { CarteraCobroGuard } from '../../../common/guards/cartera-cobro.guard';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -25,7 +26,7 @@ import { CreatePayablePaymentDto } from './dto/create-payable-payment.dto';
 import { VoidPayablePaymentDto } from './dto/void-payable-payment.dto';
 
 @SkipMembershipCheck()
-@UseGuards(JwtAuthGuard, PosGuard, CarteraCobroGuard, PosPermissionsGuard)
+@UseGuards(JwtAuthGuard, PosGuard, CarteraCobroGuard, RolesGuard, PosPermissionsGuard)
 @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
 @Controller('pos/payables')
 export class PayablesController {

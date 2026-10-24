@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PosGuard } from '../../../common/guards/pos.guard';
+import { RolesGuard } from '../../../common/guards/roles.guard';
 import { CarteraCobroGuard } from '../../../common/guards/cartera-cobro.guard';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -28,7 +29,7 @@ import { CreateExpenseCategoryDto } from './dto/create-expense-category.dto';
 import { UpdateExpenseCategoryDto } from './dto/update-expense-category.dto';
 
 @SkipMembershipCheck()
-@UseGuards(JwtAuthGuard, PosGuard, CarteraCobroGuard, PosPermissionsGuard)
+@UseGuards(JwtAuthGuard, PosGuard, CarteraCobroGuard, RolesGuard, PosPermissionsGuard)
 @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
 @Controller('pos')
 export class ExpensesController {

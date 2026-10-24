@@ -1084,7 +1084,17 @@ export class ReportsService {
       ? Math.round((operatingProfit / currentSales.netSales) * 10000) / 100
       : 0;
 
-    const isPartial = currentMetrics.coveragePercent < 100;
+    // 183d: Ventas con costo cubierto vs ventas sin costo
+    const coveredRevenue = missing.length === 0
+      ? currentSales.netSales
+      : Math.min(currentSales.netSales, Math.max(0, r2(currentMetrics.coveredRevenue)));
+    const uncoveredRevenue = Math.max(0, r2(currentSales.netSales - coveredRevenue));
+
+    const coveragePercent = currentSales.netSales > 0
+      ? Math.round((coveredRevenue / currentSales.netSales) * 10000) / 100
+      : 100;
+
+    const isPartial = coveragePercent < 100 || missing.length > 0;
 
     const [prevSales, prevMetrics, prevExpenses] = await Promise.all([
       computeSalesAgg(range.previous.from, range.previous.to),
@@ -1106,6 +1116,8 @@ export class ReportsService {
       discounts: currentSales.discounts,
       returns: currentSales.returns,
       netSales: currentSales.netSales,
+      coveredRevenue,
+      uncoveredRevenue,
       costOfGoodsSold,
       grossProfit,
       grossMarginPercent,
@@ -1114,7 +1126,7 @@ export class ReportsService {
       operatingMarginPercent,
       isPartial,
       coverage: {
-        coveragePercent: currentMetrics.coveragePercent,
+        coveragePercent,
         missingCostCount: missing.length,
       },
       comparison: {

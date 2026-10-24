@@ -1,6 +1,7 @@
 import { Controller, Get, Query, UseGuards } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
+import { RolesGuard } from "../../../common/guards/roles.guard";
 import { CarteraCobroGuard } from "../../../common/guards/cartera-cobro.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
@@ -12,7 +13,7 @@ import { ReportsService } from "./reports.service";
 
 @SkipMembershipCheck()
 @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
-@UseGuards(JwtAuthGuard, PosGuard)
+@UseGuards(JwtAuthGuard, PosGuard, RolesGuard)
 @Controller(["pos/reports", "reports"])
 export class ReportsController {
   constructor(private readonly service: ReportsService) {}
