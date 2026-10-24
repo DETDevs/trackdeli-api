@@ -22,7 +22,7 @@ export const VALID_DOCUMENT_TYPES = [
 
 export type PrintDocumentType = typeof VALID_DOCUMENT_TYPES[number];
 
-export const VALID_EVENT_TYPES = ['PRINT', 'SHARE'] as const;
+export const VALID_EVENT_TYPES = ['PRINT', 'SHARE', 'SAVE_PDF', 'SHARE_LINK'] as const;
 export type PrintEventType = typeof VALID_EVENT_TYPES[number];
 
 export const VALID_STATUS_TYPES = ['OK', 'FAILED'] as const;

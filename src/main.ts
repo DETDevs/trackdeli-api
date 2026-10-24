@@ -3,7 +3,7 @@ import * as Sentry from '@sentry/nestjs';
 
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe, Logger, RequestMethod } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TraceInterceptor } from './common/interceptors/trace.interceptor';
@@ -39,7 +39,12 @@ async function bootstrap() {
     credentials: true,
   });
 
-  app.setGlobalPrefix('api/v1');
+  app.setGlobalPrefix('api/v1', {
+    exclude: [
+      { path: 'r/:token', method: RequestMethod.GET },
+      { path: 'r/:token/pdf', method: RequestMethod.GET },
+    ],
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -52,7 +57,12 @@ async function bootstrap() {
   app.useGlobalInterceptors(new TraceInterceptor(), new LoggingInterceptor(), new DecimalToNumberInterceptor());
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  app.use((req: any, res: any, next: any) => { res.setHeader('Content-Type', 'application/json; charset=utf-8'); next(); });
+  app.use((req: any, res: any, next: any) => {
+    if (!req.path.startsWith('/r/')) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+    next();
+  });
   const port = configService.get<number>('PORT') || 3000;
   await app.listen(port);
   Logger.log(`Application is running on: await app.getUrl()`, 'Bootstrap');

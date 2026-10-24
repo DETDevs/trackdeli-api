@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import * as sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -60,5 +60,49 @@ export class UploadService {
       Bucket: this.bucketName,
       Key: key,
     }));
+  }
+
+  async uploadReceiptPdf(key: string, buffer: Buffer): Promise<void> {
+    this.logger.log(`[uploadReceiptPdf] Subiendo PDF a R2: key=${key}, size=${buffer.length} bytes`);
+    try {
+      await this.s3Client.send(new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        Body: buffer,
+        ContentType: 'application/pdf',
+      }));
+      this.logger.log(`[uploadReceiptPdf] OK PDF subido a R2: key=${key}`);
+    } catch (error: any) {
+      this.logger.error(`[uploadReceiptPdf] ERROR al subir PDF a R2: key=${key}, error=${error.message}`, error.stack);
+      throw error;
+    }
+  }
+
+  async getReceiptPdfStream(key: string): Promise<{ stream: NodeJS.ReadableStream; contentLength?: number }> {
+    try {
+      const response = await this.s3Client.send(new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      }));
+      return {
+        stream: response.Body as NodeJS.ReadableStream,
+        contentLength: response.ContentLength,
+      };
+    } catch (error: any) {
+      this.logger.error(`[getReceiptPdfStream] ERROR al obtener PDF de R2: key=${key}, error=${error.message}`, error.stack);
+      throw error;
+    }
+  }
+
+  async deleteReceiptPdf(key: string): Promise<void> {
+    this.logger.log(`[deleteReceiptPdf] Eliminando PDF de R2: key=${key}`);
+    try {
+      await this.s3Client.send(new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      }));
+    } catch (error: any) {
+      this.logger.warn(`[deleteReceiptPdf] Advertencia al borrar PDF de R2: key=${key}, error=${error.message}`);
+    }
   }
 }

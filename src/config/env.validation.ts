@@ -17,6 +17,7 @@ export const envValidationSchema = Joi.object({
   R2_SECRET_ACCESS_KEY: Joi.string().optional().allow(''),
   R2_BUCKET_NAME: Joi.string().optional().allow(''),
   R2_PUBLIC_URL: Joi.string().optional().allow(''),
+  RECEIPT_PUBLIC_URL: Joi.string().uri().optional().allow(''),
   FIREBASE_PROJECT_ID: Joi.string().optional().allow(''),
   FIREBASE_CLIENT_EMAIL: Joi.string().optional().allow(''),
   FIREBASE_PRIVATE_KEY: Joi.string().optional().allow(''),

@@ -2253,6 +2253,7 @@ WHERE a."customerId" = c."id"
       await this.ensurePrintAuditAndReceiptSchema();
       await this.ensureBatchesSchema();
       await this.ensureCreditInstallmentsSchema();
+      await this.ensureReceiptLinksSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -3297,6 +3298,67 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 189a - Advertencia sincronizando esquema de Crédito con Cuotas: ${err.message}`);
+    }
+  }
+
+  private async ensureReceiptLinksSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1900100)`);
+
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_receipt_links" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "saleId" TEXT NOT NULL,
+              "token" VARCHAR(32) NOT NULL,
+              "objectKey" VARCHAR(500) NOT NULL DEFAULT '',
+              "fileSize" INTEGER NOT NULL,
+              "businessName" VARCHAR(120) NOT NULL,
+              "folio" VARCHAR(50) NOT NULL,
+              "saleDate" TIMESTAMP(3) NOT NULL,
+              "total" DOUBLE PRECISION NOT NULL,
+              "currency" VARCHAR(10) NOT NULL,
+              "expiresAt" TIMESTAMP(3) NOT NULL,
+              "revokedAt" TIMESTAMP(3),
+              "viewCount" INTEGER NOT NULL DEFAULT 0,
+              "lastViewedAt" TIMESTAMP(3),
+              "createdById" TEXT,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_receipt_links_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_receipt_links_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_receipt_links_saleId_fkey" FOREIGN KEY ("saleId") REFERENCES "pos_sales"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_receipt_links_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_receipt_links_saleId_key"
+              ON "pos_receipt_links"("saleId");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_receipt_links_token_key"
+              ON "pos_receipt_links"("token");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_receipt_links_businessId_idx"
+              ON "pos_receipt_links"("businessId");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_receipt_links_expiresAt_idx"
+              ON "pos_receipt_links"("expiresAt");
+          `);
+
+          this.logger.log('190a - Esquema de Comprobantes Digitales sincronizado');
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 190a - Advertencia sincronizando esquema de Comprobantes Digitales: ${err.message}`);
     }
   }
 

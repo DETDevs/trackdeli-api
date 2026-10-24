@@ -4,7 +4,7 @@ import { SentryModule } from '@sentry/nestjs/setup';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bull';
 import { ScheduleModule } from '@nestjs/schedule';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, Reflector } from '@nestjs/core';
 import { envValidationSchema } from './config/env.validation';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -180,6 +180,7 @@ import { WebAdminAccessGuard } from './common/guards/web-admin-access.guard';
   ],
   controllers: [HealthController],
   providers: [
+    Reflector,
     {
       provide: APP_GUARD,
       useClass: CustomThrottlerGuard,

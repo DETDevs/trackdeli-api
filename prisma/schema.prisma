@@ -372,6 +372,7 @@ model Business {
   // Auditoría de impresiones y configuración de ticket (184a)
   printEvents           PosPrintEvent[]
   receiptSettings       PosReceiptSettings?
+  receiptLinks          PosReceiptLink[]
 
   @@map("businesses")
 }
@@ -482,6 +483,7 @@ model User {
   // Auditoría de impresiones y configuración de ticket (184a)
   printEvents            PosPrintEvent[]     @relation("PrintEventsUser")
   updatedReceiptSettings PosReceiptSettings[] @relation("ReceiptSettingsUpdatedBy")
+  createdReceiptLinks    PosReceiptLink[]    @relation("ReceiptLinksCreatedBy")
 
   // Password audit relations
   passwordChangesReceived PasswordChangeLog[] @relation("PasswordChangesReceived")
@@ -1084,6 +1086,7 @@ model Sale {
   deviceId       String?          @db.VarChar(100)
 
   orderSubAccounts OrderSubAccount[]
+  receiptLink      PosReceiptLink?
 
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
@@ -2388,5 +2391,32 @@ model SaleItemBatch {
   @@index([saleItemId])
   @@index([batchId])
   @@map("pos_sale_item_batches")
+}
+
+model PosReceiptLink {
+  id           String    @id @default(uuid())
+  businessId   String
+  business     Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  saleId       String    @unique
+  sale         Sale      @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  token        String    @unique @db.VarChar(32)
+  objectKey    String    @default("") @db.VarChar(500)
+  fileSize     Int
+  businessName String    @db.VarChar(120)
+  folio        String    @db.VarChar(50)
+  saleDate     DateTime
+  total        Float
+  currency     String    @db.VarChar(10)
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  viewCount    Int       @default(0)
+  lastViewedAt DateTime?
+  createdById  String?
+  createdBy    User?     @relation("ReceiptLinksCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now())
+
+  @@index([businessId])
+  @@index([expiresAt])
+  @@map("pos_receipt_links")
 }
 

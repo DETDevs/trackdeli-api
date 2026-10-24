@@ -10,6 +10,21 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { CreatePrintEventDto } from './dto/create-print-event.dto';
 import { UpdateReceiptSettingsDto } from './dto/update-receipt-settings.dto';
 
+/**
+ * Enmascara números de teléfono en reason para no guardar teléfonos completos (máx últimos 4 dígitos).
+ */
+function maskPhoneInReason(reason?: string | null): string | null {
+  if (!reason) return reason ?? null;
+  return reason.replace(/(\+?\d[\d\s\-()]{5,}\d)/g, (match) => {
+    const digits = match.replace(/\D/g, '');
+    if (digits.length >= 7) {
+      const last4 = digits.slice(-4);
+      return `***${last4}`;
+    }
+    return match;
+  });
+}
+
 @Injectable()
 export class PrintAuditService {
   private readonly logger = new Logger(PrintAuditService.name);
@@ -172,22 +187,22 @@ export class PrintAuditService {
             sequence = prevOkPrints;
             isReprint = false;
           }
-        } else if (ev.eventType === 'SHARE') {
-          const prevOkShares = await tx.posPrintEvent.count({
+        } else {
+          const prevOkCount = await tx.posPrintEvent.count({
             where: {
               businessId,
               documentType: ev.documentType,
               documentId: ev.documentId,
-              eventType: 'SHARE',
+              eventType: ev.eventType,
               status: 'OK',
             },
           });
 
           if (ev.status === 'OK') {
-            sequence = prevOkShares + 1;
+            sequence = prevOkCount + 1;
             isReprint = false;
           } else {
-            sequence = prevOkShares;
+            sequence = prevOkCount;
             isReprint = false;
           }
         }
@@ -206,7 +221,7 @@ export class PrintAuditService {
             deviceId: ev.deviceId ?? null,
             stationName: ev.stationName ?? null,
             cashRegisterId: ev.cashRegisterId ?? null,
-            reason: ev.reason ?? null,
+            reason: maskPhoneInReason(ev.reason),
             clientEventId: ev.clientEventId,
             occurredAt: new Date(ev.occurredAt),
           },
