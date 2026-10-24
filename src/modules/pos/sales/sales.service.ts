@@ -1,7 +1,7 @@
 import {
   Injectable, NotFoundException, BadRequestException, ConflictException, ForbiddenException, UnprocessableEntityException, Logger,
 } from "@nestjs/common";
-import { BusinessProductType, CreditAccountStatus, PosPaymentMethod, Prisma, UserRole } from "@prisma/client";
+import { BusinessProductType, CreditAccountStatus, CreditInstallmentStatus, PosPaymentMethod, Prisma, UserRole } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { BusinessProductsService } from "../../business-products/business-products.service";
 import { CreateSaleDto } from "./dto/create-sale.dto";
@@ -81,6 +81,45 @@ export class SalesService {
         exchangeRate: p.exchangeRate != null ? Number(new Prisma.Decimal(p.exchangeRate.toString()).toDecimalPlaces(4)) : 1,
         amountBase: p.amountBase != null ? Number(new Prisma.Decimal(p.amountBase.toString()).toDecimalPlaces(2)) : 0,
       })),
+      creditAccount: sale.creditAccount
+        ? {
+            ...sale.creditAccount,
+            originalAmount: Number(sale.creditAccount.originalAmount),
+            balance: Number(sale.creditAccount.balance),
+            principalAmount: sale.creditAccount.principalAmount != null ? Number(sale.creditAccount.principalAmount) : null,
+            downPaymentAmount: sale.creditAccount.downPaymentAmount != null ? Number(sale.creditAccount.downPaymentAmount) : 0,
+            interestAmount: sale.creditAccount.interestAmount != null ? Number(sale.creditAccount.interestAmount) : 0,
+            interestRate: sale.creditAccount.interestRate != null ? Number(sale.creditAccount.interestRate) : null,
+            installments: (sale.creditAccount.installments && sale.creditAccount.installments.length > 0)
+              ? sale.creditAccount.installments.map((inst: any) => ({
+                  ...inst,
+                  amount: Number(inst.amount),
+                  paidAmount: Number(inst.paidAmount),
+                }))
+              : [
+                  {
+                    id: `virtual-${sale.creditAccount.id}`,
+                    creditAccountId: sale.creditAccount.id,
+                    installmentNumber: 1,
+                    dueDate: sale.creditAccount.dueDate,
+                    amount: Number(sale.creditAccount.originalAmount),
+                    paidAmount: Math.max(0, Math.round((Number(sale.creditAccount.originalAmount) - Number(sale.creditAccount.balance)) * 100) / 100),
+                    status: sale.creditAccount.status,
+                    paidAt: sale.creditAccount.status === 'PAID' ? sale.creditAccount.updatedAt : null,
+                  },
+                ],
+            desglose: {
+              totalProductos: sale.total != null ? Number(sale.total) : (sale.creditAccount.principalAmount != null ? Number(sale.creditAccount.principalAmount) + Number(sale.creditAccount.downPaymentAmount || 0) : Number(sale.creditAccount.originalAmount)),
+              prima: sale.creditAccount.downPaymentAmount != null ? Number(sale.creditAccount.downPaymentAmount) : 0,
+              fiado: sale.creditAccount.principalAmount != null ? Number(sale.creditAccount.principalAmount) : Number(sale.creditAccount.originalAmount),
+              interestType: sale.creditAccount.interestType || null,
+              interestRate: sale.creditAccount.interestRate != null ? Number(sale.creditAccount.interestRate) : 0,
+              interestAmount: sale.creditAccount.interestAmount != null ? Number(sale.creditAccount.interestAmount) : 0,
+              totalAPagar: Number(sale.creditAccount.originalAmount),
+              balance: Number(sale.creditAccount.balance),
+            },
+          }
+        : null,
     };
   }
 
@@ -385,13 +424,51 @@ export class SalesService {
 
       const finalNotes = hasAuditDiscrepancy ? `${dto.notes ? dto.notes + '. ' : ''}[AUDIT: ${auditNote.trim()}]` : dto.notes;
 
-      const isCredit = (dto.paymentMethod as any) === PosPaymentMethod.CREDITO || (dto as any).paymentType === PosPaymentMethod.CREDITO;
-      const paymentMethod = isCredit ? PosPaymentMethod.CREDITO : dto.paymentMethod;
+      // 1. Detectar porción de crédito y prima
+      const hasDirectCredit = (dto.paymentMethod as any) === PosPaymentMethod.CREDITO || (dto as any).paymentType === PosPaymentMethod.CREDITO;
+      const creditRowInPayments = dto.payments && dto.payments.find((p: any) => p.method === PosPaymentMethod.CREDITO);
+      const isCreditRequested = hasDirectCredit || Boolean(creditRowInPayments);
+
+      let fiado = 0;
+      let prima = 0;
+
+      if (isCreditRequested) {
+        if (creditRowInPayments) {
+          fiado = Number(creditRowInPayments.amount ?? creditRowInPayments.amountTendered ?? 0);
+          if (fiado <= 0 && hasDirectCredit) fiado = total;
+        } else {
+          fiado = total;
+        }
+        fiado = Math.round(fiado * 100) / 100;
+        prima = Math.max(0, Math.round((total - fiado) * 100) / 100);
+      }
+
+      const isCredit = isCreditRequested && fiado > 0;
+      const paymentMethod = isCredit && (!dto.payments || dto.payments.length <= 1)
+        ? PosPaymentMethod.CREDITO
+        : (dto.payments && dto.payments.length > 1 ? PosPaymentMethod.MIXTO : dto.paymentMethod);
 
       let customerId: string | null = null;
       let customerName = dto.customerName || null;
       let customerPhone = dto.customerPhone || null;
       let dueDate: Date | null = null;
+      let creditPlanResult: {
+        totalAPagar: number;
+        fiado: number;
+        prima: number;
+        interestAmount: number;
+        interestRate: number;
+        interestType: string | null;
+        installmentsCount: number;
+        frequency: string | null;
+        firstDueDate: Date;
+        finalDueDate: Date;
+        cuotas: Array<{
+          installmentNumber: number;
+          dueDate: Date;
+          amount: Prisma.Decimal;
+        }>;
+      } | null = null;
 
       if (isCredit) {
         const isCarteraActive = await this.businessProductsService.isActive(
@@ -450,7 +527,177 @@ export class SalesService {
           await tx.$queryRaw`SELECT id FROM pos_credit_groups WHERE id = ${customer.groupId} FOR UPDATE`;
         }
 
-        const saleTotalDecimal = new Prisma.Decimal(total);
+        // Tasa e intereses
+        const defaultRate = policies.creditInterestEnabled ? Number(policies.creditInterestRate || 0) : 0;
+        const configuredInterestType = policies.creditInterestType || 'FLAT';
+        let effectiveRate = defaultRate;
+        const interestType = configuredInterestType;
+
+        if (dto.creditPlan) {
+          if (dto.creditPlan.interestRate !== undefined && dto.creditPlan.interestRate !== null) {
+            const requestedRate = Number(dto.creditPlan.interestRate);
+            if (requestedRate !== defaultRate) {
+              if (userRole === UserRole.CAJERO) {
+                if (dto.creditPlan.approvalToken) {
+                  await this.approvalsService.consumeToken(
+                    businessId,
+                    PosAction.CREDIT_RATE_OVERRIDE,
+                    dto.creditPlan.approvalToken,
+                    tx,
+                  );
+                } else {
+                  throw new UnprocessableEntityException({
+                    statusCode: 422,
+                    error: 'Unprocessable Entity',
+                    code: 'RATE_OVERRIDE_REQUIRES_APPROVAL',
+                    message: {
+                      code: 'RATE_OVERRIDE_REQUIRES_APPROVAL',
+                      message: 'El cambio de tasa de interés de crédito requiere aprobación del encargado',
+                    },
+                  });
+                }
+              } else if (dto.creditPlan.approvalToken) {
+                await this.approvalsService.consumeToken(
+                  businessId,
+                  PosAction.CREDIT_RATE_OVERRIDE,
+                  dto.creditPlan.approvalToken,
+                  tx,
+                );
+              }
+              effectiveRate = requestedRate;
+            }
+          }
+        } else {
+          // Sin creditPlan (desktop viejo): 0% interés para no romper versiones viejas
+          effectiveRate = 0;
+        }
+
+        // Fecha de primera cuota / vencimiento
+        let firstDueDate: Date;
+        if (dto.creditPlan?.firstDueDate) {
+          const parsed = new Date(dto.creditPlan.firstDueDate);
+          if (isNaN(parsed.getTime())) throw new BadRequestException('Fecha de primera cuota inválida');
+          firstDueDate = parsed;
+        } else if (dto.creditPlan?.dueDate) {
+          const parsed = new Date(dto.creditPlan.dueDate);
+          if (isNaN(parsed.getTime())) throw new BadRequestException('Fecha de vencimiento inválida');
+          firstDueDate = parsed;
+        } else if (dto.creditDueDate) {
+          const parsed = new Date(dto.creditDueDate);
+          if (isNaN(parsed.getTime())) throw new BadRequestException('Fecha de vencimiento de crédito inválida');
+          firstDueDate = parsed;
+        } else {
+          firstDueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        }
+
+        const isInstallments = dto.creditPlan?.mode === 'INSTALLMENTS';
+        const numCuotas = isInstallments ? Math.max(1, Number(dto.creditPlan?.installmentsCount || 1)) : 1;
+        const frequency = isInstallments ? (dto.creditPlan?.frequency || 'MENSUAL').toUpperCase() : null;
+
+        if (isInstallments) {
+          const maxInst = policies.creditMaxInstallments || 12;
+          if (numCuotas < 2 || numCuotas > maxInst) {
+            throw new BadRequestException(`El número de cuotas debe estar entre 2 y ${maxInst}`);
+          }
+          const allowedFreqs = (policies.creditAllowedFrequencies || 'SEMANAL,QUINCENAL,MENSUAL')
+            .split(',')
+            .map((f) => f.trim().toUpperCase());
+          if (frequency && !allowedFreqs.includes(frequency)) {
+            throw new BadRequestException(`La frecuencia ${frequency} no está permitida en este negocio`);
+          }
+        }
+
+        // Cálculo de interés
+        let calculatedInterest = 0;
+        if (effectiveRate > 0) {
+          if (interestType === 'FLAT') {
+            calculatedInterest = Math.round(fiado * (effectiveRate / 100) * 100) / 100;
+          } else if (interestType === 'MONTHLY') {
+            let meses = 1;
+            if (!isInstallments) {
+              const diffMs = firstDueDate.getTime() - Date.now();
+              const diffDays = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)));
+              meses = Math.max(1, Math.round(diffDays / 30));
+            } else {
+              if (frequency === 'SEMANAL') meses = (numCuotas * 7) / 30;
+              else if (frequency === 'QUINCENAL') meses = (numCuotas * 15) / 30;
+              else meses = numCuotas;
+            }
+            calculatedInterest = Math.round(fiado * (effectiveRate / 100) * meses * 100) / 100;
+          }
+        }
+
+        const totalAPagar = Math.round((fiado + calculatedInterest) * 100) / 100;
+
+        // Distribución de cuotas
+        const cuotaBase = Math.floor((totalAPagar / numCuotas) * 100) / 100;
+        const cuotasList: Array<{ installmentNumber: number; dueDate: Date; amount: Prisma.Decimal }> = [];
+
+        const calculateInstallmentDate = (base: Date, idx: number, freq: string | null): Date => {
+          if (idx === 0) return new Date(base.getTime());
+          const d = new Date(base.getTime());
+          if (freq === 'SEMANAL') {
+            d.setDate(d.getDate() + idx * 7);
+            return d;
+          }
+          if (freq === 'QUINCENAL') {
+            d.setDate(d.getDate() + idx * 15);
+            return d;
+          }
+          // MENSUAL con ajuste de fin de mes
+          const year = base.getFullYear();
+          const month = base.getMonth();
+          const day = base.getDate();
+          const lastDayOfBase = new Date(year, month + 1, 0).getDate();
+          const isEndOfMonth = day === lastDayOfBase;
+
+          const targetMonthFirst = new Date(year, month + idx, 1);
+          const targetLastDay = new Date(targetMonthFirst.getFullYear(), targetMonthFirst.getMonth() + 1, 0).getDate();
+          const targetDay = isEndOfMonth ? targetLastDay : Math.min(day, targetLastDay);
+
+          return new Date(
+            targetMonthFirst.getFullYear(),
+            targetMonthFirst.getMonth(),
+            targetDay,
+            base.getHours(),
+            base.getMinutes(),
+            base.getSeconds(),
+            base.getMilliseconds(),
+          );
+        };
+
+        for (let i = 1; i <= numCuotas; i++) {
+          const isLast = i === numCuotas;
+          const instAmount = isLast
+            ? Math.round((totalAPagar - (cuotaBase * (numCuotas - 1))) * 100) / 100
+            : cuotaBase;
+          const instDueDate = calculateInstallmentDate(firstDueDate, i - 1, frequency);
+
+          cuotasList.push({
+            installmentNumber: i,
+            dueDate: instDueDate,
+            amount: new Prisma.Decimal(instAmount.toFixed(2)),
+          });
+        }
+
+        const finalDueDate = cuotasList[cuotasList.length - 1].dueDate;
+        dueDate = cuotasList[0].dueDate;
+
+        creditPlanResult = {
+          totalAPagar,
+          fiado,
+          prima,
+          interestAmount: calculatedInterest,
+          interestRate: effectiveRate,
+          interestType: effectiveRate > 0 ? interestType : null,
+          installmentsCount: numCuotas,
+          frequency: isInstallments ? frequency : null,
+          firstDueDate: dueDate,
+          finalDueDate,
+          cuotas: cuotasList,
+        };
+
+        const totalDebtToCharge = new Prisma.Decimal(totalAPagar);
 
         // 1. Deuda activa del cliente
         const customerDebtAgg = await tx.creditAccount.aggregate({
@@ -470,7 +717,7 @@ export class SalesService {
 
         if (customer.creditLimit !== null && customer.creditLimit !== undefined) {
           const customerLimitDecimal = new Prisma.Decimal(customer.creditLimit);
-          if (customerDebtDecimal.add(saleTotalDecimal).greaterThan(customerLimitDecimal)) {
+          if (customerDebtDecimal.add(totalDebtToCharge).greaterThan(customerLimitDecimal)) {
             isLimitExceeded = true;
             exceededLimit = Number(customer.creditLimit);
             exceededBalance = customerDebt;
@@ -496,7 +743,7 @@ export class SalesService {
             const groupDebtDecimal = new Prisma.Decimal(groupDebt);
             const groupLimitDecimal = new Prisma.Decimal(group.creditLimit);
 
-            if (groupDebtDecimal.add(saleTotalDecimal).greaterThan(groupLimitDecimal)) {
+            if (groupDebtDecimal.add(totalDebtToCharge).greaterThan(groupLimitDecimal)) {
               isLimitExceeded = true;
               exceededLimit = Number(group.creditLimit);
               exceededBalance = groupDebt;
@@ -525,18 +772,18 @@ export class SalesService {
                   code: 'CREDIT_LIMIT_EXCEEDED',
                   message: {
                     code: 'CREDIT_LIMIT_EXCEEDED',
-                    message: `Límite de crédito excedido (${isGroupExceeded ? 'empresa' : 'cliente'}). Límite: ${exceededLimit.toFixed(2)}, Deuda actual: ${exceededBalance.toFixed(2)}, Intentando cargar: ${total.toFixed(2)}`,
+                    message: `Límite de crédito excedido (${isGroupExceeded ? 'empresa' : 'cliente'}). Límite: ${exceededLimit.toFixed(2)}, Deuda actual: ${exceededBalance.toFixed(2)}, Intentando cargar: ${totalAPagar.toFixed(2)}`,
                     details: {
                       limit: exceededLimit,
                       balance: exceededBalance,
-                      requested: total,
+                      requested: totalAPagar,
                       entity: isGroupExceeded ? 'GROUP' : 'CUSTOMER',
                       entityId: isGroupExceeded ? customer.groupId : customer.id,
                     },
                   },
                   limit: exceededLimit,
                   balance: exceededBalance,
-                  requested: total,
+                  requested: totalAPagar,
                 });
               }
             } else {
@@ -561,20 +808,10 @@ export class SalesService {
               action: PosAction.CREDIT_LIMIT_OVERRIDE,
               entityType: isGroupExceeded ? 'CreditGroup' : 'Customer',
               entityId: isGroupExceeded ? customer.groupId : customer.id,
-              reason: `Venta a crédito autorizada sobrepasando límite de ${isGroupExceeded ? 'empresa' : 'cliente'} (${exceededLimit.toFixed(2)}). Solicitado: ${total.toFixed(2)}, Deuda previa: ${exceededBalance.toFixed(2)}`,
+              reason: `Venta a crédito autorizada sobrepasando límite de ${isGroupExceeded ? 'empresa' : 'cliente'} (${exceededLimit.toFixed(2)}). Solicitado: ${totalAPagar.toFixed(2)}, Deuda previa: ${exceededBalance.toFixed(2)}`,
             },
             tx,
           );
-        }
-
-        if (dto.creditDueDate) {
-          const parsedDueDate = new Date(dto.creditDueDate);
-          if (isNaN(parsedDueDate.getTime())) {
-            throw new BadRequestException("Fecha de vencimiento de crédito inválida");
-          }
-          dueDate = parsedDueDate;
-        } else {
-          dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
         }
       } else if (dto.customerId) {
         const customer = await tx.customer.findFirst({
@@ -861,18 +1098,50 @@ export class SalesService {
         });
       }
 
+      let createdCreditAccount: any = null;
       if (isCredit && customerId && dueDate) {
-        await tx.creditAccount.create({
+        createdCreditAccount = await tx.creditAccount.create({
           data: {
             saleId: sale.id,
             customerId,
             businessId,
-            originalAmount: total,
-            balance: total,
-            status: CreditAccountStatus.PENDING,
+            originalAmount: creditPlanResult ? creditPlanResult.totalAPagar : total,
+            balance: creditPlanResult ? creditPlanResult.totalAPagar : total,
+            principalAmount: creditPlanResult ? new Prisma.Decimal(creditPlanResult.fiado.toFixed(2)) : new Prisma.Decimal(total.toFixed(2)),
+            downPaymentAmount: creditPlanResult ? new Prisma.Decimal(creditPlanResult.prima.toFixed(2)) : new Prisma.Decimal(0),
+            interestAmount: creditPlanResult ? new Prisma.Decimal(creditPlanResult.interestAmount.toFixed(2)) : new Prisma.Decimal(0),
+            interestRate: creditPlanResult && creditPlanResult.interestRate != null ? new Prisma.Decimal(creditPlanResult.interestRate.toFixed(2)) : null,
+            interestType: (creditPlanResult?.interestType as any) || null,
+            installmentsCount: creditPlanResult?.installmentsCount || 1,
+            frequency: (creditPlanResult?.frequency as any) || null,
+            finalDueDate: creditPlanResult?.finalDueDate || dueDate,
             dueDate,
+            status: CreditAccountStatus.PENDING,
           },
         });
+
+        if (creditPlanResult && creditPlanResult.cuotas && creditPlanResult.cuotas.length > 0) {
+          await tx.creditInstallment.createMany({
+            data: creditPlanResult.cuotas.map((c) => ({
+              creditAccountId: createdCreditAccount.id,
+              installmentNumber: c.installmentNumber,
+              dueDate: c.dueDate,
+              amount: c.amount,
+              paidAmount: 0,
+              status: CreditInstallmentStatus.PENDING,
+            })),
+          });
+
+          const createdInstallments = await tx.creditInstallment.findMany({
+            where: { creditAccountId: createdCreditAccount.id },
+            orderBy: { installmentNumber: 'asc' },
+          });
+          createdCreditAccount.installments = createdInstallments;
+        } else {
+          createdCreditAccount.installments = [];
+        }
+
+        (sale as any).creditAccount = createdCreditAccount;
       }
 
       for (const item of dto.items) {
@@ -1064,6 +1333,11 @@ export class SalesService {
         cashier: { select: { id: true, name: true } },
         cashRegister: { select: { id: true, openedAt: true } },
         payments: true,
+        creditAccount: {
+          include: {
+            installments: { orderBy: { installmentNumber: 'asc' } },
+          },
+        },
         returns: {
           include: { items: true },
           orderBy: { createdAt: 'desc' },
@@ -1105,6 +1379,12 @@ export class SalesService {
         cashier: { select: { id: true, name: true } },
         cashRegister: { select: { id: true, openedAt: true } },
         payments: true,
+        creditAccount: {
+          include: {
+            installments: { orderBy: { installmentNumber: 'asc' } },
+            payments: { orderBy: { createdAt: 'desc' } },
+          },
+        },
         returns: {
           include: {
             items: true,
@@ -1445,6 +1725,13 @@ export class SalesService {
           data: {
             balance: 0,
             status: CreditAccountStatus.CANCELLED,
+          },
+        });
+
+        await tx.creditInstallment.updateMany({
+          where: { creditAccountId: sale.creditAccount.id },
+          data: {
+            status: CreditInstallmentStatus.CANCELLED,
           },
         });
       }
@@ -1909,6 +2196,13 @@ export class SalesService {
               status: CreditAccountStatus.CANCELLED,
             },
           });
+
+          await tx.creditInstallment.updateMany({
+            where: { creditAccountId: sale.creditAccount.id },
+            data: {
+              status: CreditInstallmentStatus.CANCELLED,
+            },
+          });
         } else {
           // El refund es menor o igual al saldo pendiente
           const newBalDec = currentBalDec.minus(totalReturnRefundDec);
@@ -1919,6 +2213,62 @@ export class SalesService {
               status: newBalDec.equals(0) ? CreditAccountStatus.PAID : CreditAccountStatus.PARTIALLY_PAID,
             },
           });
+
+          // Descontar de las últimas cuotas pendientes hacia atrás (LIFO)
+          const pendingInstallments = await tx.creditInstallment.findMany({
+            where: {
+              creditAccountId: sale.creditAccount.id,
+              status: { in: [CreditInstallmentStatus.PENDING, CreditInstallmentStatus.PARTIALLY_PAID, CreditInstallmentStatus.OVERDUE] },
+            },
+            orderBy: { installmentNumber: 'desc' },
+          });
+
+          let remainingToDeduct = new Prisma.Decimal(totalReturnRefundDec.toString());
+          for (const inst of pendingInstallments) {
+            if (remainingToDeduct.isZero() || remainingToDeduct.isNegative()) break;
+            const instAmountDec = new Prisma.Decimal(inst.amount.toString());
+            const instPaidDec = new Prisma.Decimal(inst.paidAmount.toString());
+            const instPendingDec = instAmountDec.minus(instPaidDec);
+
+            if (instPendingDec.greaterThan(0)) {
+              if (remainingToDeduct.greaterThanOrEqualTo(instPendingDec)) {
+                // Esta cuota se reduce a lo ya pagado (o se cancela si pagado es 0)
+                remainingToDeduct = remainingToDeduct.minus(instPendingDec);
+                await tx.creditInstallment.update({
+                  where: { id: inst.id },
+                  data: {
+                    amount: instPaidDec,
+                    status: instPaidDec.isZero() ? CreditInstallmentStatus.CANCELLED : CreditInstallmentStatus.PAID,
+                  },
+                });
+              } else {
+                // Se reduce parcialmente el monto de la cuota
+                const newInstAmount = instAmountDec.minus(remainingToDeduct);
+                remainingToDeduct = new Prisma.Decimal(0);
+                await tx.creditInstallment.update({
+                  where: { id: inst.id },
+                  data: {
+                    amount: newInstAmount,
+                  },
+                });
+              }
+            }
+          }
+
+          // Recalcular dueDate a la próxima cuota pendiente
+          const nextPending = await tx.creditInstallment.findFirst({
+            where: {
+              creditAccountId: sale.creditAccount.id,
+              status: { in: [CreditInstallmentStatus.PENDING, CreditInstallmentStatus.PARTIALLY_PAID, CreditInstallmentStatus.OVERDUE] },
+            },
+            orderBy: { installmentNumber: 'asc' },
+          });
+          if (nextPending) {
+            await tx.creditAccount.update({
+              where: { id: sale.creditAccount.id },
+              data: { dueDate: nextPending.dueDate },
+            });
+          }
         }
       }
 

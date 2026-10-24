@@ -2252,6 +2252,7 @@ WHERE a."customerId" = c."id"
       await this.ensureFinancesSchema();
       await this.ensurePrintAuditAndReceiptSchema();
       await this.ensureBatchesSchema();
+      await this.ensureCreditInstallmentsSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -3193,6 +3194,109 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 186a - Advertencia sincronizando esquema de Lotes y Vencimientos: ${err.message}`);
+    }
+  }
+
+  private async ensureCreditInstallmentsSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(1890100)`);
+
+          // 1. pos_policies credit fields
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_policies" ADD COLUMN IF NOT EXISTS "creditInterestEnabled" BOOLEAN NOT NULL DEFAULT false;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_policies" ADD COLUMN IF NOT EXISTS "creditInterestType" VARCHAR(20) NOT NULL DEFAULT 'FLAT';
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_policies" ADD COLUMN IF NOT EXISTS "creditInterestRate" NUMERIC(5, 2) NOT NULL DEFAULT 0;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_policies" ADD COLUMN IF NOT EXISTS "creditMaxInstallments" INTEGER NOT NULL DEFAULT 12;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_policies" ADD COLUMN IF NOT EXISTS "creditAllowedFrequencies" TEXT NOT NULL DEFAULT 'SEMANAL,QUINCENAL,MENSUAL';
+          `);
+
+          // 2. pos_credit_accounts snapshot fields
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_credit_accounts" ADD COLUMN IF NOT EXISTS "interestType" VARCHAR(20);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_credit_accounts" ADD COLUMN IF NOT EXISTS "interestRate" NUMERIC(5, 2);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_credit_accounts" ADD COLUMN IF NOT EXISTS "interestAmount" NUMERIC(12, 2) NOT NULL DEFAULT 0;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_credit_accounts" ADD COLUMN IF NOT EXISTS "principalAmount" NUMERIC(12, 2);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_credit_accounts" ADD COLUMN IF NOT EXISTS "downPaymentAmount" NUMERIC(12, 2) NOT NULL DEFAULT 0;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_credit_accounts" ADD COLUMN IF NOT EXISTS "installmentsCount" INTEGER NOT NULL DEFAULT 1;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_credit_accounts" ADD COLUMN IF NOT EXISTS "frequency" VARCHAR(20);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_credit_accounts" ADD COLUMN IF NOT EXISTS "finalDueDate" TIMESTAMP(3);
+          `);
+
+          // 3. pos_credit_payments interest portion
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_credit_payments" ADD COLUMN IF NOT EXISTS "interestPortion" NUMERIC(12, 2) NOT NULL DEFAULT 0;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_credit_payments" ADD COLUMN IF NOT EXISTS "principalPortion" NUMERIC(12, 2);
+          `);
+
+          // 4. Enum CreditInstallmentStatus
+          await tx.$executeRawUnsafe(`
+            DO $$ BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'CreditInstallmentStatus') THEN
+                CREATE TYPE "CreditInstallmentStatus" AS ENUM ('PENDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED');
+              END IF;
+            END $$;
+          `);
+
+          // 5. Tabla pos_credit_installments
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_credit_installments" (
+              "id" TEXT NOT NULL,
+              "creditAccountId" TEXT NOT NULL,
+              "installmentNumber" INTEGER NOT NULL,
+              "dueDate" TIMESTAMP(3) NOT NULL,
+              "amount" NUMERIC(12, 2) NOT NULL,
+              "paidAmount" NUMERIC(12, 2) NOT NULL DEFAULT 0,
+              "status" "CreditInstallmentStatus" NOT NULL DEFAULT 'PENDING',
+              "paidAt" TIMESTAMP(3),
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_credit_installments_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_credit_installments_creditAccountId_fkey" FOREIGN KEY ("creditAccountId") REFERENCES "pos_credit_accounts"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_credit_installments_creditAccountId_installmentNumber_key"
+              ON "pos_credit_installments"("creditAccountId", "installmentNumber");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_credit_installments_creditAccountId_status_dueDate_idx"
+              ON "pos_credit_installments"("creditAccountId", "status", "dueDate");
+          `);
+
+          this.logger.log('189a - Esquema de Crédito con Cuotas sincronizado');
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 189a - Advertencia sincronizando esquema de Crédito con Cuotas: ${err.message}`);
     }
   }
 

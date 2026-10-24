@@ -76,6 +76,40 @@ export class PaymentDto {
   exchangeRate?: number;
 }
 
+export class CreditPlanDto {
+  @IsOptional()
+  @IsEnum(['SINGLE', 'INSTALLMENTS'])
+  mode?: 'SINGLE' | 'INSTALLMENTS';
+
+  @IsOptional()
+  @IsString()
+  dueDate?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  installmentsCount?: number;
+
+  @IsOptional()
+  @IsEnum(['SEMANAL', 'QUINCENAL', 'MENSUAL'])
+  frequency?: 'SEMANAL' | 'QUINCENAL' | 'MENSUAL';
+
+  @IsOptional()
+  @IsString()
+  firstDueDate?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  interestRate?: number;
+
+  @IsOptional()
+  @IsString()
+  approvalToken?: string;
+}
+
 export class CreateSaleDto {
   @IsOptional()
   @IsString()
@@ -97,6 +131,11 @@ export class CreateSaleDto {
   @IsOptional()
   @IsString()
   creditDueDate?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CreditPlanDto)
+  creditPlan?: CreditPlanDto;
 
   @IsOptional()
   @SanitizeText()

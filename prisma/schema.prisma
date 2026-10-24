@@ -147,6 +147,14 @@ enum CreditAccountStatus {
   CANCELLED
 }
 
+enum CreditInstallmentStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
 enum MovementType {
   ENTRADA
   SALIDA
@@ -685,6 +693,12 @@ model PosPolicies {
   inventoryAdjustRequireApproval Boolean @default(true)
   creditLimitOverrideRequiresApproval Boolean @default(true)
 
+  creditInterestEnabled      Boolean  @default(false)
+  creditInterestType         String   @default("FLAT") // FLAT | MONTHLY
+  creditInterestRate         Decimal  @default(0) @db.Decimal(5, 2)
+  creditMaxInstallments      Int      @default(12)
+  creditAllowedFrequencies   String   @default("SEMANAL,QUINCENAL,MENSUAL")
+
   @@map("pos_policies")
 }
 
@@ -1193,7 +1207,17 @@ model CreditAccount {
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
+  interestType      String?             @db.VarChar(20) // FLAT | MONTHLY
+  interestRate      Decimal?            @db.Decimal(5, 2)
+  interestAmount    Decimal             @default(0) @db.Decimal(12, 2)
+  principalAmount   Decimal?            @db.Decimal(12, 2)
+  downPaymentAmount Decimal             @default(0) @db.Decimal(12, 2)
+  installmentsCount Int                 @default(1)
+  frequency         String?             @db.VarChar(20) // SEMANAL | QUINCENAL | MENSUAL
+  finalDueDate      DateTime?
+
   payments       CreditPayment[]
+  installments   CreditInstallment[]
 
   @@index([businessId, status, dueDate])
   @@index([businessId, customerId])
@@ -1204,16 +1228,36 @@ model CreditPayment {
   id               String           @id @default(uuid())
   creditAccountId  String
   creditAccount    CreditAccount    @relation(fields: [creditAccountId], references: [id], onDelete: Restrict)
-  amount         Decimal @db.Decimal(12,2)
+  amount           Decimal          @db.Decimal(12, 2)
   paymentMethod    PosPaymentMethod @default(EFECTIVO)
   receivedByUserId String
   receivedByUser   User             @relation("CreditPaymentsReceived", fields: [receivedByUserId], references: [id])
   receivedAt       DateTime         @default(now())
   notes            String?
+  interestPortion  Decimal          @default(0) @db.Decimal(12, 2)
+  principalPortion Decimal?         @db.Decimal(12, 2)
   createdAt        DateTime         @default(now())
 
   @@index([creditAccountId])
   @@map("pos_credit_payments")
+}
+
+model CreditInstallment {
+  id                String                  @id @default(uuid())
+  creditAccountId   String
+  creditAccount     CreditAccount           @relation(fields: [creditAccountId], references: [id], onDelete: Cascade)
+  installmentNumber Int
+  dueDate           DateTime
+  amount            Decimal                 @db.Decimal(12, 2)
+  paidAmount        Decimal                 @default(0) @db.Decimal(12, 2)
+  status            CreditInstallmentStatus @default(PENDING)
+  paidAt            DateTime?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@unique([creditAccountId, installmentNumber])
+  @@index([creditAccountId, status, dueDate])
+  @@map("pos_credit_installments")
 }
 
 model CreditGroup {

@@ -27,4 +27,10 @@ export class UpdatePosPoliciesDto {
   @IsOptional() @IsBoolean() allowNegativeStock?: boolean;
   @IsOptional() @IsBoolean() inventoryAdjustRequireApproval?: boolean;
   @IsOptional() @IsBoolean() creditLimitOverrideRequiresApproval?: boolean;
+
+  @IsOptional() @IsBoolean() creditInterestEnabled?: boolean;
+  @IsOptional() @IsString() creditInterestType?: string;
+  @IsOptional() @IsNumber() @Min(0) creditInterestRate?: number;
+  @IsOptional() @IsNumber() @Min(1) @Max(60) creditMaxInstallments?: number;
+  @IsOptional() @IsString() creditAllowedFrequencies?: string;
 }

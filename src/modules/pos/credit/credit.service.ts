@@ -8,7 +8,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { BusinessProductType, CreditAccountStatus, PosPaymentMethod, Prisma } from '@prisma/client';
+import { BusinessProductType, CreditAccountStatus, CreditInstallmentStatus, PosPaymentMethod, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TrackingGateway } from '../../tracking/tracking.gateway';
 import { BusinessProductsService } from '../../business-products/business-products.service';
@@ -53,6 +53,49 @@ export class CreditService {
     }
   }
 
+  private formatCreditAccount(acc: any) {
+    if (!acc) return null;
+    const installments = (acc.installments && acc.installments.length > 0)
+      ? acc.installments.map((inst: any) => ({
+          ...inst,
+          amount: Number(inst.amount),
+          paidAmount: Number(inst.paidAmount),
+        }))
+      : [
+          {
+            id: `virtual-${acc.id}`,
+            creditAccountId: acc.id,
+            installmentNumber: 1,
+            dueDate: acc.dueDate,
+            amount: Number(acc.originalAmount),
+            paidAmount: Math.max(0, Math.round((Number(acc.originalAmount) - Number(acc.balance)) * 100) / 100),
+            status: acc.status,
+            paidAt: acc.status === 'PAID' ? acc.updatedAt : null,
+          },
+        ];
+
+    return {
+      ...acc,
+      originalAmount: Number(acc.originalAmount),
+      balance: Number(acc.balance),
+      principalAmount: acc.principalAmount != null ? Number(acc.principalAmount) : null,
+      downPaymentAmount: acc.downPaymentAmount != null ? Number(acc.downPaymentAmount) : 0,
+      interestAmount: acc.interestAmount != null ? Number(acc.interestAmount) : 0,
+      interestRate: acc.interestRate != null ? Number(acc.interestRate) : null,
+      installments,
+      desglose: {
+        totalProductos: acc.principalAmount != null ? Number(acc.principalAmount) + Number(acc.downPaymentAmount || 0) : (acc.sale?.total != null ? Number(acc.sale.total) : Number(acc.originalAmount)),
+        prima: acc.downPaymentAmount != null ? Number(acc.downPaymentAmount) : 0,
+        fiado: acc.principalAmount != null ? Number(acc.principalAmount) : Number(acc.originalAmount),
+        interestType: acc.interestType || null,
+        interestRate: acc.interestRate != null ? Number(acc.interestRate) : 0,
+        interestAmount: acc.interestAmount != null ? Number(acc.interestAmount) : 0,
+        totalAPagar: Number(acc.originalAmount),
+        balance: Number(acc.balance),
+      },
+    };
+  }
+
   async registerPayment(
     creditAccountId: string,
     dto: RegisterCreditPaymentDto,
@@ -79,6 +122,33 @@ export class CreditService {
         throw new BadRequestException('El monto a abonar debe ser mayor a 0');
       }
 
+      // Separación de interés y capital
+      const totalInterest = Number(account.interestAmount || 0);
+      const totalOriginal = Number(account.originalAmount);
+      const currentBalance = Number(account.balance);
+      const isFinalPayoff = (currentBalance - amountToDeduct) <= 0.005;
+
+      let interestPortion = 0;
+      if (totalInterest > 0 && totalOriginal > 0) {
+        const priorPaymentsAgg = await tx.creditPayment.aggregate({
+          where: { creditAccountId },
+          _sum: { interestPortion: true },
+        });
+        const priorInterestPaid = Number(priorPaymentsAgg._sum.interestPortion || 0);
+        const remainingInterest = Math.max(0, Math.round((totalInterest - priorInterestPaid) * 100) / 100);
+
+        if (isFinalPayoff) {
+          // El último abono que salda la cuenta ajusta centavos para que la suma sea exactamente totalInterest
+          interestPortion = remainingInterest;
+        } else {
+          interestPortion = Math.round((amountToDeduct * (totalInterest / totalOriginal)) * 100) / 100;
+          if (interestPortion > remainingInterest) {
+            interestPortion = remainingInterest;
+          }
+        }
+      }
+      const principalPortion = Math.round((amountToDeduct - interestPortion) * 100) / 100;
+
       // Actualización atómica con validación de saldo para evitar race conditions
       const updatedCount = await tx.$executeRaw`
         UPDATE "pos_credit_accounts"
@@ -98,6 +168,8 @@ export class CreditService {
         data: {
           creditAccountId,
           amount: amountToDeduct,
+          interestPortion: new Prisma.Decimal(interestPortion.toFixed(2)),
+          principalPortion: new Prisma.Decimal(principalPortion.toFixed(2)),
           paymentMethod: dto.paymentMethod,
           receivedByUserId: userId,
           notes: dto.notes ? dto.notes.trim() : null,
@@ -108,22 +180,79 @@ export class CreditService {
         },
       });
 
+      // Cascada a cuotas pendientes (FIFO)
+      const pendingInstallments = await tx.creditInstallment.findMany({
+        where: {
+          creditAccountId,
+          status: { in: [CreditInstallmentStatus.PENDING, CreditInstallmentStatus.PARTIALLY_PAID, CreditInstallmentStatus.OVERDUE] },
+        },
+        orderBy: { installmentNumber: 'asc' },
+      });
+
+      let remainingPayment = amountToDeduct;
+      const paymentNow = new Date();
+      for (const inst of pendingInstallments) {
+        if (remainingPayment <= 0.0001) break;
+        const instAmt = Number(inst.amount);
+        const instPaid = Number(inst.paidAmount);
+        const instPending = Math.max(0, Math.round((instAmt - instPaid) * 100) / 100);
+
+        if (instPending > 0) {
+          if (remainingPayment >= instPending) {
+            remainingPayment = Math.round((remainingPayment - instPending) * 100) / 100;
+            await tx.creditInstallment.update({
+              where: { id: inst.id },
+              data: {
+                paidAmount: instAmt,
+                status: CreditInstallmentStatus.PAID,
+                paidAt: paymentNow,
+              },
+            });
+          } else {
+            const newPaid = Math.round((instPaid + remainingPayment) * 100) / 100;
+            remainingPayment = 0;
+            await tx.creditInstallment.update({
+              where: { id: inst.id },
+              data: {
+                paidAmount: newPaid,
+                status: CreditInstallmentStatus.PARTIALLY_PAID,
+              },
+            });
+          }
+        }
+      }
+
       const refreshed = await tx.creditAccount.findUniqueOrThrow({
         where: { id: creditAccountId },
       });
 
+      // Recalcular dueDate = próxima cuota pendiente
+      const nextPendingInstallment = await tx.creditInstallment.findFirst({
+        where: {
+          creditAccountId,
+          status: { in: [CreditInstallmentStatus.PENDING, CreditInstallmentStatus.PARTIALLY_PAID, CreditInstallmentStatus.OVERDUE] },
+        },
+        orderBy: { installmentNumber: 'asc' },
+      });
+      const nextDueDate = nextPendingInstallment ? nextPendingInstallment.dueDate : refreshed.dueDate;
+
       let newStatus: CreditAccountStatus;
       if (refreshed.balance <= 0.005) {
         newStatus = CreditAccountStatus.PAID;
+      } else if (nextDueDate < new Date()) {
+        newStatus = CreditAccountStatus.OVERDUE;
       } else if (refreshed.balance < refreshed.originalAmount) {
         newStatus = CreditAccountStatus.PARTIALLY_PAID;
       } else {
-        newStatus = refreshed.dueDate < new Date() ? CreditAccountStatus.OVERDUE : CreditAccountStatus.PENDING;
+        newStatus = CreditAccountStatus.PENDING;
       }
 
       const finalAccount = await tx.creditAccount.update({
         where: { id: creditAccountId },
-        data: { status: newStatus },
+        data: {
+          status: newStatus,
+          dueDate: nextDueDate,
+        },
         include: {
           customer: true,
           sale: { select: { id: true, invoiceNumber: true, total: true, createdAt: true } },
@@ -131,8 +260,13 @@ export class CreditService {
             orderBy: { receivedAt: 'desc' },
             include: { receivedByUser: { select: { id: true, name: true } } },
           },
+          installments: {
+            orderBy: { installmentNumber: 'asc' },
+          },
         },
       });
+
+      const formattedAccount = this.formatCreditAccount(finalAccount);
 
       this.trackingGateway.notifyBusiness(businessId, 'credit_payment_registered', {
         creditAccountId,
@@ -150,8 +284,13 @@ export class CreditService {
       );
 
       return {
-        payment,
-        account: finalAccount,
+        payment: {
+          ...payment,
+          amount: Number(payment.amount),
+          interestPortion: payment.interestPortion != null ? Number(payment.interestPortion) : 0,
+          principalPortion: payment.principalPortion != null ? Number(payment.principalPortion) : Number(payment.amount),
+        },
+        account: formattedAccount,
       };
     });
   }
@@ -174,6 +313,9 @@ export class CreditService {
         payments: {
           orderBy: { receivedAt: 'desc' },
           include: { receivedByUser: { select: { id: true, name: true } } },
+        },
+        installments: {
+          orderBy: { installmentNumber: 'asc' },
         },
       },
     });
@@ -219,7 +361,7 @@ export class CreditService {
         creditLimit: customer.creditLimit,
         availableCredit,
       },
-      accounts,
+      accounts: accounts.map((a) => this.formatCreditAccount(a)),
     };
   }
 
@@ -234,6 +376,9 @@ export class CreditService {
           orderBy: { receivedAt: 'desc' },
           include: { receivedByUser: { select: { id: true, name: true } } },
         },
+        installments: {
+          orderBy: { installmentNumber: 'asc' },
+        },
       },
     });
 
@@ -241,21 +386,33 @@ export class CreditService {
       throw new NotFoundException('Cuenta por cobrar no encontrada');
     }
 
-    return account;
+    return this.formatCreditAccount(account);
   }
 
   @Cron('0 */30 * * * *')
   async reconcileCreditAccounts(): Promise<void> {
     try {
+      const now = new Date();
+
+      // Transicionar cuotas vencidas
+      await this.prisma.creditInstallment.updateMany({
+        where: {
+          status: { in: [CreditInstallmentStatus.PENDING, CreditInstallmentStatus.PARTIALLY_PAID] },
+          dueDate: { lt: now },
+        },
+        data: {
+          status: CreditInstallmentStatus.OVERDUE,
+        },
+      });
+
       const openAccounts = await this.prisma.creditAccount.findMany({
         where: { status: { notIn: [CreditAccountStatus.PAID, CreditAccountStatus.CANCELLED] } },
         include: {
           payments: true,
+          installments: true,
           business: { select: { id: true, name: true } },
         },
       });
-
-      const now = new Date();
 
       for (const acc of openAccounts) {
         const totalPaid = acc.payments.reduce((sum, p) => sum + Number(p.amount), 0);
@@ -269,8 +426,9 @@ export class CreditService {
           );
         }
 
-        // Transicionar automáticamente a OVERDUE si ya venció
-        if (acc.status === CreditAccountStatus.PENDING && acc.dueDate < now) {
+        // Transicionar automáticamente a OVERDUE si alguna cuota está vencida o si su dueDate venció
+        const hasOverdueInstallment = acc.installments.some((inst) => inst.status === CreditInstallmentStatus.OVERDUE);
+        if ((hasOverdueInstallment || acc.dueDate < now) && acc.status !== CreditAccountStatus.OVERDUE) {
           await this.prisma.creditAccount.update({
             where: { id: acc.id },
             data: { status: CreditAccountStatus.OVERDUE },

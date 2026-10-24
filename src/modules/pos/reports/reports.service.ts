@@ -525,6 +525,9 @@ export class ReportsService {
       include: {
         customer: true,
         sale: { select: { id: true, invoiceNumber: true, total: true, createdAt: true } },
+        installments: {
+          orderBy: { installmentNumber: 'asc' },
+        },
       },
       orderBy: { dueDate: 'asc' },
     });
@@ -538,6 +541,25 @@ export class ReportsService {
         0,
         Math.floor((now.getTime() - new Date(acc.dueDate).getTime()) / (1000 * 60 * 60 * 24)),
       );
+
+      const formattedInstallments = (acc.installments && acc.installments.length > 0)
+        ? acc.installments.map((inst: any) => ({
+            ...inst,
+            amount: Number(inst.amount),
+            paidAmount: Number(inst.paidAmount),
+          }))
+        : [
+            {
+              id: `virtual-${acc.id}`,
+              creditAccountId: acc.id,
+              installmentNumber: 1,
+              dueDate: acc.dueDate,
+              amount: Number(acc.originalAmount),
+              paidAmount: Math.max(0, Math.round((Number(acc.originalAmount) - Number(acc.balance)) * 100) / 100),
+              status: acc.status,
+              paidAt: acc.status === 'PAID' ? acc.updatedAt : null,
+            },
+          ];
 
       if (!customerMap.has(acc.customerId)) {
         customerMap.set(acc.customerId, {
@@ -559,11 +581,12 @@ export class ReportsService {
       custEntry.accounts.push({
         id: acc.id,
         invoiceNumber: acc.sale.invoiceNumber,
-        originalAmount: acc.originalAmount,
-        balance: acc.balance,
+        originalAmount: Number(acc.originalAmount),
+        balance: Number(acc.balance),
         dueDate: acc.dueDate,
         daysOverdue,
         status: acc.status,
+        installments: formattedInstallments,
       });
     }
 
@@ -597,6 +620,9 @@ export class ReportsService {
       include: {
         customer: true,
         sale: { select: { id: true, invoiceNumber: true, total: true, createdAt: true } },
+        installments: {
+          orderBy: { installmentNumber: 'asc' },
+        },
       },
       orderBy: { dueDate: 'asc' },
     });
@@ -614,6 +640,25 @@ export class ReportsService {
       } else {
         currentPortfolio += acc.balance;
       }
+
+      const formattedInstallments = (acc.installments && acc.installments.length > 0)
+        ? acc.installments.map((inst: any) => ({
+            ...inst,
+            amount: Number(inst.amount),
+            paidAmount: Number(inst.paidAmount),
+          }))
+        : [
+            {
+              id: `virtual-${acc.id}`,
+              creditAccountId: acc.id,
+              installmentNumber: 1,
+              dueDate: acc.dueDate,
+              amount: Number(acc.originalAmount),
+              paidAmount: Math.max(0, Math.round((Number(acc.originalAmount) - Number(acc.balance)) * 100) / 100),
+              status: acc.status,
+              paidAt: acc.status === 'PAID' ? acc.updatedAt : null,
+            },
+          ];
 
       if (!customerMap.has(acc.customerId)) {
         customerMap.set(acc.customerId, {
@@ -653,11 +698,12 @@ export class ReportsService {
       custEntry.accounts.push({
         id: acc.id,
         invoiceNumber: acc.sale.invoiceNumber,
-        originalAmount: acc.originalAmount,
-        balance: acc.balance,
+        originalAmount: Number(acc.originalAmount),
+        balance: Number(acc.balance),
         dueDate: acc.dueDate,
         isOverdue,
         status: acc.status,
+        installments: formattedInstallments,
       });
     }
 
@@ -1054,10 +1100,22 @@ export class ReportsService {
       };
     };
 
-    const [currentSales, currentMetrics, currentExpenses] = await Promise.all([
+    const computeInterestIncome = async (fromDt: Date, toDt: Date) => {
+      const rows: any[] = await this.prisma.$queryRaw`
+        SELECT COALESCE(SUM(cp."interestPortion"), 0)::float AS "interestIncome"
+        FROM pos_credit_payments cp
+        JOIN pos_credit_accounts ca ON ca.id = cp."creditAccountId"
+        WHERE ca."businessId" = ${businessId}
+          AND (cp."receivedAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (cp."receivedAt" AT TIME ZONE 'UTC') <= ${toDt};
+      `;
+      return r2(rows[0]?.interestIncome || 0);
+    };
+
+    const [currentSales, currentMetrics, currentExpenses, currentInterestIncome] = await Promise.all([
       computeSalesAgg(startDate, endDate),
       computeProfitMetrics(startDate, endDate),
       computeExpensesAgg(startDate, endDate),
+      computeInterestIncome(startDate, endDate),
     ]);
 
     const missing: any[] = await this.prisma.$queryRaw`
@@ -1084,6 +1142,9 @@ export class ReportsService {
       ? Math.round((operatingProfit / currentSales.netSales) * 10000) / 100
       : 0;
 
+    const interestIncome = currentInterestIncome;
+    const netProfit = r2(operatingProfit + interestIncome);
+
     // 183d: Ventas con costo cubierto vs ventas sin costo
     const coveredRevenue = missing.length === 0
       ? currentSales.netSales
@@ -1096,14 +1157,16 @@ export class ReportsService {
 
     const isPartial = coveragePercent < 100 || missing.length > 0;
 
-    const [prevSales, prevMetrics, prevExpenses] = await Promise.all([
+    const [prevSales, prevMetrics, prevExpenses, prevInterestIncome] = await Promise.all([
       computeSalesAgg(range.previous.from, range.previous.to),
       computeProfitMetrics(range.previous.from, range.previous.to),
       computeExpensesAgg(range.previous.from, range.previous.to),
+      computeInterestIncome(range.previous.from, range.previous.to),
     ]);
 
     const prevGrossProfit = r2(prevSales.netSales - prevMetrics.totalCost);
     const prevOperatingProfit = r2(prevGrossProfit - prevExpenses.total);
+    const prevNetProfit = r2(prevOperatingProfit + prevInterestIncome);
 
     const calcChange = (curr: number, prev: number): number | null => {
       if (prev === 0) return null;
@@ -1124,6 +1187,8 @@ export class ReportsService {
       operatingExpenses: currentExpenses,
       operatingProfit,
       operatingMarginPercent,
+      interestIncome,
+      netProfit,
       isPartial,
       coverage: {
         coveragePercent,
@@ -1134,6 +1199,8 @@ export class ReportsService {
         netSalesChange: calcChange(currentSales.netSales, prevSales.netSales),
         grossProfitChange: calcChange(grossProfit, prevGrossProfit),
         operatingProfitChange: calcChange(operatingProfit, prevOperatingProfit),
+        interestIncomeChange: calcChange(interestIncome, prevInterestIncome),
+        netProfitChange: calcChange(netProfit, prevNetProfit),
       },
     };
   }

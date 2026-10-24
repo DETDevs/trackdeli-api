@@ -53,7 +53,7 @@ describe('ProductsImportService', () => {
       })
     };
 
-    service = new ProductsImportService(prismaMock, productsMock);
+    service = new ProductsImportService(prismaMock, productsMock, {} as any);
   });
 
   describe('parseTolerantNumber', () => {

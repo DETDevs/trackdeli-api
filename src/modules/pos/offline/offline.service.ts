@@ -488,7 +488,8 @@ export class OfflineService {
           const taxableAmount = Math.max(0, subtotal - discountAmount);
           const taxAmount = taxableAmount * (business.taxRate / 100);
           const total = taxableAmount + taxAmount;
-          const change = Math.max(0, saleDto.amountPaid - total);
+          const amountPaid = saleDto.amountPaid != null ? Number(saleDto.amountPaid) : total;
+          const change = Math.max(0, amountPaid - total);
 
           const occurredDate = new Date(saleDto.occurredAt);
           const validOccurredAt = isNaN(occurredDate.getTime()) ? new Date() : occurredDate;
@@ -536,8 +537,27 @@ export class OfflineService {
             }
           }
 
+          const isOfflineCredit = (saleDto.paymentMethod as any) === 'CREDITO' ||
+            ((saleDto as any).payments && (saleDto as any).payments.some((p: any) => p.method === 'CREDITO'));
+
+          if (isOfflineCredit) {
+            const creditDiscMsg = `Venta a crédito offline sin cuenta por cobrar: registrar manualmente (Venta: ${invoiceNumber}, Monto: C$${total.toFixed(2)}, Cliente: ${saleDto.customerName || 'No indicado'}, Tel: ${saleDto.customerPhone || 'N/A'})`;
+            const firstProdId = processedItems.find((pi) => pi.productId)?.productId;
+            discrepancies.push({
+              productId: firstProdId || null,
+              productName: 'Crédito Offline',
+              expectedStock: 0,
+              resultingStock: 0,
+              message: creditDiscMsg,
+              notes: creditDiscMsg,
+            });
+          }
+
           const notesPrefix = soldWithoutOpenShift ? "[Offline][Sin Turno Abierto]" : "[Offline]";
-          const finalNotes = saleDto.notes ? `${notesPrefix} ${saleDto.notes}` : notesPrefix;
+          let finalNotes = saleDto.notes ? `${notesPrefix} ${saleDto.notes}` : notesPrefix;
+          if (isOfflineCredit) {
+            finalNotes += ' [Discrepancia: Venta a crédito offline sin cuenta por cobrar: registrar manualmente]';
+          }
 
           const createdSale = await tx.sale.create({
             data: {
@@ -578,7 +598,7 @@ export class OfflineService {
               taxAmount,
               total,
               paymentMethod: saleDto.paymentMethod,
-              amountPaid: saleDto.amountPaid,
+              amountPaid,
               change,
               reference: saleDto.reference || null,
               notes: finalNotes,
@@ -605,14 +625,31 @@ export class OfflineService {
           }
 
           for (const disc of discrepancies) {
-            await tx.inventoryDiscrepancy.create({
+            if (disc.productId) {
+              await tx.inventoryDiscrepancy.create({
+                data: {
+                  productId: disc.productId,
+                  businessId,
+                  saleId: createdSale.id,
+                  expectedStock: disc.expectedStock,
+                  resultingStock: disc.resultingStock,
+                  notes: disc.notes || disc.message || `Venta offline ${invoiceNumber}: stock insuficiente (disponible: ${disc.expectedStock}, requerido: ${disc.expectedStock - disc.resultingStock})`,
+                },
+              });
+            }
+          }
+
+          if (isOfflineCredit) {
+            await tx.posAuditLog.create({
               data: {
-                productId: disc.productId,
                 businessId,
-                saleId: createdSale.id,
-                expectedStock: disc.expectedStock,
-                resultingStock: disc.resultingStock,
-                notes: disc.notes || disc.message || `Venta offline ${invoiceNumber}: stock insuficiente (disponible: ${disc.expectedStock}, requerido: ${disc.expectedStock - disc.resultingStock})`,
+                userId: cashierId,
+                userRole: 'CAJERO',
+                action: 'VENTA_OFFLINE_CREDITO_DISCREPANCIA',
+                entityType: 'Sale',
+                entityId: createdSale.id,
+                reason: `Venta a crédito offline sin cuenta por cobrar: registrar manualmente (Venta: ${invoiceNumber}, Monto: C$${total.toFixed(2)}, Cliente: ${saleDto.customerName || 'No especificado'})`,
+                after: { invoiceNumber, total, customerName: saleDto.customerName, customerPhone: saleDto.customerPhone },
               },
             });
           }
