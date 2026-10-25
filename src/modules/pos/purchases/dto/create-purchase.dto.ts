@@ -31,6 +31,10 @@ export class PurchaseItemDto {
 
   @IsOptional()
   @IsString()
+  batchNumber?: string;
+
+  @IsOptional()
+  @IsString()
   expiryDate?: string;
 }
 
