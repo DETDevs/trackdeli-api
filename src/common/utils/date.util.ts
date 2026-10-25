@@ -1,3 +1,5 @@
+import { BadRequestException } from '@nestjs/common';
+
 /**
  * Utilidades para formateo de fechas y sanitización de parámetros para Meta Cloud API.
  */
@@ -215,3 +217,185 @@ export function getNextMonth(year: number, month: number): [number, number] {
 export function formatYearMonthDay(year: number, month: number, day: number): string {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
+
+/**
+ * Obtiene la hora (0-23) de una fecha según la zona horaria indicada.
+ */
+export function getHourInTimezone(date: Date | string, timeZone: string = DEFAULT_BUSINESS_TIMEZONE): number {
+  if (!date) return 0;
+  const d = typeof date === 'string' ? new Date(date) : date;
+  if (isNaN(d.getTime())) return 0;
+
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: 'numeric',
+    hour12: false,
+  }).formatToParts(d);
+  const hourPart = parts.find((p) => p.type === 'hour');
+  const val = Number(hourPart?.value ?? 0);
+  return val === 24 ? 0 : val;
+}
+
+export interface BusinessPeriodDates {
+  startDate: Date;
+  endDate: Date;
+  fromIso: string;
+  toIso: string;
+  prismaWhere: { gte: Date; lte: Date };
+}
+
+export interface BusinessDateRangeResult extends BusinessPeriodDates {
+  previous?: BusinessPeriodDates;
+}
+
+export interface ResolveBusinessDateRangeOptions {
+  period?: string | null;
+  from?: string | null;
+  to?: string | null;
+  timezone?: string | null;
+  now?: Date;
+}
+
+/**
+ * Helper unificado para resolver rangos de fechas bajo la zona horaria del negocio (por defecto 'America/Managua').
+ * Garantiza límites exactos [inicio, fin] en instantes UTC para que las ventas nocturnas nunca queden fuera.
+ */
+export function resolveBusinessDateRange(
+  options: ResolveBusinessDateRangeOptions = {},
+): BusinessDateRangeResult {
+  const tz = options.timezone || DEFAULT_BUSINESS_TIMEZONE;
+  const now = options.now || new Date();
+  const todayStr = formatDateInTimezone(now, tz);
+
+  let curFrom: Date;
+  let curTo: Date;
+  let prevFrom: Date | undefined;
+  let prevTo: Date | undefined;
+
+  const cleanFrom = options.from?.trim();
+  const cleanTo = options.to?.trim();
+
+  if (cleanFrom || cleanTo) {
+    const effectiveFrom = cleanFrom || cleanTo!;
+    const effectiveTo = cleanTo || cleanFrom!;
+
+    curFrom = getStartOfDayInTimezone(effectiveFrom, tz);
+    curTo = getEndOfDayInTimezone(effectiveTo, tz);
+
+    if (isNaN(curFrom.getTime()) || isNaN(curTo.getTime())) {
+      throw new BadRequestException('Formato de fecha inválido');
+    }
+
+    if (curFrom > curTo) {
+      throw new BadRequestException('La fecha inicial (from) no puede ser posterior a la fecha final (to)');
+    }
+
+    const diffMs = curTo.getTime() - curFrom.getTime();
+    if (diffMs > 366 * 24 * 60 * 60 * 1000) {
+      throw new BadRequestException('El rango de fechas no puede exceder 366 días');
+    }
+
+    prevTo = new Date(curFrom.getTime() - 1);
+    prevFrom = new Date(prevTo.getTime() - diffMs);
+  } else if (options.period === 'yesterday') {
+    const yesterdayStr = addDaysToDateStr(todayStr, -1);
+    curFrom = parseLocalDateToUtc(yesterdayStr, '00:00:00.000', tz);
+    curTo = parseLocalDateToUtc(yesterdayStr, '23:59:59.999', tz);
+    const dayBeforeStr = addDaysToDateStr(todayStr, -2);
+    prevFrom = parseLocalDateToUtc(dayBeforeStr, '00:00:00.000', tz);
+    prevTo = parseLocalDateToUtc(dayBeforeStr, '23:59:59.999', tz);
+  } else if (options.period === 'last7days') {
+    const startStr = addDaysToDateStr(todayStr, -6);
+    curFrom = parseLocalDateToUtc(startStr, '00:00:00.000', tz);
+    curTo = parseLocalDateToUtc(todayStr, '23:59:59.999', tz);
+    const prevStartStr = addDaysToDateStr(todayStr, -13);
+    const prevEndStr = addDaysToDateStr(todayStr, -7);
+    prevFrom = parseLocalDateToUtc(prevStartStr, '00:00:00.000', tz);
+    prevTo = parseLocalDateToUtc(prevEndStr, '23:59:59.999', tz);
+  } else if (options.period === 'week') {
+    // Lunes a hoy en la zona local vs mismos días de la semana anterior
+    const [y, m, d] = todayStr.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    const dayOfWeek = dt.getUTCDay();
+    const daysSinceMonday = (dayOfWeek + 6) % 7;
+    const mondayStr = addDaysToDateStr(todayStr, -daysSinceMonday);
+    curFrom = parseLocalDateToUtc(mondayStr, '00:00:00.000', tz);
+    curTo = parseLocalDateToUtc(todayStr, '23:59:59.999', tz);
+    const prevMondayStr = addDaysToDateStr(mondayStr, -7);
+    const prevEndStr = addDaysToDateStr(todayStr, -7);
+    prevFrom = parseLocalDateToUtc(prevMondayStr, '00:00:00.000', tz);
+    prevTo = parseLocalDateToUtc(prevEndStr, '23:59:59.999', tz);
+  } else if (options.period === 'month') {
+    // Del 1 del mes a hoy vs mismos días del mes anterior
+    const [y, m, d] = todayStr.split('-').map(Number);
+    const monthStartStr = formatYearMonthDay(y, m, 1);
+    curFrom = parseLocalDateToUtc(monthStartStr, '00:00:00.000', tz);
+    curTo = parseLocalDateToUtc(todayStr, '23:59:59.999', tz);
+    const [prevYear, prevMonth] = m === 1 ? [y - 1, 12] : [y, m - 1];
+    const prevMonthStartStr = formatYearMonthDay(prevYear, prevMonth, 1);
+    const daysInPrevMonth = getDaysInMonth(prevYear, prevMonth);
+    const prevD = Math.min(d, daysInPrevMonth);
+    const prevEndStr = formatYearMonthDay(prevYear, prevMonth, prevD);
+    prevFrom = parseLocalDateToUtc(prevMonthStartStr, '00:00:00.000', tz);
+    prevTo = parseLocalDateToUtc(prevEndStr, '23:59:59.999', tz);
+  } else if (options.period === 'year') {
+    // Del 1 de enero a hoy vs mismo rango del año anterior
+    const [y, m, d] = todayStr.split('-').map(Number);
+    const yearStartStr = formatYearMonthDay(y, 1, 1);
+    curFrom = parseLocalDateToUtc(yearStartStr, '00:00:00.000', tz);
+    curTo = parseLocalDateToUtc(todayStr, '23:59:59.999', tz);
+    const prevYearStartStr = formatYearMonthDay(y - 1, 1, 1);
+    const daysInPrevYearMonth = getDaysInMonth(y - 1, m);
+    const prevD = Math.min(d, daysInPrevYearMonth);
+    const prevEndStr = formatYearMonthDay(y - 1, m, prevD);
+    prevFrom = parseLocalDateToUtc(prevYearStartStr, '00:00:00.000', tz);
+    prevTo = parseLocalDateToUtc(prevEndStr, '23:59:59.999', tz);
+  } else {
+    // 'today' por defecto
+    curFrom = parseLocalDateToUtc(todayStr, '00:00:00.000', tz);
+    curTo = parseLocalDateToUtc(todayStr, '23:59:59.999', tz);
+    const yesterdayStr = addDaysToDateStr(todayStr, -1);
+    prevFrom = parseLocalDateToUtc(yesterdayStr, '00:00:00.000', tz);
+    prevTo = parseLocalDateToUtc(yesterdayStr, '23:59:59.999', tz);
+  }
+
+  const result: BusinessDateRangeResult = {
+    startDate: curFrom,
+    endDate: curTo,
+    fromIso: curFrom.toISOString(),
+    toIso: curTo.toISOString(),
+    prismaWhere: { gte: curFrom, lte: curTo },
+  };
+
+  if (prevFrom && prevTo) {
+    result.previous = {
+      startDate: prevFrom,
+      endDate: prevTo,
+      fromIso: prevFrom.toISOString(),
+      toIso: prevTo.toISOString(),
+      prismaWhere: { gte: prevFrom, lte: prevTo },
+    };
+  }
+
+  return result;
+}
+
+/**
+ * Retorna el filtro `{ gte?: Date, lte?: Date }` para Prisma WhereInput interpretando from y to en la zona del negocio.
+ * Si no se especifica ni from ni to, retorna `{}` vacío.
+ * Si se especifica solo from, cubre todo el día local de from.
+ * Si se especifica solo to, cubre todo el día local de to.
+ */
+export function buildBusinessDateRange(
+  from?: string | null,
+  to?: string | null,
+  timezone: string = DEFAULT_BUSINESS_TIMEZONE,
+): { gte?: Date; lte?: Date } {
+  const cleanFrom = from?.trim();
+  const cleanTo = to?.trim();
+  if (!cleanFrom && !cleanTo) return {};
+
+  const range = resolveBusinessDateRange({ from: cleanFrom, to: cleanTo, timezone });
+  return { gte: range.startDate, lte: range.endDate };
+}
+

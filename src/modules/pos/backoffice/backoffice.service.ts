@@ -2,6 +2,10 @@ import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { Prisma, SaleStatus } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import {
+  resolveBusinessDateRange,
+  buildBusinessDateRange,
+} from '../../../common/utils/date.util';
+import {
   BackofficeSalesQueryDto,
   BackofficeDateRangeDto,
   BackofficeInventoryQueryDto,
@@ -19,14 +23,7 @@ export class BackofficeService {
   }
 
   private buildDateRange(from?: string, to?: string) {
-    const range: any = {};
-    if (from) {
-      range.gte = from.includes('T') ? new Date(from) : new Date(`${from}T00:00:00.000Z`);
-    }
-    if (to) {
-      range.lte = to.includes('T') ? new Date(to) : new Date(`${to}T23:59:59.999Z`);
-    }
-    return range;
+    return buildBusinessDateRange(from, to);
   }
 
   private extractPlaca(vehicleInfo?: string | null): string | null {
@@ -44,23 +41,25 @@ export class BackofficeService {
    * comparación contra el período anterior, y métodos de pago (efectivo/tarjeta/transferencia).
    */
   async getDashboard(businessId: string) {
-    const now = new Date();
+    // Rangos en zona horaria del negocio (por defecto 'America/Managua')
+    const todayRange = resolveBusinessDateRange({ period: 'today' });
+    const weekRange = resolveBusinessDateRange({ period: 'last7days' });
+    const monthRange = resolveBusinessDateRange({ period: 'month' });
 
-    // Rango Hoy (00:00:00 a now) vs Ayer (mismo día entero o hasta la hora)
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-    const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
-    const yesterdayEnd = new Date(todayEnd.getTime() - 24 * 60 * 60 * 1000);
+    const todayStart = todayRange.startDate;
+    const todayEnd = todayRange.endDate;
+    const yesterdayStart = todayRange.previous!.startDate;
+    const yesterdayEnd = todayRange.previous!.endDate;
 
-    // Rango Semana (últimos 7 días) vs Semana anterior (7 días previos)
-    const weekStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const prevWeekStart = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-    const prevWeekEnd = new Date(weekStart.getTime());
+    const weekStart = weekRange.startDate;
+    const weekEnd = weekRange.endDate;
+    const prevWeekStart = weekRange.previous!.startDate;
+    const prevWeekEnd = weekRange.previous!.endDate;
 
-    // Rango Mes (desde día 1 del mes actual) vs Mes anterior
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
-    const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    const monthStart = monthRange.startDate;
+    const monthEnd = monthRange.endDate;
+    const prevMonthStart = monthRange.previous!.startDate;
+    const prevMonthEnd = monthRange.previous!.endDate;
 
     const activeSaleStatuses = [SaleStatus.COMPLETED, SaleStatus.PARTIALLY_RETURNED, SaleStatus.RETURNED];
 
@@ -93,12 +92,12 @@ export class BackofficeService {
     ]);
 
     const [weekMetrics, prevWeekMetrics] = await Promise.all([
-      computePeriodMetrics(weekStart, now),
+      computePeriodMetrics(weekStart, weekEnd),
       computePeriodMetrics(prevWeekStart, prevWeekEnd),
     ]);
 
     const [monthMetrics, prevMonthMetrics] = await Promise.all([
-      computePeriodMetrics(monthStart, now),
+      computePeriodMetrics(monthStart, monthEnd),
       computePeriodMetrics(prevMonthStart, prevMonthEnd),
     ]);
 
@@ -127,7 +126,7 @@ export class BackofficeService {
       where: {
         businessId,
         status: { in: activeSaleStatuses },
-        createdAt: { gte: monthStart, lte: now },
+        createdAt: { gte: monthStart, lte: monthEnd },
       },
       include: {
         returns: { select: { refundAmount: true, refundMethod: true } },

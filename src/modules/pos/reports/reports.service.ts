@@ -2,6 +2,12 @@ import { BadRequestException, ForbiddenException, Injectable, Logger } from "@ne
 import { BusinessProductType, CreditAccountStatus, PosPaymentMethod, Prisma } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { BusinessProductsService } from "../../business-products/business-products.service";
+import {
+  resolveBusinessDateRange,
+  buildBusinessDateRange,
+  getHourInTimezone,
+  DEFAULT_BUSINESS_TIMEZONE,
+} from "../../../common/utils/date.util";
 
 @Injectable()
 export class ReportsService {
@@ -127,24 +133,7 @@ export class ReportsService {
   }
 
   private buildDateRange(from?: string, to?: string) {
-    const range: any = {};
-    if (from) {
-      if (from.includes('T')) {
-        range.gte = new Date(from);
-      } else {
-        const [y, m, d] = from.split('-').map(Number);
-        range.gte = new Date(Date.UTC(y, m - 1, d, 6, 0, 0, 0));
-      }
-    }
-    if (to) {
-      if (to.includes('T')) {
-        range.lte = new Date(to);
-      } else {
-        const [y, m, d] = to.split('-').map(Number);
-        range.lte = new Date(Date.UTC(y, m - 1, d, 29, 59, 59, 999));
-      }
-    }
-    return range;
+    return buildBusinessDateRange(from, to);
   }
 
   async getSalesSummary(businessId: string, period?: string, from?: string, to?: string) {
@@ -294,10 +283,9 @@ export class ReportsService {
   }
 
   async getDaily(businessId: string) {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    const end = new Date();
-    end.setHours(23, 59, 59, 999);
+    const range = resolveBusinessDateRange({ period: 'today' });
+    const start = range.startDate;
+    const end = range.endDate;
 
     const sales = await this.prisma.sale.findMany({
       where: {
@@ -312,7 +300,7 @@ export class ReportsService {
     for (let h = 0; h < 24; h++) byHour.set(h, { count: 0, revenue: 0 });
 
     for (const sale of sales) {
-      const hour = sale.createdAt.getHours();
+      const hour = getHourInTimezone(sale.createdAt, DEFAULT_BUSINESS_TIMEZONE);
       const existing = byHour.get(hour)!;
       const refundsTotal = (sale.returns || []).reduce((rSum: number, r: any) => rSum + r.refundAmount, 0);
       const netSaleTotal = Math.max(0, sale.total - refundsTotal);
@@ -367,101 +355,20 @@ export class ReportsService {
   }
 
   resolveDateRange(period?: string, from?: string, to?: string) {
-    const MANAGUA_OFFSET_MS = -6 * 60 * 60 * 1000;
-
-    const createUtcDateFromManagua = (year: number, month: number, day: number, hour = 0, minute = 0, second = 0, ms = 0) => {
-      return new Date(Date.UTC(year, month, day, hour + 6, minute, second, ms));
-    };
-
-    const nowUtc = new Date();
-    const nowManagua = new Date(nowUtc.getTime() + MANAGUA_OFFSET_MS);
-    const y = nowManagua.getUTCFullYear();
-    const m = nowManagua.getUTCMonth();
-    const d = nowManagua.getUTCDate();
-
-    let curFrom: Date;
-    let curTo: Date;
-    let prevFrom: Date;
-    let prevTo: Date;
-
-    const cleanFrom = from?.trim();
-    const cleanTo = to?.trim();
-
-    if (cleanFrom || cleanTo) {
-      if (!cleanFrom || !cleanTo) {
-        throw new BadRequestException('Se requieren ambos parámetros (from y to) para un rango personalizado');
-      }
-
-      if (cleanFrom.includes('T')) {
-        curFrom = new Date(cleanFrom);
-      } else {
-        const parts = cleanFrom.split('-').map(Number);
-        if (parts.length !== 3 || parts.some(isNaN)) {
-          throw new BadRequestException('Formato de fecha inválido en from (esperado YYYY-MM-DD)');
-        }
-        curFrom = createUtcDateFromManagua(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
-      }
-
-      if (cleanTo.includes('T')) {
-        curTo = new Date(cleanTo);
-      } else {
-        const parts = cleanTo.split('-').map(Number);
-        if (parts.length !== 3 || parts.some(isNaN)) {
-          throw new BadRequestException('Formato de fecha inválido en to (esperado YYYY-MM-DD)');
-        }
-        curTo = createUtcDateFromManagua(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999);
-      }
-
-      if (isNaN(curFrom.getTime()) || isNaN(curTo.getTime())) {
-        throw new BadRequestException('Formato de fecha inválido');
-      }
-
-      if (curFrom > curTo) {
-        throw new BadRequestException('La fecha inicial (from) no puede ser posterior a la fecha final (to)');
-      }
-
-      const diffMs = curTo.getTime() - curFrom.getTime();
-      if (diffMs > 366 * 24 * 60 * 60 * 1000) {
-        throw new BadRequestException('El rango de fechas no puede exceder 366 días');
-      }
-
-      prevTo = new Date(curFrom.getTime() - 1);
-      prevFrom = new Date(prevTo.getTime() - diffMs);
-    } else if (period === 'week') {
-      // 192a: Lunes a hoy vs los mismos días de la semana pasada (ej. lun-sáb vs lun-sáb)
-      const dayOfWeek = nowManagua.getUTCDay(); // 0 is Sunday, 1 is Monday, ..., 6 is Saturday
-      const daysSinceMonday = (dayOfWeek + 6) % 7;
-      curFrom = createUtcDateFromManagua(y, m, d - daysSinceMonday, 0, 0, 0, 0);
-      curTo = createUtcDateFromManagua(y, m, d, 23, 59, 59, 999);
-      prevFrom = createUtcDateFromManagua(y, m, d - daysSinceMonday - 7, 0, 0, 0, 0);
-      prevTo = createUtcDateFromManagua(y, m, d - 7, 23, 59, 59, 999);
-    } else if (period === 'month') {
-      // 192a: Del 1 a hoy vs los mismos días del mes anterior
-      curFrom = createUtcDateFromManagua(y, m, 1, 0, 0, 0, 0);
-      curTo = createUtcDateFromManagua(y, m, d, 23, 59, 59, 999);
-      prevFrom = createUtcDateFromManagua(y, m - 1, 1, 0, 0, 0, 0);
-      const lastDayOfPrevMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
-      const prevD = Math.min(d, lastDayOfPrevMonth);
-      prevTo = createUtcDateFromManagua(y, m - 1, prevD, 23, 59, 59, 999);
-    } else if (period === 'year') {
-      // 192a: Del 1 de enero a hoy vs el mismo rango del año anterior
-      curFrom = createUtcDateFromManagua(y, 0, 1, 0, 0, 0, 0);
-      curTo = createUtcDateFromManagua(y, m, d, 23, 59, 59, 999);
-      prevFrom = createUtcDateFromManagua(y - 1, 0, 1, 0, 0, 0, 0);
-      const lastDayOfPrevYearMonth = new Date(Date.UTC(y - 1, m + 1, 0)).getUTCDate();
-      const prevD = Math.min(d, lastDayOfPrevYearMonth);
-      prevTo = createUtcDateFromManagua(y - 1, m, prevD, 23, 59, 59, 999);
-    } else {
-      // 'today' is default
-      curFrom = createUtcDateFromManagua(y, m, d, 0, 0, 0, 0);
-      curTo = createUtcDateFromManagua(y, m, d, 23, 59, 59, 999);
-      prevFrom = createUtcDateFromManagua(y, m, d - 1, 0, 0, 0, 0);
-      prevTo = createUtcDateFromManagua(y, m, d - 1, 23, 59, 59, 999);
-    }
-
+    const range = resolveBusinessDateRange({ period, from, to });
     return {
-      current: { from: curFrom, to: curTo, fromIso: curFrom.toISOString(), toIso: curTo.toISOString() },
-      previous: { from: prevFrom, to: prevTo, fromIso: prevFrom.toISOString(), toIso: prevTo.toISOString() },
+      current: {
+        from: range.startDate,
+        to: range.endDate,
+        fromIso: range.fromIso,
+        toIso: range.toIso,
+      },
+      previous: {
+        from: range.previous?.startDate ?? range.startDate,
+        to: range.previous?.endDate ?? range.endDate,
+        fromIso: range.previous?.fromIso ?? range.fromIso,
+        toIso: range.previous?.toIso ?? range.toIso,
+      },
     };
   }
 

@@ -18,6 +18,7 @@ import { validateProductQuantity, round3 } from '../products/product-unit.util';
 import { resolveLineUnitPrice } from './utils/pricing.util';
 
 import { BatchesService } from '../batches/batches.service';
+import { buildBusinessDateRange } from '../../../common/utils/date.util';
 
 @Injectable()
 export class SalesService {
@@ -1318,13 +1319,7 @@ export class SalesService {
     if (filters?.paymentMethod) where.paymentMethod = filters.paymentMethod;
     if (filters?.cashRegisterId) where.cashRegisterId = filters.cashRegisterId;
     if (filters?.from || filters?.to) {
-      where.createdAt = {};
-      if (filters.from) {
-        where.createdAt.gte = filters.from.includes('T') ? new Date(filters.from) : new Date(`${filters.from}T00:00:00.000Z`);
-      }
-      if (filters.to) {
-        where.createdAt.lte = filters.to.includes('T') ? new Date(filters.to) : new Date(`${filters.to}T23:59:59.999Z`);
-      }
+      where.createdAt = buildBusinessDateRange(filters.from, filters.to);
     }
 
     const sales = await this.prisma.sale.findMany({
@@ -2485,13 +2480,7 @@ export class SalesService {
     if (filters?.reason) where.reason = filters.reason;
     if (filters?.saleId) where.saleId = filters.saleId;
     if (filters?.from || filters?.to) {
-      where.createdAt = {};
-      if (filters.from) {
-        where.createdAt.gte = filters.from.includes('T') ? new Date(filters.from) : new Date(`${filters.from}T00:00:00.000Z`);
-      }
-      if (filters.to) {
-        where.createdAt.lte = filters.to.includes('T') ? new Date(filters.to) : new Date(`${filters.to}T23:59:59.999Z`);
-      }
+      where.createdAt = buildBusinessDateRange(filters.from, filters.to);
     }
 
     return this.prisma.saleReturn.findMany({

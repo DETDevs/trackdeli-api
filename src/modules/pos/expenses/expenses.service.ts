@@ -17,6 +17,7 @@ import { UpdateExpenseCategoryDto } from './dto/update-expense-category.dto';
 import {
   DEFAULT_BUSINESS_TIMEZONE,
   parseLocalDateToUtc,
+  buildBusinessDateRange,
 } from '../../../common/utils/date.util';
 
 @Injectable()
@@ -29,28 +30,7 @@ export class ExpensesService {
   ) {}
 
   private parseDateRange(from?: string, to?: string) {
-    let gte: Date | undefined;
-    let lte: Date | undefined;
-
-    if (from && from.trim()) {
-      const cleanFrom = from.trim();
-      if (cleanFrom.includes('T')) {
-        gte = new Date(cleanFrom);
-      } else {
-        gte = parseLocalDateToUtc(cleanFrom, '00:00:00.000', DEFAULT_BUSINESS_TIMEZONE);
-      }
-    }
-
-    if (to && to.trim()) {
-      const cleanTo = to.trim();
-      if (cleanTo.includes('T')) {
-        lte = new Date(cleanTo);
-      } else {
-        lte = parseLocalDateToUtc(cleanTo, '23:59:59.999', DEFAULT_BUSINESS_TIMEZONE);
-      }
-    }
-
-    return { gte, lte };
+    return buildBusinessDateRange(from, to);
   }
 
   async getCategories(businessId: string) {

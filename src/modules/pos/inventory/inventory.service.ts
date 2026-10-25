@@ -17,6 +17,7 @@ import { BatchCountDto } from './dto/batch-count.dto';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
 import { BatchesService } from '../batches/batches.service';
+import { buildBusinessDateRange } from '../../../common/utils/date.util';
 
 @Injectable()
 export class InventoryService {
@@ -483,13 +484,7 @@ export class InventoryService {
     if (filters?.type) where.type = filters.type;
 
     if (filters?.from || filters?.to) {
-      where.createdAt = {};
-      if (filters.from) {
-        where.createdAt.gte = filters.from.includes('T') ? new Date(filters.from) : new Date(`${filters.from}T00:00:00.000Z`);
-      }
-      if (filters.to) {
-        where.createdAt.lte = filters.to.includes('T') ? new Date(filters.to) : new Date(`${filters.to}T23:59:59.999Z`);
-      }
+      where.createdAt = buildBusinessDateRange(filters.from, filters.to);
     }
 
     const page = Math.max(1, Number(filters?.page) || 1);

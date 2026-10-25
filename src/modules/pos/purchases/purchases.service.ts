@@ -23,6 +23,7 @@ import { AuditService } from '../audit/audit.service';
 import { BusinessProductsService } from '../../business-products/business-products.service';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { VoidPurchaseDto } from './dto/void-purchase.dto';
+import { buildBusinessDateRange } from '../../../common/utils/date.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
 import { BatchesService } from '../batches/batches.service';
@@ -715,13 +716,7 @@ export class PurchasesService {
     if (filters?.status) where.status = filters.status;
 
     if (filters?.from || filters?.to) {
-      where.purchaseDate = {};
-      if (filters.from) {
-        where.purchaseDate.gte = filters.from.includes('T') ? new Date(filters.from) : new Date(`${filters.from}T00:00:00.000Z`);
-      }
-      if (filters.to) {
-        where.purchaseDate.lte = filters.to.includes('T') ? new Date(filters.to) : new Date(`${filters.to}T23:59:59.999Z`);
-      }
+      where.purchaseDate = buildBusinessDateRange(filters.from, filters.to);
     }
 
     const page = Math.max(1, Number(filters?.page) || 1);
