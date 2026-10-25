@@ -32,9 +32,10 @@ export class BackofficeController {
   getDashboard(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
+    @Query('branchId') branchId?: string,
   ) {
     const businessId = resolveBusinessId(user, qBid);
-    return this.backofficeService.getDashboard(businessId);
+    return this.backofficeService.getDashboard(businessId, branchId);
   }
 
   @Get('sales')

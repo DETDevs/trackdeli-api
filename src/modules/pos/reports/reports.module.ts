@@ -8,5 +8,6 @@ import { BatchesModule } from '../batches/batches.module';
   imports: [PrismaModule, BatchesModule],
   controllers: [ReportsController],
   providers: [ReportsService],
+  exports: [ReportsService],
 })
 export class ReportsModule {}

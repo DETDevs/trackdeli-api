@@ -1,10 +1,15 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
-import { Prisma, SaleStatus } from '@prisma/client';
+import { BusinessProductType, Prisma, SaleStatus } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import {
   resolveBusinessDateRange,
   buildBusinessDateRange,
+  DEFAULT_BUSINESS_TIMEZONE,
 } from '../../../common/utils/date.util';
+import { ReportsService } from '../reports/reports.service';
+import { BatchesService } from '../batches/batches.service';
+import { BusinessProductsService } from '../../business-products/business-products.service';
+import { getSalePaymentBreakdown } from '../cash-register/pos-cash.utils';
 import {
   BackofficeSalesQueryDto,
   BackofficeDateRangeDto,
@@ -16,7 +21,12 @@ import {
 export class BackofficeService {
   private readonly logger = new Logger(BackofficeService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly reportsService: ReportsService,
+    private readonly batchesService: BatchesService,
+    private readonly businessProductsService: BusinessProductsService,
+  ) {}
 
   private round2(num: number): number {
     return Math.round((num + Number.EPSILON) * 100) / 100;
@@ -39,8 +49,10 @@ export class BackofficeService {
    * 1. Resumen (Dashboard)
    * Ventas de hoy, de la semana y del mes (total C$ y cantidad), ticket promedio,
    * comparación contra el período anterior, y métodos de pago (efectivo/tarjeta/transferencia).
+   * Ampliado (204a) con caja abierta, ganancia de hoy, últimas 5 ventas, alertas del negocio,
+   * agregación en base de datos para paymentMethods y zona horaria de Managua.
    */
-  async getDashboard(businessId: string) {
+  async getDashboard(businessId: string, branchId?: string) {
     // Rangos en zona horaria del negocio (por defecto 'America/Managua')
     const todayRange = resolveBusinessDateRange({ period: 'today' });
     const weekRange = resolveBusinessDateRange({ period: 'last7days' });
@@ -61,48 +73,35 @@ export class BackofficeService {
     const prevMonthStart = monthRange.previous!.startDate;
     const prevMonthEnd = monthRange.previous!.endDate;
 
-    const activeSaleStatuses = [SaleStatus.COMPLETED, SaleStatus.PARTIALLY_RETURNED, SaleStatus.RETURNED];
-
-    // Helper para calcular métricas de un rango
+    // Helper para calcular métricas de un rango con agregación en BD
     const computePeriodMetrics = async (startDate: Date, endDate: Date) => {
-      const sales = await this.prisma.sale.findMany({
-        where: {
-          businessId,
-          status: { in: activeSaleStatuses },
-          createdAt: { gte: startDate, lte: endDate },
-        },
-        include: { returns: { select: { refundAmount: true } } },
-      });
+      const rows: any[] = await this.prisma.$queryRaw`
+        SELECT
+          COUNT(*)::int AS "salesCount",
+          COALESCE(SUM(GREATEST(0, s.total - COALESCE(ret.refund_total, 0))), 0)::float AS "totalRevenue"
+        FROM pos_sales s
+        LEFT JOIN (
+          SELECT "saleId", SUM("refundAmount") AS refund_total
+          FROM pos_sale_returns
+          GROUP BY "saleId"
+        ) ret ON ret."saleId" = s.id
+        WHERE s."businessId" = ${businessId}
+          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+          AND s."createdAt" >= ${startDate} AND s."createdAt" <= ${endDate}
+          ${branchId ? Prisma.sql`AND (s."posTerminalId" = ${branchId} OR s."cashRegisterId" = ${branchId})` : Prisma.empty}
+      `;
 
-      const salesCount = sales.length;
-      let totalRevenue = 0;
-      for (const s of sales) {
-        const refundTotal = (s.returns || []).reduce((acc, r) => acc + (r.refundAmount || 0), 0);
-        totalRevenue += Math.max(0, s.total - refundTotal);
-      }
-
-      totalRevenue = this.round2(totalRevenue);
+      const salesCount = Number(rows[0]?.salesCount || 0);
+      const totalRevenue = this.round2(Number(rows[0]?.totalRevenue || 0));
       const averageTicket = salesCount > 0 ? this.round2(totalRevenue / salesCount) : 0;
       return { totalRevenue, salesCount, averageTicket };
     };
 
-    const [todayMetrics, yesterdayMetrics] = await Promise.all([
-      computePeriodMetrics(todayStart, todayEnd),
-      computePeriodMetrics(yesterdayStart, yesterdayEnd),
-    ]);
-
-    const [weekMetrics, prevWeekMetrics] = await Promise.all([
-      computePeriodMetrics(weekStart, weekEnd),
-      computePeriodMetrics(prevWeekStart, prevWeekEnd),
-    ]);
-
-    const [monthMetrics, prevMonthMetrics] = await Promise.all([
-      computePeriodMetrics(monthStart, monthEnd),
-      computePeriodMetrics(prevMonthStart, prevMonthEnd),
-    ]);
-
     // Calcular crecimiento/comparación
-    const computeComparison = (current: { totalRevenue: number; salesCount: number; averageTicket: number }, prev: { totalRevenue: number; salesCount: number; averageTicket: number }) => {
+    const computeComparison = (
+      current: { totalRevenue: number; salesCount: number; averageTicket: number },
+      prev: { totalRevenue: number; salesCount: number; averageTicket: number },
+    ) => {
       const revenueDiff = this.round2(current.totalRevenue - prev.totalRevenue);
       const revenueGrowthPercent = prev.totalRevenue > 0
         ? this.round2(((current.totalRevenue - prev.totalRevenue) / prev.totalRevenue) * 100)
@@ -121,63 +120,325 @@ export class BackofficeService {
       };
     };
 
-    // Desglose de métodos de pago del mes actual (o general)
-    const monthSales = await this.prisma.sale.findMany({
-      where: {
-        businessId,
-        status: { in: activeSaleStatuses },
-        createdAt: { gte: monthStart, lte: monthEnd },
-      },
-      include: {
-        returns: { select: { refundAmount: true, refundMethod: true } },
-        payments: true,
-      },
-    });
+    // Agregación de métodos de pago en base de datos (sin cargar ventas en memoria)
+    const computePaymentMethods = async () => {
+      const pmRows: any[] = await this.prisma.$queryRaw`
+        WITH month_sales AS (
+          SELECT
+            s.id,
+            s.total,
+            s."paymentMethod",
+            COALESCE(ret.refund_total, 0) AS refund_total
+          FROM pos_sales s
+          LEFT JOIN (
+            SELECT "saleId", SUM("refundAmount") AS refund_total
+            FROM pos_sale_returns
+            GROUP BY "saleId"
+          ) ret ON ret."saleId" = s.id
+          WHERE s."businessId" = ${businessId}
+            AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+            AND s."createdAt" >= ${monthStart} AND s."createdAt" <= ${monthEnd}
+            ${branchId ? Prisma.sql`AND (s."posTerminalId" = ${branchId} OR s."cashRegisterId" = ${branchId})` : Prisma.empty}
+        ),
+        sales_with_payments AS (
+          SELECT DISTINCT p."saleId"
+          FROM pos_payments p
+          JOIN month_sales ms ON ms.id = p."saleId"
+        ),
+        payments_agg AS (
+          SELECT
+            UPPER(COALESCE(p.method::text, '')) AS method,
+            SUM(
+              COALESCE(
+                CASE WHEN p."amountBase" IS NOT NULL AND p."amountBase" > 0 THEN p."amountBase" ELSE p.amount END,
+                0
+              )
+            ) AS amount
+          FROM pos_payments p
+          JOIN month_sales ms ON ms.id = p."saleId"
+          GROUP BY UPPER(COALESCE(p.method::text, ''))
+        ),
+        direct_sales_agg AS (
+          SELECT
+            UPPER(COALESCE(ms."paymentMethod"::text, '')) AS method,
+            SUM(GREATEST(0, ms.total - ms.refund_total)) AS amount
+          FROM month_sales ms
+          WHERE ms.id NOT IN (SELECT "saleId" FROM sales_with_payments)
+          GROUP BY UPPER(COALESCE(ms."paymentMethod"::text, ''))
+        ),
+        combined AS (
+          SELECT method, amount FROM payments_agg
+          UNION ALL
+          SELECT method, amount FROM direct_sales_agg
+        )
+        SELECT
+          COALESCE(SUM(amount) FILTER (WHERE method IN ('EFECTIVO', 'CASH')), 0)::float AS efectivo,
+          COALESCE(SUM(amount) FILTER (WHERE method IN ('TARJETA', 'CARD')), 0)::float AS tarjeta,
+          COALESCE(SUM(amount) FILTER (WHERE method IN ('TRANSFERENCIA', 'TRANSFER')), 0)::float AS transferencia,
+          COALESCE(SUM(amount) FILTER (WHERE method NOT IN ('EFECTIVO', 'CASH', 'TARJETA', 'CARD', 'TRANSFERENCIA', 'TRANSFER')), 0)::float AS otros
+        FROM combined;
+      `;
 
-    const paymentMethods = {
-      efectivo: 0,
-      tarjeta: 0,
-      transferencia: 0,
-      otros: 0,
+      return {
+        efectivo: this.round2(Number(pmRows[0]?.efectivo || 0)),
+        tarjeta: this.round2(Number(pmRows[0]?.tarjeta || 0)),
+        transferencia: this.round2(Number(pmRows[0]?.transferencia || 0)),
+        otros: this.round2(Number(pmRows[0]?.otros || 0)),
+      };
     };
 
-    for (const sale of monthSales) {
-      const refundTotal = (sale.returns || []).reduce((acc, r) => acc + (r.refundAmount || 0), 0);
-      const netTotal = Math.max(0, sale.total - refundTotal);
+    // Cajas abiertas: id, cashierName, openedAt, openingFloat, expectedCash, salesCount
+    const computeOpenRegisters = async () => {
+      const openRegs = await this.prisma.cashRegister.findMany({
+        where: {
+          businessId,
+          status: 'OPEN',
+          ...(branchId ? { id: branchId } : {}),
+        },
+        include: {
+          cashier: { select: { id: true, name: true } },
+          movements: true,
+          sales: {
+            where: { status: { notIn: [SaleStatus.CANCELLED, SaleStatus.VOIDED] } },
+            include: { payments: true, returns: { select: { refundAmount: true, refundMethod: true } } },
+          },
+        },
+        orderBy: { openedAt: 'desc' },
+      });
 
-      if (sale.payments && sale.payments.length > 0) {
-        for (const p of sale.payments) {
-          const method = (p.method || '').toUpperCase();
-          const amt = Number(p.amountBase || p.amount || 0);
-          if (method === 'EFECTIVO' || method === 'CASH') paymentMethods.efectivo += amt;
-          else if (method === 'TARJETA' || method === 'CARD') paymentMethods.tarjeta += amt;
-          else if (method === 'TRANSFERENCIA' || method === 'TRANSFER') paymentMethods.transferencia += amt;
-          else paymentMethods.otros += amt;
+      const formatted = openRegs.map((reg) => {
+        const openingFloat = this.round2(Number(reg.openingCash ?? 0));
+        let decMovementsIn = new Prisma.Decimal(0);
+        let decMovementsOut = new Prisma.Decimal(0);
+
+        for (const m of reg.movements || []) {
+          const amt = new Prisma.Decimal(m.amount != null ? m.amount.toString() : 0);
+          const isUsd = (m.currency || '').toUpperCase() === 'USD';
+          const type = m.type === 'SALIDA' ? 'OUT' : (m.type === 'ENTRADA' ? 'IN' : m.type);
+          if (!isUsd) {
+            if (type === 'IN') decMovementsIn = decMovementsIn.plus(amt);
+            if (type === 'OUT') decMovementsOut = decMovementsOut.plus(amt);
+          }
         }
-      } else {
-        const method = (sale.paymentMethod || '').toUpperCase();
-        if (method === 'EFECTIVO' || method === 'CASH') paymentMethods.efectivo += netTotal;
-        else if (method === 'TARJETA' || method === 'CARD') paymentMethods.tarjeta += netTotal;
-        else if (method === 'TRANSFERENCIA' || method === 'TRANSFER') paymentMethods.transferencia += netTotal;
-        else paymentMethods.otros += netTotal;
+
+        let decCash = new Prisma.Decimal(0);
+        let activeSalesCount = 0;
+
+        for (const s of reg.sales || []) {
+          activeSalesCount++;
+          const breakdown = getSalePaymentBreakdown(s);
+          decCash = decCash.plus(new Prisma.Decimal(breakdown.cashNio));
+        }
+
+        const liveExpectedCash = new Prisma.Decimal(openingFloat)
+          .plus(decCash)
+          .plus(decMovementsIn)
+          .minus(decMovementsOut);
+
+        const expectedCash = reg.expectedCash != null
+          ? this.round2(Number(reg.expectedCash))
+          : this.round2(Number(liveExpectedCash));
+
+        return {
+          id: reg.id,
+          cashierName: reg.cashier?.name || 'Desconocido',
+          openedAt: reg.openedAt,
+          openingFloat,
+          expectedCash,
+          salesCount: activeSalesCount,
+        };
+      });
+
+      return {
+        openRegister: formatted.length > 0 ? formatted[0] : null,
+        openRegisters: formatted,
+      };
+    };
+
+    // Ganancias de hoy: { profit, cost, marginPct, itemsWithoutCost }
+    const computeTodayProfit = async () => {
+      try {
+        const profitData = await this.reportsService.getProfit(businessId, 'today');
+        return {
+          profit: this.round2(Number(profitData.estimatedProfit ?? 0)),
+          cost: this.round2(Number(profitData.totalCost ?? 0)),
+          marginPct: Number(profitData.marginPercent ?? 0),
+          itemsWithoutCost: Number(profitData.missingCostCount ?? 0),
+        };
+      } catch (err) {
+        this.logger.warn(`Could not compute todayProfit: ${err.message}`);
+        return {
+          profit: 0,
+          cost: 0,
+          marginPct: 0,
+          itemsWithoutCost: 0,
+        };
       }
-    }
+    };
 
-    paymentMethods.efectivo = this.round2(paymentMethods.efectivo);
-    paymentMethods.tarjeta = this.round2(paymentMethods.tarjeta);
-    paymentMethods.transferencia = this.round2(paymentMethods.transferencia);
-    paymentMethods.otros = this.round2(paymentMethods.otros);
+    // Últimas 5 ventas: invoiceNumber, createdAt, total, paymentMethod, status
+    const computeLastSales = async () => {
+      const sales = await this.prisma.sale.findMany({
+        where: {
+          businessId,
+          ...(branchId ? { OR: [{ posTerminalId: branchId }, { cashRegisterId: branchId }] } : {}),
+        },
+        select: {
+          invoiceNumber: true,
+          createdAt: true,
+          total: true,
+          paymentMethod: true,
+          status: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+      });
 
-    // Obtener información de suscripción y negocio
+      return sales.map((s) => ({
+        invoiceNumber: s.invoiceNumber,
+        createdAt: s.createdAt,
+        total: this.round2(s.total),
+        paymentMethod: s.paymentMethod,
+        status: s.status,
+      }));
+    };
+
+    // Alertas (stock, lotes, créditos vencidos, última diferencia de caja)
+    const computeAlerts = async (tracksBatches: boolean) => {
+      const alerts: Record<string, any> = {};
+
+      // 1. lowStock & outOfStock
+      try {
+        const stockRows: any[] = await this.prisma.$queryRaw`
+          SELECT
+            COUNT(*) FILTER (WHERE stock <= 0)::int AS "outOfStockCount",
+            COUNT(*) FILTER (WHERE stock > 0 AND stock <= "minStock")::int AS "lowStockCount"
+          FROM pos_products
+          WHERE "businessId" = ${businessId}
+            AND "isActive" = true
+            AND "trackStock" = true
+        `;
+        alerts.lowStock = { count: Number(stockRows[0]?.lowStockCount || 0) };
+        alerts.outOfStock = { count: Number(stockRows[0]?.outOfStockCount || 0) };
+      } catch (err) {
+        this.logger.warn(`Could not compute stock alerts: ${err.message}`);
+        alerts.lowStock = { count: 0 };
+        alerts.outOfStock = { count: 0 };
+      }
+
+      // 2. expiringBatches y expiredBatches: solo si tracksBatches
+      if (tracksBatches) {
+        try {
+          const batchExp = await this.batchesService.getExpiringBatches(businessId, 30);
+          alerts.expiringBatches = {
+            count: Number(batchExp.summary?.criticos?.count || 0),
+            amount: this.round2(Number(batchExp.summary?.criticos?.valueAtRisk || 0)),
+          };
+          alerts.expiredBatches = {
+            count: Number(batchExp.summary?.vencidos?.count || 0),
+            amount: this.round2(Number(batchExp.summary?.vencidos?.valueAtRisk || 0)),
+          };
+        } catch (err) {
+          this.logger.warn(`Could not compute batch alerts: ${err.message}`);
+        }
+      }
+
+      // 3. overdueCredit: solo si el negocio tiene el add-on de Finanzas/Cartera
+      try {
+        const isCarteraActive = await this.businessProductsService.isActive(
+          businessId,
+          BusinessProductType.CARTERA_COBRO,
+        );
+        if (isCarteraActive) {
+          const creditRows: any[] = await this.prisma.$queryRaw`
+            SELECT
+              COUNT(*)::int AS count,
+              COALESCE(SUM(balance), 0)::float AS amount
+            FROM pos_credit_accounts
+            WHERE "businessId" = ${businessId}
+              AND status NOT IN ('PAID', 'CANCELLED')
+              AND (status = 'OVERDUE' OR "dueDate" < NOW())
+          `;
+          alerts.overdueCredit = {
+            count: Number(creditRows[0]?.count || 0),
+            amount: this.round2(Number(creditRows[0]?.amount || 0)),
+          };
+        }
+      } catch (err) {
+        this.logger.warn(`Could not compute credit alerts: ${err.message}`);
+      }
+
+      // 4. lastCashDifference: última diferencia != 0 en los últimos 7 días
+      try {
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+        const diffRows: any[] = await this.prisma.$queryRaw`
+          SELECT
+            r.id,
+            r.difference::float AS amount,
+            r."closedAt" AS date,
+            u.name AS "cashierName"
+          FROM pos_cash_registers r
+          LEFT JOIN users u ON u.id = r."cashierId"
+          WHERE r."businessId" = ${businessId}
+            AND r.status = 'CLOSED'
+            AND r."closedAt" >= ${sevenDaysAgo}
+            AND r.difference IS NOT NULL
+            AND r.difference != 0
+          ORDER BY r."closedAt" DESC
+          LIMIT 1
+        `;
+        alerts.lastCashDifference = diffRows.length > 0 ? {
+          amount: this.round2(Number(diffRows[0].amount)),
+          cashier: diffRows[0].cashierName || 'Desconocido',
+          date: diffRows[0].date,
+        } : null;
+      } catch (err) {
+        this.logger.warn(`Could not compute cash difference alert: ${err.message}`);
+        alerts.lastCashDifference = null;
+      }
+
+      return alerts;
+    };
+
+    // Obtener información base del negocio
     const [business, posSub] = await Promise.all([
       this.prisma.business.findUnique({
         where: { id: businessId },
-        select: { currency: true, salonProfile: true },
+        select: { currency: true, salonProfile: true, tracksBatches: true },
       }),
       this.prisma.businessProductSubscription.findFirst({
-        where: { businessId, productType: 'POS' },
+        where: { businessId, productType: BusinessProductType.POS },
         select: { backofficeTier: true as any },
       }),
+    ]);
+
+    // Ejecutar consultas en paralelo
+    const [
+      todayMetrics,
+      yesterdayMetrics,
+      weekMetrics,
+      prevWeekMetrics,
+      monthMetrics,
+      prevMonthMetrics,
+      paymentMethods,
+      { openRegister, openRegisters },
+      todayProfit,
+      lastSales,
+      alerts,
+    ] = await Promise.all([
+      computePeriodMetrics(todayStart, todayEnd),
+      computePeriodMetrics(yesterdayStart, yesterdayEnd),
+      computePeriodMetrics(weekStart, weekEnd),
+      computePeriodMetrics(prevWeekStart, prevWeekEnd),
+      computePeriodMetrics(monthStart, monthEnd),
+      computePeriodMetrics(prevMonthStart, prevMonthEnd),
+      computePaymentMethods(),
+      computeOpenRegisters(),
+      computeTodayProfit(),
+      computeLastSales(),
+      computeAlerts(!!business?.tracksBatches),
     ]);
 
     return {
@@ -200,6 +461,13 @@ export class BackofficeService {
         comparison: computeComparison(monthMetrics, prevMonthMetrics),
       },
       paymentMethods,
+      openRegister,
+      openRegisters,
+      todayProfit,
+      lastSales,
+      alerts,
+      generatedAt: new Date().toISOString(),
+      timezone: DEFAULT_BUSINESS_TIMEZONE,
     };
   }
 
