@@ -284,6 +284,7 @@ export class BackofficeService {
           ...(branchId ? { OR: [{ posTerminalId: branchId }, { cashRegisterId: branchId }] } : {}),
         },
         select: {
+          id: true,
           invoiceNumber: true,
           createdAt: true,
           total: true,
@@ -295,6 +296,7 @@ export class BackofficeService {
       });
 
       return sales.map((s) => ({
+        id: s.id,
         invoiceNumber: s.invoiceNumber,
         createdAt: s.createdAt,
         total: this.round2(s.total),
