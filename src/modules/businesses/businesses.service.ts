@@ -50,6 +50,7 @@ export class BusinessesService {
       posPhone: business.posPhone ?? null,
       posFooter: business.posFooter ?? null,
       tracksBatches: (business as any).tracksBatches ?? false,
+      taxId: business.taxId ?? null,
       createdAt: business.createdAt,
     };
   }
@@ -113,6 +114,7 @@ export class BusinessesService {
         ...(dto.gridColumns !== undefined && { gridColumns: dto.gridColumns }),
         ...(dto.gridRows !== undefined && { gridRows: dto.gridRows }),
         ...(dto.tracksBatches !== undefined && { tracksBatches: dto.tracksBatches }),
+        ...(dto.taxId !== undefined && { taxId: dto.taxId }),
       },
     });
 

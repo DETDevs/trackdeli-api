@@ -170,6 +170,7 @@ export class AuthService {
           salonLabels,
           posVertical: b.posVertical,
           tracksBatches: b.tracksBatches ?? false,
+          taxId: b.taxId ?? null,
           billing_anchor_day: billing.billing_anchor_day,
           current_period_start: billing.current_period_start,
           due_date: billing.due_date,
@@ -542,6 +543,7 @@ export class AuthService {
             salonProfile: true,
             posVertical: true,
             tracksBatches: true,
+            taxId: true,
           },
         },
       },
@@ -569,6 +571,7 @@ export class AuthService {
       businessData = {
         ...user.business,
         tracksBatches: user.business.tracksBatches ?? false,
+        taxId: user.business.taxId ?? null,
         salonProfile,
         salonLabels,
         billing_anchor_day: billing?.billing_anchor_day ?? null,

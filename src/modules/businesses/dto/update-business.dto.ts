@@ -1,4 +1,5 @@
-import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber, IsEnum, Matches, IsBoolean } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsUrl, Max, MaxLength, Min, IsNumber, IsEnum, Matches, IsBoolean, ValidateIf } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { BusinessType, PosVertical, PricingModel } from '@prisma/client';
 import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
@@ -167,9 +168,17 @@ export class UpdateBusinessDto {
 
   @IsOptional()
   @SanitizeText()
-  @IsString()
-  @MaxLength(50)
-  taxId?: string;
+  @Transform(({ value }) => {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed === '' ? null : trimmed;
+    }
+    return value ?? null;
+  })
+  @ValidateIf((_obj, value) => value !== null && value !== undefined)
+  @IsString({ message: 'El RUC / Cédula / NIT debe ser una cadena de texto' })
+  @MaxLength(30, { message: 'El RUC / Cédula / NIT no puede exceder 30 caracteres' })
+  taxId?: string | null;
 
   @IsOptional()
   @SanitizeText()

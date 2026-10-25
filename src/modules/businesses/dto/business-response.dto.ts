@@ -46,6 +46,7 @@ export class BusinessResponseDto {
   posFooter?: string | null;
 
   tracksBatches?: boolean;
+  taxId?: string | null;
 
   createdAt: Date;
 }

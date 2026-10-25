@@ -957,6 +957,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           name: 'Columna businesses.posFooter',
           sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "posFooter" VARCHAR(200);`,
         },
+        {
+          name: 'Columna businesses.taxId (200a)',
+          sql: `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "taxId" VARCHAR(30);`,
+        },
 
         {
           name: 'Tabla pos_restaurant_tables',
