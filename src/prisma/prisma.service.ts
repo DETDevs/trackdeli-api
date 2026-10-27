@@ -2258,6 +2258,7 @@ WHERE a."customerId" = c."id"
       await this.ensureBatchesSchema();
       await this.ensureCreditInstallmentsSchema();
       await this.ensureReceiptLinksSchema();
+      await this.ensureProductTaxAndMarkupSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -3363,6 +3364,82 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 190a - Advertencia sincronizando esquema de Comprobantes Digitales: ${err.message}`);
+    }
+  }
+
+  /**
+   * 206a - Precio de etiqueta, margen sobre costo e IVA por producto
+   * - businesses: useListPrice (boolean default false), defaultMarkupPct (double precision null), autoUpdatePriceOnPurchase (boolean default false)
+   * - pos_products: listPrice (double precision null), markupPct (double precision null), taxable (boolean default false)
+   * - pos_sales: listPriceTotal (double precision default 0), listDiscountTotal (double precision default 0), taxModel (varchar(20) default 'LEGACY')
+   * - pos_sale_items: listPrice (double precision null), listPriceDiscount (double precision default 0), manualDiscountShare (double precision default 0), taxable (boolean default false), taxRate (double precision default 0), taxAmount (double precision default 0)
+   * DDL idempotente con advisory lock 2060100.
+   */
+  private async ensureProductTaxAndMarkupSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(2060100)`);
+
+          // 1. businesses
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "useListPrice" BOOLEAN NOT NULL DEFAULT false`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "defaultMarkupPct" DOUBLE PRECISION`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "autoUpdatePriceOnPurchase" BOOLEAN NOT NULL DEFAULT false`,
+          );
+
+          // 2. pos_products
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "listPrice" DOUBLE PRECISION`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "markupPct" DOUBLE PRECISION`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "taxable" BOOLEAN NOT NULL DEFAULT false`,
+          );
+
+          // 3. pos_sales
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "listPriceTotal" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "listDiscountTotal" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "taxModel" VARCHAR(20) NOT NULL DEFAULT 'LEGACY'`,
+          );
+
+          // 4. pos_sale_items
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "listPrice" DOUBLE PRECISION`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "listPriceDiscount" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "manualDiscountShare" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "taxable" BOOLEAN NOT NULL DEFAULT false`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "taxAmount" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+          );
+
+          this.logger.log('[PrismaService] ✓ 206a - Esquema de Precio de Etiqueta, Margen e IVA por Producto sincronizado');
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 206a - Advertencia sincronizando esquema de precio e impuesto: ${err.message}`);
     }
   }
 

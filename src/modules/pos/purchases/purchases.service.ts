@@ -23,6 +23,7 @@ import { AuditService } from '../audit/audit.service';
 import { BusinessProductsService } from '../../business-products/business-products.service';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { VoidPurchaseDto } from './dto/void-purchase.dto';
+import { ApplyPurchasePriceUpdatesDto } from './dto/apply-price-updates.dto';
 import { buildBusinessDateRange } from '../../../common/utils/date.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 
@@ -197,7 +198,7 @@ export class PurchasesService {
 
       const business = await tx.business.findUnique({
         where: { id: businessId },
-        select: { id: true, tracksBatches: true },
+        select: { id: true, tracksBatches: true, autoUpdatePriceOnPurchase: true, defaultMarkupPct: true },
       });
 
       const assignedBatchesByProduct = new Map<string, Set<string>>();
@@ -312,19 +313,81 @@ export class PurchasesService {
                 throw err;
               }
             }
+            const effectiveMarkup = product.markupPct != null ? product.markupPct : business?.defaultMarkupPct;
+            const shouldUpdatePrice = Boolean(item.updatePrice) || (Boolean(business?.autoUpdatePriceOnPurchase) && effectiveMarkup != null);
+
+            let newCalculatedPrice: number | null = null;
+            if (shouldUpdatePrice) {
+              if (item.newPrice != null && Number(item.newPrice) >= 0) {
+                newCalculatedPrice = Number(item.newPrice);
+              } else if (effectiveMarkup != null) {
+                newCalculatedPrice = Math.round(newCostNum * (1 + effectiveMarkup / 100) * 100) / 100;
+              }
+            }
+
             createdBatchId = batch.id;
             await tx.product.update({
               where: { id: product.id },
-              data: { cost: newCostNum },
+              data: {
+                cost: newCostNum,
+                ...(newCalculatedPrice != null && { price: newCalculatedPrice }),
+              },
             });
+
+            if (newCalculatedPrice != null && newCalculatedPrice !== product.price) {
+              await this.auditService.record(
+                {
+                  businessId,
+                  userId,
+                  userRole: 'ENCARGADO',
+                  action: 'PRODUCT_PRICE_UPDATED',
+                  entityType: 'Product',
+                  entityId: product.id,
+                  before: { price: product.price, cost: oldCostDec != null ? Number(oldCostDec) : null },
+                  after: { price: newCalculatedPrice, cost: newCostNum, markupPct: effectiveMarkup },
+                  reason: `Actualización de precio por compra factura ${trimmedInvoice || 'S/N'}`,
+                },
+                tx,
+              );
+            }
           } else {
+            const effectiveMarkup = product.markupPct != null ? product.markupPct : business?.defaultMarkupPct;
+            const shouldUpdatePrice = Boolean(item.updatePrice) || (Boolean(business?.autoUpdatePriceOnPurchase) && effectiveMarkup != null);
+
+            let newCalculatedPrice: number | null = null;
+            if (shouldUpdatePrice) {
+              if (item.newPrice != null && Number(item.newPrice) >= 0) {
+                newCalculatedPrice = Number(item.newPrice);
+              } else if (effectiveMarkup != null) {
+                newCalculatedPrice = Math.round(newCostNum * (1 + effectiveMarkup / 100) * 100) / 100;
+              }
+            }
+
             await tx.product.update({
               where: { id: product.id },
               data: {
                 stock: { increment: validQty },
                 cost: newCostNum,
+                ...(newCalculatedPrice != null && { price: newCalculatedPrice }),
               },
             });
+
+            if (newCalculatedPrice != null && newCalculatedPrice !== product.price) {
+              await this.auditService.record(
+                {
+                  businessId,
+                  userId,
+                  userRole: 'ENCARGADO',
+                  action: 'PRODUCT_PRICE_UPDATED',
+                  entityType: 'Product',
+                  entityId: product.id,
+                  before: { price: product.price, cost: oldCostDec != null ? Number(oldCostDec) : null },
+                  after: { price: newCalculatedPrice, cost: newCostNum, markupPct: effectiveMarkup },
+                  reason: `Actualización de precio por compra factura ${trimmedInvoice || 'S/N'}`,
+                },
+                tx,
+              );
+            }
           }
 
           await tx.stockMovement.create({
@@ -343,10 +406,42 @@ export class PurchasesService {
             },
           });
         } else {
+          const effectiveMarkup = product.markupPct != null ? product.markupPct : business?.defaultMarkupPct;
+          const shouldUpdatePrice = Boolean(item.updatePrice) || (Boolean(business?.autoUpdatePriceOnPurchase) && effectiveMarkup != null);
+
+          let newCalculatedPrice: number | null = null;
+          if (shouldUpdatePrice) {
+            if (item.newPrice != null && Number(item.newPrice) >= 0) {
+              newCalculatedPrice = Number(item.newPrice);
+            } else if (effectiveMarkup != null) {
+              newCalculatedPrice = Math.round(newCostNum * (1 + effectiveMarkup / 100) * 100) / 100;
+            }
+          }
+
           await tx.product.update({
             where: { id: product.id },
-            data: { cost: newCostNum },
+            data: {
+              cost: newCostNum,
+              ...(newCalculatedPrice != null && { price: newCalculatedPrice }),
+            },
           });
+
+          if (newCalculatedPrice != null && newCalculatedPrice !== product.price) {
+            await this.auditService.record(
+              {
+                businessId,
+                userId,
+                userRole: 'ENCARGADO',
+                action: 'PRODUCT_PRICE_UPDATED',
+                entityType: 'Product',
+                entityId: product.id,
+                before: { price: product.price, cost: oldCostDec != null ? Number(oldCostDec) : null },
+                after: { price: newCalculatedPrice, cost: newCostNum, markupPct: effectiveMarkup },
+                reason: `Actualización de precio por compra factura ${trimmedInvoice || 'S/N'}`,
+              },
+              tx,
+            );
+          }
         }
 
         await tx.productCostHistory.create({
@@ -885,4 +980,94 @@ export class PurchasesService {
         : null,
     };
   }
+
+  async applyPriceUpdates(
+    purchaseId: string,
+    businessId: string,
+    userId: string,
+    userRole: string,
+    dto: ApplyPurchasePriceUpdatesDto,
+  ) {
+    const purchase = await this.prisma.purchase.findFirst({
+      where: { id: purchaseId, businessId },
+      include: {
+        items: {
+          include: {
+            product: true,
+          },
+        },
+      },
+    });
+
+    if (!purchase) {
+      throw new NotFoundException('Compra no encontrada');
+    }
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { defaultMarkupPct: true },
+    });
+
+    const results: Array<{ productId: string; productName: string; oldPrice: number; newPrice: number; markupPct: number | null }> = [];
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const item of purchase.items) {
+        if (!item.product) continue;
+        const requested = dto.items?.find((i) => i.productId === item.productId);
+        if (dto.items && dto.items.length > 0 && !requested) {
+          continue;
+        }
+
+        const product = item.product;
+        const effectiveMarkup = requested?.markupPct ?? product.markupPct ?? business?.defaultMarkupPct ?? null;
+        let newPrice: number | null = null;
+
+        if (requested?.newPrice != null && requested.newPrice >= 0) {
+          newPrice = Number(requested.newPrice);
+        } else if (effectiveMarkup != null) {
+          const cost = Number(item.unitCost);
+          newPrice = Math.round(cost * (1 + effectiveMarkup / 100) * 100) / 100;
+        }
+
+        if (newPrice != null && newPrice !== product.price) {
+          await tx.product.update({
+            where: { id: product.id },
+            data: {
+              price: newPrice,
+              ...(requested?.markupPct != null && { markupPct: requested.markupPct }),
+            },
+          });
+
+          await this.auditService.record(
+            {
+              businessId,
+              userId,
+              userRole,
+              action: 'PRODUCT_PRICE_UPDATED',
+              entityType: 'Product',
+              entityId: product.id,
+              before: { price: product.price, cost: product.cost },
+              after: { price: newPrice, cost: Number(item.unitCost), markupPct: effectiveMarkup },
+              reason: `Actualización de precio posterior a compra factura ${purchase.invoiceNumber || purchase.id}`,
+            },
+            tx,
+          );
+
+          results.push({
+            productId: product.id,
+            productName: product.name,
+            oldPrice: product.price,
+            newPrice,
+            markupPct: effectiveMarkup,
+          });
+        }
+      }
+    });
+
+    return {
+      updatedCount: results.length,
+      updatedProducts: results,
+    };
+  }
 }
+

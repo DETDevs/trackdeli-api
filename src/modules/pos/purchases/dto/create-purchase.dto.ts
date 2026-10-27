@@ -36,6 +36,15 @@ export class PurchaseItemDto {
   @IsOptional()
   @IsString()
   expiryDate?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  updatePrice?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  newPrice?: number;
 }
 
 export class CreatePurchaseDto {

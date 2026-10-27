@@ -306,6 +306,11 @@ model Business {
   tracksBatches           Boolean       @default(false)
   extraUserSlots          Int           @default(0)
 
+  // 206a: Precio de etiqueta, margen e IVA
+  useListPrice            Boolean       @default(false)
+  defaultMarkupPct        Float?
+  autoUpdatePriceOnPurchase Boolean     @default(false)
+
   createdAt              DateTime     @default(now())
 
   // TrackDeli relations
@@ -967,6 +972,9 @@ model Product {
   wholesalePrice  Decimal? @map("wholesale_price") @db.Decimal(12, 2)
   wholesaleMinQty Decimal? @map("wholesale_min_qty") @db.Decimal(12, 3)
   taxIncluded Boolean   @default(true)
+  listPrice       Float?
+  markupPct       Float?
+  taxable         Boolean   @default(false)
 
   unit        String   @default("UND") @db.VarChar(10)
   isRecipe    Boolean  @default(false)
@@ -1058,6 +1066,9 @@ model Sale {
 
   subtotal       Float
   discountAmount Float            @default(0)
+  listPriceTotal    Float            @default(0)
+  listDiscountTotal Float            @default(0)
+  taxModel          String           @default("LEGACY") @db.VarChar(20)
   taxRate        Float            @default(0)
   taxEnabled     Boolean          @default(false)
   taxIncluded    Boolean          @default(false)
@@ -1114,6 +1125,14 @@ model SaleItem {
   discount    Float    @default(0)
   subtotal    Float
   returnedQty Float    @default(0)
+
+  // 206a: Foto impositiva y de etiqueta por línea
+  listPrice           Float?
+  listPriceDiscount   Float    @default(0)
+  manualDiscountShare Float    @default(0)
+  taxable             Boolean  @default(false)
+  taxRate             Float    @default(0)
+  taxAmount           Float    @default(0)
 
   returnItems      SaleReturnItem[]
   batchAllocations SaleItemBatch[]

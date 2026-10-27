@@ -19,6 +19,7 @@ import { resolveLineUnitPrice } from './utils/pricing.util';
 
 import { BatchesService } from '../batches/batches.service';
 import { buildBusinessDateRange } from '../../../common/utils/date.util';
+import { calculateSaleTotals, RawSaleItemCalculationInput } from './utils/sale-calculation.util';
 
 @Injectable()
 export class SalesService {
@@ -186,6 +187,9 @@ export class SalesService {
           logoUrl: true,
           wholesaleEnabled: true,
           tracksBatches: true,
+          useListPrice: true,
+          defaultMarkupPct: true,
+          autoUpdatePriceOnPurchase: true,
         },
       });
       if (!business) throw new NotFoundException("Negocio no encontrado");
@@ -199,16 +203,16 @@ export class SalesService {
 
       const policies = await this.policiesService.get(businessId);
 
-      let subtotal = 0;
       let hasNegativeStock = false;
-      const processedItems: any[] = [];
+      const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
 
       for (const item of dto.items) {
         let priceTier = 'RETAIL';
         let effectiveUnitPrice = item.unitPrice;
+        let product: any = null;
 
         if (item.productId) {
-          const product = await tx.product.findFirst({
+          product = await tx.product.findFirst({
             where: { id: item.productId, businessId },
             include: {
               recipeComponents: {
@@ -309,121 +313,87 @@ export class SalesService {
           }
         }
 
-        const itemDiscount = item.discount || 0;
-        const itemSubtotal = (dto.isSplitSale && item.subtotal !== undefined)
-          ? item.subtotal
-          : (effectiveUnitPrice * item.quantity - itemDiscount);
-        subtotal += itemSubtotal;
+        let listPrice: number | null = null;
+        if (item.listPrice !== undefined && item.listPrice !== null) {
+          listPrice = Number(item.listPrice);
+        } else if (business.useListPrice && product?.listPrice != null) {
+          listPrice = Number(product.listPrice);
+        }
 
-        processedItems.push({
+        let taxable: boolean | null | undefined = undefined;
+        if (item.taxable !== undefined && item.taxable !== null) {
+          taxable = Boolean(item.taxable);
+        }
+
+        rawItemsForCalc.push({
           productId: item.productId || null,
-          productName: item.productName,
-          barcode: item.barcode || null,
+          productName: item.productName || product?.name || 'Producto',
+          barcode: item.barcode || product?.barcode || null,
           unitPrice: effectiveUnitPrice,
           priceTier,
           quantity: item.quantity,
-          discount: itemDiscount,
-          subtotal: itemSubtotal,
+          discount: item.discount || 0,
+          subtotal: (dto.isSplitSale && item.subtotal !== undefined) ? item.subtotal : undefined,
+          listPrice,
+          taxable,
         });
       }
 
-      const discountAmount = dto.discountAmount || 0;
-      const finalSubtotal = subtotal - discountAmount;
+      const calcResult = calculateSaleTotals(
+        rawItemsForCalc,
+        dto.discountAmount || 0,
+        business,
+        Boolean(dto.isSplitSale),
+      );
 
-      /* ==============================================================================
-       * REGLAS SEMÁNTICAS DE CÁLCULO DE IMPUESTOS Y SUBTOTAL (TrackDeli API)
-       * ==============================================================================
-       * 1. `subtotal` = Suma de (item.unitPrice * item.quantity).
-       * 2. `finalSubtotal` = `subtotal` - `dto.discountAmount`.
-       * 3. Dependencia de "taxIncluded":
-       *    - Si `taxIncluded === true`: Los `unitPrice` enviados por el cliente YA traen 
-       *      el impuesto sumado. Por lo tanto, `total = finalSubtotal`. 
-       *      El `taxAmount` se extrae hacia atrás: `finalSubtotal - (finalSubtotal / 1.15)`.
-       *    - Si `taxIncluded === false`: Los `unitPrice` enviados NO traen impuesto. 
-       *      El `taxAmount` se calcula hacia adelante: `finalSubtotal * 0.15`.
-       *      El `total` será `finalSubtotal + taxAmount`.
-       * 
-       * NOTA: `isOfflineSync` permite relajar el rechazo por discrepancias, pero
-       * el servidor sigue forzando este estándar de cálculo final en la BD.
-       * ============================================================================== */
+      const subtotal = calcResult.subtotal;
+      const discountAmount = calcResult.discountAmount;
+      const appliedTaxEnabled = calcResult.taxEnabled;
+      const appliedTaxIncluded = calcResult.taxIncluded;
+      const appliedTaxRate = calcResult.taxRate;
+      const taxAmount = calcResult.taxAmount;
+      const total = calcResult.total;
+      const taxModel = calcResult.taxModel;
+      const listPriceTotal = calcResult.listPriceTotal;
+      const listDiscountTotal = calcResult.listDiscountTotal;
 
-      let appliedTaxEnabled = business.taxEnabled;
-      let appliedTaxIncluded = business.taxIncluded;
-      let appliedTaxRate = business.taxRate;
       let hasAuditDiscrepancy = false;
       let auditNote = "";
 
-      const hasClientSnapshot = dto.clientTotal !== undefined && dto.clientTaxEnabled !== undefined;
+      const hasClientSnapshot = dto.clientTotal !== undefined;
 
       if (hasClientSnapshot) {
-        if (!dto.isOfflineSync) {
-          // Venta online normal: Se ignora el snapshot del cliente si difiere y se audita
-          if (
-            dto.clientTaxEnabled !== business.taxEnabled ||
-            dto.clientTaxIncluded !== business.taxIncluded ||
-            (dto.clientTaxRate || 0) !== business.taxRate
-          ) {
-            hasAuditDiscrepancy = true;
-            auditNote = `Venta ONLINE ignoró snapshot cliente (Rate: ${dto.clientTaxRate}, Enabled: ${dto.clientTaxEnabled}). Se usó vigente.`;
-          }
-        } else {
-          // Venta offline (sincronización diferida)
-          const occurredAtDate = dto.occurredAt ? new Date(dto.occurredAt) : new Date();
-          const msIn7Days = 7 * 24 * 60 * 60 * 1000;
-          const isWithinWindow = (Date.now() - occurredAtDate.getTime()) <= msIn7Days;
-          
-          const perfectlyMatchesCurrent = 
-            dto.clientTaxEnabled === business.taxEnabled && 
-            dto.clientTaxIncluded === business.taxIncluded && 
-            (dto.clientTaxRate || 0) === business.taxRate;
-
-          if (isWithinWindow && perfectlyMatchesCurrent) {
-            // Snapshot válido, coincide con la actual.
-            appliedTaxEnabled = dto.clientTaxEnabled!;
-            appliedTaxIncluded = dto.clientTaxIncluded!;
-            appliedTaxRate = dto.clientTaxRate || 0;
+        const diff = Math.abs(dto.clientTotal! - total);
+        if (diff > 0.01) {
+          if (!dto.isOfflineSync) {
+            throw new BadRequestException(
+              `El cliente envió un total manipulado o desactualizado. Total enviado: ${dto.clientTotal}, Total calculado en servidor: C$ ${total}.`,
+            );
           } else {
-            // Fuera de ventana, o no coincide. Como no tenemos tabla de historial, 
-            // recalculamos con la vigente y dejamos registro.
             hasAuditDiscrepancy = true;
-            auditNote = `Venta OFFLINE recalculada con impuesto vigente. Snapshot cliente: Rate: ${dto.clientTaxRate}, Enabled: ${dto.clientTaxEnabled}, Total: ${dto.clientTotal}. Motivo: ${!isWithinWindow ? 'Fuera de ventana de 7 días.' : 'Discrepancia con configuración actual.'}`;
+            auditNote = `Diferencia en total offline. Cliente exigía: C$ ${dto.clientTotal}. Servidor guardó: C$ ${total}.`;
           }
-        }
-      }
-
-      let calculatedTaxAmount = 0;
-      let calculatedTotal = finalSubtotal;
-      
-      if (appliedTaxEnabled) {
-        if (appliedTaxIncluded) {
-          calculatedTaxAmount = finalSubtotal - (finalSubtotal / (1 + (appliedTaxRate / 100)));
-        } else {
-          calculatedTaxAmount = finalSubtotal * (appliedTaxRate / 100);
-          calculatedTotal = finalSubtotal + calculatedTaxAmount;
-        }
-      }
-      
-      const taxAmount = Math.round(calculatedTaxAmount * 100) / 100;
-      const total = Math.round(calculatedTotal * 100) / 100;
-
-      if (hasClientSnapshot && !dto.isOfflineSync) {
-        // En ventas online (tiempo real), SIEMPRE rechazamos si el cliente 
-        // manda un total distinto al que el servidor calcula con la vigente.
-        const diff = Math.abs(dto.clientTotal! - total);
-        if (diff > 0.05) {
-          throw new BadRequestException(`El cliente envió un total manipulado o desactualizado. Total enviado: ${dto.clientTotal}, Total calculado en servidor: C$ ${total}. ${hasAuditDiscrepancy ? auditNote : ''}`);
-        }
-      } else if (hasClientSnapshot && dto.isOfflineSync) {
-        // En offline, si el total difiere del calculado, NO fallamos, solo lo registramos
-        // para que la venta no se pierda. Se usa el 'total' del servidor.
-        const diff = Math.abs(dto.clientTotal! - total);
-        if (diff > 0.05) {
-          hasAuditDiscrepancy = true;
-          auditNote += ` Diferencia en total. Cliente exigía: C$ ${dto.clientTotal}. Servidor guardó: C$ ${total}.`;
         }
       }
 
       const finalNotes = hasAuditDiscrepancy ? `${dto.notes ? dto.notes + '. ' : ''}[AUDIT: ${auditNote.trim()}]` : dto.notes;
+
+      const processedItems = calcResult.lines.map((l) => ({
+        productId: l.productId,
+        productName: l.productName,
+        barcode: l.barcode,
+        unitPrice: l.unitPrice,
+        priceTier: l.priceTier,
+        quantity: l.quantity,
+        discount: l.discount,
+        subtotal: l.subtotal,
+        listPrice: l.listPrice,
+        listPriceDiscount: l.listPriceDiscount,
+        manualDiscountShare: l.manualDiscountShare,
+        taxable: l.taxable,
+        taxRate: l.taxRate,
+        taxAmount: l.taxAmount,
+      }));
 
       // 1. Detectar porción de crédito y prima
       const hasDirectCredit = (dto.paymentMethod as any) === PosPaymentMethod.CREDITO || (dto as any).paymentType === PosPaymentMethod.CREDITO;
@@ -1073,6 +1043,9 @@ export class SalesService {
           taxIncluded: appliedTaxIncluded,
           taxAmount,
           total,
+          taxModel,
+          listPriceTotal,
+          listDiscountTotal,
           paymentMethod: mainMethod,
           amountPaid: Number(totalBaseTenderedDec.toDecimalPlaces(2)),
           change: totalChangeDec,
@@ -2001,29 +1974,44 @@ export class SalesService {
         const returningQtyDec = new Prisma.Decimal(itemInput.qty.toString());
         const lineBaseSubtotalDec = new Prisma.Decimal(saleItem.unitPrice.toString()).times(returningQtyDec);
 
-        const saleSubtotalDec = new Prisma.Decimal(sale.subtotal.toString());
-        const saleDiscountDec = new Prisma.Decimal(sale.discountAmount.toString());
-        let proratedDiscountDec = new Prisma.Decimal(0);
-        if (saleSubtotalDec.greaterThan(0) && saleDiscountDec.greaterThan(0)) {
-          proratedDiscountDec = lineBaseSubtotalDec.dividedBy(saleSubtotalDec).times(saleDiscountDec).toDecimalPlaces(2);
-        }
-
-        const netBaseDec = lineBaseSubtotalDec.minus(proratedDiscountDec);
-
         let lineTaxDec = new Prisma.Decimal(0);
         let lineRefundDec = new Prisma.Decimal(0);
+        let proratedDiscountDec = new Prisma.Decimal(0);
 
-        if (sale.taxEnabled && sale.taxRate > 0) {
-          const rateDec = new Prisma.Decimal(sale.taxRate.toString()).dividedBy(100);
-          if (sale.taxIncluded) {
-            lineTaxDec = netBaseDec.minus(netBaseDec.dividedBy(new Prisma.Decimal(1).plus(rateDec))).toDecimalPlaces(2);
-            lineRefundDec = netBaseDec.toDecimalPlaces(2);
+        if (sale.taxModel === 'PER_LINE') {
+          // 206a: Devolución parcial en nuevo modelo por línea
+          // Reembolso = neto de la línea - su manualDiscountShare proporcional + su taxAmount proporcional
+          const qtyRatio = returningQtyDec.dividedBy(new Prisma.Decimal(saleItem.quantity.toString()));
+          proratedDiscountDec = new Prisma.Decimal(saleItem.manualDiscountShare || 0).times(qtyRatio).toDecimalPlaces(2);
+          const netBaseDec = lineBaseSubtotalDec.minus(proratedDiscountDec);
+
+          if (saleItem.taxable && (saleItem.taxAmount || 0) > 0) {
+            lineTaxDec = new Prisma.Decimal(saleItem.taxAmount.toString()).times(qtyRatio).toDecimalPlaces(2);
           } else {
-            lineTaxDec = netBaseDec.times(rateDec).toDecimalPlaces(2);
-            lineRefundDec = netBaseDec.plus(lineTaxDec).toDecimalPlaces(2);
+            lineTaxDec = new Prisma.Decimal(0);
           }
+          lineRefundDec = netBaseDec.plus(lineTaxDec).toDecimalPlaces(2);
         } else {
-          lineRefundDec = netBaseDec.toDecimalPlaces(2);
+          // Ventas LEGACY siguen con la lógica actual
+          const saleSubtotalDec = new Prisma.Decimal(sale.subtotal.toString());
+          const saleDiscountDec = new Prisma.Decimal(sale.discountAmount.toString());
+          if (saleSubtotalDec.greaterThan(0) && saleDiscountDec.greaterThan(0)) {
+            proratedDiscountDec = lineBaseSubtotalDec.dividedBy(saleSubtotalDec).times(saleDiscountDec).toDecimalPlaces(2);
+          }
+          const netBaseDec = lineBaseSubtotalDec.minus(proratedDiscountDec);
+
+          if (sale.taxEnabled && sale.taxRate > 0) {
+            const rateDec = new Prisma.Decimal(sale.taxRate.toString()).dividedBy(100);
+            if (sale.taxIncluded) {
+              lineTaxDec = netBaseDec.minus(netBaseDec.dividedBy(new Prisma.Decimal(1).plus(rateDec))).toDecimalPlaces(2);
+              lineRefundDec = netBaseDec.toDecimalPlaces(2);
+            } else {
+              lineTaxDec = netBaseDec.times(rateDec).toDecimalPlaces(2);
+              lineRefundDec = netBaseDec.plus(lineTaxDec).toDecimalPlaces(2);
+            }
+          } else {
+            lineRefundDec = netBaseDec.toDecimalPlaces(2);
+          }
         }
 
         totalReturnRefundDec = totalReturnRefundDec.plus(lineRefundDec);
@@ -2034,8 +2022,8 @@ export class SalesService {
           qty: itemInput.qty,
           restock: itemInput.restock !== false,
           discountProrated: Number(proratedDiscountDec),
-          taxRate: sale.taxRate,
-          taxIncluded: sale.taxIncluded,
+          taxRate: sale.taxModel === 'PER_LINE' ? (saleItem.taxable ? saleItem.taxRate : 0) : sale.taxRate,
+          taxIncluded: sale.taxModel === 'PER_LINE' ? false : sale.taxIncluded,
           taxAmount: Number(lineTaxDec),
           refundAmount: Number(lineRefundDec),
         });

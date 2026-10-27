@@ -191,6 +191,20 @@ export class UpdateBusinessDto {
   tracksBatches?: boolean;
 
   @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(1000)
+  defaultMarkupPct?: number | null;
+
+  @IsOptional()
+  @IsBoolean()
+  autoUpdatePriceOnPurchase?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  useListPrice?: boolean;
+
+  @IsOptional()
   @IsBoolean()
   confirm?: boolean;
 }

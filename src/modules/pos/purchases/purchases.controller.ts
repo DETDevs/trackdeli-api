@@ -21,6 +21,7 @@ import { IdempotencyInterceptor } from '../idempotency/idempotency.interceptor';
 import { PurchasesService } from './purchases.service';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { VoidPurchaseDto } from './dto/void-purchase.dto';
+import { ApplyPurchasePriceUpdatesDto } from './dto/apply-price-updates.dto';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
@@ -80,5 +81,16 @@ export class PurchasesController {
     @Query('businessId') qBid?: string,
   ) {
     return this.service.voidPurchase(id, resolveBusinessId(user, qBid), user.sub, dto);
+  }
+
+  @Post(':id/apply-price-updates')
+  @UseGuards(NoWebPlatformGuard)
+  applyPriceUpdates(
+    @Param('id') id: string,
+    @Body() dto: ApplyPurchasePriceUpdatesDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.applyPriceUpdates(id, resolveBusinessId(user, qBid), user.sub, user.role, dto);
   }
 }

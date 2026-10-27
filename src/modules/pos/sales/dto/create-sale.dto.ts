@@ -44,6 +44,16 @@ export class CreateSaleItemDto {
   @IsNumber()
   @Min(0)
   subtotal?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  listPrice?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  taxable?: boolean;
 }
 
 export class PaymentDto {
@@ -221,6 +231,14 @@ export class CreateSaleDto {
   @IsOptional()
   @IsNumber()
   clientTotal?: number;
+
+  @IsOptional()
+  @IsNumber()
+  clientListPriceTotal?: number;
+
+  @IsOptional()
+  @IsNumber()
+  clientListDiscountTotal?: number;
 
   @IsOptional()
   isOfflineSync?: boolean;

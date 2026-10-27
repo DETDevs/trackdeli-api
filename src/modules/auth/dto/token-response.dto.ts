@@ -24,6 +24,9 @@ export class TokenResponseDto {
       salonLabels?: any;
       posVertical?: string | null;
       tracksBatches?: boolean;
+      useListPrice?: boolean;
+      defaultMarkupPct?: number | null;
+      autoUpdatePriceOnPurchase?: boolean;
     } | null;
     salonProfile?: string | null;
     salonLabels?: any;

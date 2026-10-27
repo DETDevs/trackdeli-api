@@ -41,8 +41,11 @@ const CORE_TARGETS: ImportTarget[] = [
   { id: 'name', label: 'Nombre del Producto', kind: 'core', dataType: 'TEXT', required: true },
   { id: 'description', label: 'Descripción', kind: 'core', dataType: 'TEXT', required: false },
   { id: 'categoryId', label: 'Categoría', kind: 'core', dataType: 'TEXT', required: false },
-  { id: 'price', label: 'Precio', kind: 'core', dataType: 'NUMBER', required: true },
+  { id: 'price', label: 'Precio', kind: 'core', dataType: 'NUMBER', required: false },
   { id: 'cost', label: 'Costo', kind: 'core', dataType: 'NUMBER', required: false },
+  { id: 'listPrice', label: 'Precio Etiqueta', kind: 'core', dataType: 'NUMBER', required: false },
+  { id: 'markupPct', label: 'Margen %', kind: 'core', dataType: 'NUMBER', required: false },
+  { id: 'taxable', label: 'Aplica IVA (SI/NO)', kind: 'core', dataType: 'BOOLEAN', required: false },
   { id: 'taxIncluded', label: 'Impuesto Incluido', kind: 'core', dataType: 'BOOLEAN', required: false },
   { id: 'trackStock', label: 'Controla Inventario', kind: 'core', dataType: 'BOOLEAN', required: false },
   { id: 'stock', label: 'Existencia (Stock)', kind: 'core', dataType: 'NUMBER', required: false },
@@ -428,10 +431,16 @@ export class ProductsImportService {
                break;
              }
              parsedVal = Math.round(parsedVal * 1000) / 1000;
-          } else if (tgt.id === 'price' || tgt.id === 'cost') {
+          } else if (tgt.id === 'price' || tgt.id === 'cost' || tgt.id === 'listPrice') {
              parsedVal = this.parseTolerantNumber(valStr);
              if (isNaN(parsedVal) || parsedVal < 0) {
                rowError = `Columna '${h}': debe ser un número mayor o igual a 0.`;
+               break;
+             }
+          } else if (tgt.id === 'markupPct') {
+             parsedVal = this.parseTolerantNumber(valStr);
+             if (isNaN(parsedVal) || parsedVal < 0 || parsedVal > 1000) {
+               rowError = `Columna '${h}': debe ser un número entre 0 y 1000.`;
                break;
              }
           } else if (tgt.id === 'wholesalePrice') {
@@ -497,8 +506,12 @@ export class ProductsImportService {
         continue;
       }
       if (payload.core.price === undefined) {
-        result.errors.push({ row: rowNum, column: 'price', message: 'El precio es obligatorio.' });
-        continue;
+        if (payload.core.cost !== undefined && payload.core.markupPct !== undefined) {
+          payload.core.price = Math.round((Number(payload.core.cost) * (1 + Number(payload.core.markupPct) / 100)) * 100) / 100;
+        } else {
+          result.errors.push({ row: rowNum, column: 'price', message: 'El precio es obligatorio si no se especifica costo y margen.' });
+          continue;
+        }
       }
 
       const skuKey = payload.core.sku ? this.normalizeStr(payload.core.sku) : '';
@@ -795,6 +808,9 @@ export class ProductsImportService {
       else if (t.id === 'cost') sampleRow[t.id] = 50.00;
       else if (t.id === 'wholesalePrice') sampleRow[t.id] = 85.00;
       else if (t.id === 'wholesaleMinQty') sampleRow[t.id] = 6;
+      else if (t.id === 'listPrice') sampleRow[t.id] = 120.00;
+      else if (t.id === 'markupPct') sampleRow[t.id] = 25.00;
+      else if (t.id === 'taxable') sampleRow[t.id] = 'NO';
       else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive') sampleRow[t.id] = 'SI';
       else if (t.id === 'stock') sampleRow[t.id] = 10;
       else if (t.id === 'lotNumber') sampleRow[t.id] = 'LT-2026-001';
@@ -821,6 +837,9 @@ export class ProductsImportService {
       let desc = '...';
       if (t.id === 'wholesalePrice') desc = 'Precio por mayor (opcional, menor al precio normal)';
       else if (t.id === 'wholesaleMinQty') desc = 'Cantidad mínima para precio por mayor (mínimo 2)';
+      else if (t.id === 'listPrice') desc = 'Precio de etiqueta o referencia (opcional).';
+      else if (t.id === 'markupPct') desc = 'Margen de ganancia sobre costo en % (opcional, ej. 25).';
+      else if (t.id === 'taxable') desc = 'Aplica 15% de IVA sobre precio de venta (SI o NO, defecto NO).';
       else if (t.id === 'lotNumber') desc = 'Número o código de lote (opcional). Si se omite y hay existencias, se asignará al lote INICIAL.';
       else if (t.id === 'expiryDate') desc = 'Fecha de vencimiento en formato AAAA-MM-DD o serial de Excel (opcional).';
       wsHelp.addRow({ col: t.label, req: t.required ? 'Sí' : 'No', type: typeStr, desc });
@@ -864,7 +883,7 @@ export class ProductsImportService {
              const exp = (p as any).batches?.[0]?.expiryDate;
              row[t.id] = exp ? exp.toISOString().split('T')[0] : '';
            }
-           else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive') {
+           else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive' || t.id === 'taxable') {
              row[t.id] = (p as any)[t.id] ? 'SI' : 'NO';
            } else {
              row[t.id] = (p as any)[t.id];

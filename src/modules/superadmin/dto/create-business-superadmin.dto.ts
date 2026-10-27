@@ -145,6 +145,19 @@ export class CreateBusinessSuperAdminDto {
   @IsBoolean()
   tracksBatches?: boolean;
 
+  @IsOptional()
+  @IsBoolean()
+  useListPrice?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  defaultMarkupPct?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  autoUpdatePriceOnPurchase?: boolean;
+
   @IsObject()
   @IsOptional()
   @ValidateNested()

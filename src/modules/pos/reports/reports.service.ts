@@ -147,7 +147,21 @@ export class ReportsService {
         COALESCE(SUM(GREATEST(0, s.total - COALESCE(refunds.total_refund, 0))), 0)::float AS "totalRevenue",
         COALESCE(SUM(s."discountAmount"), 0)::float AS "totalDiscount",
         COALESCE(SUM(GREATEST(0, s."taxAmount" - COALESCE(refunds.tax_refund, 0))), 0)::float AS "totalTax",
-        COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS "netRevenue"
+        COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS "netRevenue",
+        COALESCE(SUM(
+          CASE
+            WHEN s."taxModel" = 'PER_LINE' THEN COALESCE(lines_breakdown.taxable_net, 0)
+            WHEN s."taxEnabled" = true AND s."taxRate" > 0 THEN GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))
+            ELSE 0
+          END
+        ), 0)::float AS "taxableSales",
+        COALESCE(SUM(
+          CASE
+            WHEN s."taxModel" = 'PER_LINE' THEN COALESCE(lines_breakdown.exempt_net, 0)
+            WHEN s."taxEnabled" = true AND s."taxRate" > 0 THEN 0
+            ELSE GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))
+          END
+        ), 0)::float AS "exemptSales"
       FROM pos_sales s
       LEFT JOIN (
         SELECT "saleId", SUM("refundAmount") AS total_refund, SUM("taxRefunded") AS tax_refund, SUM("refundAmount" - COALESCE("taxRefunded", 0)) AS net_refund
@@ -155,6 +169,19 @@ export class ReportsService {
         WHERE "businessId" = ${businessId}
         GROUP BY "saleId"
       ) refunds ON refunds."saleId" = s.id
+      LEFT JOIN (
+        SELECT
+          i."saleId",
+          SUM(CASE WHEN i.taxable = true THEN GREATEST(0, (i.subtotal - i."manualDiscountShare") - COALESCE(ri.net_refund, 0)) ELSE 0 END) AS taxable_net,
+          SUM(CASE WHEN i.taxable = false THEN GREATEST(0, (i.subtotal - i."manualDiscountShare") - COALESCE(ri.net_refund, 0)) ELSE 0 END) AS exempt_net
+        FROM pos_sale_items i
+        LEFT JOIN (
+          SELECT "saleItemId", SUM("refundAmount" - COALESCE("taxAmount", 0)) AS net_refund
+          FROM pos_sale_return_items
+          GROUP BY "saleItemId"
+        ) ri ON ri."saleItemId" = i.id
+        GROUP BY i."saleId"
+      ) lines_breakdown ON lines_breakdown."saleId" = s.id
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
@@ -217,6 +244,8 @@ export class ReportsService {
     const totalDiscount = summaryAgg[0]?.totalDiscount || 0;
     const totalTax = summaryAgg[0]?.totalTax || 0;
     const netRevenue = summaryAgg[0]?.netRevenue || 0;
+    const taxableSales = summaryAgg[0]?.taxableSales || 0;
+    const exemptSales = summaryAgg[0]?.exemptSales || 0;
 
     this.logger.log(`[getSalesSummary] businessId=${businessId} ventas=${totalSales} total=${totalRevenue.toFixed(2)}`);
 
@@ -227,6 +256,8 @@ export class ReportsService {
       totalDiscount: Math.round(totalDiscount * 100) / 100,
       totalTax: Math.round(totalTax * 100) / 100,
       netRevenue: Math.round(netRevenue * 100) / 100,
+      taxableSales: Math.round(taxableSales * 100) / 100,
+      exemptSales: Math.round(exemptSales * 100) / 100,
       averageTicket: totalSales > 0 ? Math.round((totalRevenue / totalSales) * 100) / 100 : 0,
       byPaymentMethod,
       byDay,
@@ -909,10 +940,35 @@ export class ReportsService {
           COALESCE(SUM(s.subtotal), 0)::float AS "grossSales",
           COALESCE(SUM(s."discountAmount"), 0)::float AS "discounts",
           COALESCE(SUM(refunds.net_refund), 0)::float AS "returns",
-          COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS "netSales"
+          COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS "netSales",
+          COALESCE(SUM(
+            CASE
+              WHEN s."taxModel" = 'PER_LINE' THEN (
+                SELECT COALESCE(SUM(si."subtotal" - si."manualDiscountShare"), 0)
+                FROM pos_sale_items si
+                WHERE si."saleId" = s.id AND si.taxable = true
+              )
+              WHEN s."taxModel" = 'LEGACY' AND s."taxAmount" > 0 THEN GREATEST(0, s.subtotal - s."discountAmount")
+              ELSE 0
+            END
+          ), 0)::float AS "taxableSales",
+          COALESCE(SUM(
+            CASE
+              WHEN s."taxModel" = 'PER_LINE' THEN (
+                SELECT COALESCE(SUM(si."subtotal" - si."manualDiscountShare"), 0)
+                FROM pos_sale_items si
+                WHERE si."saleId" = s.id AND (si.taxable = false OR si.taxable IS NULL)
+              )
+              WHEN s."taxModel" = 'LEGACY' AND (s."taxAmount" = 0 OR s."taxAmount" IS NULL) THEN GREATEST(0, s.subtotal - s."discountAmount")
+              ELSE 0
+            END
+          ), 0)::float AS "exemptSales",
+          COALESCE(SUM(GREATEST(0, s."taxAmount" - COALESCE(refunds.tax_refund, 0))), 0)::float AS "taxAmount"
         FROM pos_sales s
         LEFT JOIN (
-          SELECT "saleId", SUM("refundAmount" - COALESCE("taxRefunded", 0)) AS net_refund
+          SELECT "saleId",
+            SUM("refundAmount" - COALESCE("taxRefunded", 0)) AS net_refund,
+            SUM(COALESCE("taxRefunded", 0)) AS tax_refund
           FROM pos_sale_returns
           WHERE "businessId" = ${businessId}
           GROUP BY "saleId"
@@ -926,7 +982,10 @@ export class ReportsService {
       const discounts = r2(row.discounts || 0);
       const returns = r2(row.returns || 0);
       const netSales = r2(row.netSales || 0);
-      return { grossSales, discounts, returns, netSales };
+      const taxableSales = r2(row.taxableSales || 0);
+      const exemptSales = r2(row.exemptSales || 0);
+      const taxAmount = r2(row.taxAmount || 0);
+      return { grossSales, discounts, returns, netSales, taxableSales, exemptSales, taxAmount };
     };
 
     const computeProfitMetrics = async (fromDt: Date, toDt: Date) => {
@@ -1093,6 +1152,9 @@ export class ReportsService {
       discounts: currentSales.discounts,
       returns: currentSales.returns,
       netSales: currentSales.netSales,
+      taxableSales: currentSales.taxableSales,
+      exemptSales: currentSales.exemptSales,
+      taxAmount: currentSales.taxAmount,
       coveredRevenue,
       uncoveredRevenue,
       costOfGoodsSold,

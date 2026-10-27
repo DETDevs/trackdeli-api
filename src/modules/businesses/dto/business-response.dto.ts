@@ -46,6 +46,9 @@ export class BusinessResponseDto {
   posFooter?: string | null;
 
   tracksBatches?: boolean;
+  useListPrice?: boolean;
+  defaultMarkupPct?: number | null;
+  autoUpdatePriceOnPurchase?: boolean;
   taxId?: string | null;
 
   createdAt: Date;

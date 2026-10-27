@@ -50,6 +50,9 @@ export class BusinessesService {
       posPhone: business.posPhone ?? null,
       posFooter: business.posFooter ?? null,
       tracksBatches: (business as any).tracksBatches ?? false,
+      useListPrice: (business as any).useListPrice ?? false,
+      defaultMarkupPct: (business as any).defaultMarkupPct != null ? Number((business as any).defaultMarkupPct) : null,
+      autoUpdatePriceOnPurchase: (business as any).autoUpdatePriceOnPurchase ?? false,
       taxId: business.taxId ?? null,
       createdAt: business.createdAt,
     };
@@ -114,6 +117,8 @@ export class BusinessesService {
         ...(dto.gridColumns !== undefined && { gridColumns: dto.gridColumns }),
         ...(dto.gridRows !== undefined && { gridRows: dto.gridRows }),
         ...(dto.tracksBatches !== undefined && { tracksBatches: dto.tracksBatches }),
+        ...(dto.defaultMarkupPct !== undefined && { defaultMarkupPct: dto.defaultMarkupPct }),
+        ...(dto.autoUpdatePriceOnPurchase !== undefined && { autoUpdatePriceOnPurchase: dto.autoUpdatePriceOnPurchase }),
         ...(dto.taxId !== undefined && { taxId: dto.taxId }),
       },
     });

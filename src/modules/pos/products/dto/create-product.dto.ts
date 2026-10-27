@@ -1,4 +1,4 @@
-import { IsString, MinLength, IsOptional, IsNumber, Min, IsBoolean, IsNotEmpty, IsIn, IsDateString, MaxLength } from 'class-validator';
+import { IsString, MinLength, IsOptional, IsNumber, Min, Max, IsBoolean, IsNotEmpty, IsIn, IsDateString, MaxLength } from 'class-validator';
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
 import { ALLOWED_PRODUCT_UNITS } from '../product-unit.util';
 
@@ -94,6 +94,21 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   taxIncluded?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0, { message: 'El precio de etiqueta debe ser mayor o igual a 0' })
+  listPrice?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0, { message: 'El margen debe ser mayor o igual a 0' })
+  @Max(1000, { message: 'El margen no puede superar 1000%' })
+  markupPct?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  taxable?: boolean;
 
   @IsOptional()
   attributes?: Record<string, any>;
