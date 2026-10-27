@@ -14,6 +14,7 @@ import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
 import { AdjustStockDto } from "./dto/adjust-stock.dto";
 import { SetRecipeComponentsDto } from "./dto/set-recipe-components.dto";
+import { BulkUpdateProductsDto } from "./dto/bulk-update-products.dto";
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
@@ -69,6 +70,16 @@ export class ProductsController {
     @Query("businessId") qBid?: string,
   ) {
     return this.service.create(dto, resolveBusinessId(user, qBid), user?.sub);
+  }
+
+  @Patch("bulk")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  bulkUpdate(
+    @Body() dto: BulkUpdateProductsDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.bulkUpdate(resolveBusinessId(user, qBid), dto, user);
   }
 
   @Patch(":id")

@@ -51,6 +51,8 @@ export class BusinessesService {
       posFooter: business.posFooter ?? null,
       tracksBatches: (business as any).tracksBatches ?? false,
       useListPrice: (business as any).useListPrice ?? false,
+      taxEnabled: Boolean((business as any).taxEnabled),
+      taxIncluded: Boolean((business as any).taxIncluded),
       defaultMarkupPct: (business as any).defaultMarkupPct != null ? Number((business as any).defaultMarkupPct) : null,
       autoUpdatePriceOnPurchase: (business as any).autoUpdatePriceOnPurchase ?? false,
       taxId: business.taxId ?? null,

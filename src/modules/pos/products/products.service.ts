@@ -14,6 +14,7 @@ import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
 import { AdjustStockDto } from "./dto/adjust-stock.dto";
 import { SetRecipeComponentsDto } from "./dto/set-recipe-components.dto";
+import { BulkUpdateProductsDto } from "./dto/bulk-update-products.dto";
 import { validateProductQuantity, round3 } from "./product-unit.util";
 
 import { BatchesService } from '../batches/batches.service';
@@ -737,6 +738,148 @@ export class ProductsService {
     if (!product) throw new NotFoundException("Producto no encontrado");
     const removed = await this.prisma.product.update({ where: { id }, data: { isActive: false } });
     return this.mapProductWithInventory(removed);
+  }
+
+  async bulkUpdate(
+    businessId: string,
+    dto: BulkUpdateProductsDto,
+    user: JwtPayload,
+  ) {
+    if (
+      dto.productIds !== 'ALL_FILTERED' &&
+      (!Array.isArray(dto.productIds) || dto.productIds.length === 0)
+    ) {
+      throw new BadRequestException('productIds debe ser un arreglo no vacío de IDs o "ALL_FILTERED"');
+    }
+
+    if (
+      !dto.changes ||
+      (dto.changes.taxable === undefined && dto.changes.markupPct === undefined)
+    ) {
+      throw new BadRequestException('Debe proporcionar al menos un cambio (taxable o markupPct)');
+    }
+
+    if (Array.isArray(dto.productIds) && dto.productIds.length > 1000) {
+      throw new BadRequestException('El límite máximo por llamada es de 1,000 productos');
+    }
+
+    const dataToUpdate: Prisma.ProductUpdateManyMutationInput = {
+      updatedAt: new Date(),
+    };
+
+    if (dto.changes.taxable !== undefined) {
+      dataToUpdate.taxable = Boolean(dto.changes.taxable);
+    }
+
+    if (dto.changes.markupPct !== undefined) {
+      dataToUpdate.markupPct = dto.changes.markupPct !== null ? Number(dto.changes.markupPct) : null;
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      let where: Prisma.ProductWhereInput = { businessId };
+
+      if (Array.isArray(dto.productIds)) {
+        where.id = { in: dto.productIds };
+      } else {
+        // "ALL_FILTERED"
+        if (dto.filters?.categoryId) {
+          where.categoryId = dto.filters.categoryId;
+        }
+        if (dto.filters?.taxable !== undefined) {
+          where.taxable = dto.filters.taxable;
+        }
+        if (dto.filters?.isActive !== undefined) {
+          where.isActive = dto.filters.isActive;
+        } else {
+          where.isActive = true;
+        }
+
+        if (dto.filters?.search) {
+          const activeFields = await tx.productFieldDefinition.findMany({
+            where: { businessId, isActive: true },
+            select: { key: true, searchable: true },
+          });
+          const searchableKeys = activeFields.filter((f) => f.searchable).map((f) => f.key);
+          let matchingIds: string[] = [];
+          if (searchableKeys.length > 0) {
+            const orSql = searchableKeys.map((k) => `"attributes"->>'${k}' ILIKE $2`).join(' OR ');
+            const matches: any[] = await tx.$queryRawUnsafe(
+              `SELECT id FROM "pos_products" WHERE "businessId" = $1 AND (${orSql})`,
+              businessId,
+              `%${dto.filters.search}%`,
+            );
+            matchingIds = matches.map((m) => m.id);
+          }
+
+          where.OR = [
+            { name: { contains: dto.filters.search, mode: 'insensitive' } },
+            { barcode: { contains: dto.filters.search, mode: 'insensitive' } },
+            { sku: { contains: dto.filters.search, mode: 'insensitive' } },
+            ...(matchingIds.length > 0 ? [{ id: { in: matchingIds } }] : []),
+          ];
+        }
+      }
+
+      // Validar tope de 1,000 productos
+      const matched = await tx.product.findMany({
+        where,
+        select: { id: true },
+        take: 1001,
+      });
+
+      if (matched.length > 1000) {
+        throw new BadRequestException(
+          'La selección excede el límite máximo de 1,000 productos por llamada. Por favor refine los filtros.',
+        );
+      }
+
+      const idsToUpdate = matched.map((p) => p.id);
+
+      if (idsToUpdate.length === 0) {
+        return {
+          success: true,
+          updatedCount: 0,
+          changes: dto.changes,
+          message: 'No se encontraron productos que coincidan con los criterios.',
+        };
+      }
+
+      const updateRes = await tx.product.updateMany({
+        where: { id: { in: idsToUpdate }, businessId },
+        data: dataToUpdate,
+      });
+
+      // Registro en auditoría
+      await tx.posAuditLog.create({
+        data: {
+          businessId,
+          userId: user.sub,
+          userRole: user.role,
+          action: 'PRODUCTOS_CAMBIO_MASIVO',
+          entityType: 'Product',
+          entityId: idsToUpdate.length === 1 ? idsToUpdate[0] : 'BULK',
+          reason: `Actualización masiva de ${updateRes.count} producto(s)`,
+          after: {
+            count: updateRes.count,
+            changes: dto.changes as any,
+            selectionType: Array.isArray(dto.productIds) ? 'LIST' : 'ALL_FILTERED',
+            filters: (dto.filters || null) as any,
+            productIdsSample: idsToUpdate.slice(0, 50),
+          },
+        },
+      });
+
+      this.logger.log(
+        `[bulkUpdate] businessId=${businessId} userId=${user.sub} updated=${updateRes.count} changes=${JSON.stringify(dto.changes)}`,
+      );
+
+      return {
+        success: true,
+        updatedCount: updateRes.count,
+        changes: dto.changes,
+        message: `Se actualizaron ${updateRes.count} producto(s) correctamente`,
+      };
+    });
   }
 
   async adjustStock(productId: string, dto: AdjustStockDto, userId: string, businessId: string) {

@@ -47,6 +47,8 @@ export class BusinessResponseDto {
 
   tracksBatches?: boolean;
   useListPrice?: boolean;
+  taxEnabled?: boolean;
+  taxIncluded?: boolean;
   defaultMarkupPct?: number | null;
   autoUpdatePriceOnPurchase?: boolean;
   taxId?: string | null;
