@@ -426,6 +426,9 @@ export class ReportsService {
       totalCash,
       totalCard,
       totalTransfer,
+      taxableSales: summary.taxableSales,
+      exemptSales: summary.exemptSales,
+      totalTax: summary.totalTax,
       topProducts: topProducts.map(p => ({
         productId: p.name,
         productName: p.name,

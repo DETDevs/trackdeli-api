@@ -78,10 +78,35 @@ export class BackofficeService {
       const rows: any[] = await this.prisma.$queryRaw`
         SELECT
           COUNT(*)::int AS "salesCount",
-          COALESCE(SUM(GREATEST(0, s.total - COALESCE(ret.refund_total, 0))), 0)::float AS "totalRevenue"
+          COALESCE(SUM(GREATEST(0, s.total - COALESCE(ret.refund_total, 0))), 0)::float AS "totalRevenue",
+          COALESCE(SUM(
+            CASE
+              WHEN s."taxModel" = 'PER_LINE' THEN (
+                SELECT COALESCE(SUM(si."subtotal" - si."manualDiscountShare"), 0)
+                FROM pos_sale_items si
+                WHERE si."saleId" = s.id AND si.taxable = true
+              )
+              WHEN s."taxModel" = 'LEGACY' AND s."taxAmount" > 0 THEN GREATEST(0, s.subtotal - s."discountAmount")
+              ELSE 0
+            END
+          ), 0)::float AS "taxableSales",
+          COALESCE(SUM(
+            CASE
+              WHEN s."taxModel" = 'PER_LINE' THEN (
+                SELECT COALESCE(SUM(si."subtotal" - si."manualDiscountShare"), 0)
+                FROM pos_sale_items si
+                WHERE si."saleId" = s.id AND (si.taxable = false OR si.taxable IS NULL)
+              )
+              WHEN s."taxModel" = 'LEGACY' AND (s."taxAmount" = 0 OR s."taxAmount" IS NULL) THEN GREATEST(0, s.subtotal - s."discountAmount")
+              ELSE 0
+            END
+          ), 0)::float AS "exemptSales",
+          COALESCE(SUM(GREATEST(0, s."taxAmount" - COALESCE(ret.tax_refund, 0))), 0)::float AS "taxAmount"
         FROM pos_sales s
         LEFT JOIN (
-          SELECT "saleId", SUM("refundAmount") AS refund_total
+          SELECT "saleId",
+            SUM("refundAmount") AS refund_total,
+            SUM(COALESCE("taxRefunded", 0)) AS tax_refund
           FROM pos_sale_returns
           GROUP BY "saleId"
         ) ret ON ret."saleId" = s.id
@@ -93,8 +118,11 @@ export class BackofficeService {
 
       const salesCount = Number(rows[0]?.salesCount || 0);
       const totalRevenue = this.round2(Number(rows[0]?.totalRevenue || 0));
+      const taxableSales = this.round2(Number(rows[0]?.taxableSales || 0));
+      const exemptSales = this.round2(Number(rows[0]?.exemptSales || 0));
+      const taxAmount = this.round2(Number(rows[0]?.taxAmount || 0));
       const averageTicket = salesCount > 0 ? this.round2(totalRevenue / salesCount) : 0;
-      return { totalRevenue, salesCount, averageTicket };
+      return { totalRevenue, salesCount, averageTicket, taxableSales, exemptSales, taxAmount };
     };
 
     // Calcular crecimiento/comparación
@@ -644,6 +672,9 @@ export class BackofficeService {
       taxRate: sale.taxRate,
       taxAmount: this.round2(sale.taxAmount),
       total: this.round2(sale.total),
+      taxModel: (sale as any).taxModel || 'LEGACY',
+      listPriceTotal: this.round2(Number((sale as any).listPriceTotal || 0)),
+      listDiscountTotal: this.round2(Number((sale as any).listDiscountTotal || 0)),
       totalRefunded: this.round2(totalRefunded),
       netTotal: this.round2(netTotal),
       amountPaid: this.round2(sale.amountPaid),
@@ -682,6 +713,12 @@ export class BackofficeService {
           subtotal: this.round2(item.subtotal),
           total: this.round2(item.subtotal),
           discount: item.discount,
+          listPrice: (item as any).listPrice != null ? this.round2(Number((item as any).listPrice)) : null,
+          listPriceDiscount: this.round2(Number((item as any).listPriceDiscount || 0)),
+          manualDiscountShare: this.round2(Number((item as any).manualDiscountShare || 0)),
+          taxable: (item as any).taxable ?? false,
+          taxRate: (item as any).taxRate ?? 0,
+          taxAmount: this.round2(Number((item as any).taxAmount || 0)),
         };
       }),
       returns: sale.returns.map((r) => ({
