@@ -38,4 +38,8 @@ export class CreateProductFieldDto {
   @IsOptional()
   @IsBoolean()
   showInPos?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allowCreateInline?: boolean;
 }

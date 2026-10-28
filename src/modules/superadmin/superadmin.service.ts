@@ -1124,6 +1124,7 @@ export class SuperAdminService {
               order: tmpl.order,
               searchable: tmpl.searchable,
               showInPos: tmpl.showInPos,
+              allowCreateInline: tmpl.allowCreateInline ?? true,
               isActive: true,
             },
           });
@@ -1486,6 +1487,7 @@ export class SuperAdminService {
                 order: tmpl.order,
                 searchable: tmpl.searchable,
                 showInPos: tmpl.showInPos,
+                allowCreateInline: tmpl.allowCreateInline ?? true,
                 isActive: true,
               },
             });

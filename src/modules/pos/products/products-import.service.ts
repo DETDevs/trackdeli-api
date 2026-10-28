@@ -2,9 +2,10 @@ import { Injectable, UnprocessableEntityException, BadRequestException, Logger }
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ProductsService } from './products.service';
 import { BatchesService } from '../batches/batches.service';
-import { ProductFieldDataType, StockMovementType, Prisma } from '@prisma/client';
+import { ProductFieldDataType, StockMovementType, Prisma, UserRole } from '@prisma/client';
 import * as exceljs from 'exceljs';
 import { parse } from 'csv-parse/sync';
+import { normalizeOptionLabel } from '../../../common/utils/field-key.util';
 
 export interface ImportTarget {
   id: string;
@@ -358,9 +359,11 @@ export class ProductsImportService {
     
     const activeFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: true },
+      include: { fieldOptions: true },
     });
     const inactiveFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: false },
+      include: { fieldOptions: true },
     });
     const activeFieldMap = new Map(activeFields.map((f) => [f.key, f]));
     const inactiveFieldMap = new Map(inactiveFields.map((f) => [f.key, f]));
@@ -485,6 +488,59 @@ export class ProductsImportService {
                break;
              }
              parsedVal = canonic;
+          } else if (tgt.dataType === 'LIST') {
+            const field = activeFieldMap.get(tgt.id);
+            if (field) {
+              const normVal = normalizeOptionLabel(valStr);
+              field.fieldOptions = field.fieldOptions || [];
+              const matched = field.fieldOptions.find(
+                (o: any) => o.normalizedLabel === normVal || o.label.toLowerCase() === valStr.toLowerCase(),
+              );
+              if (matched) {
+                parsedVal = matched.label;
+                payload.dynamic[`${tgt.id}_id`] = matched.id;
+              } else {
+                if (!(field.allowCreateInline ?? true)) {
+                  rowError = `Columna '${h}': la opción '${valStr}' no existe para el campo '${field.label}' y no está permitida la creación al vuelo.`;
+                  break;
+                }
+                let optId = `inline_${Date.now()}_${Math.random()}`;
+                if (!dryRun) {
+                  const last = await this.prisma.productFieldOption.findFirst({
+                    where: { businessId, fieldDefinitionId: field.id },
+                    orderBy: { sortOrder: 'desc' },
+                    select: { sortOrder: true },
+                  });
+                  const nextOrder = (last?.sortOrder ?? -1) + 1;
+                  const newOpt = await this.prisma.productFieldOption.create({
+                    data: {
+                      businessId,
+                      fieldDefinitionId: field.id,
+                      label: valStr,
+                      normalizedLabel: normVal,
+                      sortOrder: nextOrder,
+                      isActive: true,
+                    },
+                  });
+                  optId = newOpt.id;
+                  field.fieldOptions.push(newOpt);
+                } else {
+                  field.fieldOptions.push({
+                    id: optId,
+                    businessId,
+                    fieldDefinitionId: field.id,
+                    label: valStr,
+                    normalizedLabel: normVal,
+                    isActive: true,
+                    sortOrder: 0,
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  });
+                }
+                parsedVal = valStr;
+                payload.dynamic[`${tgt.id}_id`] = optId;
+              }
+            }
           }
         } else {
           parsedVal = undefined;
@@ -848,7 +904,7 @@ export class ProductsImportService {
     return workbook;
   }
 
-  async exportProducts(businessId: string, filters?: any): Promise<exceljs.Workbook> {
+  async exportProducts(businessId: string, filters?: any, userRole?: string): Promise<exceljs.Workbook> {
     const workbook = new exceljs.Workbook();
     const ws = workbook.addWorksheet('Productos');
     const targets = await this.getTargets(businessId);
@@ -863,7 +919,7 @@ export class ProductsImportService {
     let products: any[];
     if (this.productsService?.findAll && filters && Object.keys(filters).length > 0) {
       const { businessId: _, ...restFilters } = filters;
-      products = await this.productsService.findAll(businessId, restFilters, 'ENCARGADO');
+      products = await this.productsService.findAll(businessId, restFilters, userRole);
     } else {
       products = await this.prisma.product.findMany({
         where: { businessId, isActive: true },
@@ -873,6 +929,11 @@ export class ProductsImportService {
           batches: { where: { quantity: { gt: 0 } }, orderBy: { expiryDate: 'asc' } },
         }
       });
+      if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
+        for (const p of products) {
+          delete (p as any).cost;
+        }
+      }
     }
 
     for (const p of products) {

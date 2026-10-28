@@ -22,7 +22,7 @@ export class ProductsImportController {
   constructor(private readonly importService: ProductsImportService) {}
 
   @Get('export')
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.CAJERO)
   async exportProducts(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid: string,
@@ -30,7 +30,7 @@ export class ProductsImportController {
     @Res() res: Response
   ) {
     const bId = resolveBusinessId(user, qBid);
-    const wb = await this.importService.exportProducts(bId, query);
+    const wb = await this.importService.exportProducts(bId, query, user.role);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=productos.xlsx');
     await wb.xlsx.write(res);
@@ -118,9 +118,10 @@ export class SuperAdminProductsImportController {
   async exportBusinessProducts(
     @Param('businessId') businessId: string,
     @Query() query: any,
+    @CurrentUser() user: JwtPayload,
     @Res() res: Response
   ) {
-    const wb = await this.importService.exportProducts(businessId, query);
+    const wb = await this.importService.exportProducts(businessId, query, user.role);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=productos.xlsx');
     await wb.xlsx.write(res);

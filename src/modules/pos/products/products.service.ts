@@ -19,6 +19,7 @@ import { validateProductQuantity, round3 } from "./product-unit.util";
 
 import { BatchesService } from '../batches/batches.service';
 import { buildBusinessDateRange, formatDateInTimezone } from '../../../common/utils/date.util';
+import { normalizeOptionLabel } from '../../../common/utils/field-key.util';
 
 @Injectable()
 export class ProductsService {
@@ -72,6 +73,9 @@ export class ProductsService {
       if (rawAttrs[key] !== undefined) {
         filteredAttrs[key] = rawAttrs[key];
       }
+      if (rawAttrs[`${key}_id`] !== undefined) {
+        filteredAttrs[`${key}_id`] = rawAttrs[`${key}_id`];
+      }
     }
 
     const wholesale_price = product.wholesalePrice != null ? Number(product.wholesalePrice) : null;
@@ -115,6 +119,9 @@ export class ProductsService {
 
     const activeFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: true },
+      include: {
+        fieldOptions: true,
+      },
     });
     const inactiveFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: false },
@@ -122,6 +129,49 @@ export class ProductsService {
 
     const activeMap = new Map(activeFields.map((f) => [f.key, f]));
     const inactiveMap = new Map(inactiveFields.map((f) => [f.key, f]));
+
+    // Para campos LIST con allowCreateInline, crear opciones nuevas si no existen
+    for (const [key, val] of Object.entries(incomingAttributes)) {
+      const field: any = activeMap.get(key);
+      if (!field || field.dataType !== ProductFieldDataType.LIST) continue;
+      if (val === null || val === undefined || val === '') continue;
+
+      let rawStr = '';
+      if (typeof val === 'string') {
+        rawStr = val.trim();
+      } else if (typeof val === 'object' && val !== null) {
+        rawStr = String(val.label || val.id || '').trim();
+      }
+      if (!rawStr) continue;
+
+      const norm = normalizeOptionLabel(rawStr);
+      const options: any[] = field.fieldOptions || [];
+      let matched = options.find(
+        (o) => o.id === rawStr || o.normalizedLabel === norm || o.label.toLowerCase() === rawStr.toLowerCase(),
+      );
+
+      if (!matched && (field.allowCreateInline ?? true)) {
+        const last = await this.prisma.productFieldOption.findFirst({
+          where: { businessId, fieldDefinitionId: field.id },
+          orderBy: { sortOrder: 'desc' },
+          select: { sortOrder: true },
+        });
+        const nextOrder = (last?.sortOrder ?? -1) + 1;
+
+        const newOpt = await this.prisma.productFieldOption.create({
+          data: {
+            businessId,
+            fieldDefinitionId: field.id,
+            label: rawStr,
+            normalizedLabel: norm,
+            sortOrder: nextOrder,
+            isActive: true,
+          },
+        });
+        field.fieldOptions = field.fieldOptions || [];
+        field.fieldOptions.push(newOpt);
+      }
+    }
 
     return this.validateAttributesSync(incomingAttributes, existingAttributes, activeMap, inactiveMap);
   }
@@ -135,6 +185,10 @@ export class ProductsService {
     // 1. Claves desconocidas
     for (const key of Object.keys(incomingAttributes)) {
       if (!activeMap.has(key)) {
+        // Permitir claves terminadas en _id si corresponden a un campo LIST activo
+        if (key.endsWith('_id') && activeMap.has(key.replace(/_id$/, ''))) {
+          continue;
+        }
         if (inactiveMap.has(key)) {
           const existingVal = existingAttributes ? existingAttributes[key] : undefined;
           const incomingVal = incomingAttributes[key];
@@ -167,9 +221,9 @@ export class ProductsService {
       }
     }
 
-    // 3. Validar tipos de datos y opciones de SELECT
+    // 3. Validar tipos de datos y opciones de SELECT y LIST
     for (const [key, val] of Object.entries(incomingAttributes)) {
-      const field = activeMap.get(key);
+      const field: any = activeMap.get(key);
       if (!field) continue;
 
       if (val === null || val === undefined || val === '') {
@@ -205,6 +259,50 @@ export class ProductsService {
           break;
         }
 
+        case ProductFieldDataType.LIST: {
+          let rawStr = '';
+          if (typeof val === 'string') {
+            rawStr = val.trim();
+          } else if (typeof val === 'object' && val !== null) {
+            rawStr = String(val.label || val.id || '').trim();
+          } else {
+            throw new UnprocessableEntityException(
+              `El valor para el campo '${field.label}' (${key}) debe ser una cadena de texto o ID de opción`,
+            );
+          }
+
+          if (!rawStr) break;
+
+          const norm = normalizeOptionLabel(rawStr);
+          const options: any[] = field.fieldOptions || [];
+          const matched = options.find(
+            (o) => o.id === rawStr || o.normalizedLabel === norm || o.label.toLowerCase() === rawStr.toLowerCase(),
+          );
+
+          if (matched) {
+            if (!matched.isActive) {
+              const existingLabel = existingAttributes ? existingAttributes[key] : undefined;
+              const existingId = existingAttributes ? existingAttributes[`${key}_id`] : undefined;
+              const alreadyHad = existingId === matched.id || existingLabel === matched.label;
+              if (!alreadyHad) {
+                throw new UnprocessableEntityException(
+                  `La opción '${matched.label}' para el campo '${field.label}' está desactivada y no puede asignarse a nuevos productos`,
+                );
+              }
+            }
+            incomingAttributes[key] = matched.label;
+            incomingAttributes[`${key}_id`] = matched.id;
+          } else {
+            if (!(field.allowCreateInline ?? true)) {
+              throw new UnprocessableEntityException(
+                `La opción '${rawStr}' no existe para el campo '${field.label}' y no está permitida la creación al vuelo`,
+              );
+            }
+            incomingAttributes[key] = rawStr;
+          }
+          break;
+        }
+
         case ProductFieldDataType.BOOLEAN:
           if (typeof val !== 'boolean') {
             throw new UnprocessableEntityException(
@@ -227,7 +325,7 @@ export class ProductsService {
 
     const merged = { ...(existingAttributes || {}) };
     for (const [k, v] of Object.entries(incomingAttributes)) {
-      if (activeMap.has(k)) {
+      if (activeMap.has(k) || (k.endsWith('_id') && activeMap.has(k.replace(/_id$/, '')))) {
         merged[k] = v;
       }
     }

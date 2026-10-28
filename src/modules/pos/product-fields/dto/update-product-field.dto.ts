@@ -33,4 +33,8 @@ export class UpdateProductFieldDto {
   @IsOptional()
   @IsBoolean()
   showInPos?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allowCreateInline?: boolean;
 }

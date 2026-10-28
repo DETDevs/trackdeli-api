@@ -4035,9 +4035,9 @@ WHERE a."customerId" = c."id"
           tracksBatches: true,
           order: 4,
           fields: [
-            { key: 'laboratorio', label: 'Laboratorio', dataType: ProductFieldDataType.TEXT, order: 1 },
+            { key: 'laboratorio', label: 'Laboratorio', dataType: ProductFieldDataType.LIST, allowCreateInline: true, order: 1 },
             { key: 'principio_activo', label: 'Principio activo', dataType: ProductFieldDataType.TEXT, searchable: true, order: 2 },
-            { key: 'presentacion', label: 'Presentación', dataType: ProductFieldDataType.TEXT, order: 3 },
+            { key: 'presentacion', label: 'Presentación', dataType: ProductFieldDataType.LIST, allowCreateInline: true, order: 3 },
             { key: 'requiere_receta', label: 'Requiere receta', dataType: ProductFieldDataType.BOOLEAN, showInPos: true, order: 4 },
           ],
         },
@@ -4138,6 +4138,7 @@ WHERE a."customerId" = c."id"
               order: field.order ?? 0,
               searchable: field.searchable ?? false,
               showInPos: field.showInPos ?? false,
+              allowCreateInline: (field as any).allowCreateInline ?? true,
             },
             create: {
               industryId: industry.id,
@@ -4149,6 +4150,7 @@ WHERE a."customerId" = c."id"
               order: field.order ?? 0,
               searchable: field.searchable ?? false,
               showInPos: field.showInPos ?? false,
+              allowCreateInline: (field as any).allowCreateInline ?? true,
             },
           });
         }

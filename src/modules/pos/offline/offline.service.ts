@@ -16,6 +16,7 @@ import { validateProductQuantity, round3 } from "../products/product-unit.util";
 
 import { BatchesService } from "../batches/batches.service";
 import { calculateSaleTotals, RawSaleItemCalculationInput } from "../sales/utils/sale-calculation.util";
+import { ProductFieldDataType } from "@prisma/client";
 
 @Injectable()
 export class OfflineService {
@@ -786,7 +787,7 @@ export class OfflineService {
   }
 
   async getCatalogSnapshot(businessId: string, since?: string) {
-    const [categories, products, business] = await Promise.all([
+    const [categories, products, business, listFieldsWithOptions] = await Promise.all([
       this.prisma.category.findMany({
         where: { businessId, isActive: true },
         orderBy: { name: "asc" },
@@ -813,6 +814,20 @@ export class OfflineService {
           defaultMarkupPct: true,
           autoUpdatePriceOnPurchase: true,
         },
+      }),
+      this.prisma.productFieldDefinition.findMany({
+        where: {
+          businessId,
+          isActive: true,
+          dataType: ProductFieldDataType.LIST,
+        },
+        include: {
+          fieldOptions: {
+            where: { isActive: true },
+            orderBy: { sortOrder: 'asc' },
+          },
+        },
+        orderBy: { order: 'asc' },
       }),
     ]);
 
@@ -842,6 +857,25 @@ export class OfflineService {
     for (const c of categories) {
       if (c.createdAt > latestUpdate) latestUpdate = c.createdAt;
     }
+    for (const f of listFieldsWithOptions) {
+      if (f.updatedAt > latestUpdate) latestUpdate = f.updatedAt;
+      for (const opt of f.fieldOptions) {
+        if (opt.updatedAt > latestUpdate) latestUpdate = opt.updatedAt;
+      }
+    }
+
+    const fieldOptions = listFieldsWithOptions.flatMap((f) =>
+      f.fieldOptions.map((opt) => ({
+        id: opt.id,
+        businessId: opt.businessId,
+        fieldDefinitionId: opt.fieldDefinitionId,
+        fieldKey: f.key,
+        label: opt.label,
+        normalizedLabel: opt.normalizedLabel,
+        sortOrder: opt.sortOrder,
+        isActive: opt.isActive,
+      }))
+    );
 
     const snapshotVersion = latestUpdate.toISOString();
 
@@ -878,6 +912,8 @@ export class OfflineService {
       auto_update_price_on_purchase: business?.autoUpdatePriceOnPurchase ?? false,
       autoUpdatePriceOnPurchase: business?.autoUpdatePriceOnPurchase ?? false,
       categories,
+      fieldOptions,
+      field_options: fieldOptions,
       products: products.map((p) => {
         const isRecipe = Boolean(p.isRecipe);
         const { recipeComponents, ...rest } = p;

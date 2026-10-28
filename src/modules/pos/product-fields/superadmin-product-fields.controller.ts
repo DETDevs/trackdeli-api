@@ -75,4 +75,9 @@ export class SuperAdminProductFieldsController {
   ) {
     return this.service.activate(businessId, id);
   }
+
+  @Post('apply-template')
+  applyIndustryTemplate(@Param('businessId') businessId: string) {
+    return this.service.applyIndustryTemplate(businessId);
+  }
 }

@@ -20,3 +20,22 @@ export function generateFieldKey(label: string): string {
     .replace(/^_|_$/g, '')
     .slice(0, 50);
 }
+
+/**
+ * Normaliza una etiqueta de opción de campo tipo LIST para comparaciones y unicidad:
+ * - Minúsculas
+ * - Sin acentos/tildes ni marcas diacríticas
+ * - Trim y espacios colapsados a uno solo
+ * - Máximo 120 caracteres
+ */
+export function normalizeOptionLabel(label: string): string {
+  if (!label) return '';
+  return label
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 120);
+}
+
