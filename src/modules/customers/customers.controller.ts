@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
   Headers,
@@ -19,7 +20,7 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { UserRole } from '@prisma/client';
 import { UpdateCustomerLocationDto } from './dto/update-customer-location.dto';
 import { CreateCustomerDto } from './dto/create-customer.dto';
-import { UpdateCustomerDto } from './dto/update-customer.dto';
+import { UpdateCustomerDto, UpdateCustomerStatusDto } from './dto/update-customer.dto';
 import { CreateLocationConfirmationLinkDto } from './dto/create-location-link.dto';
 
 @SkipMembershipCheck()
@@ -48,6 +49,7 @@ export class CustomersController {
     @Query('page') page?: string | number,
     @Query('limit') limit?: string | number,
     @Query('onlyWithBalance') onlyWithBalance?: string | boolean,
+    @Query('status') status?: string,
     @Param('businessId') paramBusinessId?: string,
   ) {
     const businessId =
@@ -65,6 +67,7 @@ export class CustomersController {
       page,
       limit,
       onlyWithBalance,
+      status,
     }, user.role);
   }
 
@@ -176,6 +179,7 @@ export class CustomersController {
   @Get([
     'businesses/:businessId/customers/:id/history',
     'businesses/me/customers/:id/history',
+    'pos/customers/:id/history',
     'customers/:id/history',
   ])
   @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
@@ -198,6 +202,7 @@ export class CustomersController {
   @Get([
     'businesses/:businessId/customers/:id',
     'businesses/me/customers/:id',
+    'pos/customers/:id',
     'customers/:id',
   ])
   @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
@@ -220,6 +225,7 @@ export class CustomersController {
   @Patch([
     'businesses/:businessId/customers/:id',
     'businesses/me/customers/:id',
+    'pos/customers/:id',
     'customers/:id',
   ])
   @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
@@ -237,7 +243,54 @@ export class CustomersController {
       throw new ForbiddenException('Negocio no especificado');
     }
     this.checkBusinessAccess(user, businessId);
-    return this.customersService.updateCustomer(businessId, id, dto);
+    return this.customersService.updateCustomer(businessId, id, dto, user.role);
+  }
+
+  @Patch([
+    'businesses/:businessId/customers/:id/status',
+    'businesses/me/customers/:id/status',
+    'pos/customers/:id/status',
+    'customers/:id/status',
+  ])
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async setStatus(
+    @Param('id') id: string,
+    @Body() dto: UpdateCustomerStatusDto,
+    @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.setStatus(businessId, id, dto.isActive);
+  }
+
+  @Delete([
+    'businesses/:businessId/customers/:id',
+    'businesses/me/customers/:id',
+    'pos/customers/:id',
+    'customers/:id',
+  ])
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  async remove(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Param('businessId') paramBusinessId?: string,
+  ) {
+    const businessId =
+      paramBusinessId && paramBusinessId !== 'me'
+        ? paramBusinessId
+        : user.businessId;
+    if (!businessId) {
+      throw new ForbiddenException('Negocio no especificado');
+    }
+    this.checkBusinessAccess(user, businessId);
+    return this.customersService.remove(businessId, id);
   }
 
   @Post([
@@ -260,7 +313,7 @@ export class CustomersController {
       throw new ForbiddenException('Negocio no especificado');
     }
     this.checkBusinessAccess(user, businessId);
-    return this.customersService.create(businessId, dto);
+    return this.customersService.create(businessId, dto, user.role);
   }
 
   @Post('customers/location-confirmation-link')

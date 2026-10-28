@@ -8,6 +8,9 @@ export class CustomerResponseDto {
   groupId?: string | null;
   group?: { id: string; name: string; taxId?: string | null } | null;
   externalCode?: string | null;
+  email?: string | null;
+  notes?: string | null;
+  isActive?: boolean;
   lastLatitude: number | null;
   lastLongitude: number | null;
   lastAddressText: string | null;
@@ -25,6 +28,7 @@ export class CustomerSearchResultDto {
   creditLimit?: number | null;
   groupId?: string | null;
   externalCode?: string | null;
+  isActive?: boolean;
   lastLatitude: number | null;
   lastLongitude: number | null;
   lastAddressText: string | null;

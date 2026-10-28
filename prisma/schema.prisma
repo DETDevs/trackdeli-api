@@ -786,6 +786,7 @@ model Customer {
   groupId         String?
   group           CreditGroup?              @relation(fields: [groupId], references: [id], onDelete: SetNull)
   externalCode    String?                   @db.VarChar(50)
+  isActive        Boolean                   @default(true)
 
   locationSessions CustomerLocationSession[]
   sales            Sale[]

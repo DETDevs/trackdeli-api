@@ -90,6 +90,7 @@ export class CustomersService {
 
     const where: Prisma.CustomerWhereInput = {
       businessId,
+      isActive: true,
       ...(hasCartera && groupId && groupId.trim() ? { groupId: groupId.trim() } : {}),
       OR: [
         { name: { contains: trimmed, mode: 'insensitive' } },
@@ -113,6 +114,7 @@ export class CustomersService {
       creditLimit: hasCartera ? (c.creditLimit ?? null) : null,
       groupId: hasCartera ? (c.groupId ?? null) : null,
       externalCode: c.externalCode ?? null,
+      isActive: c.isActive,
       lastLatitude: c.lastLatitude,
       lastLongitude: c.lastLongitude,
       lastAddressText: c.lastAddressText,
@@ -161,10 +163,13 @@ export class CustomersService {
       businessId: customer.businessId,
       name: customer.name,
       phone: customer.phone,
+      email: customer.email ?? null,
+      notes: customer.notes ?? null,
       ruc: customer.ruc ?? null,
       creditLimit: hasCartera ? (customer.creditLimit ?? null) : null,
       groupId: hasCartera ? (customer.groupId ?? null) : null,
       externalCode: customer.externalCode ?? null,
+      isActive: customer.isActive,
       lastLatitude: customer.lastLatitude,
       lastLongitude: customer.lastLongitude,
       lastAddressText: customer.lastAddressText,
@@ -179,33 +184,169 @@ export class CustomersService {
     };
   }
 
+  /** 207a: recorta el texto; vacío = null. */
+  private cleanText(value?: string | null): string | null {
+    if (value === undefined || value === null) return null;
+    const trimmed = String(value).trim();
+    return trimmed === '' ? null : trimmed;
+  }
+
+  /**
+   * 207a: determina si un límite de crédito representa un valor real y positivo (> 0).
+   * Valores null, undefined, "" o 0 se consideran no configurados / ignorables.
+   */
+  private isCreditLimitSet(val?: number | string | null): boolean {
+    if (val === undefined || val === null || val === '') return false;
+    const num = Number(val);
+    return !Number.isNaN(num) && num > 0;
+  }
+
+  /**
+   * 207a: determina si un groupId representa una empresa real (no nula ni vacía).
+   */
+  private isGroupIdSet(val?: string | null): boolean {
+    if (val === undefined || val === null) return false;
+    return String(val).trim().length > 0;
+  }
+
+  /**
+   * 207a: busca posibles duplicados dentro del negocio.
+   * - Cédula/RUC: otro cliente ACTIVO con el mismo valor (aviso, se puede confirmar).
+   * - Teléfono: igual exacto = bloqueante (restricción única de la base, incluye inactivos);
+   *   variante equivalente de un cliente activo = aviso.
+   */
+  private async findDuplicates(
+    businessId: string,
+    keys: { ruc?: string | null; phone?: string | null },
+    excludeId?: string | null,
+    userRole?: UserRole,
+  ) {
+    const found: {
+      field: 'documentId' | 'phone';
+      blocking: boolean;
+      customer: Record<string, any>;
+    }[] = [];
+    const select = {
+      id: true,
+      name: true,
+      phone: true,
+      ruc: true,
+      email: true,
+      isActive: true,
+    } as const;
+    const present = (c: any) => ({
+      id: c.id,
+      name: c.name,
+      phone: c.phone ?? null,
+      email: c.email ?? null,
+      documentId: userRole === UserRole.CAJERO ? null : (c.ruc ?? null),
+      isActive: c.isActive,
+    });
+    const notSelf = excludeId ? { id: { not: excludeId } } : {};
+
+    if (keys.ruc) {
+      const rows = await this.prisma.customer.findMany({
+        where: {
+          businessId,
+          isActive: true,
+          ruc: { equals: keys.ruc, mode: 'insensitive' },
+          ...notSelf,
+        },
+        select,
+        take: 5,
+      });
+      for (const c of rows) {
+        found.push({ field: 'documentId', blocking: false, customer: present(c) });
+      }
+    }
+
+    if (keys.phone) {
+      const rows = await this.prisma.customer.findMany({
+        where: {
+          businessId,
+          phone: { in: this.getPhoneVariants(keys.phone) },
+          ...notSelf,
+        },
+        select,
+        take: 5,
+      });
+      for (const c of rows) {
+        const exact = c.phone === keys.phone;
+        if (!exact && !c.isActive) continue;
+        found.push({ field: 'phone', blocking: exact, customer: present(c) });
+      }
+    }
+    return found;
+  }
+
+  /** 207a: lanza 409 DUPLICATE_CUSTOMER con el cliente existente si corresponde avisar. */
+  private async assertNoDuplicates(
+    businessId: string,
+    keys: { ruc?: string | null; phone?: string | null },
+    excludeId: string | null,
+    confirmed: boolean,
+    userRole?: UserRole,
+  ) {
+    const found = await this.findDuplicates(businessId, keys, excludeId, userRole);
+    if (found.length === 0) return;
+    const canConfirm = found.every((d) => !d.blocking);
+    if (canConfirm && confirmed) return;
+    const first = found[0];
+    const what = found.some((d) => d.blocking)
+      ? 'Ya existe un cliente con ese teléfono'
+      : first.field === 'documentId'
+      ? 'Ya existe un cliente activo con esa cédula/RUC'
+      : 'Ya existe un cliente activo con un teléfono equivalente';
+    throw new ConflictException({
+      statusCode: 409,
+      error: 'Conflict',
+      code: 'DUPLICATE_CUSTOMER',
+      message: `${what} (${first.customer.name})`,
+      canConfirm,
+      duplicates: found,
+    });
+  }
+
   async create(
     businessId: string,
     dto: CreateCustomerDto,
+    userRole?: UserRole,
   ): Promise<CustomerResponseDto> {
-    const name = (dto.name || '').trim();
-    const phone = (dto.phone || '').trim();
+    const name = this.cleanText(dto.name);
+    const phone = this.cleanText(dto.phone);
+    const ruc = this.cleanText(dto.documentId ?? dto.ruc);
 
     if (!name) {
       throw new BadRequestException('El nombre del cliente es requerido');
     }
-    if (!phone) {
+    // Cobro (191): sin checkDuplicates el teléfono sigue siendo obligatorio.
+    if (!phone && !dto.checkDuplicates) {
       throw new BadRequestException('El número de teléfono es requerido');
     }
 
-    const existing = await this.prisma.customer.findUnique({
-      where: {
-        businessId_phone: {
-          businessId,
-          phone,
-        },
-      },
-    });
-
-    if (existing) {
-      throw new ConflictException(
-        `Ya existe un cliente registrado con el teléfono ${phone} (${existing.name})`,
+    if (dto.checkDuplicates) {
+      await this.assertNoDuplicates(
+        businessId,
+        { ruc, phone },
+        null,
+        dto.confirmDuplicates === true,
+        userRole,
       );
+    } else if (phone) {
+      const existing = await this.prisma.customer.findUnique({
+        where: {
+          businessId_phone: {
+            businessId,
+            phone,
+          },
+        },
+      });
+
+      if (existing) {
+        throw new ConflictException(
+          `Ya existe un cliente registrado con el teléfono ${phone} (${existing.name})`,
+        );
+      }
     }
 
     if (dto.externalCode && dto.externalCode.trim()) {
@@ -227,18 +368,34 @@ export class CustomersService {
       BusinessProductType.CARTERA_COBRO,
     );
 
+    // Sin Finanzas: solo rechaza si intenta asignar límite de crédito > 0 o empresa real
     if (!hasCartera) {
-      if (dto.creditLimit !== undefined && dto.creditLimit !== null) {
-        throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
-      }
-      if (dto.groupId) {
+      if (this.isCreditLimitSet(dto.creditLimit) || this.isGroupIdSet(dto.groupId)) {
         throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
       }
     }
 
-    if (dto.groupId) {
+    // CAJERO en POST:
+    // Si creditLimit, groupId o isBlocked vienen null, vacíos, 0 o false, ignorar sin error.
+    // Dar 403 solo si el CAJERO intenta poner un valor distinto (ej. creditLimit > 0, groupId real, isBlocked: true).
+    const isCajero = userRole === UserRole.CAJERO;
+    if (isCajero) {
+      if (this.isCreditLimitSet(dto.creditLimit) || this.isGroupIdSet(dto.groupId)) {
+        throw new ForbiddenException(
+          'Solo el encargado puede definir el límite de crédito o la empresa del cliente',
+        );
+      }
+      if (dto.isBlocked === true) {
+        throw new ForbiddenException(
+          'Solo el encargado puede cambiar el límite de crédito, la empresa o el bloqueo del cliente',
+        );
+      }
+    }
+
+    const hasValidGroup = this.isGroupIdSet(dto.groupId);
+    if (hasValidGroup) {
       const group = await this.prisma.creditGroup.findFirst({
-        where: { id: dto.groupId, businessId },
+        where: { id: dto.groupId!.trim(), businessId },
       });
       if (!group) {
         throw new BadRequestException('La empresa/convenio especificada no existe');
@@ -250,13 +407,20 @@ export class CustomersService {
         businessId,
         name,
         phone,
-        email: dto.email?.trim() || null,
-        notes: dto.notes?.trim() || null,
-        ruc: dto.ruc?.trim() || null,
-        creditLimit: hasCartera && dto.creditLimit !== undefined ? dto.creditLimit : null,
-        groupId: hasCartera ? (dto.groupId || null) : null,
+        email: this.cleanText(dto.email),
+        notes: this.cleanText(dto.notes),
+        ruc,
+        creditLimit:
+          !isCajero && hasCartera && this.isCreditLimitSet(dto.creditLimit)
+            ? Number(dto.creditLimit)
+            : null,
+        groupId:
+          !isCajero && hasCartera && hasValidGroup
+            ? dto.groupId!.trim()
+            : null,
         externalCode: dto.externalCode?.trim() || null,
         lastAddressText: dto.address?.trim() || null,
+        isBlocked: !isCajero && dto.isBlocked === true,
       },
       include: {
         group: {
@@ -271,10 +435,13 @@ export class CustomersService {
       name: customer.name,
       phone: customer.phone,
       ruc: customer.ruc ?? null,
-      creditLimit: hasCartera ? (customer.creditLimit ?? null) : null,
-      groupId: hasCartera ? (customer.groupId ?? null) : null,
-      group: hasCartera ? (customer.group ?? null) : null,
+      creditLimit: hasCartera && !isCajero ? (customer.creditLimit ?? null) : null,
+      groupId: hasCartera && !isCajero ? (customer.groupId ?? null) : null,
+      group: hasCartera && !isCajero ? (customer.group ?? null) : null,
       externalCode: customer.externalCode ?? null,
+      email: customer.email ?? null,
+      notes: customer.notes ?? null,
+      isActive: customer.isActive,
       lastLatitude: customer.lastLatitude,
       lastLongitude: customer.lastLongitude,
       lastAddressText: customer.lastAddressText,
@@ -767,6 +934,7 @@ export class CustomersService {
       page?: number | string;
       limit?: number | string;
       onlyWithBalance?: boolean | string;
+      status?: string;
     } = {},
     userRole?: UserRole,
   ) {
@@ -817,6 +985,11 @@ export class CustomersService {
     const where: Prisma.CustomerWhereInput = {
       businessId,
     };
+
+    // 207a: status=active|inactive filtra por estado; sin status (o 'all') lista todos como antes.
+    const statusFilter = (options.status ?? '').toString().trim().toLowerCase();
+    if (statusFilter === 'active') where.isActive = true;
+    else if (statusFilter === 'inactive') where.isActive = false;
 
     const hasCartera = await this.businessProductsService.isActive(
       businessId,
@@ -939,6 +1112,7 @@ export class CustomersService {
         externalCode: c.externalCode ?? null,
         group: hasCartera ? (c.group ?? null) : null,
         isBlocked: c.isBlocked,
+        isActive: c.isActive,
         consecutiveNoShows: c.consecutiveNoShows,
         lastAddressText: c.lastAddressText ?? null,
         currentBalance: roundedBalance,
@@ -1196,6 +1370,7 @@ export class CustomersService {
         creditLimit: isCarteraActive ? customer.creditLimit : null,
         ruc: customer.ruc,
         isBlocked: customer.isBlocked,
+        isActive: customer.isActive,
         consecutiveNoShows: customer.consecutiveNoShows,
         lastLatitude: customer.lastLatitude,
         lastLongitude: customer.lastLongitude,
@@ -1225,6 +1400,7 @@ export class CustomersService {
     businessId: string,
     id: string,
     dto: UpdateCustomerDto,
+    userRole?: UserRole,
   ) {
     const customer = await this.prisma.customer.findFirst({
       where: { id, businessId },
@@ -1239,27 +1415,109 @@ export class CustomersService {
       BusinessProductType.CARTERA_COBRO,
     );
 
+    const isCajero = userRole === UserRole.CAJERO;
+
+    // Validación sin Finanzas:
+    // Solo rechazar si intenta asignar o cambiar a un límite > 0 o una empresa real.
+    // Si viene null, vacío, 0 o igual al actual, ignorar sin error.
     if (!hasCartera) {
-      if (dto.creditLimit !== undefined && dto.creditLimit !== null) {
-        throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
-      }
-      if (dto.groupId !== undefined && dto.groupId !== null) {
+      const attemptsLimit =
+        dto.creditLimit !== undefined &&
+        this.isCreditLimitSet(dto.creditLimit) &&
+        Number(dto.creditLimit) !== Number(customer.creditLimit);
+      const attemptsGroup =
+        dto.groupId !== undefined &&
+        this.isGroupIdSet(dto.groupId) &&
+        dto.groupId!.trim() !== (customer.groupId ?? '');
+
+      if (attemptsLimit || attemptsGroup) {
         throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
       }
     }
 
-    if (dto.phone && dto.phone.trim() !== customer.phone) {
+    // CAJERO en PATCH:
+    // "si creditLimit, groupId o isBlocked vienen null, vacíos, 0 o iguales al valor actual,
+    // ignoralos sin error. Dá 403 solo si el CAJERO intenta poner un valor distinto (ej. creditLimit 5000)."
+    let allowUpdateCreditLimit = !isCajero;
+    let allowUpdateGroup = !isCajero;
+    let allowUpdateBlocked = !isCajero;
+
+    if (isCajero) {
+      if (dto.creditLimit !== undefined) {
+        const isIgnoredLimit =
+          dto.creditLimit === null ||
+          (dto.creditLimit as any) === '' ||
+          Number(dto.creditLimit) === 0 ||
+          (customer.creditLimit != null && Number(dto.creditLimit) === Number(customer.creditLimit));
+        if (!isIgnoredLimit) {
+          throw new ForbiddenException(
+            'Solo el encargado puede cambiar el límite de crédito, la empresa o el bloqueo del cliente',
+          );
+        }
+        allowUpdateCreditLimit = false;
+      }
+
+      if (dto.groupId !== undefined) {
+        const cleanGid = dto.groupId ? String(dto.groupId).trim() : '';
+        const currentGid = customer.groupId ? String(customer.groupId).trim() : '';
+        const isIgnoredGroup = cleanGid === '' || cleanGid === currentGid;
+        if (!isIgnoredGroup) {
+          throw new ForbiddenException(
+            'Solo el encargado puede cambiar el límite de crédito, la empresa o el bloqueo del cliente',
+          );
+        }
+        allowUpdateGroup = false;
+      }
+
+      if (dto.isBlocked !== undefined) {
+        const isIgnoredBlocked =
+          dto.isBlocked === null ||
+          dto.isBlocked === undefined ||
+          dto.isBlocked === customer.isBlocked;
+        if (!isIgnoredBlocked) {
+          throw new ForbiddenException(
+            'Solo el encargado puede cambiar el límite de crédito, la empresa o el bloqueo del cliente',
+          );
+        }
+        allowUpdateBlocked = false;
+      }
+    }
+
+    if (dto.name !== undefined && !this.cleanText(dto.name)) {
+      throw new BadRequestException('El nombre del cliente no puede quedar vacío');
+    }
+    const newPhone = dto.phone !== undefined ? this.cleanText(dto.phone) : undefined;
+    const rawDoc = dto.documentId !== undefined ? dto.documentId : dto.ruc;
+    const newRuc = rawDoc !== undefined ? this.cleanText(rawDoc) : undefined;
+
+    const phoneChanged = newPhone !== undefined && newPhone !== (customer.phone ?? null);
+    const rucChanged = newRuc !== undefined && newRuc !== (customer.ruc ?? null);
+
+    if (dto.checkDuplicates) {
+      if (phoneChanged || rucChanged) {
+        await this.assertNoDuplicates(
+          businessId,
+          {
+            ruc: rucChanged ? newRuc : null,
+            phone: phoneChanged ? newPhone : null,
+          },
+          id,
+          dto.confirmDuplicates === true,
+          userRole,
+        );
+      }
+    } else if (phoneChanged && newPhone) {
       const existing = await this.prisma.customer.findUnique({
         where: {
           businessId_phone: {
             businessId,
-            phone: dto.phone.trim(),
+            phone: newPhone,
           },
         },
       });
       if (existing && existing.id !== id) {
         throw new ConflictException(
-          `Ya existe otro cliente con el teléfono ${dto.phone.trim()}`,
+          `Ya existe otro cliente con el teléfono ${newPhone}`,
         );
       }
     }
@@ -1281,9 +1539,9 @@ export class CustomersService {
       }
     }
 
-    if (dto.groupId !== undefined && dto.groupId) {
+    if (allowUpdateGroup && dto.groupId !== undefined && this.isGroupIdSet(dto.groupId)) {
       const group = await this.prisma.creditGroup.findFirst({
-        where: { id: dto.groupId, businessId },
+        where: { id: dto.groupId!.trim(), businessId },
       });
       if (!group) {
         throw new BadRequestException('La empresa/convenio especificada no existe');
@@ -1296,15 +1554,23 @@ export class CustomersService {
     const updated = await this.prisma.customer.update({
       where: { id },
       data: {
-        ...(dto.name !== undefined && { name: dto.name.trim() }),
-        ...(dto.phone !== undefined && { phone: dto.phone.trim() }),
-        ...(dto.email !== undefined && { email: dto.email?.trim() || null }),
-        ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
-        ...(dto.ruc !== undefined && { ruc: dto.ruc?.trim() || null }),
-        ...(dto.creditLimit !== undefined && {
-          creditLimit: hasCartera ? dto.creditLimit : null,
+        ...(dto.name !== undefined && { name: this.cleanText(dto.name)! }),
+        ...(newPhone !== undefined && { phone: newPhone }),
+        ...(dto.email !== undefined && { email: this.cleanText(dto.email) }),
+        ...(dto.notes !== undefined && { notes: this.cleanText(dto.notes) }),
+        ...(newRuc !== undefined && { ruc: newRuc }),
+        ...(allowUpdateCreditLimit && dto.creditLimit !== undefined && {
+          creditLimit:
+            hasCartera && this.isCreditLimitSet(dto.creditLimit)
+              ? Number(dto.creditLimit)
+              : null,
         }),
-        ...(dto.groupId !== undefined && { groupId: hasCartera ? (dto.groupId || null) : null }),
+        ...(allowUpdateGroup && dto.groupId !== undefined && {
+          groupId:
+            hasCartera && this.isGroupIdSet(dto.groupId)
+              ? dto.groupId!.trim()
+              : null,
+        }),
         ...(dto.externalCode !== undefined && { externalCode: dto.externalCode?.trim() || null }),
         ...(dto.address !== undefined && {
           lastAddressText: dto.address?.trim() || null,
@@ -1316,7 +1582,9 @@ export class CustomersService {
           lastLongitude: dto.longitude != null ? Number(dto.longitude) : null,
         }),
         ...(hasNewCoords && { lastConfirmedAt: now }),
-        ...(dto.isBlocked !== undefined && { isBlocked: dto.isBlocked }),
+        ...(allowUpdateBlocked && dto.isBlocked !== undefined && {
+          isBlocked: Boolean(dto.isBlocked),
+        }),
       },
       include: {
         group: {
@@ -1333,7 +1601,68 @@ export class CustomersService {
         group: null,
       };
     }
+    if (isCajero) {
+      return { ...updated, creditLimit: null };
+    }
     return updated;
+  }
+
+  /**
+   * 207a: activar/desactivar. Un cliente desactivado no aparece en la búsqueda del cobro
+   * pero conserva ventas, créditos e historial.
+   */
+  async setStatus(businessId: string, id: string, isActive: boolean) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id, businessId },
+      select: { id: true },
+    });
+    if (!customer) {
+      throw new NotFoundException('Cliente no encontrado');
+    }
+    const updated = await this.prisma.customer.update({
+      where: { id },
+      data: { isActive },
+      select: { id: true, name: true, isActive: true, updatedAt: true },
+    });
+    return updated;
+  }
+
+  /**
+   * 207a (opcional): borrado real solo si el cliente no tiene ningún movimiento.
+   * Con ventas, créditos, citas, comandas, vehículos o cortes se rechaza y se sugiere desactivar.
+   */
+  async remove(businessId: string, id: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id, businessId },
+      include: {
+        _count: {
+          select: {
+            sales: true,
+            creditAccounts: true,
+            appointments: true,
+            tableOrders: true,
+            workshopVehicles: true,
+            statementItems: true,
+          },
+        },
+      },
+    });
+    if (!customer) {
+      throw new NotFoundException('Cliente no encontrado');
+    }
+    const movements = Object.values(customer._count).reduce((a, b) => a + b, 0);
+    if (movements > 0) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'CUSTOMER_HAS_HISTORY',
+        message:
+          'No se puede eliminar un cliente con ventas, créditos o movimientos. Puedes desactivarlo para conservar su historial.',
+        counts: customer._count,
+      });
+    }
+    await this.prisma.customer.delete({ where: { id } });
+    return { deleted: true, id };
   }
 
   async getByCode(businessId: string, code: string, userRole?: string) {
@@ -1502,6 +1831,7 @@ export class CustomersService {
               name: customer.group.name,
             }
           : null,
+        isActive: customer.isActive,
       };
     }
 
@@ -1522,6 +1852,7 @@ export class CustomersService {
       groupId: hasCartera ? (customer.groupId ?? null) : null,
       creditGroup: groupInfo,
       group: groupInfo,
+      isActive: customer.isActive,
       createdAt: customer.createdAt,
       updatedAt: customer.updatedAt,
     };
