@@ -186,8 +186,13 @@ export class ProductsService {
     for (const key of Object.keys(incomingAttributes)) {
       if (!activeMap.has(key)) {
         // Permitir claves terminadas en _id si corresponden a un campo LIST activo
-        if (key.endsWith('_id') && activeMap.has(key.replace(/_id$/, ''))) {
-          continue;
+        if (key.endsWith('_id')) {
+          const baseKey = key.replace(/_id$/, '');
+          const baseField = activeMap.get(baseKey);
+          if (baseField && baseField.dataType === ProductFieldDataType.LIST) {
+            continue;
+          }
+          throw new UnprocessableEntityException('El sufijo _id está reservado');
         }
         if (inactiveMap.has(key)) {
           const existingVal = existingAttributes ? existingAttributes[key] : undefined;

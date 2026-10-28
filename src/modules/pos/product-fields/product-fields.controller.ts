@@ -137,6 +137,17 @@ export class ProductFieldsController {
     return this.service.createOption(resolveBusinessId(user, qBid), fieldId, dto);
   }
 
+  @Patch(':fieldId/options/reorder')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  reorderOptions(
+    @Param('fieldId') fieldId: string,
+    @Body() dto: { optionIds: string[] },
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.reorderOptions(resolveBusinessId(user, qBid), fieldId, dto.optionIds);
+  }
+
   @Patch(':fieldId/options/:optionId')
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   updateOption(
@@ -180,5 +191,18 @@ export class ProductFieldsController {
     @Query('businessId') qBid?: string,
   ) {
     return this.service.deleteOption(resolveBusinessId(user, qBid), fieldId, optionId);
+  }
+
+  @Post('migrate-text-to-list')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  migrateTextToList(
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+    @Query('fieldId') fieldId?: string,
+  ) {
+    return this.service.migrateExistingTextValuesToOptions(
+      resolveBusinessId(user, qBid),
+      fieldId,
+    );
   }
 }

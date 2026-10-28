@@ -355,8 +355,18 @@ export class ProductsImportService {
       }),
     ]);
     const targetMap = new Map(targets.map(t => [t.id, t]));
-    
-    
+
+    for (const [colKey, conf] of Object.entries(mapping)) {
+      if (conf?.target && conf.target !== 'ignore' && conf.target !== 'append_description') {
+        if (conf.target.endsWith('_id') && !['categoryId', 'supplierId'].includes(conf.target)) {
+          throw new BadRequestException('El sufijo _id está reservado');
+        }
+        const tgt = targetMap.get(conf.target);
+        if (tgt && tgt.kind === 'dynamic' && tgt.id.endsWith('_id')) {
+          throw new BadRequestException('El sufijo _id está reservado');
+        }
+      }
+    }
     const activeFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: true },
       include: { fieldOptions: true },

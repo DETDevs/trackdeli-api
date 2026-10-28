@@ -1858,6 +1858,45 @@ WHERE a."customerId" = c."id"
           name: 'Índice product_field_definitions.businessId_isActive',
           sql: `CREATE INDEX IF NOT EXISTS "product_field_definitions_businessId_isActive_idx" ON "product_field_definitions"("businessId", "isActive");`,
         },
+        // ==========================================
+        // 208a: Campos dinámicos de tipo Lista (catálogo de opciones)
+        // ==========================================
+        {
+          name: 'Enum ProductFieldDataType - Agregar LIST',
+          sql: `ALTER TYPE "ProductFieldDataType" ADD VALUE IF NOT EXISTS 'LIST';`,
+        },
+        {
+          name: 'Columna industry_field_templates.allowCreateInline',
+          sql: `ALTER TABLE "industry_field_templates" ADD COLUMN IF NOT EXISTS "allowCreateInline" BOOLEAN NOT NULL DEFAULT true;`,
+        },
+        {
+          name: 'Columna product_field_definitions.allowCreateInline',
+          sql: `ALTER TABLE "product_field_definitions" ADD COLUMN IF NOT EXISTS "allowCreateInline" BOOLEAN NOT NULL DEFAULT true;`,
+        },
+        {
+          name: 'Tabla pos_product_field_options',
+          sql: `CREATE TABLE IF NOT EXISTS "pos_product_field_options" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "fieldDefinitionId" TEXT NOT NULL,
+            "label" VARCHAR(120) NOT NULL,
+            "normalizedLabel" VARCHAR(120) NOT NULL,
+            "sortOrder" INTEGER NOT NULL DEFAULT 0,
+            "isActive" BOOLEAN NOT NULL DEFAULT true,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL,
+            CONSTRAINT "pos_product_field_options_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_product_field_options_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_product_field_options_fieldDefinitionId_fkey" FOREIGN KEY ("fieldDefinitionId") REFERENCES "product_field_definitions"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );`,
+        },
+        {
+          name: 'Índices pos_product_field_options',
+          sql: `DO $$ BEGIN
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_product_field_options_businessId_fieldDefinitionId_norm_key" ON "pos_product_field_options"("businessId", "fieldDefinitionId", "normalizedLabel");
+            CREATE INDEX IF NOT EXISTS "pos_product_field_options_businessId_fieldDefinitionId_isAc_idx" ON "pos_product_field_options"("businessId", "fieldDefinitionId", "isActive");
+          END $$;`,
+        },
         {
           name: 'Columnas businesses.industryId, usesVariants, tracksBatches',
           sql: `DO $$ BEGIN

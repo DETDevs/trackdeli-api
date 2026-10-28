@@ -9,7 +9,7 @@ import { CreateProductFieldDto } from './dto/create-product-field.dto';
 import { UpdateProductFieldDto } from './dto/update-product-field.dto';
 import { CreateFieldOptionDto } from './dto/create-field-option.dto';
 import { UpdateFieldOptionDto } from './dto/update-field-option.dto';
-import { generateFieldKey, normalizeOptionLabel } from '../../../common/utils/field-key.util';
+import { generateFieldKey, normalizeOptionLabel, pickBestOptionLabel } from '../../../common/utils/field-key.util';
 import { ProductFieldDataType } from '@prisma/client';
 
 export const MAX_ACTIVE_PRODUCT_FIELDS = 15;
@@ -64,6 +64,10 @@ export class ProductFieldsService {
       throw new BadRequestException('No se pudo generar una clave válida a partir de la etiqueta');
     }
 
+    if (key.endsWith('_id')) {
+      throw new BadRequestException('El sufijo _id está reservado');
+    }
+
     if (dto.dataType === ProductFieldDataType.SELECT) {
       if (!Array.isArray(dto.options) || dto.options.length === 0) {
         throw new BadRequestException('Para campos de tipo SELECT, las opciones son obligatorias');
@@ -115,6 +119,10 @@ export class ProductFieldsService {
   async update(businessId: string, id: string, dto: UpdateProductFieldDto) {
     const field = await this.findOne(businessId, id);
 
+    if (field.key.endsWith('_id')) {
+      throw new BadRequestException('El sufijo _id está reservado');
+    }
+
     // Validación de cambio de dataType si ya existen productos con valor guardado
     // Nota: Se permite migrar de TEXT a LIST
     if (dto.dataType !== undefined && dto.dataType !== field.dataType) {
@@ -124,7 +132,7 @@ export class ProductFieldsService {
 
       if (!isUpgradingTextToList) {
         const hasProductsWithValue: any[] = await this.prisma.$queryRawUnsafe(
-          `SELECT 1 FROM "products"
+          `SELECT 1 FROM "pos_products"
            WHERE "businessId" = $1
              AND "attributes"->>$2 IS NOT NULL
              AND "attributes"->>$2 != ''
@@ -425,6 +433,33 @@ export class ProductFieldsService {
     });
   }
 
+  async reorderOptions(businessId: string, fieldId: string, optionIds: string[]) {
+    await this.findOne(businessId, fieldId);
+    const options = await this.prisma.productFieldOption.findMany({
+      where: {
+        businessId,
+        fieldDefinitionId: fieldId,
+        id: { in: optionIds },
+      },
+      select: { id: true },
+    });
+
+    if (options.length !== optionIds.length) {
+      throw new BadRequestException('Algunos IDs de opciones no pertenecen a este campo');
+    }
+
+    await this.prisma.$transaction(
+      optionIds.map((id, index) =>
+        this.prisma.productFieldOption.update({
+          where: { id },
+          data: { sortOrder: index },
+        }),
+      ),
+    );
+
+    return this.findOptions(businessId, fieldId);
+  }
+
   // ========================================================
   // Aplicar Plantilla de Industria y Migración de Textos
   // ========================================================
@@ -535,19 +570,24 @@ export class ProductFieldsService {
         return typeof raw === 'string' && raw.trim().length > 0;
       });
 
-      const groups = new Map<string, { label: string; productIds: string[] }>();
+      const groups = new Map<string, { variants: Map<string, number>; productIds: string[] }>();
       for (const p of prodsWithVal) {
         const raw = String((p.attributes as any)[field.key]).trim();
         const norm = normalizeOptionLabel(raw);
         if (!norm) continue;
         if (!groups.has(norm)) {
-          groups.set(norm, { label: raw, productIds: [] });
+          groups.set(norm, { variants: new Map<string, number>(), productIds: [] });
         }
-        groups.get(norm)!.productIds.push(p.id);
+        const g = groups.get(norm)!;
+        g.productIds.push(p.id);
+        g.variants.set(raw, (g.variants.get(raw) || 0) + 1);
       }
 
       let fieldCreated = 0;
       for (const [norm, g] of groups.entries()) {
+        const variantList = Array.from(g.variants.entries()).map(([label, count]) => ({ label, count }));
+        const bestLabel = pickBestOptionLabel(variantList);
+
         let opt = await this.prisma.productFieldOption.findUnique({
           where: {
             businessId_fieldDefinitionId_normalizedLabel: {
@@ -570,7 +610,7 @@ export class ProductFieldsService {
             data: {
               businessId,
               fieldDefinitionId: field.id,
-              label: g.label,
+              label: bestLabel,
               normalizedLabel: norm,
               sortOrder: nextOrder,
               isActive: true,
@@ -578,6 +618,11 @@ export class ProductFieldsService {
           });
           fieldCreated++;
           totalCreatedOptions++;
+        } else if (opt.label !== bestLabel) {
+          opt = await this.prisma.productFieldOption.update({
+            where: { id: opt.id },
+            data: { label: bestLabel },
+          });
         }
 
         for (const pId of g.productIds) {
@@ -594,7 +639,7 @@ export class ProductFieldsService {
              )
              WHERE "id" = $5;`,
             field.key,
-            opt.label,
+            bestLabel,
             `${field.key}_id`,
             opt.id,
             pId,

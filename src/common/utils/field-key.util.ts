@@ -39,3 +39,55 @@ export function normalizeOptionLabel(label: string): string {
     .slice(0, 120);
 }
 
+export function hasAccents(str: string): boolean {
+  return /[áéíóúÁÉÍÓÚñÑ]/.test(str);
+}
+
+export function isProperCase(str: string): boolean {
+  const trimmed = str.trim();
+  if (!trimmed) return false;
+  const startsUpper = /^[A-ZÁÉÍÓÚÑ]/.test(trimmed);
+  const notAllUpper = trimmed !== trimmed.toUpperCase() && /[a-záéíóúñ]/.test(trimmed);
+  return startsUpper && notAllUpper;
+}
+
+/**
+ * Selecciona la mejor etiqueta escrita entre distintas variantes de un mismo valor:
+ * (a) la variante con tildes
+ * (b) la que empieza con mayúscula y no está toda en mayúsculas
+ * (c) la más usada
+ */
+export function pickBestOptionLabel(variants: Array<{ label: string; count: number }>): string {
+  if (!variants || variants.length === 0) return '';
+  if (variants.length === 1) return variants[0].label;
+
+  const sorted = [...variants].sort((a, b) => {
+    // (a) Variante con tildes
+    const aAcc = hasAccents(a.label);
+    const bAcc = hasAccents(b.label);
+    if (aAcc && !bAcc) return -1;
+    if (!aAcc && bAcc) return 1;
+
+    // (b) Empieza con mayúscula y no está toda en mayúsculas
+    const aProp = isProperCase(a.label);
+    const bProp = isProperCase(b.label);
+    if (aProp && !bProp) return -1;
+    if (!aProp && bProp) return 1;
+
+    // (c) La más usada
+    if (b.count !== a.count) {
+      return b.count - a.count;
+    }
+
+    // Desempate: empieza con mayúscula
+    const aUpper = /^[A-ZÁÉÍÓÚÑ]/.test(a.label);
+    const bUpper = /^[A-ZÁÉÍÓÚÑ]/.test(b.label);
+    if (aUpper && !bUpper) return -1;
+    if (!aUpper && bUpper) return 1;
+
+    return a.label.localeCompare(b.label);
+  });
+
+  return sorted[0].label;
+}
+

@@ -123,6 +123,10 @@ export class IndustriesService {
       throw new BadRequestException('No se pudo generar una clave válida para la plantilla de campo');
     }
 
+    if (key.endsWith('_id')) {
+      throw new BadRequestException('El sufijo _id está reservado');
+    }
+
     if (dto.dataType === ProductFieldDataType.SELECT) {
       if (!Array.isArray(dto.options) || dto.options.length === 0) {
         throw new BadRequestException('Para campos de tipo SELECT, las opciones son obligatorias');

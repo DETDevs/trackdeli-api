@@ -80,4 +80,21 @@ export class SuperAdminProductFieldsController {
   applyIndustryTemplate(@Param('businessId') businessId: string) {
     return this.service.applyIndustryTemplate(businessId);
   }
+
+  @Patch(':fieldId/options/reorder')
+  reorderOptions(
+    @Param('businessId') businessId: string,
+    @Param('fieldId') fieldId: string,
+    @Body() dto: { optionIds: string[] },
+  ) {
+    return this.service.reorderOptions(businessId, fieldId, dto.optionIds);
+  }
+
+  @Post('migrate-text-to-list')
+  migrateTextToList(
+    @Param('businessId') businessId: string,
+    @Query('fieldId') fieldId?: string,
+  ) {
+    return this.service.migrateExistingTextValuesToOptions(businessId, fieldId);
+  }
 }
