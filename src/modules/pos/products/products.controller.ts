@@ -30,6 +30,12 @@ export class ProductsController {
     @Query("search") search?: string,
     @Query("categoryId") categoryId?: string,
     @Query("lowStock") lowStock?: string,
+    @Query("taxable") taxable?: string,
+    @Query("type") type?: string,
+    @Query("isActive") isActive?: string,
+    @Query("expiry") expiry?: string,
+    @Query("expiryMonth") expiryMonth?: string,
+    @Query("sort") sort?: string,
   ) {
     return this.service.findAll(
       resolveBusinessId(user, qBid),
@@ -37,6 +43,12 @@ export class ProductsController {
         search,
         categoryId,
         lowStock: lowStock === "true",
+        taxable: taxable !== undefined ? (taxable === "true" || taxable === "1") : undefined,
+        type,
+        isActive: isActive !== undefined ? (isActive === "true" || isActive === "1") : undefined,
+        expiry,
+        expiryMonth,
+        sort,
       },
       user.role,
     );

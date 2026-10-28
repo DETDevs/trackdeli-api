@@ -816,6 +816,25 @@ export class OfflineService {
       }),
     ]);
 
+    let batchMap = new Map<string, { activeBatchCount: number; nextExpiryDate: string | null }>();
+    if (business?.tracksBatches) {
+      const batchAggs: any[] = await this.prisma.$queryRaw`
+        SELECT
+          b."productId",
+          COUNT(*)::int AS "activeBatchCount",
+          MIN(b."expiryDate") AS "nextExpiryDate"
+        FROM pos_product_batches b
+        WHERE b."businessId" = ${businessId} AND b.quantity > 0
+        GROUP BY b."productId";
+      `;
+      for (const row of batchAggs) {
+        batchMap.set(row.productId, {
+          activeBatchCount: Number(row.activeBatchCount || 0),
+          nextExpiryDate: row.nextExpiryDate ? new Date(row.nextExpiryDate).toISOString().split('T')[0] : null,
+        });
+      }
+    }
+
     let latestUpdate = new Date(0);
     for (const p of products) {
       if (p.updatedAt > latestUpdate) latestUpdate = p.updatedAt;
@@ -879,6 +898,14 @@ export class OfflineService {
           unit: p.unit || 'UND',
           trackInventory: p.trackStock,
           isRecipe,
+          ...(business?.tracksBatches
+            ? {
+                nextExpiryDate: batchMap.get(p.id)?.nextExpiryDate ?? null,
+                next_expiry_date: batchMap.get(p.id)?.nextExpiryDate ?? null,
+                activeBatchCount: batchMap.get(p.id)?.activeBatchCount ?? 0,
+                active_batch_count: batchMap.get(p.id)?.activeBatchCount ?? 0,
+              }
+            : {}),
           ...(isRecipe && recipeComponents
             ? {
               components: recipeComponents.map((c) => ({

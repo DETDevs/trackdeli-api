@@ -18,7 +18,7 @@ import { BulkUpdateProductsDto } from "./dto/bulk-update-products.dto";
 import { validateProductQuantity, round3 } from "./product-unit.util";
 
 import { BatchesService } from '../batches/batches.service';
-import { buildBusinessDateRange } from '../../../common/utils/date.util';
+import { buildBusinessDateRange, formatDateInTimezone } from '../../../common/utils/date.util';
 
 @Injectable()
 export class ProductsService {
@@ -241,6 +241,11 @@ export class ProductsService {
       categoryId?: string;
       lowStock?: boolean;
       isActive?: boolean;
+      taxable?: boolean;
+      type?: string;
+      expiry?: string;
+      expiryMonth?: string;
+      sort?: string;
     },
     userRole?: string,
   ) {
@@ -253,6 +258,8 @@ export class ProductsService {
     }
 
     if (filters?.categoryId) where.categoryId = filters.categoryId;
+    if (filters?.taxable !== undefined) where.taxable = filters.taxable;
+    if (filters?.type) where.type = filters.type;
 
     const activeFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: true },
@@ -281,32 +288,150 @@ export class ProductsService {
       ];
     }
 
-    const products = await this.prisma.product.findMany({
-      where,
-      include: {
-        category: true,
-        supplier: { select: { id: true, name: true } },
-        recipeComponents: {
-          include: {
-            componentProduct: { select: { id: true, name: true, unit: true, stock: true } },
+    const [products, business] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        include: {
+          category: true,
+          supplier: { select: { id: true, name: true } },
+          recipeComponents: {
+            include: {
+              componentProduct: { select: { id: true, name: true, unit: true, stock: true } },
+            },
           },
         },
-      },
-      orderBy: { name: "asc" },
-    });
+        orderBy: { name: "asc" },
+      }),
+      this.prisma.business.findUnique({
+        where: { id: businessId },
+        select: { wholesaleEnabled: true, tracksBatches: true },
+      }),
+    ]);
 
-    const business = await this.prisma.business.findUnique({
-      where: { id: businessId },
-      select: { wholesaleEnabled: true },
+    // 210a: Agregado de lotes por producto (una sola consulta, solo si el negocio tiene tracksBatches = true)
+    let batchMap = new Map<string, {
+      activeBatchCount: number;
+      hasBatchWithoutDate: boolean;
+      nextExpiryDate: string | null;
+      nextExpiryBatchCode: string | null;
+      expiredQty: number;
+      hasExpired: boolean;
+      hasDays30: boolean;
+      hasDays31_60: boolean;
+      hasDays61_90: boolean;
+      expiryMonths: string[];
+    }>();
+
+    if (business?.tracksBatches) {
+      const batchAggs: any[] = await this.prisma.$queryRaw`
+        SELECT
+          b."productId",
+          COUNT(*)::int AS "activeBatchCount",
+          BOOL_OR(b."expiryDate" IS NULL) AS "hasBatchWithoutDate",
+          MIN(b."expiryDate") AS "nextExpiryDate",
+          (ARRAY_AGG(b."batchNumber" ORDER BY b."expiryDate" ASC, b."createdAt" ASC) FILTER (WHERE b."expiryDate" IS NOT NULL))[1] AS "nextExpiryBatchCode",
+          COALESCE(SUM(CASE WHEN b."expiryDate" < (CURRENT_TIMESTAMP AT TIME ZONE 'America/Managua')::date THEN b.quantity ELSE 0 END), 0)::float AS "expiredQty",
+          BOOL_OR(b."expiryDate" < (CURRENT_TIMESTAMP AT TIME ZONE 'America/Managua')::date) AS "hasExpired",
+          BOOL_OR(b."expiryDate" >= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Managua')::date AND b."expiryDate" <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Managua')::date + 30) AS "hasDays30",
+          BOOL_OR(b."expiryDate" > (CURRENT_TIMESTAMP AT TIME ZONE 'America/Managua')::date + 30 AND b."expiryDate" <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Managua')::date + 60) AS "hasDays31_60",
+          BOOL_OR(b."expiryDate" > (CURRENT_TIMESTAMP AT TIME ZONE 'America/Managua')::date + 60 AND b."expiryDate" <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Managua')::date + 90) AS "hasDays61_90",
+          ARRAY_AGG(DISTINCT to_char(b."expiryDate", 'YYYY-MM')) FILTER (WHERE b."expiryDate" IS NOT NULL) AS "expiryMonths"
+        FROM pos_product_batches b
+        WHERE b."businessId" = ${businessId} AND b.quantity > 0
+        GROUP BY b."productId";
+      `;
+
+      for (const row of batchAggs) {
+        batchMap.set(row.productId, {
+          activeBatchCount: Number(row.activeBatchCount || 0),
+          hasBatchWithoutDate: Boolean(row.hasBatchWithoutDate),
+          nextExpiryDate: row.nextExpiryDate ? new Date(row.nextExpiryDate).toISOString().split('T')[0] : null,
+          nextExpiryBatchCode: row.nextExpiryBatchCode || null,
+          expiredQty: Number(row.expiredQty || 0),
+          hasExpired: Boolean(row.hasExpired),
+          hasDays30: Boolean(row.hasDays30),
+          hasDays31_60: Boolean(row.hasDays31_60),
+          hasDays61_90: Boolean(row.hasDays61_90),
+          expiryMonths: Array.isArray(row.expiryMonths) ? row.expiryMonths : [],
+        });
+      }
+    }
+
+    const todayStr = formatDateInTimezone(new Date(), 'America/Managua');
+    const todayMs = new Date(todayStr + 'T00:00:00.000Z').getTime();
+
+    let mapped = products.map((p) => {
+      const item = this.filterActiveAttributes(p, activeKeys, userRole, business?.wholesaleEnabled);
+      if (business?.tracksBatches) {
+        const b = batchMap.get(p.id);
+        item.nextExpiryDate = b?.nextExpiryDate ?? null;
+        item.nextExpiryBatchCode = b?.nextExpiryBatchCode ?? null;
+        item.activeBatchCount = b?.activeBatchCount ?? 0;
+        item.expiredQty = b?.expiredQty ?? 0;
+        item.hasBatchWithoutDate = b?.hasBatchWithoutDate ?? false;
+      }
+      return item;
     });
 
     if (filters?.lowStock) {
-      return products
-        .filter((p) => p.trackStock && Number(p.stock) <= Number(p.minStock))
-        .map((p) => this.filterActiveAttributes(p, activeKeys, userRole, business?.wholesaleEnabled));
+      mapped = mapped.filter((p) => p.trackStock && Number(p.stock) <= Number(p.minStock));
     }
 
-    return products.map((p) => this.filterActiveAttributes(p, activeKeys, userRole, business?.wholesaleEnabled));
+    // Filtros de vencimiento solo si el negocio tiene tracksBatches activo
+    if (business?.tracksBatches) {
+      if (filters?.expiry) {
+        mapped = mapped.filter((p) => {
+          const b = batchMap.get(p.id);
+          const nextExp = p.nextExpiryDate;
+          let daysRemaining: number | null = null;
+          if (nextExp) {
+            const expMs = new Date(nextExp + 'T00:00:00.000Z').getTime();
+            daysRemaining = Math.ceil((expMs - todayMs) / (1000 * 60 * 60 * 24));
+          }
+
+          switch (filters.expiry) {
+            case 'EXPIRED':
+              return p.expiredQty > 0 || (b ? b.hasExpired : false) || (daysRemaining !== null && daysRemaining < 0);
+            case 'DAYS_30':
+              return (b ? b.hasDays30 : false) || (daysRemaining !== null && daysRemaining >= 0 && daysRemaining <= 30);
+            case 'DAYS_31_60':
+              return (b ? b.hasDays31_60 : false) || (daysRemaining !== null && daysRemaining >= 31 && daysRemaining <= 60);
+            case 'DAYS_61_90':
+              return (b ? b.hasDays61_90 : false) || (daysRemaining !== null && daysRemaining >= 61 && daysRemaining <= 90);
+            case 'NO_DATE':
+              return p.hasBatchWithoutDate === true || (p.activeBatchCount > 0 && p.nextExpiryDate === null);
+            case 'NO_BATCHES':
+              return p.activeBatchCount === 0;
+            default:
+              return true;
+          }
+        });
+      }
+
+      if (filters?.expiryMonth) {
+        mapped = mapped.filter((p) => {
+          const b = batchMap.get(p.id);
+          return b ? b.expiryMonths.includes(filters.expiryMonth!) : false;
+        });
+      }
+
+      if (filters?.sort === 'nextExpiry') {
+        mapped.sort((a, b) => {
+          const aDate = a.nextExpiryDate ? new Date(a.nextExpiryDate + 'T00:00:00.000Z').getTime() : null;
+          const bDate = b.nextExpiryDate ? new Date(b.nextExpiryDate + 'T00:00:00.000Z').getTime() : null;
+
+          if (aDate !== null && bDate !== null) {
+            if (aDate !== bDate) return aDate - bDate;
+            return a.name.localeCompare(b.name);
+          }
+          if (aDate !== null && bDate === null) return -1;
+          if (aDate === null && bDate !== null) return 1;
+          return a.name.localeCompare(b.name);
+        });
+      }
+    }
+
+    return mapped;
   }
 
   async findOne(id: string, businessId: string, userRole?: string) {
@@ -332,10 +457,31 @@ export class ProductsService {
 
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { wholesaleEnabled: true },
+      select: { wholesaleEnabled: true, tracksBatches: true },
     });
 
-    return this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled);
+    const item = this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled);
+
+    if (business?.tracksBatches) {
+      const batchAggs: any[] = await this.prisma.$queryRaw`
+        SELECT
+          COUNT(*)::int AS "activeBatchCount",
+          BOOL_OR(b."expiryDate" IS NULL) AS "hasBatchWithoutDate",
+          MIN(b."expiryDate") AS "nextExpiryDate",
+          (ARRAY_AGG(b."batchNumber" ORDER BY b."expiryDate" ASC, b."createdAt" ASC) FILTER (WHERE b."expiryDate" IS NOT NULL))[1] AS "nextExpiryBatchCode",
+          COALESCE(SUM(CASE WHEN b."expiryDate" < (CURRENT_TIMESTAMP AT TIME ZONE 'America/Managua')::date THEN b.quantity ELSE 0 END), 0)::float AS "expiredQty"
+        FROM pos_product_batches b
+        WHERE b."businessId" = ${businessId} AND b."productId" = ${id} AND b.quantity > 0;
+      `;
+      const row = batchAggs[0];
+      item.nextExpiryDate = row?.nextExpiryDate ? new Date(row.nextExpiryDate).toISOString().split('T')[0] : null;
+      item.nextExpiryBatchCode = row?.nextExpiryBatchCode || null;
+      item.activeBatchCount = Number(row?.activeBatchCount || 0);
+      item.expiredQty = Number(row?.expiredQty || 0);
+      item.hasBatchWithoutDate = Boolean(row?.hasBatchWithoutDate);
+    }
+
+    return item;
   }
 
   async findByBarcode(businessId: string, barcode: string, userRole?: string) {

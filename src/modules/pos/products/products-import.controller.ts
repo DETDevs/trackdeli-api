@@ -26,10 +26,11 @@ export class ProductsImportController {
   async exportProducts(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid: string,
+    @Query() query: any,
     @Res() res: Response
   ) {
     const bId = resolveBusinessId(user, qBid);
-    const wb = await this.importService.exportProducts(bId);
+    const wb = await this.importService.exportProducts(bId, query);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=productos.xlsx');
     await wb.xlsx.write(res);
@@ -116,9 +117,10 @@ export class SuperAdminProductsImportController {
   @Roles(UserRole.SUPERADMIN)
   async exportBusinessProducts(
     @Param('businessId') businessId: string,
+    @Query() query: any,
     @Res() res: Response
   ) {
-    const wb = await this.importService.exportProducts(businessId);
+    const wb = await this.importService.exportProducts(businessId, query);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=productos.xlsx');
     await wb.xlsx.write(res);

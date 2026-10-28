@@ -848,7 +848,7 @@ export class ProductsImportService {
     return workbook;
   }
 
-  async exportProducts(businessId: string): Promise<exceljs.Workbook> {
+  async exportProducts(businessId: string, filters?: any): Promise<exceljs.Workbook> {
     const workbook = new exceljs.Workbook();
     const ws = workbook.addWorksheet('Productos');
     const targets = await this.getTargets(businessId);
@@ -860,14 +860,20 @@ export class ProductsImportService {
       style: (t.id === 'sku' || t.id === 'barcode') ? { numFmt: '@' } : undefined
     }));
 
-    const products = await this.prisma.product.findMany({
-      where: { businessId },
-      include: {
-        category: true,
-        supplier: true,
-        batches: { where: { quantity: { gt: 0 } }, orderBy: { expiryDate: 'asc' } },
-      }
-    });
+    let products: any[];
+    if (this.productsService?.findAll && filters && Object.keys(filters).length > 0) {
+      const { businessId: _, ...restFilters } = filters;
+      products = await this.productsService.findAll(businessId, restFilters, 'ENCARGADO');
+    } else {
+      products = await this.prisma.product.findMany({
+        where: { businessId, isActive: true },
+        include: {
+          category: true,
+          supplier: true,
+          batches: { where: { quantity: { gt: 0 } }, orderBy: { expiryDate: 'asc' } },
+        }
+      });
+    }
 
     for (const p of products) {
       const row: any = {};
@@ -878,10 +884,10 @@ export class ProductsImportService {
            if (t.id === 'categoryId') row[t.id] = p.category?.name || '';
            else if (t.id === 'supplierId') row[t.id] = p.supplier?.name || '';
            else if (t.id === 'sku' || t.id === 'barcode') row[t.id] = p[t.id] || '';
-           else if (t.id === 'lotNumber') row[t.id] = (p as any).batches?.[0]?.batchNumber || '';
+           else if (t.id === 'lotNumber') row[t.id] = (p as any).nextExpiryBatchCode || (p as any).batches?.[0]?.batchNumber || '';
            else if (t.id === 'expiryDate') {
-             const exp = (p as any).batches?.[0]?.expiryDate;
-             row[t.id] = exp ? exp.toISOString().split('T')[0] : '';
+             const exp = (p as any).nextExpiryDate || (p as any).batches?.[0]?.expiryDate;
+             row[t.id] = exp ? (exp instanceof Date ? exp.toISOString().split('T')[0] : String(exp).split('T')[0]) : '';
            }
            else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive' || t.id === 'taxable') {
              row[t.id] = (p as any)[t.id] ? 'SI' : 'NO';
