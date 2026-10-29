@@ -47,10 +47,27 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const isObject = typeof message === 'object' && message !== null;
     const msgObj = isObject ? (message as Record<string, any>) : {};
 
+    let finalMessage = msgObj.message ?? message;
+    if (status === 403 && (finalMessage === 'Forbidden resource' || (typeof finalMessage === 'string' && finalMessage.includes('Forbidden resource')))) {
+      const url = request.url || '';
+      if (url.includes('/groups')) {
+        finalMessage = 'Solo el encargado puede eliminar una empresa cliente';
+      } else if (url.includes('/statements') && url.includes('/cancel')) {
+        finalMessage = 'Solo el encargado puede anular un estado de cuenta';
+      } else if (url.includes('/force-close')) {
+        finalMessage = 'Solo el encargado puede forzar el cierre de turno de otro usuario';
+      } else {
+        finalMessage = 'Solo el encargado o administrador puede realizar esta acción';
+      }
+      if (isObject && msgObj.message) {
+        msgObj.message = finalMessage;
+      }
+    }
+
     response.status(status).json({
       statusCode: status,
       ...msgObj,
-      message: msgObj.message ?? message,
+      message: finalMessage,
       timestamp: new Date().toISOString(),
       path: request.url,
     });

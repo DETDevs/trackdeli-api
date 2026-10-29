@@ -71,14 +71,20 @@ export class PosPermissionsGuard implements CanActivate {
     const allowed = this.permissionsService.can(user.role, action, policies);
 
     if (!allowed) {
+      let friendlyMessage = `El rol ${user.role} no tiene permiso para la acción ${action} o la política del negocio lo prohíbe.`;
+      if (action === PosAction.GROUP_MANAGE) {
+        friendlyMessage = 'Solo el encargado puede gestionar o eliminar empresas clientes';
+      } else if (action === PosAction.GROUP_SETTLE) {
+        friendlyMessage = 'Solo el encargado puede anular un estado de cuenta';
+      } else if (action === PosAction.CIERRE_TURNO_OTRO) {
+        friendlyMessage = 'Solo el encargado puede forzar el cierre de turno de otro usuario';
+      }
+
       throw new ForbiddenException({
         statusCode: 403,
         error: 'Forbidden',
         code: 'POLICY_FORBIDDEN',
-        message: {
-          code: 'POLICY_FORBIDDEN',
-          message: `El rol ${user.role} no tiene permiso para la acción ${action} o la política del negocio lo prohíbe.`
-        }
+        message: friendlyMessage,
       });
     }
 

@@ -304,7 +304,6 @@ export class CreditController {
     );
   }
 
-  @Post(['pos/credit/statements/:id/cancel', 'credit/statements/:id/cancel'])
   @Patch(['pos/credit/statements/:id/cancel', 'credit/statements/:id/cancel'])
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   @UseGuards(NoWebPlatformGuard)
@@ -332,5 +331,20 @@ export class CreditController {
       user.sub,
       user.role,
     );
+  }
+
+  @Post(['pos/credit/statements/:id/cancel', 'credit/statements/:id/cancel'])
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @UseGuards(NoWebPlatformGuard)
+  @RequirePosAction(PosAction.GROUP_SETTLE)
+  @UseInterceptors(IdempotencyInterceptor)
+  cancelStatementPost(
+    @Param('id') id: string,
+    @Body() dto: CancelCreditStatementDto,
+    @Headers() headers: Record<string, string>,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.cancelStatement(id, dto, headers, user, qBid);
   }
 }

@@ -1,12 +1,15 @@
-import { Controller, Get, Inject } from '@nestjs/common';
+import { Controller, Get, UseGuards } from '@nestjs/common';
 import { PrismaService } from './prisma/prisma.service';
 import { Public } from './common/decorators/public.decorator';
+import { SuperAdminGuard } from './common/guards/superadmin.guard';
+import { Roles } from './common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 
-@Public()
 @Controller('health')
 export class HealthController {
   constructor(private readonly prisma: PrismaService) {}
 
+  @Public()
   @Get()
   getHealth() {
     return {
@@ -16,6 +19,8 @@ export class HealthController {
     };
   }
 
+  @UseGuards(SuperAdminGuard)
+  @Roles(UserRole.SUPERADMIN)
   @Get('deep')
   async getDeepHealth() {
     const start = Date.now();

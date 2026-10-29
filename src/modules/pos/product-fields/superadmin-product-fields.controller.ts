@@ -9,6 +9,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { SuperAdminGuard } from '../../../common/guards/superadmin.guard';
+import { Roles } from '../../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 import { ProductFieldsService } from './product-fields.service';
 import { CreateProductFieldDto } from './dto/create-product-field.dto';
 import { UpdateProductFieldDto } from './dto/update-product-field.dto';
@@ -16,6 +18,7 @@ import { ReorderProductFieldsDto } from './dto/reorder-product-fields.dto';
 
 @Controller('superadmin/businesses/:businessId/product-fields')
 @UseGuards(SuperAdminGuard)
+@Roles(UserRole.SUPERADMIN)
 export class SuperAdminProductFieldsController {
   constructor(private readonly service: ProductFieldsService) {}
 

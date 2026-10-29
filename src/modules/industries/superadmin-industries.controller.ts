@@ -10,6 +10,8 @@ import {
 } from '@nestjs/common';
 import { IndustriesService } from './industries.service';
 import { SuperAdminGuard } from '../../common/guards/superadmin.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 import { CreateIndustryDto } from './dto/create-industry.dto';
 import { UpdateIndustryDto } from './dto/update-industry.dto';
 import { CreateFieldTemplateDto } from './dto/create-field-template.dto';
@@ -17,6 +19,7 @@ import { UpdateFieldTemplateDto } from './dto/update-field-template.dto';
 
 @Controller('superadmin/industries')
 @UseGuards(SuperAdminGuard)
+@Roles(UserRole.SUPERADMIN)
 export class SuperAdminIndustriesController {
   constructor(private readonly service: IndustriesService) {}
 

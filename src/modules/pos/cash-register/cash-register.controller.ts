@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards, BadRequestException, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, UseGuards, BadRequestException, ForbiddenException, UseInterceptors } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { IdempotencyInterceptor } from "../idempotency/idempotency.interceptor";
 import { PosGuard } from "../../../common/guards/pos.guard";
@@ -88,6 +88,7 @@ export class CashRegisterController {
   }
 
   @Post(":id/force-close")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   @UseGuards(NoWebPlatformGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
@@ -97,6 +98,9 @@ export class CashRegisterController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
+    if (user.role === UserRole.CAJERO || (user.role !== UserRole.ENCARGADO && user.role !== UserRole.SUPERADMIN)) {
+      throw new ForbiddenException('Solo el encargado puede forzar el cierre de turno de otro usuario');
+    }
     if (!dto.reason) {
       throw new BadRequestException({
         statusCode: 400,

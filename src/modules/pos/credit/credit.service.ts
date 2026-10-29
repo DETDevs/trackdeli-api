@@ -8,7 +8,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { BusinessProductType, CreditAccountStatus, CreditInstallmentStatus, PosPaymentMethod, Prisma } from '@prisma/client';
+import { BusinessProductType, CreditAccountStatus, CreditInstallmentStatus, PosPaymentMethod, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { TrackingGateway } from '../../tracking/tracking.gateway';
 import { BusinessProductsService } from '../../business-products/business-products.service';
@@ -762,6 +762,9 @@ export class CreditService {
   }
 
   async deleteGroup(businessId: string, id: string, userId: string, userRole: string) {
+    if (userRole === UserRole.CAJERO || (userRole !== UserRole.ENCARGADO && userRole !== UserRole.SUPERADMIN)) {
+      throw new ForbiddenException('Solo el encargado puede eliminar una empresa cliente');
+    }
     await this.ensureCarteraActive(businessId);
     const existing = await this.prisma.creditGroup.findFirst({
       where: { id, businessId },
@@ -1895,6 +1898,9 @@ export class CreditService {
     userId: string,
     userRole: string,
   ) {
+    if (userRole === UserRole.CAJERO || (userRole !== UserRole.ENCARGADO && userRole !== UserRole.SUPERADMIN)) {
+      throw new ForbiddenException('Solo el encargado puede anular un estado de cuenta');
+    }
     await this.ensureCarteraActive(businessId);
     const reason = (dto?.reason || '').trim();
     if (!reason) {

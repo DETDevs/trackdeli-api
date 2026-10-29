@@ -17,6 +17,8 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import { SuperAdminService } from './superadmin.service';
 import { SuperAdminGuard } from '../../common/guards/superadmin.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 import { CreateBusinessSuperAdminDto } from './dto/create-business-superadmin.dto';
 import { OrdersMetricsQueryDto } from './dto/orders-metrics-query.dto';
 import { CreateMembershipDto } from './dto/create-membership.dto';
@@ -41,6 +43,7 @@ import { BusinessesQueryDto } from './dto/businesses-query.dto';
 
 @Controller('superadmin')
 @UseGuards(SuperAdminGuard)
+@Roles(UserRole.SUPERADMIN)
 export class SuperAdminController {
   constructor(
     private readonly superAdminService: SuperAdminService,

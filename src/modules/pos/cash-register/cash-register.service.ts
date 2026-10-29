@@ -3,7 +3,7 @@ import { PrismaService } from "../../../prisma/prisma.service";
 import { OpenCashRegisterDto } from "./dto/open-register.dto";
 import { CloseCashRegisterDto } from "./dto/close-register.dto";
 import { CashMovementDto } from "./dto/cash-movement.dto";
-import { MovementType, Prisma } from "@prisma/client";
+import { MovementType, Prisma, UserRole } from "@prisma/client";
 import { getSalePaymentBreakdown } from "./pos-cash.utils";
 import { PoliciesService } from '../policies/policies.service';
 import { AuditService } from '../audit/audit.service';
@@ -314,6 +314,14 @@ export class CashRegisterService {
     }
 
     if (!register) throw new NotFoundException("Caja no encontrada o ya cerrada");
+
+    if (registerId && userRole === UserRole.CAJERO && register.cashierId !== cashierId) {
+      throw new ForbiddenException(
+        dto.reason
+          ? 'Solo el encargado puede forzar el cierre de turno de otro usuario'
+          : 'Solo el encargado puede cerrar el turno de otro usuario',
+      );
+    }
 
     const policies = await this.policiesService.get(businessId);
     let closingCashDec = new Prisma.Decimal(0);

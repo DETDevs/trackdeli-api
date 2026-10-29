@@ -1,10 +1,11 @@
-import { Controller, Post, Delete, Get, Patch, Body, Query } from '@nestjs/common';
+import { Controller, Post, Delete, Get, Patch, Body, Query, UseGuards } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { Public } from '../../common/decorators/public.decorator';
+import { SuperAdminGuard } from '../../common/guards/superadmin.guard';
 
 import { WhatsAppChannel } from './channels/whatsapp.channel';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -18,7 +19,8 @@ export class NotificationsController {
   ) {}
 
   @Get('diagnostic')
-  @Public()
+  @UseGuards(SuperAdminGuard)
+  @Roles(UserRole.SUPERADMIN)
   async getDiagnostic(@Query('wabaId') queryWabaId?: string) {
     const targetWabaId = queryWabaId?.trim() || '1453312026366922';
     const config = this.whatsappChannel.getConfigInfo();
