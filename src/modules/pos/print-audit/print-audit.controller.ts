@@ -35,6 +35,7 @@ export class PrintAuditController {
     UserRole.SUPERADMIN,
     UserRole.WAITER,
     UserRole.REPARTIDOR,
+    UserRole.VENDEDOR,
   )
   registerEvents(
     @CurrentUser() user: JwtPayload,
@@ -43,7 +44,7 @@ export class PrintAuditController {
   ) {
     const businessId = resolveBusinessId(user, qBid);
     const events = Array.isArray(body) ? body : body?.events || [];
-    return this.service.registerEvents(businessId, user.sub, events);
+    return this.service.registerEvents(businessId, user.sub, events, user.role);
   }
 
   /**

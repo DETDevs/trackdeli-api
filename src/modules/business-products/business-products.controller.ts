@@ -30,8 +30,8 @@ export class BusinessProductsController {
 
   @Get()
   @SkipMembershipCheck()
-  @Roles(UserRole.SUPERADMIN, UserRole.ENCARGADO, UserRole.CAJERO)
-  getProducts(
+  @Roles(UserRole.SUPERADMIN, UserRole.ENCARGADO, UserRole.CAJERO, UserRole.VENDEDOR)
+  async getProducts(
     @Param('id') businessId: string | undefined,
     @CurrentUser() user: JwtPayload,
   ) {
@@ -51,7 +51,21 @@ export class BusinessProductsController {
       );
     }
 
-    return this.service.getProducts(targetBusinessId);
+    const result = await this.service.getProducts(targetBusinessId);
+    if (user.role === UserRole.VENDEDOR) {
+      return {
+        businessId: result.businessId,
+        businessName: result.businessName,
+        products: {
+          DELIVERY: { status: result.products?.DELIVERY?.status || 'INACTIVE' },
+          POS: { status: result.products?.POS?.status || 'INACTIVE' },
+          CARTERA_COBRO: { status: result.products?.CARTERA_COBRO?.status || 'INACTIVE' },
+          CITAS: { status: result.products?.CITAS?.status || 'INACTIVE' },
+        },
+      };
+    }
+
+    return result;
   }
 
   @Post(':productType/activate')

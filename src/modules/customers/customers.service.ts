@@ -70,6 +70,7 @@ export class CustomersService {
     businessId: string,
     query: string,
     groupId?: string,
+    userRole?: UserRole,
   ): Promise<CustomerSearchResultDto[]> {
     const trimmed = (query || '').trim();
     if (!trimmed) {
@@ -106,14 +107,15 @@ export class CustomersService {
       orderBy: [{ lastConfirmedAt: 'desc' }, { updatedAt: 'desc' }],
     });
 
+    const isVendedor = userRole === UserRole.VENDEDOR;
     return customers.map((c) => ({
       id: c.id,
       name: c.name,
       phone: c.phone,
       ruc: c.ruc ?? null,
-      creditLimit: hasCartera ? (c.creditLimit ?? null) : null,
-      groupId: hasCartera ? (c.groupId ?? null) : null,
-      externalCode: c.externalCode ?? null,
+      creditLimit: hasCartera && !isVendedor ? (c.creditLimit ?? null) : null,
+      groupId: hasCartera && !isVendedor ? (c.groupId ?? null) : null,
+      externalCode: isVendedor ? null : (c.externalCode ?? null),
       isActive: c.isActive,
       lastLatitude: c.lastLatitude,
       lastLongitude: c.lastLongitude,
@@ -379,6 +381,7 @@ export class CustomersService {
     // Si creditLimit, groupId o isBlocked vienen null, vacíos, 0 o false, ignorar sin error.
     // Dar 403 solo si el CAJERO intenta poner un valor distinto (ej. creditLimit > 0, groupId real, isBlocked: true).
     const isCajero = userRole === UserRole.CAJERO;
+    const isVendedor = userRole === UserRole.VENDEDOR;
     if (isCajero) {
       if (this.isCreditLimitSet(dto.creditLimit) || this.isGroupIdSet(dto.groupId)) {
         throw new ForbiddenException(
@@ -388,6 +391,21 @@ export class CustomersService {
       if (dto.isBlocked === true) {
         throw new ForbiddenException(
           'Solo el encargado puede cambiar el límite de crédito, la empresa o el bloqueo del cliente',
+        );
+      }
+    }
+
+    // VENDEDOR en POST (creación rápida):
+    // Ignora y rechaza campos de crédito (límite, cartera corporativa, bloqueo).
+    if (isVendedor) {
+      if (this.isCreditLimitSet(dto.creditLimit) || this.isGroupIdSet(dto.groupId)) {
+        throw new ForbiddenException(
+          'El vendedor no puede definir límite de crédito ni cartera corporativa',
+        );
+      }
+      if (dto.isBlocked === true) {
+        throw new ForbiddenException(
+          'El vendedor no tiene permiso para bloquear clientes',
         );
       }
     }
@@ -411,16 +429,16 @@ export class CustomersService {
         notes: this.cleanText(dto.notes),
         ruc,
         creditLimit:
-          !isCajero && hasCartera && this.isCreditLimitSet(dto.creditLimit)
+          !isCajero && !isVendedor && hasCartera && this.isCreditLimitSet(dto.creditLimit)
             ? Number(dto.creditLimit)
             : null,
         groupId:
-          !isCajero && hasCartera && hasValidGroup
+          !isCajero && !isVendedor && hasCartera && hasValidGroup
             ? dto.groupId!.trim()
             : null,
-        externalCode: dto.externalCode?.trim() || null,
+        externalCode: isVendedor ? null : (dto.externalCode?.trim() || null),
         lastAddressText: dto.address?.trim() || null,
-        isBlocked: !isCajero && dto.isBlocked === true,
+        isBlocked: !isCajero && !isVendedor && dto.isBlocked === true,
       },
       include: {
         group: {
@@ -435,10 +453,10 @@ export class CustomersService {
       name: customer.name,
       phone: customer.phone,
       ruc: customer.ruc ?? null,
-      creditLimit: hasCartera && !isCajero ? (customer.creditLimit ?? null) : null,
-      groupId: hasCartera && !isCajero ? (customer.groupId ?? null) : null,
-      group: hasCartera && !isCajero ? (customer.group ?? null) : null,
-      externalCode: customer.externalCode ?? null,
+      creditLimit: hasCartera && !isCajero && !isVendedor ? (customer.creditLimit ?? null) : null,
+      groupId: hasCartera && !isCajero && !isVendedor ? (customer.groupId ?? null) : null,
+      group: hasCartera && !isCajero && !isVendedor ? (customer.group ?? null) : null,
+      externalCode: isVendedor ? null : (customer.externalCode ?? null),
       email: customer.email ?? null,
       notes: customer.notes ?? null,
       isActive: customer.isActive,
@@ -1087,14 +1105,15 @@ export class CustomersService {
     ]);
 
     const isCajero = userRole === UserRole.CAJERO;
+    const isVendedor = userRole === UserRole.VENDEDOR;
     const items = customers.map((c) => {
-      const currentBalance = hasCartera
+      const currentBalance = hasCartera && !isVendedor
         ? (c.creditAccounts || []).reduce(
             (sum, ca) => sum + (Number(ca.balance) || 0),
             0,
           )
         : 0;
-      const roundedBalance = hasCartera ? Math.round(currentBalance * 100) / 100 : null;
+      const roundedBalance = hasCartera && !isVendedor ? Math.round(currentBalance * 100) / 100 : null;
       return {
         id: c.id,
         businessId: c.businessId,
@@ -1103,14 +1122,14 @@ export class CustomersService {
         email: c.email ?? null,
         notes: c.notes ?? null,
         ruc: isCajero ? null : (c.ruc ?? null),
-        creditLimit: !hasCartera || isCajero
+        creditLimit: !hasCartera || isCajero || isVendedor
           ? null
           : c.creditLimit !== null && c.creditLimit !== undefined
           ? Number(c.creditLimit)
           : null,
-        groupId: hasCartera ? (c.groupId ?? null) : null,
-        externalCode: c.externalCode ?? null,
-        group: hasCartera ? (c.group ?? null) : null,
+        groupId: hasCartera && !isVendedor ? (c.groupId ?? null) : null,
+        externalCode: isVendedor ? null : (c.externalCode ?? null),
+        group: hasCartera && !isVendedor ? (c.group ?? null) : null,
         isBlocked: c.isBlocked,
         isActive: c.isActive,
         consecutiveNoShows: c.consecutiveNoShows,
@@ -1121,7 +1140,7 @@ export class CustomersService {
         updatedAt: c.updatedAt,
         _count: {
           ...c._count,
-          creditAccounts: hasCartera ? c._count.creditAccounts : 0,
+          creditAccounts: hasCartera && !isVendedor ? c._count.creditAccounts : 0,
         },
       };
     });
@@ -1154,7 +1173,7 @@ export class CustomersService {
     return Array.from(variants);
   }
 
-  async findById(businessId: string, id: string) {
+  async findById(businessId: string, id: string, userRole?: UserRole) {
     const [customer, hasCartera] = await Promise.all([
       this.prisma.customer.findFirst({
         where: { id, businessId },
@@ -1220,15 +1239,17 @@ export class CustomersService {
       }),
     ]);
 
+    const isVendedor = userRole === UserRole.VENDEDOR;
     return {
       ...customer,
-      creditLimit: hasCartera ? customer.creditLimit : null,
-      groupId: hasCartera ? customer.groupId : null,
+      creditLimit: hasCartera && !isVendedor ? customer.creditLimit : null,
+      groupId: hasCartera && !isVendedor ? customer.groupId : null,
+      externalCode: isVendedor ? null : (customer.externalCode ?? null),
       orders,
       sales,
       _count: {
         ...customer._count,
-        creditAccounts: hasCartera ? customer._count.creditAccounts : 0,
+        creditAccounts: hasCartera && !isVendedor ? customer._count.creditAccounts : 0,
         orders: ordersCount,
       },
     };

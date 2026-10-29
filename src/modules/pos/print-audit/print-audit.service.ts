@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import * as sharp from 'sharp';
 import sanitizeHtml from 'sanitize-html';
+import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { CreatePrintEventDto } from './dto/create-print-event.dto';
 import { UpdateReceiptSettingsDto } from './dto/update-receipt-settings.dto';
@@ -80,6 +81,11 @@ export class PrintAuditService {
           where: { id: documentId, businessId },
           select: { id: true },
         }));
+      case 'PRESALE_TICKET':
+        return !!(await this.prisma.presaleTicket.findFirst({
+          where: { id: documentId, businessId },
+          select: { id: true },
+        }));
       default:
         return false;
     }
@@ -92,6 +98,7 @@ export class PrintAuditService {
     businessId: string,
     userId: string,
     rawEvents: CreatePrintEventDto[],
+    userRole?: UserRole,
   ) {
     if (!Array.isArray(rawEvents)) {
       throw new BadRequestException('El cuerpo debe ser una lista de eventos o contener events: []');
@@ -128,6 +135,23 @@ export class PrintAuditService {
         throw new BadRequestException(
           `El motivo (reason) del evento ${ev.clientEventId} no puede exceder 300 caracteres`,
         );
+      }
+
+      if (userRole === UserRole.VENDEDOR) {
+        if (ev.documentType !== 'PRESALE_TICKET') {
+          throw new BadRequestException(
+            'El vendedor solo puede registrar eventos de sus propios comprobantes de preventa',
+          );
+        }
+        const ticket = await this.prisma.presaleTicket.findFirst({
+          where: { id: ev.documentId, businessId, sellerId: userId },
+          select: { id: true },
+        });
+        if (!ticket) {
+          throw new BadRequestException(
+            'El vendedor solo puede registrar eventos de sus propios comprobantes de preventa',
+          );
+        }
       }
 
       const belongsToBusiness = await this.validateDocumentOwnership(

@@ -20,7 +20,7 @@ export class CategoriesController {
   constructor(private readonly service: CategoriesService) {}
 
   @Get('summary')
-  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER, UserRole.VENDEDOR)
   getSummary(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') queryBusinessId?: string,
@@ -32,7 +32,7 @@ export class CategoriesController {
   }
 
   @Get()
-  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER, UserRole.VENDEDOR)
   findAll(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') queryBusinessId?: string,

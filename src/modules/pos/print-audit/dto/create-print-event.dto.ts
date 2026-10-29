@@ -18,6 +18,7 @@ export const VALID_DOCUMENT_TYPES = [
   'EXPENSE',
   'SUPPLIER_PAYMENT',
   'SALE_RETURN',
+  'PRESALE_TICKET',
 ] as const;
 
 export type PrintDocumentType = typeof VALID_DOCUMENT_TYPES[number];

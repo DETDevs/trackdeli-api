@@ -40,7 +40,7 @@ export class CustomersController {
     'pos/customers',
     'customers',
   ])
-  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
   async findAll(
     @CurrentUser() user: JwtPayload,
     @Query('search') search?: string,
@@ -110,7 +110,7 @@ export class CustomersController {
     'pos/customers/search',
     'customers/search',
   ])
-  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
   async search(
     @CurrentUser() user: JwtPayload,
     @Query('search') search?: string,
@@ -127,7 +127,7 @@ export class CustomersController {
     }
     this.checkBusinessAccess(user, businessId);
     const searchTerm = search ?? query ?? '';
-    return this.customersService.search(businessId, searchTerm, groupId);
+    return this.customersService.search(businessId, searchTerm, groupId, user.role);
   }
 
   @Get([
@@ -136,7 +136,7 @@ export class CustomersController {
     'pos/customers/lookup',
     'customers/lookup',
   ])
-  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
   async lookup(
     @Query('phone') phone: string,
     @CurrentUser() user: JwtPayload,
@@ -159,7 +159,7 @@ export class CustomersController {
     'pos/customers/by-code/:code',
     'customers/by-code/:code',
   ])
-  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
   async getByCode(
     @Param('code') code: string,
     @CurrentUser() user: JwtPayload,
@@ -205,7 +205,7 @@ export class CustomersController {
     'pos/customers/:id',
     'customers/:id',
   ])
-  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
   async findOne(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
@@ -219,7 +219,7 @@ export class CustomersController {
       throw new ForbiddenException('Negocio no especificado');
     }
     this.checkBusinessAccess(user, businessId);
-    return this.customersService.findById(businessId, id);
+    return this.customersService.findById(businessId, id, user.role);
   }
 
   @Patch([
@@ -299,7 +299,7 @@ export class CustomersController {
     'pos/customers',
     'customers',
   ])
-  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
   async create(
     @Body() dto: CreateCustomerDto,
     @CurrentUser() user: JwtPayload,

@@ -122,6 +122,15 @@ export class ProductsService {
       delete mapped.cost;
     }
 
+    if (userRole === UserRole.VENDEDOR) {
+      delete mapped.markupPct;
+      delete mapped.supplierId;
+      delete mapped.supplier;
+      delete mapped.purchasePrice;
+      delete mapped.purchaseCost;
+      delete mapped.costHistories;
+    }
+
     return mapped;
   }
 

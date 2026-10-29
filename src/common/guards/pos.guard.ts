@@ -152,12 +152,30 @@ export class PosGuard implements CanActivate {
       const method = (request.method || '').toUpperCase();
 
       const isAllowed =
-        (method === 'GET' && normalizedPath === '/pos/products') ||
-        (method === 'GET' && /^\/pos\/products\/[^/]+$/.test(normalizedPath)) ||
-        (method === 'GET' && normalizedPath === '/pos/categories') ||
+        (method === 'GET' && (normalizedPath === '/pos/products' || /^\/pos\/products\/.*$/.test(normalizedPath))) ||
+        (method === 'GET' && (normalizedPath === '/pos/categories' || normalizedPath === '/pos/categories/summary')) ||
         (method === 'GET' && (normalizedPath === '/pos/product-fields' || /^\/pos\/product-fields\/[^/]+$/.test(normalizedPath))) ||
-        (method === 'GET' && (normalizedPath === '/customers' || normalizedPath === '/pos/customers' || /^\/customers\/[^/]+$/.test(normalizedPath))) ||
-        (method === 'POST' && (normalizedPath === '/customers' || normalizedPath === '/pos/customers')) ||
+        (method === 'GET' && (
+          normalizedPath === '/customers' ||
+          normalizedPath === '/pos/customers' ||
+          normalizedPath === '/customers/search' ||
+          normalizedPath === '/pos/customers/search' ||
+          normalizedPath === '/customers/lookup' ||
+          normalizedPath === '/pos/customers/lookup' ||
+          normalizedPath === '/businesses/me/customers' ||
+          normalizedPath === '/businesses/me/customers/search' ||
+          normalizedPath === '/businesses/me/customers/lookup' ||
+          /^\/customers\/[^/]+$/.test(normalizedPath) ||
+          /^\/pos\/customers\/[^/]+$/.test(normalizedPath) ||
+          /^\/businesses\/me\/customers\/[^/]+$/.test(normalizedPath)
+        )) ||
+        (method === 'POST' && (
+          normalizedPath === '/customers' ||
+          normalizedPath === '/pos/customers' ||
+          normalizedPath === '/businesses/me/customers'
+        )) ||
+        (method === 'POST' && normalizedPath === '/pos/print-audit/events') ||
+        (method === 'GET' && (normalizedPath === '/businesses/me/products' || /^\/businesses\/[^/]+\/products$/.test(normalizedPath))) ||
         (method === 'POST' && normalizedPath === '/pos/presale-tickets') ||
         (method === 'GET' && normalizedPath === '/pos/presale-tickets/mine') ||
         (method === 'GET' && /^\/pos\/presale-tickets\/by-code\/[^/]+$/.test(normalizedPath)) ||
