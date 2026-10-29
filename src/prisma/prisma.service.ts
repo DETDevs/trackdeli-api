@@ -889,6 +889,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
           sql: `ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN NOT NULL DEFAULT true;`,
         },
         {
+          name: 'Columna pos_categories.description (214a)',
+          sql: `ALTER TABLE "pos_categories" ADD COLUMN IF NOT EXISTS "description" TEXT;`,
+        },
+        {
+          name: 'Columna pos_categories.sortOrder (214a)',
+          sql: `ALTER TABLE "pos_categories" ADD COLUMN IF NOT EXISTS "sortOrder" INTEGER NOT NULL DEFAULT 0;`,
+        },
+        {
           name: 'Tabla customer_location_sessions',
           sql: `CREATE TABLE IF NOT EXISTS "customer_location_sessions" (
             "id" TEXT NOT NULL,

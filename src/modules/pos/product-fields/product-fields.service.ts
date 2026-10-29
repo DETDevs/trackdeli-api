@@ -377,7 +377,8 @@ export class ProductFieldsService {
              "attributes"::jsonb,
              ARRAY[$1],
              to_jsonb($2::text)
-           )
+           ),
+           "updatedAt" = NOW()
            WHERE "businessId" = $3
              AND ("attributes"->>$1 = $4 OR "attributes"->>$5 = $6);`,
           field.key,
@@ -387,6 +388,11 @@ export class ProductFieldsService {
           `${field.key}_id`,
           option.id,
         );
+
+        await tx.productFieldDefinition.update({
+          where: { id: fieldId },
+          data: { updatedAt: new Date() },
+        });
       }
 
       return updated;
@@ -410,11 +416,11 @@ export class ProductFieldsService {
       throw new NotFoundException(`Opción con ID '${optionId}' no encontrada`);
     }
 
-    const inUse = await this.prisma.$queryRawUnsafe<any[]>(
-      `SELECT 1 FROM "pos_products"
+    const inUseResult = await this.prisma.$queryRawUnsafe<any[]>(
+      `SELECT COUNT(*)::int AS count
+       FROM "pos_products"
        WHERE "businessId" = $1
-         AND ("attributes"->>$2 = $3 OR "attributes"->>$4 = $5)
-       LIMIT 1;`,
+         AND ("attributes"->>$2 = $3 OR "attributes"->>$4 = $5);`,
       businessId,
       field.key,
       option.label,
@@ -422,14 +428,110 @@ export class ProductFieldsService {
       option.id,
     );
 
-    if (inUse.length > 0) {
-      throw new BadRequestException(
-        'No se puede eliminar la opción porque está en uso por uno o más productos. Desactívela en su lugar.',
-      );
+    const productCount = Number(inUseResult[0]?.count ?? 0);
+    if (productCount > 0) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'OPTION_HAS_PRODUCTS',
+        message: `No se puede eliminar la opción '${option.label}' porque está asignada a ${productCount} producto(s). Puede unirla con otra opción o desactivarla.`,
+        productCount,
+      });
     }
 
-    return this.prisma.productFieldOption.delete({
-      where: { id: optionId },
+    return this.prisma.$transaction(async (tx) => {
+      const deleted = await tx.productFieldOption.delete({
+        where: { id: optionId },
+      });
+
+      // Invalidar catálogo offline tocando updatedAt en la definición del campo
+      await tx.productFieldDefinition.update({
+        where: { id: fieldId },
+        data: { updatedAt: new Date() },
+      });
+
+      return deleted;
+    });
+  }
+
+  async mergeOptions(
+    businessId: string,
+    fieldId: string,
+    sourceOptionId: string,
+    targetOptionId: string,
+  ) {
+    if (sourceOptionId === targetOptionId) {
+      throw new BadRequestException('La opción de origen y destino no pueden ser la misma');
+    }
+
+    const field = await this.findOne(businessId, fieldId);
+
+    const [sourceOption, targetOption] = await Promise.all([
+      this.prisma.productFieldOption.findFirst({
+        where: { id: sourceOptionId, fieldDefinitionId: fieldId, businessId },
+      }),
+      this.prisma.productFieldOption.findFirst({
+        where: { id: targetOptionId, fieldDefinitionId: fieldId, businessId },
+      }),
+    ]);
+
+    if (!sourceOption) {
+      throw new NotFoundException(`Opción de origen con ID '${sourceOptionId}' no encontrada`);
+    }
+    if (!targetOption) {
+      throw new NotFoundException(`Opción de destino con ID '${targetOptionId}' no encontrada`);
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Actualizar atributos e ID en todos los productos que usen la opción origen
+      const affectedProducts = await tx.$executeRawUnsafe(
+        `UPDATE "pos_products"
+         SET "attributes" = jsonb_set(
+           jsonb_set(
+             COALESCE("attributes", '{}'::jsonb),
+             ARRAY[$1],
+             to_jsonb($2::text)
+           ),
+           ARRAY[$3],
+           to_jsonb($4::text)
+         ),
+         "updatedAt" = NOW()
+         WHERE "businessId" = $5
+           AND ("attributes"->>$1 = $6 OR "attributes"->>$3 = $7);`,
+        field.key,
+        targetOption.label,
+        `${field.key}_id`,
+        targetOption.id,
+        businessId,
+        sourceOption.label,
+        sourceOption.id,
+      );
+
+      // 2. Eliminar la opción origen
+      await tx.productFieldOption.delete({
+        where: { id: sourceOptionId },
+      });
+
+      // 3. Invalidar catálogo offline tocando updatedAt en la opción destino y en el campo
+      await tx.productFieldOption.update({
+        where: { id: targetOptionId },
+        data: { updatedAt: new Date() },
+      });
+
+      await tx.productFieldDefinition.update({
+        where: { id: fieldId },
+        data: { updatedAt: new Date() },
+      });
+
+      return {
+        success: true,
+        merged: true,
+        sourceOptionId,
+        sourceOptionLabel: sourceOption.label,
+        targetOptionId,
+        targetOptionLabel: targetOption.label,
+        affectedProducts: Number(affectedProducts),
+      };
     });
   }
 

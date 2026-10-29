@@ -13,8 +13,16 @@ export class UpdateCategoryDto {
   color?: string;
 
   @IsOptional()
+  @SanitizeText()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
   @IsString()
   icon?: string;
+
+  @IsOptional()
+  sortOrder?: number;
 
   @IsOptional()
   @IsBoolean()

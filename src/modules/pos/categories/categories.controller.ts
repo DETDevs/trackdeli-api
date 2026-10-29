@@ -10,12 +10,26 @@ import { resolveBusinessId } from '../pos.utils';
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
+import { ReorderCategoriesDto } from './dto/reorder-categories.dto';
+import { MoveCategoryProductsDto } from './dto/move-category-products.dto';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
 @Controller('pos/categories')
 export class CategoriesController {
   constructor(private readonly service: CategoriesService) {}
+
+  @Get('summary')
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
+  getSummary(
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') queryBusinessId?: string,
+  ) {
+    return this.service.getSummary(
+      resolveBusinessId(user, queryBusinessId),
+      user.role,
+    );
+  }
 
   @Get()
   @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER)
@@ -34,6 +48,32 @@ export class CategoriesController {
     @Query('businessId') queryBusinessId?: string,
   ) {
     return this.service.create(dto, resolveBusinessId(user, queryBusinessId));
+  }
+
+  @Patch('reorder')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  reorder(
+    @Body() dto: ReorderCategoriesDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') queryBusinessId?: string,
+  ) {
+    const ids = dto.categoryIds || dto.ids || [];
+    return this.service.reorder(resolveBusinessId(user, queryBusinessId), ids);
+  }
+
+  @Post(':id/move-products')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  moveProducts(
+    @Param('id') id: string,
+    @Body() dto: MoveCategoryProductsDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') queryBusinessId?: string,
+  ) {
+    return this.service.moveProducts(
+      id,
+      dto.targetCategoryId,
+      resolveBusinessId(user, queryBusinessId),
+    );
   }
 
   @Patch(':id')

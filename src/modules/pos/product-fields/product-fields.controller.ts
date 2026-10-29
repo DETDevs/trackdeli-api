@@ -23,6 +23,7 @@ import { UpdateProductFieldDto } from './dto/update-product-field.dto';
 import { ReorderProductFieldsDto } from './dto/reorder-product-fields.dto';
 import { CreateFieldOptionDto } from './dto/create-field-option.dto';
 import { UpdateFieldOptionDto } from './dto/update-field-option.dto';
+import { MergeFieldOptionDto } from './dto/merge-field-option.dto';
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
@@ -180,6 +181,23 @@ export class ProductFieldsController {
     @Query('businessId') qBid?: string,
   ) {
     return this.service.activateOption(resolveBusinessId(user, qBid), fieldId, optionId);
+  }
+
+  @Post(':fieldId/options/:optionId/merge')
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  mergeOption(
+    @Param('fieldId') fieldId: string,
+    @Param('optionId') optionId: string,
+    @Body() dto: MergeFieldOptionDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.mergeOptions(
+      resolveBusinessId(user, qBid),
+      fieldId,
+      optionId,
+      dto.targetOptionId,
+    );
   }
 
   @Delete(':fieldId/options/:optionId')

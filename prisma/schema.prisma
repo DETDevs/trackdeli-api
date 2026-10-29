@@ -921,15 +921,17 @@ model NotificationLog {
 // ═══════════════════════════════════════════════
 
 model Category {
-  id         String    @id @default(uuid())
-  businessId String
-  business   Business  @relation(fields: [businessId], references: [id])
-  name       String    @db.VarChar(100)
-  color      String?   @db.VarChar(10)
-  icon       String?   @db.VarChar(50)
-  isActive   Boolean   @default(true)
-  products   Product[]
-  createdAt  DateTime  @default(now())
+  id          String    @id @default(uuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id])
+  name        String    @db.VarChar(100)
+  description String?
+  color       String?   @db.VarChar(10)
+  icon        String?   @db.VarChar(50)
+  sortOrder   Int       @default(0)
+  isActive    Boolean   @default(true)
+  products    Product[]
+  createdAt   DateTime  @default(now())
 
   @@unique([businessId, name])
   @@map("pos_categories")
