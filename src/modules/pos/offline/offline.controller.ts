@@ -71,7 +71,7 @@ export class OfflineController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.registerTerminal(resolveBusinessId(user, qBid), dto);
+    return this.service.registerTerminal(resolveBusinessId(user, qBid), dto, user.role);
   }
 
   @Get("terminals")

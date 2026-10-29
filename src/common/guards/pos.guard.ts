@@ -144,6 +144,35 @@ export class PosGuard implements CanActivate {
       }
     }
 
+    if (user.role === UserRole.VENDEDOR) {
+      const rawPath =
+        request.path ||
+        (request.originalUrl ? request.originalUrl.split('?')[0] : (request.url ? request.url.split('?')[0] : ''));
+      const normalizedPath = rawPath.replace(/^\/api\/v1/, '').replace(/\/$/, '') || '/';
+      const method = (request.method || '').toUpperCase();
+
+      const isAllowed =
+        (method === 'GET' && normalizedPath === '/pos/products') ||
+        (method === 'GET' && /^\/pos\/products\/[^/]+$/.test(normalizedPath)) ||
+        (method === 'GET' && normalizedPath === '/pos/categories') ||
+        (method === 'GET' && (normalizedPath === '/pos/product-fields' || /^\/pos\/product-fields\/[^/]+$/.test(normalizedPath))) ||
+        (method === 'GET' && (normalizedPath === '/customers' || normalizedPath === '/pos/customers' || /^\/customers\/[^/]+$/.test(normalizedPath))) ||
+        (method === 'POST' && (normalizedPath === '/customers' || normalizedPath === '/pos/customers')) ||
+        (method === 'POST' && normalizedPath === '/pos/presale-tickets') ||
+        (method === 'GET' && normalizedPath === '/pos/presale-tickets/mine') ||
+        (method === 'GET' && /^\/pos\/presale-tickets\/by-code\/[^/]+$/.test(normalizedPath)) ||
+        (method === 'GET' && /^\/pos\/presale-tickets\/[^/]+$/.test(normalizedPath)) ||
+        (method === 'POST' && /^\/pos\/presale-tickets\/[^/]+\/cancel$/.test(normalizedPath)) ||
+        (method === 'GET' && (normalizedPath === '/pos/reports/sales-by-seller' || normalizedPath === '/reports/sales-by-seller')) ||
+        (method === 'POST' && normalizedPath === '/pos/devices/register');
+
+      if (!isAllowed) {
+        throw new ForbiddenException(
+          'Acceso denegado: el rol VENDEDOR no tiene permiso para este recurso',
+        );
+      }
+    }
+
     return true;
   }
 }

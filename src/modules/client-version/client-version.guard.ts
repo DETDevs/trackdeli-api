@@ -70,7 +70,28 @@ export class ClientVersionGuard implements CanActivate {
     }
 
     // 5. Consultar versión mínima configurada
-    const minVersion = await this.clientVersionService.getMinVersion(platform);
+    let minVersion = await this.clientVersionService.getMinVersion(platform);
+
+    // 213a: Si el negocio tiene venta en dos pasos activa y el usuario es CAJERO o VENDEDOR,
+    // exigir versión mínima de desktop (>= 2.13.0) para que respete reservas y vea tickets
+    const authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const parts = authHeader.split(' ')[1].split('.');
+        if (parts.length === 3) {
+          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+          if (payload.businessId && (payload.role === 'CAJERO' || payload.role === 'VENDEDOR')) {
+            const twoStepActive = await this.clientVersionService.isTwoStepSaleEnabled(payload.businessId);
+            if (twoStepActive) {
+              const TWO_STEP_MIN_VERSION = '2.13.0';
+              if (!minVersion || compareSemver(TWO_STEP_MIN_VERSION, minVersion) > 0) {
+                minVersion = TWO_STEP_MIN_VERSION;
+              }
+            }
+          }
+        }
+      } catch {}
+    }
 
     // Por defecto vacía = sin restricción
     if (!minVersion || minVersion.trim() === '') {

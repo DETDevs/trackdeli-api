@@ -191,6 +191,7 @@ export class SalesService {
           useListPrice: true,
           defaultMarkupPct: true,
           autoUpdatePriceOnPurchase: true,
+          twoStepSaleEnabled: true,
         },
       });
       if (!business) throw new NotFoundException("Negocio no encontrado");
@@ -232,7 +233,8 @@ export class SalesService {
 
           if (item.unitPrice !== undefined && item.unitPrice !== null) {
             const diff = Math.abs(item.unitPrice - resolved.unitPrice);
-            if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale) {
+            const isPresaleSellerLine = Boolean(dto.presaleTicketId && (item as any).origin === 'SELLER');
+            if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale && !isPresaleSellerLine) {
               throw new BadRequestException({
                 statusCode: 400,
                 error: 'Bad Request',
@@ -251,7 +253,11 @@ export class SalesService {
               if (compProd && compProd.trackStock === true) {
                 const compRequestedQty = round3(requestedQty * Number(comp.quantity));
                 const compCurrentStock = Number(compProd.stock);
-                if (compCurrentStock < compRequestedQty) {
+                const compReservedStock = Number(compProd.reservedStock || 0);
+                const compAvailableStock = business.twoStepSaleEnabled && !dto.presaleTicketId
+                  ? compCurrentStock - compReservedStock
+                  : compCurrentStock;
+                if (compAvailableStock < compRequestedQty) {
                   if (!policies.allowNegativeStock && !dto.isOfflineSync) {
                     throw new UnprocessableEntityException({
                       statusCode: 422,
@@ -259,7 +265,7 @@ export class SalesService {
                       code: 'INSUFFICIENT_STOCK',
                       message: {
                         code: 'INSUFFICIENT_STOCK',
-                        message: `Stock insuficiente para "${compProd.name}" (insumo de "${product.name}"). Disponible: ${compCurrentStock}, solicitado: ${compRequestedQty}`,
+                        message: `Stock insuficiente para "${compProd.name}" (insumo de "${product.name}"). Disponible: ${compAvailableStock}, solicitado: ${compRequestedQty}`,
                         details: {
                           productId: compProd.id,
                           productName: compProd.name,
@@ -285,7 +291,11 @@ export class SalesService {
             }
           } else if (product.trackStock === true) {
             const currentStock = Number(product.stock);
-            if (currentStock < requestedQty) {
+            const reservedStock = Number(product.reservedStock || 0);
+            const availableStock = business.twoStepSaleEnabled && !dto.presaleTicketId
+              ? currentStock - reservedStock
+              : currentStock;
+            if (availableStock < requestedQty) {
               if (!policies.allowNegativeStock && !dto.isOfflineSync) {
                 throw new UnprocessableEntityException({
                   statusCode: 422,
@@ -293,11 +303,11 @@ export class SalesService {
                   code: 'INSUFFICIENT_STOCK',
                   message: {
                     code: 'INSUFFICIENT_STOCK',
-                    message: `Stock insuficiente para "${product.name}". Disponible: ${currentStock}, solicitado: ${requestedQty}`,
+                    message: `Stock insuficiente para "${product.name}". Disponible: ${availableStock}, solicitado: ${requestedQty}`,
                     details: {
                       productId: product.id,
                       productName: product.name,
-                      available: currentStock,
+                      available: availableStock,
                       requested: requestedQty,
                     },
                   },
@@ -379,7 +389,7 @@ export class SalesService {
 
       const finalNotes = hasAuditDiscrepancy ? `${dto.notes ? dto.notes + '. ' : ''}[AUDIT: ${auditNote.trim()}]` : dto.notes;
 
-      const processedItems = calcResult.lines.map((l) => ({
+      const processedItems = calcResult.lines.map((l, idx) => ({
         productId: l.productId,
         productName: l.productName,
         barcode: l.barcode,
@@ -394,6 +404,7 @@ export class SalesService {
         taxable: l.taxable,
         taxRate: l.taxRate,
         taxAmount: l.taxAmount,
+        origin: (dto.items[idx] as any)?.origin || 'CASHIER',
       }));
 
       // 1. Detectar porción de crédito y prima
@@ -1021,6 +1032,30 @@ export class SalesService {
         }
       }
 
+      let sellerId: string | null = null;
+      let sellerName: string | null = null;
+      if (dto.sellerId) {
+        const sellerUser = await tx.user.findFirst({
+          where: {
+            id: dto.sellerId,
+            businessId,
+            role: UserRole.VENDEDOR,
+            isActive: true,
+          },
+          select: { id: true, name: true },
+        });
+        if (!sellerUser) {
+          throw new BadRequestException({
+            statusCode: 400,
+            message: 'El vendedor seleccionado no existe, no está activo o no tiene rol VENDEDOR en este negocio',
+          });
+        }
+        sellerId = sellerUser.id;
+        sellerName = sellerUser.name;
+      } else if (dto.sellerName) {
+        sellerName = dto.sellerName;
+      }
+
       const sale = await tx.sale.create({
         data: {
           businessId,
@@ -1038,6 +1073,9 @@ export class SalesService {
           waiterName: dto.waiterName || null,
           vehicleInfo: dto.vehicleInfo || null,
           workshopVehicleId: dto.workshopVehicleId || null,
+          sellerId,
+          sellerName,
+          presaleTicketId: dto.presaleTicketId || null,
           items: { create: processedItems },
           payments: { create: processedPayments },
           subtotal,

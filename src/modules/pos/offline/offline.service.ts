@@ -16,7 +16,7 @@ import { validateProductQuantity, round3 } from "../products/product-unit.util";
 
 import { BatchesService } from "../batches/batches.service";
 import { calculateSaleTotals, RawSaleItemCalculationInput } from "../sales/utils/sale-calculation.util";
-import { ProductFieldDataType } from "@prisma/client";
+import { ProductFieldDataType, UserRole } from "@prisma/client";
 
 @Injectable()
 export class OfflineService {
@@ -57,7 +57,11 @@ export class OfflineService {
     }
 
     const activeTerminals = await this.prisma.posTerminal.findMany({
-      where: { businessId, isActive: true },
+      where: {
+        businessId,
+        isActive: true,
+        terminalType: { not: 'VENDEDOR' },
+      },
       select: { id: true, name: true, deviceIdentifier: true, hasPendingOfflineSales: true, pendingSalesCount: true },
     });
 
@@ -79,8 +83,11 @@ export class OfflineService {
     };
   }
 
-  async registerTerminal(businessId: string, dto: RegisterTerminalDto) {
+  async registerTerminal(businessId: string, dto: RegisterTerminalDto, userRole?: string) {
     this.logger.log(`[registerTerminal] businessId=${businessId} deviceIdentifier=${dto.deviceIdentifier}`);
+
+    const isVendedor = userRole === UserRole.VENDEDOR || dto.terminalType === 'VENDEDOR';
+    const terminalType = isVendedor ? 'VENDEDOR' : (dto.terminalType || 'CAJA');
 
     const existingTerminal = await this.prisma.posTerminal.findUnique({
       where: { businessId_deviceIdentifier: { businessId, deviceIdentifier: dto.deviceIdentifier } },
@@ -91,18 +98,19 @@ export class OfflineService {
         where: { id: existingTerminal.id },
         data: {
           name: dto.name || existingTerminal.name,
+          terminalType: isVendedor ? 'VENDEDOR' : (existingTerminal.terminalType || terminalType),
           lastSeenAt: new Date(),
         },
       });
     }
 
     const willBeActive = dto.isActive !== undefined ? dto.isActive : true;
-    if (willBeActive) {
+    if (willBeActive && terminalType !== 'VENDEDOR') {
       await this.validateNoPendingOfflineSales(businessId, existingTerminal?.id);
     }
 
     const count = await this.prisma.posTerminal.count({ where: { businessId } });
-    const defaultName = `Caja ${count + 1}`;
+    const defaultName = isVendedor ? `Vendedor ${count + 1}` : `Caja ${count + 1}`;
 
     return this.prisma.posTerminal.upsert({
       where: { businessId_deviceIdentifier: { businessId, deviceIdentifier: dto.deviceIdentifier } },
@@ -110,11 +118,13 @@ export class OfflineService {
         businessId,
         deviceIdentifier: dto.deviceIdentifier,
         name: dto.name || defaultName,
+        terminalType,
         isActive: willBeActive,
         lastSeenAt: new Date(),
       },
       update: {
         name: dto.name || undefined,
+        terminalType: isVendedor ? 'VENDEDOR' : undefined,
         isActive: willBeActive,
         lastSeenAt: new Date(),
       },
@@ -622,6 +632,79 @@ export class OfflineService {
             }
           }
 
+          let sellerId: string | null = null;
+          let sellerName: string | null = null;
+          if (saleDto.sellerId) {
+            const seller = await tx.user.findFirst({
+              where: { id: saleDto.sellerId, businessId, isActive: true },
+              select: { id: true, name: true },
+            });
+            if (seller) {
+              sellerId = seller.id;
+              sellerName = seller.name;
+            }
+          } else if (saleDto.sellerName) {
+            sellerName = saleDto.sellerName;
+          }
+
+          let presaleTicketId: string | null = null;
+          let needsReview = false;
+          let reviewReason: string | null = null;
+
+          if (saleDto.presaleTicketId) {
+            const ticket = await tx.presaleTicket.findFirst({
+              where: { id: saleDto.presaleTicketId, businessId },
+            });
+            if (ticket) {
+              if (ticket.status === 'CHARGED') {
+                needsReview = true;
+                reviewReason = `Ticket ${ticket.displayNumber} ya había sido cobrado (posible doble cobro)`;
+                presaleTicketId = null;
+              } else if (ticket.status === 'CANCELLED') {
+                needsReview = true;
+                reviewReason = `Ticket ${ticket.displayNumber} estaba anulado`;
+              } else if (ticket.status === 'EXPIRED') {
+                needsReview = true;
+                reviewReason = `Ticket ${ticket.displayNumber} estaba vencido`;
+              } else {
+                await tx.presaleTicket.update({
+                  where: { id: ticket.id },
+                  data: {
+                    status: 'CHARGED',
+                    chargedAt: validOccurredAt,
+                    chargedById: cashierId,
+                  },
+                });
+                const ticketItems = await tx.presaleTicketItem.findMany({
+                  where: { ticketId: ticket.id },
+                });
+                for (const tItem of ticketItems) {
+                  if (tItem.productId && Number(tItem.reservedQty) > 0) {
+                    await tx.product.update({
+                      where: { id: tItem.productId },
+                      data: { reservedStock: { decrement: Number(tItem.reservedQty) } },
+                    });
+                  }
+                }
+              }
+            } else {
+              needsReview = true;
+              reviewReason = `Ticket ${saleDto.presaleTicketId} no encontrado en el servidor`;
+            }
+          }
+
+          if (needsReview) {
+            discrepancies.push({
+              productId: processedItems[0]?.productId || null,
+              productName: 'Revisión Venta Offline',
+              expectedStock: 0,
+              resultingStock: 0,
+              message: `Revisión requerida: ${reviewReason} (Venta: ${invoiceNumber})`,
+              notes: reviewReason,
+            });
+            finalNotes += ` [REVISIÓN: ${reviewReason}]`;
+          }
+
           const createdSale = await tx.sale.create({
             data: {
               businessId,
@@ -640,7 +723,30 @@ export class OfflineService {
               customerName: saleDto.customerName || null,
               customerPhone: saleDto.customerPhone || null,
               customerRuc: saleDto.customerRuc || null,
-              items: { create: processedItems },
+              sellerId,
+              sellerName,
+              presaleTicketId,
+              needsReview,
+              reviewReason,
+              items: {
+                create: calcResult.lines.map((l, idx) => ({
+                  productId: l.productId,
+                  productName: l.productName,
+                  barcode: l.barcode,
+                  unitPrice: l.unitPrice,
+                  priceTier: l.priceTier,
+                  quantity: l.quantity,
+                  discount: l.discount,
+                  subtotal: l.subtotal,
+                  listPrice: l.listPrice,
+                  listPriceDiscount: l.listPriceDiscount,
+                  manualDiscountShare: l.manualDiscountShare,
+                  taxable: l.taxable,
+                  taxRate: l.taxRate,
+                  taxAmount: l.taxAmount,
+                  origin: (saleDto.items[idx] as any)?.origin || 'CASHIER',
+                })),
+              },
               payments: {
                 create: [
                   {
@@ -813,6 +919,8 @@ export class OfflineService {
           useListPrice: true,
           defaultMarkupPct: true,
           autoUpdatePriceOnPurchase: true,
+          twoStepSaleEnabled: true,
+          twoStepTicketTtlHours: true,
         },
       }),
       this.prisma.productFieldDefinition.findMany({
@@ -894,6 +1002,10 @@ export class OfflineService {
         defaultMarkupPct: business?.defaultMarkupPct != null ? Number(business.defaultMarkupPct) : null,
         auto_update_price_on_purchase: business?.autoUpdatePriceOnPurchase ?? false,
         autoUpdatePriceOnPurchase: business?.autoUpdatePriceOnPurchase ?? false,
+        two_step_sale_enabled: business?.twoStepSaleEnabled ?? false,
+        twoStepSaleEnabled: business?.twoStepSaleEnabled ?? false,
+        two_step_ticket_ttl_hours: business?.twoStepTicketTtlHours ?? 4,
+        twoStepTicketTtlHours: business?.twoStepTicketTtlHours ?? 4,
       };
     }
 
@@ -911,12 +1023,16 @@ export class OfflineService {
       defaultMarkupPct: business?.defaultMarkupPct != null ? Number(business.defaultMarkupPct) : null,
       auto_update_price_on_purchase: business?.autoUpdatePriceOnPurchase ?? false,
       autoUpdatePriceOnPurchase: business?.autoUpdatePriceOnPurchase ?? false,
+      two_step_sale_enabled: business?.twoStepSaleEnabled ?? false,
+      twoStepSaleEnabled: business?.twoStepSaleEnabled ?? false,
+      two_step_ticket_ttl_hours: business?.twoStepTicketTtlHours ?? 4,
+      twoStepTicketTtlHours: business?.twoStepTicketTtlHours ?? 4,
       categories,
       fieldOptions,
       field_options: fieldOptions,
       products: products.map((p) => {
         const isRecipe = Boolean(p.isRecipe);
-        const { recipeComponents, ...rest } = p;
+        const { recipeComponents, reservedStock: _rStock, ...rest } = p;
         return {
           ...rest,
           stock: Number(p.stock),
@@ -940,6 +1056,14 @@ export class OfflineService {
                 next_expiry_date: batchMap.get(p.id)?.nextExpiryDate ?? null,
                 activeBatchCount: batchMap.get(p.id)?.activeBatchCount ?? 0,
                 active_batch_count: batchMap.get(p.id)?.activeBatchCount ?? 0,
+              }
+            : {}),
+          ...(business?.twoStepSaleEnabled
+            ? {
+                reservedStock: Number(p.reservedStock || 0),
+                reserved_stock: Number(p.reservedStock || 0),
+                availableStock: Math.max(0, Number(p.stock) - Number(p.reservedStock || 0)),
+                available_stock: Math.max(0, Number(p.stock) - Number(p.reservedStock || 0)),
               }
             : {}),
           ...(isRecipe && recipeComponents

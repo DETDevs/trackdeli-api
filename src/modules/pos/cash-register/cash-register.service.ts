@@ -476,6 +476,49 @@ export class CashRegisterService {
       reason: finalNotes,
     });
 
+    // 213a: Barrido de vencimiento y corrección de reservas al cerrar caja
+    try {
+      const now = new Date();
+      const expiredTickets = await this.prisma.presaleTicket.findMany({
+        where: { businessId, status: 'PENDING', expiresAt: { lte: now } },
+        select: { id: true },
+      });
+      for (const t of expiredTickets) {
+        await this.prisma.$transaction(async (tx) => {
+          const items = await tx.presaleTicketItem.findMany({
+            where: { ticketId: t.id, removedAt: null },
+          });
+          for (const item of items) {
+            if (item.productId && Number(item.reservedQty) > 0) {
+              await tx.product.update({
+                where: { id: item.productId },
+                data: { reservedStock: { decrement: Number(item.reservedQty) } },
+              });
+            }
+          }
+          await tx.presaleTicket.update({
+            where: { id: t.id },
+            data: { status: 'EXPIRED' },
+          });
+        });
+      }
+
+      await this.prisma.$executeRaw`
+        UPDATE pos_products p
+        SET "reservedStock" = COALESCE((
+          SELECT SUM(ti."reservedQty")
+          FROM pos_presale_ticket_items ti
+          JOIN pos_presale_tickets t ON t.id = ti."ticketId"
+          WHERE ti."productId" = p.id
+            AND t.status = 'PENDING'
+            AND ti."removedAt" IS NULL
+        ), 0)
+        WHERE p."businessId" = ${businessId};
+      `;
+    } catch (err: any) {
+      this.logger.warn(`[close] Error en barrido de preventa al cerrar turno: ${err.message}`);
+    }
+
     const formatted = this.formatRegister(updated);
     return this.obfuscateRegister(formatted, businessId, userRole);
   }

@@ -1,12 +1,16 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger } from "@nestjs/common";
-import { BusinessProductType, CreditAccountStatus, PosPaymentMethod, Prisma } from "@prisma/client";
+import { BusinessProductType, CreditAccountStatus, PosPaymentMethod, Prisma, UserRole } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { BusinessProductsService } from "../../business-products/business-products.service";
+import { JwtPayload } from "../../../common/types/jwt-payload.interface";
 import {
   resolveBusinessDateRange,
   buildBusinessDateRange,
   getHourInTimezone,
   DEFAULT_BUSINESS_TIMEZONE,
+  getStartOfDayInTimezone,
+  getEndOfDayInTimezone,
+  formatDateInTimezone,
 } from "../../../common/utils/date.util";
 
 @Injectable()
@@ -1711,6 +1715,176 @@ export class ReportsService {
         ordersCount: v.ordersCount,
         totalRevenue: Math.round(v.totalRevenue * 100) / 100,
       })),
+    };
+  }
+
+  /**
+   * 213a: Reporte por vendedor
+   * Métricas: tickets enviados, cobrados, anulados, vencidos, % conversión,
+   * monto bruto (solo líneas SELLER), devoluciones descontadas, neto, ticket promedio,
+   * unidades y productos más vendidos.
+   * Días en hora de Managua.
+   */
+  async getSalesBySeller(
+    businessId: string,
+    currentUser: JwtPayload,
+    from?: string,
+    to?: string,
+    targetSellerId?: string,
+  ) {
+    const todayStr = formatDateInTimezone(new Date(), 'America/Managua');
+    const fromDate = getStartOfDayInTimezone(from || todayStr, 'America/Managua');
+    const toDate = getEndOfDayInTimezone(to || todayStr, 'America/Managua');
+
+    // Si el usuario es VENDEDOR, solo ve su propio reporte
+    const isVendedor = currentUser.role === UserRole.VENDEDOR;
+    const filterSellerId = isVendedor ? currentUser.sub : targetSellerId;
+
+    // Obtener los vendedores del negocio
+    const sellersWhere: any = {
+      businessId,
+      role: UserRole.VENDEDOR,
+    };
+    if (filterSellerId) {
+      sellersWhere.id = filterSellerId;
+    }
+
+    const sellers = await this.prisma.user.findMany({
+      where: sellersWhere,
+      select: { id: true, name: true, email: true },
+      orderBy: { name: 'asc' },
+    });
+
+    const results = await Promise.all(
+      sellers.map(async (seller) => {
+        // Tickets del vendedor en el período
+        const tickets = await this.prisma.presaleTicket.findMany({
+          where: {
+            businessId,
+            sellerId: seller.id,
+            sentAt: { gte: fromDate, lte: toDate },
+          },
+          select: {
+            id: true,
+            status: true,
+            total: true,
+          },
+        });
+
+        const ticketsSent = tickets.length;
+        const ticketsCharged = tickets.filter((t) => t.status === 'CHARGED').length;
+        const ticketsCancelled = tickets.filter((t) => t.status === 'CANCELLED').length;
+        const ticketsExpired = tickets.filter((t) => t.status === 'EXPIRED').length;
+        const conversionRate =
+          ticketsSent > 0 ? Math.round((ticketsCharged / ticketsSent) * 10000) / 100 : 0;
+
+        // Ventas asociadas a este vendedor
+        const sales = await this.prisma.sale.findMany({
+          where: {
+            businessId,
+            sellerId: seller.id,
+            createdAt: { gte: fromDate, lte: toDate },
+            status: { not: 'CANCELLED' },
+          },
+          select: {
+            id: true,
+            items: {
+              select: {
+                productId: true,
+                productName: true,
+                quantity: true,
+                subtotal: true,
+                origin: true,
+              },
+            },
+          },
+        });
+
+        // Monto bruto: solo líneas SELLER
+        let grossSales = 0;
+        let unitsSold = 0;
+        const productStats = new Map<
+          string,
+          { productId: string; productName: string; quantity: number; subtotal: number }
+        >();
+
+        for (const sale of sales) {
+          for (const item of sale.items) {
+            if (item.origin === 'SELLER') {
+              const sub = Number(item.subtotal);
+              const qty = Number(item.quantity);
+              grossSales += sub;
+              unitsSold += qty;
+
+              const key = item.productId || item.productName;
+              const existing = productStats.get(key) || {
+                productId: item.productId || '',
+                productName: item.productName,
+                quantity: 0,
+                subtotal: 0,
+              };
+              existing.quantity += qty;
+              existing.subtotal += sub;
+              productStats.set(key, existing);
+            }
+          }
+        }
+
+        // Devoluciones descontadas
+        const saleIds = sales.map((s) => s.id);
+        let returnsAmount = 0;
+        if (saleIds.length > 0) {
+          const returns = await this.prisma.saleReturn.findMany({
+            where: {
+              businessId,
+              saleId: { in: saleIds },
+              createdAt: { gte: fromDate, lte: toDate },
+            },
+            select: { refundAmount: true },
+          });
+          returnsAmount = returns.reduce((sum, r) => sum + Number(r.refundAmount || 0), 0);
+        }
+
+        const netSales = Math.max(0, Math.round((grossSales - returnsAmount) * 100) / 100);
+        const salesCount = sales.length;
+        const averageTicket =
+          salesCount > 0 ? Math.round((netSales / salesCount) * 100) / 100 : 0;
+
+        const topProducts = Array.from(productStats.values())
+          .sort((a, b) => b.quantity - a.quantity)
+          .slice(0, 10)
+          .map((p) => ({
+            productId: p.productId,
+            productName: p.productName,
+            units: Math.round(p.quantity * 1000) / 1000,
+            revenue: Math.round(p.subtotal * 100) / 100,
+          }));
+
+        return {
+          sellerId: seller.id,
+          sellerName: seller.name || seller.email,
+          ticketsSent,
+          ticketsCharged,
+          ticketsCancelled,
+          ticketsExpired,
+          conversionRate,
+          grossSales: Math.round(grossSales * 100) / 100,
+          returnsDiscounted: Math.round(returnsAmount * 100) / 100,
+          netSales,
+          salesCount,
+          averageTicket,
+          unitsSold: Math.round(unitsSold * 1000) / 1000,
+          topProducts,
+        };
+      }),
+    );
+
+    return {
+      period: {
+        from: formatDateInTimezone(fromDate, 'America/Managua'),
+        to: formatDateInTimezone(toDate, 'America/Managua'),
+      },
+      sellers: results,
     };
   }
 }

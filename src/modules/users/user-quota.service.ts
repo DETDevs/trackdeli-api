@@ -22,7 +22,7 @@ export class UserQuotaService {
       where: {
         businessId,
         isActive: true,
-        role: { in: [UserRole.ENCARGADO, UserRole.CAJERO] },
+        role: { in: [UserRole.ENCARGADO, UserRole.CAJERO, UserRole.VENDEDOR] },
       },
     });
 

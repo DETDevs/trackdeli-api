@@ -28,6 +28,11 @@ export class RolesGuard implements CanActivate {
       return !!requiredRoles && requiredRoles.includes(UserRole.WAITER);
     }
 
+    // Role VENDEDOR has strictly limited access (213a): ONLY endpoints explicitly marked with VENDEDOR are accessible
+    if (user.role === UserRole.VENDEDOR) {
+      return !!requiredRoles && requiredRoles.includes(UserRole.VENDEDOR);
+    }
+
     if (!requiredRoles) {
       return true;
     }

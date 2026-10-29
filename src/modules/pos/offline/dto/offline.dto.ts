@@ -26,6 +26,10 @@ export class RegisterTerminalDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
+  terminalType?: string;
 }
 
 export class UpdateTerminalStatusDto {
@@ -98,6 +102,18 @@ export class SyncOfflineSaleItemDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerId?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerName?: string;
+
+  @IsOptional()
+  @IsString()
+  presaleTicketId?: string;
 }
 
 export class SyncOfflineBatchDto {

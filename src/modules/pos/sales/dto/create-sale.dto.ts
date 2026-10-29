@@ -54,6 +54,10 @@ export class CreateSaleItemDto {
   @IsOptional()
   @IsBoolean()
   taxable?: boolean;
+
+  @IsOptional()
+  @IsString()
+  origin?: string;
 }
 
 export class PaymentDto {
@@ -250,4 +254,16 @@ export class CreateSaleDto {
   @IsOptional()
   @IsString()
   approvalToken?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerId?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerName?: string;
+
+  @IsOptional()
+  @IsString()
+  presaleTicketId?: string;
 }

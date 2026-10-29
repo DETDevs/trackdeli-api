@@ -124,8 +124,16 @@ export class PosUsersService {
     if (dto.role === UserRole.WAITER) {
       throw new UnprocessableEntityException('Los meseros se gestionan en su propia sección (pos_waiters). No se permite crear rol WAITER aquí.');
     }
-    if (dto.role !== UserRole.CAJERO) {
-      throw new UnprocessableEntityException('Rol inválido. Solo puede crear CAJERO.');
+    if (dto.role === UserRole.VENDEDOR) {
+      const business = await this.prisma.business.findUnique({
+        where: { id: businessId },
+        select: { twoStepSaleEnabled: true },
+      });
+      if (!business?.twoStepSaleEnabled) {
+        throw new BadRequestException('El modo Venta en dos pasos no está habilitado para este negocio. No se pueden crear usuarios con rol VENDEDOR.');
+      }
+    } else if (dto.role !== UserRole.CAJERO) {
+      throw new UnprocessableEntityException('Rol inválido. Solo puede crear CAJERO o VENDEDOR.');
     }
     
     await this.quotaService.checkQuota(businessId);
@@ -184,8 +192,16 @@ export class PosUsersService {
       if (dto.role === UserRole.WAITER) {
         throw new UnprocessableEntityException('Los meseros se gestionan en su propia sección (pos_waiters). No se permite asignar rol WAITER aquí.');
       }
-      if (dto.role !== UserRole.CAJERO) {
-        throw new UnprocessableEntityException('Solo puede cambiar el rol a CAJERO');
+      if (dto.role === UserRole.VENDEDOR) {
+        const business = await this.prisma.business.findUnique({
+          where: { id: businessId },
+          select: { twoStepSaleEnabled: true },
+        });
+        if (!business?.twoStepSaleEnabled) {
+          throw new BadRequestException('El modo Venta en dos pasos no está habilitado para este negocio. No se puede asignar el rol VENDEDOR.');
+        }
+      } else if (dto.role !== UserRole.CAJERO) {
+        throw new UnprocessableEntityException('Solo puede cambiar el rol a CAJERO o VENDEDOR');
       }
       updateData.role = dto.role;
     }

@@ -31,9 +31,9 @@ export class ProductsService {
     private readonly batchesService: BatchesService,
   ) { }
 
-  private mapProductWithInventory(product: any) {
+  private mapProductWithInventory(product: any, twoStepSaleEnabled?: boolean) {
     if (!product) return product;
-    const { recipeComponents: rawComponents, ...rest } = product;
+    const { recipeComponents: rawComponents, reservedStock: _rStock, ...rest } = product;
     const isRecipe = Boolean(product.isRecipe);
     const components = rawComponents
       ? rawComponents.map((c: any) => ({
@@ -49,9 +49,10 @@ export class ProductsService {
         }))
       : undefined;
 
-    return {
+    const stock = product.stock != null ? Number(product.stock) : 0;
+    const mapped: any = {
       ...rest,
-      stock: product.stock != null ? Number(product.stock) : 0,
+      stock,
       minStock: product.minStock != null ? Number(product.minStock) : 0,
       maxStock: product.maxStock != null ? Number(product.maxStock) : null,
       unit: product.unit || 'UND',
@@ -59,9 +60,23 @@ export class ProductsService {
       isRecipe,
       ...(isRecipe && components ? { components } : {}),
     };
+
+    if (twoStepSaleEnabled) {
+      const reserved = product.reservedStock != null ? Number(product.reservedStock) : 0;
+      mapped.reservedStock = reserved;
+      mapped.availableStock = Math.max(0, stock - reserved);
+    }
+
+    return mapped;
   }
 
-  private filterActiveAttributes(product: any, activeKeys: Set<string>, userRole?: string, wholesaleEnabled?: boolean) {
+  private filterActiveAttributes(
+    product: any,
+    activeKeys: Set<string>,
+    userRole?: string,
+    wholesaleEnabled?: boolean,
+    twoStepSaleEnabled?: boolean,
+  ) {
     if (!product) return product;
     const rawAttrs =
       product.attributes && typeof product.attributes === 'object' && !Array.isArray(product.attributes)
@@ -86,8 +101,14 @@ export class ProductsService {
       ? Boolean(product.business.wholesaleEnabled)
       : false;
 
+    const isTwoStepEnabled = twoStepSaleEnabled !== undefined
+      ? Boolean(twoStepSaleEnabled)
+      : product.business?.twoStepSaleEnabled !== undefined
+      ? Boolean(product.business.twoStepSaleEnabled)
+      : false;
+
     const mapped = {
-      ...this.mapProductWithInventory(product),
+      ...this.mapProductWithInventory(product, isTwoStepEnabled),
       attributes: filteredAttrs,
       wholesalePrice: wholesale_price,
       wholesaleMinQty: wholesale_min_qty,
@@ -97,7 +118,7 @@ export class ProductsService {
       wholesaleEnabled: isWholesaleEnabled,
     };
 
-    if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
+    if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER || userRole === UserRole.VENDEDOR) {
       delete mapped.cost;
     }
 
@@ -407,7 +428,7 @@ export class ProductsService {
       }),
       this.prisma.business.findUnique({
         where: { id: businessId },
-        select: { wholesaleEnabled: true, tracksBatches: true },
+        select: { wholesaleEnabled: true, tracksBatches: true, twoStepSaleEnabled: true },
       }),
     ]);
 
@@ -464,7 +485,7 @@ export class ProductsService {
     const todayMs = new Date(todayStr + 'T00:00:00.000Z').getTime();
 
     let mapped = products.map((p) => {
-      const item = this.filterActiveAttributes(p, activeKeys, userRole, business?.wholesaleEnabled);
+      const item = this.filterActiveAttributes(p, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled);
       if (business?.tracksBatches) {
         const b = batchMap.get(p.id);
         item.nextExpiryDate = b?.nextExpiryDate ?? null;
@@ -560,10 +581,10 @@ export class ProductsService {
 
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { wholesaleEnabled: true, tracksBatches: true },
+      select: { wholesaleEnabled: true, tracksBatches: true, twoStepSaleEnabled: true },
     });
 
-    const item = this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled);
+    const item = this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled);
 
     if (business?.tracksBatches) {
       const batchAggs: any[] = await this.prisma.$queryRaw`
@@ -610,10 +631,10 @@ export class ProductsService {
 
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { wholesaleEnabled: true },
+      select: { wholesaleEnabled: true, twoStepSaleEnabled: true },
     });
 
-    return this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled);
+    return this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled);
   }
 
   async create(dto: CreateProductDto, businessId: string, userId?: string) {

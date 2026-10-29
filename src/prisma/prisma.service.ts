@@ -2310,6 +2310,7 @@ WHERE a."customerId" = c."id"
       await this.ensureCreditInstallmentsSchema();
       await this.ensureReceiptLinksSchema();
       await this.ensureProductTaxAndMarkupSchema();
+      await this.ensureTwoStepSaleSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -3491,6 +3492,217 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 206a - Advertencia sincronizando esquema de precio e impuesto: ${err.message}`);
+    }
+  }
+
+  /**
+   * 213a - Venta en dos pasos (rol Vendedor, ticket por cobrar, reserva de stock):
+   * - UserRole enum: VENDEDOR
+   * - businesses: twoStepSaleEnabled (boolean default false), twoStepTicketTtlHours (int default 4)
+   * - pos_products: reservedStock (numeric(12, 3) default 0)
+   * - pos_terminals: terminalType (varchar(20) default 'CAJA')
+   * - pos_sales: sellerId, sellerName, presaleTicketId, needsReview, reviewReason
+   * - pos_sale_items: origin (varchar(20) default 'SELLER')
+   * - pos_presale_counters, pos_presale_tickets, pos_presale_ticket_items, pos_presale_ticket_events
+   * DDL idempotente con advisory lock 2130100.
+   */
+  private async ensureTwoStepSaleSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(2130100)`);
+
+          // 1. Enum UserRole
+          await tx.$executeRawUnsafe(`ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'VENDEDOR'`);
+
+          // 2. businesses
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "twoStepSaleEnabled" BOOLEAN NOT NULL DEFAULT false`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "twoStepTicketTtlHours" INTEGER NOT NULL DEFAULT 4`,
+          );
+
+          // 3. pos_products
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "reservedStock" NUMERIC(12, 3) NOT NULL DEFAULT 0`,
+          );
+
+          // 4. pos_terminals
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_terminals" ADD COLUMN IF NOT EXISTS "terminalType" VARCHAR(20) NOT NULL DEFAULT 'CAJA'`,
+          );
+          await tx.$executeRawUnsafe(
+            `UPDATE "pos_terminals" SET "terminalType" = 'CAJA' WHERE "terminalType" IS NULL`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_terminals" ALTER COLUMN "terminalType" SET DEFAULT 'CAJA'`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_terminals" ALTER COLUMN "terminalType" SET NOT NULL`,
+          );
+
+          // 5. pos_sale_items
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "origin" VARCHAR(20) NOT NULL DEFAULT 'SELLER'`,
+          );
+
+          // 6. pos_presale_counters
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_presale_counters" (
+              "businessId" TEXT NOT NULL,
+              "businessDate" DATE NOT NULL,
+              "lastNumber" INTEGER NOT NULL DEFAULT 0,
+              CONSTRAINT "pos_presale_counters_pkey" PRIMARY KEY ("businessId", "businessDate"),
+              CONSTRAINT "pos_presale_counters_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            )
+          `);
+
+          // 7. pos_presale_tickets
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_presale_tickets" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "number" INTEGER NOT NULL,
+              "businessDate" DATE NOT NULL,
+              "displayNumber" VARCHAR(20) NOT NULL,
+              "scanCode" VARCHAR(50) NOT NULL,
+              "status" VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+              "sellerId" TEXT NOT NULL,
+              "sellerName" VARCHAR(100) NOT NULL,
+              "sellerDeviceId" VARCHAR(100),
+              "customerId" TEXT,
+              "customerName" VARCHAR(100),
+              "notes" TEXT,
+              "subtotal" NUMERIC(12, 2) NOT NULL DEFAULT 0,
+              "discountAmount" NUMERIC(12, 2) NOT NULL DEFAULT 0,
+              "taxAmount" NUMERIC(12, 2) NOT NULL DEFAULT 0,
+              "total" NUMERIC(12, 2) NOT NULL DEFAULT 0,
+              "listPriceTotal" NUMERIC(12, 2) DEFAULT 0,
+              "sentAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "expiresAt" TIMESTAMP(3) NOT NULL,
+              "claimedById" TEXT,
+              "claimedAt" TIMESTAMP(3),
+              "chargedAt" TIMESTAMP(3),
+              "chargedById" TEXT,
+              "saleId" TEXT,
+              "cancelledAt" TIMESTAMP(3),
+              "cancelledById" TEXT,
+              "cancelReason" TEXT,
+              "version" INTEGER NOT NULL DEFAULT 1,
+              "clientRequestId" VARCHAR(100),
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_presale_tickets_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_presale_tickets_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_presale_tickets_sellerId_fkey" FOREIGN KEY ("sellerId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+              CONSTRAINT "pos_presale_tickets_claimedById_fkey" FOREIGN KEY ("claimedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+              CONSTRAINT "pos_presale_tickets_chargedById_fkey" FOREIGN KEY ("chargedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+              CONSTRAINT "pos_presale_tickets_cancelledById_fkey" FOREIGN KEY ("cancelledById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+              CONSTRAINT "pos_presale_tickets_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE SET NULL ON UPDATE CASCADE
+            )
+          `);
+
+          await tx.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "pos_presale_tickets_scanCode_key" ON "pos_presale_tickets"("scanCode")`);
+          await tx.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "pos_presale_tickets_businessId_businessDate_number_key" ON "pos_presale_tickets"("businessId", "businessDate", "number")`);
+          await tx.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "pos_presale_tickets_businessId_clientRequestId_key" ON "pos_presale_tickets"("businessId", "clientRequestId")`);
+          await tx.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "pos_presale_tickets_businessId_status_idx" ON "pos_presale_tickets"("businessId", "status")`);
+          await tx.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "pos_presale_tickets_businessId_sellerId_idx" ON "pos_presale_tickets"("businessId", "sellerId")`);
+          await tx.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "pos_presale_tickets_businessId_businessDate_idx" ON "pos_presale_tickets"("businessId", "businessDate")`);
+
+          // 8. pos_presale_ticket_items
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_presale_ticket_items" (
+              "id" TEXT NOT NULL,
+              "ticketId" TEXT NOT NULL,
+              "productId" TEXT,
+              "productName" VARCHAR(200) NOT NULL,
+              "barcode" VARCHAR(100),
+              "quantity" NUMERIC(12, 3) NOT NULL,
+              "reservedQty" NUMERIC(12, 3) NOT NULL DEFAULT 0,
+              "unitPrice" NUMERIC(12, 2) NOT NULL,
+              "priceTier" VARCHAR(30) NOT NULL DEFAULT 'RETAIL',
+              "listPrice" NUMERIC(12, 2),
+              "listPriceDiscount" NUMERIC(12, 2) DEFAULT 0,
+              "taxable" BOOLEAN NOT NULL DEFAULT false,
+              "taxRate" NUMERIC(5, 2) NOT NULL DEFAULT 0,
+              "discount" NUMERIC(12, 2) NOT NULL DEFAULT 0,
+              "subtotal" NUMERIC(12, 2) NOT NULL,
+              "origin" VARCHAR(20) NOT NULL DEFAULT 'SELLER',
+              "removedAt" TIMESTAMP(3),
+              "removedById" TEXT,
+              "removedReason" TEXT,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_presale_ticket_items_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_presale_ticket_items_ticketId_fkey" FOREIGN KEY ("ticketId") REFERENCES "pos_presale_tickets"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_presale_ticket_items_productId_fkey" FOREIGN KEY ("productId") REFERENCES "pos_products"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+              CONSTRAINT "pos_presale_ticket_items_removedById_fkey" FOREIGN KEY ("removedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE
+            )
+          `);
+
+          await tx.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "pos_presale_ticket_items_ticketId_idx" ON "pos_presale_ticket_items"("ticketId")`);
+          await tx.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "pos_presale_ticket_items_productId_idx" ON "pos_presale_ticket_items"("productId")`);
+
+          // 9. pos_presale_ticket_events
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_presale_ticket_events" (
+              "id" TEXT NOT NULL,
+              "ticketId" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "eventType" VARCHAR(30) NOT NULL,
+              "userId" TEXT,
+              "userRole" VARCHAR(30),
+              "details" JSONB,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_presale_ticket_events_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_presale_ticket_events_ticketId_fkey" FOREIGN KEY ("ticketId") REFERENCES "pos_presale_tickets"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_presale_ticket_events_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE
+            )
+          `);
+
+          await tx.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "pos_presale_ticket_events_ticketId_idx" ON "pos_presale_ticket_events"("ticketId")`);
+          await tx.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "pos_presale_ticket_events_businessId_eventType_idx" ON "pos_presale_ticket_events"("businessId", "eventType")`);
+
+          // 10. pos_sales columns
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "sellerId" TEXT`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "sellerName" VARCHAR(100)`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "presaleTicketId" TEXT`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "needsReview" BOOLEAN NOT NULL DEFAULT false`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "reviewReason" TEXT`,
+          );
+          await tx.$executeRawUnsafe(
+            `CREATE UNIQUE INDEX IF NOT EXISTS "pos_sales_presaleTicketId_key" ON "pos_sales"("presaleTicketId")`,
+          );
+
+          // 11. Recalcular reservedStock = suma de líneas activas al arrancar
+          await tx.$executeRawUnsafe(`
+            UPDATE pos_products p
+            SET "reservedStock" = COALESCE((
+              SELECT SUM(ti."reservedQty")
+              FROM pos_presale_ticket_items ti
+              JOIN pos_presale_tickets t ON t.id = ti."ticketId"
+              WHERE ti."productId" = p.id
+                AND t.status = 'PENDING'
+                AND ti."removedAt" IS NULL
+            ), 0);
+          `);
+
+          this.logger.log('[PrismaService] ✓ 213a - Esquema de Venta en dos pasos (tickets, items, reservas, eventos) sincronizado');
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 213a - Advertencia sincronizando esquema de venta en dos pasos: ${err.message}`);
     }
   }
 

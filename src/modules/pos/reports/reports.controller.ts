@@ -267,4 +267,16 @@ export class ReportsController {
   ) {
     return this.batchesService.getExpiredLoss(resolveBusinessId(user, qBid), { from, to });
   }
+
+  @Get("sales-by-seller")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
+  salesBySeller(
+    @CurrentUser() user: JwtPayload,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("sellerId") sellerId?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getSalesBySeller(resolveBusinessId(user, qBid), user, from, to, sellerId);
+  }
 }

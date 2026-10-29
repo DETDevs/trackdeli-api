@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -44,14 +45,28 @@ export class AdminUsersService {
     let targetRole: UserRole = dto.role;
 
     if (currentUser.role === UserRole.ENCARGADO) {
-      if (dto.role !== UserRole.CAJERO) {
-        throw new ForbiddenException('El encargado solo puede crear usuarios con rol CAJERO');
+      if (dto.role === UserRole.VENDEDOR) {
+        if (!currentUser.businessId) {
+          throw new ForbiddenException('El usuario encargado no tiene un negocio asignado');
+        }
+        const business = await this.prisma.business.findUnique({
+          where: { id: currentUser.businessId },
+          select: { twoStepSaleEnabled: true },
+        });
+        if (!business?.twoStepSaleEnabled) {
+          throw new BadRequestException('El modo Venta en dos pasos no está habilitado para este negocio. No se pueden crear usuarios con rol VENDEDOR.');
+        }
+        targetBusinessId = currentUser.businessId;
+        targetRole = UserRole.VENDEDOR;
+      } else if (dto.role === UserRole.CAJERO) {
+        if (!currentUser.businessId) {
+          throw new ForbiddenException('El usuario encargado no tiene un negocio asignado');
+        }
+        targetBusinessId = currentUser.businessId;
+        targetRole = UserRole.CAJERO;
+      } else {
+        throw new ForbiddenException('El encargado solo puede crear usuarios con rol CAJERO o VENDEDOR');
       }
-      if (!currentUser.businessId) {
-        throw new ForbiddenException('El usuario encargado no tiene un negocio asignado');
-      }
-      targetBusinessId = currentUser.businessId;
-      targetRole = UserRole.CAJERO;
     } else if (currentUser.role === UserRole.SUPERADMIN) {
       targetBusinessId = dto.businessId || null;
       targetRole = dto.role;
@@ -59,7 +74,7 @@ export class AdminUsersService {
       throw new ForbiddenException('No tienes permisos para crear usuarios');
     }
 
-    if (targetBusinessId && (targetRole === UserRole.ENCARGADO || targetRole === UserRole.CAJERO)) {
+    if (targetBusinessId && (targetRole === UserRole.ENCARGADO || targetRole === UserRole.CAJERO || targetRole === UserRole.VENDEDOR)) {
       await this.userQuotaService.checkQuota(targetBusinessId);
     }
 
@@ -131,8 +146,8 @@ export class AdminUsersService {
     }
 
     if (currentUser.role === UserRole.ENCARGADO) {
-      if (targetUser.role !== UserRole.CAJERO || targetUser.businessId !== currentUser.businessId) {
-        throw new ForbiddenException('Solo puedes cambiar la contraseña de cajeros pertenecientes a tu negocio');
+      if ((targetUser.role !== UserRole.CAJERO && targetUser.role !== UserRole.VENDEDOR) || targetUser.businessId !== currentUser.businessId) {
+        throw new ForbiddenException('Solo puedes cambiar la contraseña de cajeros y vendedores pertenecientes a tu negocio');
       }
     } else if (currentUser.role !== UserRole.SUPERADMIN) {
       throw new ForbiddenException('No tienes permisos para cambiar contraseñas');
@@ -174,8 +189,8 @@ export class AdminUsersService {
     }
 
     if (currentUser.role === UserRole.ENCARGADO) {
-      if (targetUser.role !== UserRole.CAJERO || targetUser.businessId !== currentUser.businessId) {
-        throw new ForbiddenException('Solo puedes modificar el estado de cajeros pertenecientes a tu negocio');
+      if ((targetUser.role !== UserRole.CAJERO && targetUser.role !== UserRole.VENDEDOR) || targetUser.businessId !== currentUser.businessId) {
+        throw new ForbiddenException('Solo puedes modificar el estado de cajeros y vendedores pertenecientes a tu negocio');
       }
     } else if (currentUser.role !== UserRole.SUPERADMIN) {
       throw new ForbiddenException('No tienes permisos para modificar usuarios');

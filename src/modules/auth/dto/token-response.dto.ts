@@ -27,6 +27,8 @@ export class TokenResponseDto {
       useListPrice?: boolean;
       defaultMarkupPct?: number | null;
       autoUpdatePriceOnPurchase?: boolean;
+      twoStepSaleEnabled?: boolean;
+      twoStepTicketTtlHours?: number;
     } | null;
     salonProfile?: string | null;
     salonLabels?: any;

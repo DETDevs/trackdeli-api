@@ -206,6 +206,16 @@ export class UpdateBusinessDto {
 
   @IsOptional()
   @IsBoolean()
+  twoStepSaleEnabled?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(72)
+  twoStepTicketTtlHours?: number;
+
+  @IsOptional()
+  @IsBoolean()
   confirm?: boolean;
 }
 

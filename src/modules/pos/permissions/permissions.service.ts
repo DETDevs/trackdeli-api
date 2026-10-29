@@ -87,8 +87,8 @@ export class PosPermissionsService {
       }
     }
 
-    if (role === UserRole.WAITER) {
-      // WAITER solo puede tomar pedido, pero eso está modelado en TableOrders (fuera de control de dinero estricto por ahora)
+    if (role === UserRole.WAITER || role === UserRole.VENDEDOR) {
+      // WAITER y VENDEDOR no tienen permisos directos sobre acciones de caja o dinero
       return false;
     }
 

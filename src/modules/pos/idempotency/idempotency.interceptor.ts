@@ -21,7 +21,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
   async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<any>> {
     const request = context.switchToHttp().getRequest();
-    const idempotencyKey = request.headers['idempotency-key'];
+    const idempotencyKey =
+      (request.headers['idempotency-key'] as string | undefined) ||
+      (request.headers['x-client-request-id'] as string | undefined);
 
     // Si no hay llave, simplemente procesa la solicitud
     if (!idempotencyKey) {

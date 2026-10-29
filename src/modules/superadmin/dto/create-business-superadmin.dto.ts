@@ -158,6 +158,15 @@ export class CreateBusinessSuperAdminDto {
   @IsBoolean()
   autoUpdatePriceOnPurchase?: boolean;
 
+  @IsOptional()
+  @IsBoolean()
+  twoStepSaleEnabled?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  twoStepTicketTtlHours?: number;
+
   @IsObject()
   @IsOptional()
   @ValidateNested()

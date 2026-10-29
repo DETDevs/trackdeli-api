@@ -171,6 +171,18 @@ export class ClientVersionService {
     };
   }
 
+  async isTwoStepSaleEnabled(businessId: string): Promise<boolean> {
+    try {
+      const b = await this.prisma.business.findUnique({
+        where: { id: businessId },
+        select: { twoStepSaleEnabled: true },
+      });
+      return Boolean(b?.twoStepSaleEnabled);
+    } catch {
+      return false;
+    }
+  }
+
   private getEnvMinVersion(platform: string): string {
     const specificKey = `MIN_CLIENT_VERSION_${platform.replace(/[-]/g, '_').toUpperCase()}`;
     return (
