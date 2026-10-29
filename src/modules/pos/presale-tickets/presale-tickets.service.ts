@@ -1,4 +1,4 @@
-﻿import {
+import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -203,7 +203,7 @@ export class PresaleTicketsService {
       for (const item of dto.items) {
         const product = productMap.get(item.productId);
         if (!product) {
-          throw new NotFoundException(`Producto ${item.productId} no encontrado`);
+          throw new NotFoundException('Producto no encontrado');
         }
 
         const requestedQty = Number(item.quantity);
@@ -316,6 +316,23 @@ export class PresaleTicketsService {
 
       const sellerName = user.name || user.email || 'Vendedor';
 
+      // Validar cliente si viene especificado
+      let targetCustomerId: string | null = null;
+      let targetCustomerName = dto.customerName || null;
+      if (dto.customerId && dto.customerId.trim()) {
+        const customer = await tx.customer.findFirst({
+          where: { id: dto.customerId.trim(), businessId },
+          select: { id: true, name: true },
+        });
+        if (!customer) {
+          throw new NotFoundException('Cliente no encontrado');
+        }
+        targetCustomerId = customer.id;
+        if (!targetCustomerName) {
+          targetCustomerName = customer.name;
+        }
+      }
+
       // 7. Crear el ticket
       const ticket = await tx.presaleTicket.create({
         data: {
@@ -328,8 +345,8 @@ export class PresaleTicketsService {
           sellerId: user.sub,
           sellerName,
           sellerDeviceId: dto.sellerDeviceId || null,
-          customerId: dto.customerId || null,
-          customerName: dto.customerName || null,
+          customerId: targetCustomerId,
+          customerName: targetCustomerName,
           notes: dto.notes || null,
           subtotal: totals.subtotal,
           discountAmount: totals.discountAmount,
@@ -1021,7 +1038,27 @@ export class PresaleTicketsService {
         throw new BadRequestException('El ticket no contiene productos activos para cobrar');
       }
 
-      // 3. Construir CreateSaleDto para SalesService.create
+      // 3. Validar cliente si aplica y construir CreateSaleDto para SalesService.create
+      const rawCustomerId = (dto.customerId || ticket.customerId || '').trim();
+      let customerName = dto.customerName || ticket.customerName || null;
+      let customerPhone = dto.customerPhone || ticket.customerPhone || null;
+      let customerRuc = dto.customerRuc || null;
+      let customerId: string | null = null;
+
+      if (rawCustomerId) {
+        const customer = await tx.customer.findFirst({
+          where: { id: rawCustomerId, businessId },
+          select: { id: true, name: true, phone: true, ruc: true },
+        });
+        if (!customer) {
+          throw new NotFoundException('Cliente no encontrado');
+        }
+        customerId = customer.id;
+        if (!customerName) customerName = customer.name;
+        if (!customerPhone) customerPhone = customer.phone;
+        if (!customerRuc) customerRuc = customer.ruc;
+      }
+
       const saleDto: any = {
         cashRegisterId: dto.cashRegisterId,
         paymentMethod: dto.paymentMethod,
@@ -1029,10 +1066,10 @@ export class PresaleTicketsService {
         payments: dto.payments,
         discountAmount: dto.discountAmount || 0,
         creditPlan: dto.creditPlan,
-        customerId: dto.customerId || ticket.customerId || null,
-        customerName: dto.customerName || ticket.customerName || null,
-        customerPhone: dto.customerPhone || ticket.customerPhone || null,
-        customerRuc: dto.customerRuc || null,
+        customerId,
+        customerName,
+        customerPhone,
+        customerRuc,
         notes: dto.notes
           ? `${dto.notes} [Ticket ${ticket.displayNumber}]`
           : `[Ticket ${ticket.displayNumber}]`,
