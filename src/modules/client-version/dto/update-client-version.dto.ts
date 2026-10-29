@@ -22,13 +22,19 @@ export class IsSemverOrEmptyConstraint implements ValidatorConstraintInterface {
 }
 
 export class UpdateClientVersionDto {
+  @IsOptional()
   @IsString()
   @Validate(IsSemverOrEmptyConstraint)
-  minVersion: string;
+  minVersion?: string;
 
   @IsOptional()
   @IsString()
   platform?: string;
+
+  @IsOptional()
+  @IsString()
+  @Validate(IsSemverOrEmptyConstraint)
+  twoStepMinVersion?: string;
 
   @IsOptional()
   @IsString()

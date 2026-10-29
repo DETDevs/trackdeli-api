@@ -1,4 +1,4 @@
-import {
+﻿import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -151,7 +151,7 @@ export class PresaleTicketsService {
       `;
       const dailyNumber = Number(counterResult[0]?.lastNumber || 1);
       const displayNumber = `P-${String(dailyNumber).padStart(4, '0')}`;
-      const randomSuffix = Math.random().toString(36).substring(2, 7).toUpperCase();
+      const randomSuffix = `${Date.now().toString(36).slice(-4).toUpperCase()}${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
       const scanCode = `TK-${displayNumber}-${randomSuffix}`;
 
       // 5. Reserva de stock atómica: ordenar IDs para evitar interbloqueos
@@ -392,13 +392,15 @@ export class PresaleTicketsService {
    * Consulta tickets pendientes (para la caja con polling liviano).
    * Ejecuta barrido perezoso de vencidos.
    */
-  async findPending(businessId: string) {
+  async findPending(businessId: string, status?: string) {
     await this.sweepExpirations(businessId);
+
+    const targetStatus = status ? status.toUpperCase() : 'PENDING';
 
     const tickets = await this.prisma.presaleTicket.findMany({
       where: {
         businessId,
-        status: 'PENDING',
+        status: targetStatus,
       },
       include: {
         items: {
@@ -420,8 +422,14 @@ export class PresaleTicketsService {
         now - new Date(t.claimedAt!).getTime() < 2 * 60 * 1000;
 
       const formatted = formatTicketWithItems(t);
+      const activeItems = (t.items || []).filter((i: any) => !i.removedAt);
+      const itemsCount = activeItems.length;
+      const ageSeconds = Math.max(0, Math.floor((now - new Date(t.sentAt).getTime()) / 1000));
+
       return {
         ...formatted,
+        itemsCount,
+        ageSeconds,
         isClaimed: isClaimedActive,
         claimedByName: isClaimedActive ? (t.claimedBy?.name || t.claimedBy?.email || 'Otro cajero') : null,
       };
@@ -486,7 +494,7 @@ export class PresaleTicketsService {
   /**
    * Consulta un ticket por ID.
    */
-  async findById(businessId: string, id: string) {
+  async findById(businessId: string, id: string, user?: any) {
     const ticket = await this.prisma.presaleTicket.findFirst({
       where: { id, businessId },
       include: {
@@ -502,10 +510,14 @@ export class PresaleTicketsService {
 
     if (!ticket) throw new NotFoundException('Ticket por cobrar no encontrado');
 
+    if (user?.role === UserRole.VENDEDOR && ticket.sellerId !== user.sub) {
+      throw new NotFoundException('Ticket por cobrar no encontrado');
+    }
+
     // Si está pendiente pero expiró, ejecutar barrido
     if (ticket.status === 'PENDING' && ticket.expiresAt.getTime() <= Date.now()) {
       await this.sweepExpirations(businessId);
-      return this.findById(businessId, id);
+      return this.findById(businessId, id, user);
     }
 
     return formatTicketWithItems(ticket);
@@ -514,16 +526,29 @@ export class PresaleTicketsService {
   /**
    * Consulta un ticket por código de barras o displayNumber (ej. TK-P-0042-... o P-0042).
    */
-  async findByCode(businessId: string, code: string) {
+  async findByCode(businessId: string, code: string, user?: any) {
     const normalized = code.trim();
-    const ticket = await this.prisma.presaleTicket.findFirst({
-      where: {
+    const isScanCode = normalized.toUpperCase().startsWith('TK-');
+
+    let where: any;
+    if (isScanCode) {
+      where = {
         businessId,
-        OR: [
-          { scanCode: normalized },
-          { displayNumber: normalized.toUpperCase() },
-        ],
-      },
+        scanCode: normalized,
+      };
+    } else {
+      const todayStr = formatDateInTimezone(new Date(), 'America/Managua');
+      const today = parseLocalDateToUtc(todayStr, '00:00:00.000', 'America/Managua');
+      where = {
+        businessId,
+        displayNumber: normalized.toUpperCase(),
+        businessDate: today,
+        status: { notIn: ['CANCELLED', 'EXPIRED'] },
+      };
+    }
+
+    const ticket = await this.prisma.presaleTicket.findFirst({
+      where,
       include: {
         items: {
           include: {
@@ -532,13 +557,18 @@ export class PresaleTicketsService {
         },
         events: { orderBy: { createdAt: 'asc' } },
       },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (!ticket) throw new NotFoundException('Ticket no encontrado');
 
+    if (user?.role === UserRole.VENDEDOR && ticket.sellerId !== user.sub) {
+      throw new NotFoundException('Ticket no encontrado');
+    }
+
     if (ticket.status === 'PENDING' && ticket.expiresAt.getTime() <= Date.now()) {
       await this.sweepExpirations(businessId);
-      return this.findById(businessId, ticket.id);
+      return this.findByCode(businessId, code, user);
     }
 
     return formatTicketWithItems(ticket);
@@ -575,9 +605,17 @@ export class PresaleTicketsService {
         now - claimedAtMs < 2 * 60 * 1000;
 
       if (isClaimedByOther) {
-        throw new ConflictException(
-          `Lo está cobrando ${ticket.claimedByName || 'otro cajero'}`,
-        );
+        const claimingUser = await tx.user.findUnique({
+          where: { id: ticket.claimedById },
+          select: { name: true, email: true },
+        });
+        const name = claimingUser?.name || claimingUser?.email || 'otro cajero';
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'TICKET_CLAIMED_BY_OTHER',
+          message: `Lo está cobrando ${name}`,
+          claimedByName: name,
+        });
       }
 
       const cashierName = cashier.name || cashier.email || 'Cajero';
@@ -817,9 +855,13 @@ export class PresaleTicketsService {
             reservedQty = qty;
           }
 
+          const policies = await this.policiesService.get(businessId, tx);
+          const isPrivileged =
+            cashier.role === UserRole.ENCARGADO || cashier.role === UserRole.SUPERADMIN;
+          const canOverride = isPrivileged && policies.priceOverrideEnabled;
           const resolved = resolveLineUnitPrice(product, qty, business);
           const unitPrice =
-            act.unitPrice !== undefined && act.unitPrice !== null
+            canOverride && act.unitPrice !== undefined && act.unitPrice !== null
               ? Number(act.unitPrice)
               : resolved.unitPrice;
           const subtotal = round3(qty * unitPrice);
@@ -947,6 +989,27 @@ export class PresaleTicketsService {
 
       if (ticket.status === 'EXPIRED' || new Date(ticket.expiresAt).getTime() <= Date.now()) {
         throw new ConflictException('El ticket se encuentra vencido');
+      }
+
+      const now = Date.now();
+      const claimedAtMs = ticket.claimedAt ? new Date(ticket.claimedAt).getTime() : 0;
+      const isClaimedByOther =
+        ticket.claimedById &&
+        ticket.claimedById !== cashier.sub &&
+        now - claimedAtMs < 2 * 60 * 1000;
+
+      if (isClaimedByOther) {
+        const claimingUser = await tx.user.findUnique({
+          where: { id: ticket.claimedById },
+          select: { name: true, email: true },
+        });
+        const name = claimingUser?.name || claimingUser?.email || 'otro cajero';
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'TICKET_CLAIMED_BY_OTHER',
+          message: `Lo está cobrando ${name}`,
+          claimedByName: name,
+        });
       }
 
       // 2. Obtener líneas activas
@@ -1189,3 +1252,4 @@ export class PresaleTicketsService {
     return expiredCount;
   }
 }
+

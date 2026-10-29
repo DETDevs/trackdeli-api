@@ -249,15 +249,32 @@ export class SuperAdminController {
   ) {
     const platform = dto.platform || DEFAULT_PLATFORM;
     const ipAddress = req?.ip || req?.connection?.remoteAddress;
-    return this.clientVersionService.setMinVersion({
-      platform,
-      minVersion: dto.minVersion,
-      userId: user.sub,
-      userRole: user.role,
-      businessId: user.businessId,
-      reason: dto.reason,
-      ipAddress,
-    });
+
+    if (dto.twoStepMinVersion !== undefined) {
+      await this.clientVersionService.setMinVersion({
+        platform: 'two-step',
+        minVersion: dto.twoStepMinVersion,
+        userId: user.sub,
+        userRole: user.role,
+        businessId: user.businessId,
+        reason: dto.reason || 'Actualización de versión mínima para venta en dos pasos',
+        ipAddress,
+      });
+    }
+
+    if (dto.minVersion !== undefined) {
+      await this.clientVersionService.setMinVersion({
+        platform,
+        minVersion: dto.minVersion,
+        userId: user.sub,
+        userRole: user.role,
+        businessId: user.businessId,
+        reason: dto.reason,
+        ipAddress,
+      });
+    }
+
+    return this.clientVersionService.getSettingDetails(platform);
   }
 
   @Put('client-version')

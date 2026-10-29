@@ -95,13 +95,73 @@ export class ClientVersionService {
     const minVersion = hasDbSetting ? cleanSemver(setting.value) : envVersion;
     const source = hasDbSetting ? 'database' : envVersion ? 'env' : 'default';
 
+    const twoStepMinVersion = await this.getTwoStepMinVersion(normalizedPlatform);
+
     return {
       platform: normalizedPlatform,
       minVersion,
+      twoStepMinVersion: twoStepMinVersion || null,
       source,
       updatedAt: setting?.updatedAt || null,
       updatedByUserId: setting?.updatedByUserId || null,
     };
+  }
+
+  /**
+   * Obtiene la versión mínima configurada específicamente para el modo de venta en dos pasos.
+   * Prioridad:
+   * 1. platform_settings con clave min_version:two-step:<platform> (ej. min_version:two-step:desktop-win)
+   * 2. platform_settings con clave min_version:two-step
+   * 3. Variable de entorno MIN_CLIENT_VERSION_TWO_STEP o MIN_CLIENT_VERSION_TWO_STEP_SALE
+   * 4. Cadena vacía (sin versión configurada para el modo -> no se bloquea a nadie)
+   */
+  async getTwoStepMinVersion(platform: string = DEFAULT_PLATFORM): Promise<string> {
+    const normalizedPlatform = (platform || DEFAULT_PLATFORM).trim().toLowerCase();
+    const cacheKey = `two-step:${normalizedPlatform}`;
+
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.minVersion;
+    }
+
+    let minVersion = '';
+
+    try {
+      const specificSetting = await this.prisma.platformSetting.findUnique({
+        where: { key: `${SETTING_KEY_PREFIX}two-step:${normalizedPlatform}` },
+      });
+      if (specificSetting && specificSetting.value !== undefined && specificSetting.value !== null) {
+        minVersion = cleanSemver(specificSetting.value);
+      }
+
+      if (!minVersion) {
+        const generalSetting = await this.prisma.platformSetting.findUnique({
+          where: { key: `${SETTING_KEY_PREFIX}two-step` },
+        });
+        if (generalSetting && generalSetting.value !== undefined && generalSetting.value !== null) {
+          minVersion = cleanSemver(generalSetting.value);
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[ClientVersionService] No se pudo leer platform_settings para two-step (${normalizedPlatform}): ${err.message}`,
+      );
+    }
+
+    if (!minVersion) {
+      minVersion = cleanSemver(
+        process.env.MIN_CLIENT_VERSION_TWO_STEP ||
+        process.env.MIN_CLIENT_VERSION_TWO_STEP_SALE ||
+        '',
+      );
+    }
+
+    this.cache.set(cacheKey, {
+      minVersion,
+      expiresAt: Date.now() + this.CACHE_TTL_MS,
+    });
+
+    return minVersion;
   }
 
   /**
@@ -158,10 +218,7 @@ export class ClientVersionService {
     }
 
     // Actualizar caché en memoria inmediatamente
-    this.cache.set(normalizedPlatform, {
-      minVersion: cleanVersion,
-      expiresAt: Date.now() + this.CACHE_TTL_MS,
-    });
+    this.cache.clear();
 
     return {
       platform: normalizedPlatform,

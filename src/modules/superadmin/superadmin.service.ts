@@ -67,6 +67,7 @@ const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
 ];
 
 import { UserQuotaService, BASE_USER_LIMIT } from '../users/user-quota.service';
+import { ClientVersionService } from '../client-version/client-version.service';
 
 @Injectable()
 export class SuperAdminService {
@@ -77,6 +78,7 @@ export class SuperAdminService {
     private readonly uploadService: UploadService,
     private readonly userQuotaService: UserQuotaService,
     private readonly auditService: AuditService,
+    private readonly clientVersionService: ClientVersionService,
   ) { }
 
   private async fetchEnrichedBusinesses(now: Date = new Date()) {
@@ -165,6 +167,8 @@ export class SuperAdminService {
         GROUP BY "businessId"
       `),
     ]);
+
+    const twoStepMinVersion = (await this.clientVersionService.getTwoStepMinVersion()) || null;
 
     const deviceMap = new Map<string, any>(deviceStats.map((d) => [d.businessId, d]));
     const userMap = new Map<string, number>(userStats.map((u) => [u.businessId, u.activeUsers]));
@@ -312,6 +316,7 @@ export class SuperAdminService {
         autoUpdatePriceOnPurchase: b.autoUpdatePriceOnPurchase,
         twoStepSaleEnabled: b.twoStepSaleEnabled,
         twoStepTicketTtlHours: b.twoStepTicketTtlHours,
+        twoStepMinVersion: twoStepMinVersion || null,
         posVertical: b.posVertical,
         salonProfile: b.salonProfile,
         maxDevices: posSub?.maxDevices ?? null,
@@ -916,6 +921,7 @@ export class SuperAdminService {
       autoUpdatePriceOnPurchase: business.autoUpdatePriceOnPurchase,
       twoStepSaleEnabled: business.twoStepSaleEnabled,
       twoStepTicketTtlHours: business.twoStepTicketTtlHours,
+      twoStepMinVersion: (await this.clientVersionService.getTwoStepMinVersion()) || null,
       posVertical: business.posVertical,
       salonProfile: business.salonProfile,
       createdAt: business.createdAt,
@@ -1568,7 +1574,11 @@ export class SuperAdminService {
     }
 
     this.logger.log(`[updateBusiness] OK negocio actualizado id=${id}, businessType=${updated.businessType}`);
-    return updated;
+    const twoStepMinVersion = (await this.clientVersionService.getTwoStepMinVersion()) || null;
+    return {
+      ...updated,
+      twoStepMinVersion,
+    };
   }
 
   async getRiders() {

@@ -1728,13 +1728,14 @@ export class ReportsService {
   async getSalesBySeller(
     businessId: string,
     currentUser: JwtPayload,
+    period?: string,
     from?: string,
     to?: string,
     targetSellerId?: string,
   ) {
-    const todayStr = formatDateInTimezone(new Date(), 'America/Managua');
-    const fromDate = getStartOfDayInTimezone(from || todayStr, 'America/Managua');
-    const toDate = getEndOfDayInTimezone(to || todayStr, 'America/Managua');
+    const { current } = this.resolveDateRange(period, from, to);
+    const fromDate = current.from;
+    const toDate = current.to;
 
     // Si el usuario es VENDEDOR, solo ve su propio reporte
     const isVendedor = currentUser.role === UserRole.VENDEDOR;

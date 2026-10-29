@@ -3,14 +3,18 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { UpdateBusinessDto } from './dto/update-business.dto';
 import { BusinessResponseDto } from './dto/business-response.dto';
 import { Business } from '@prisma/client';
+import { ClientVersionService } from '../client-version/client-version.service';
 
 @Injectable()
 export class BusinessesService {
   private readonly logger = new Logger(BusinessesService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly clientVersionService: ClientVersionService,
+  ) {}
 
-  private toResponseDto(business: Business): BusinessResponseDto {
+  private toResponseDto(business: Business, twoStepMinVersion?: string | null): BusinessResponseDto {
     return {
       id: business.id,
       name: business.name,
@@ -51,6 +55,9 @@ export class BusinessesService {
       posFooter: business.posFooter ?? null,
       tracksBatches: (business as any).tracksBatches ?? false,
       useListPrice: (business as any).useListPrice ?? false,
+      twoStepSaleEnabled: (business as any).twoStepSaleEnabled ?? false,
+      twoStepTicketTtlHours: (business as any).twoStepTicketTtlHours ?? 4,
+      twoStepMinVersion: twoStepMinVersion ?? null,
       taxEnabled: Boolean((business as any).taxEnabled),
       taxIncluded: Boolean((business as any).taxIncluded),
       defaultMarkupPct: (business as any).defaultMarkupPct != null ? Number((business as any).defaultMarkupPct) : null,
@@ -69,7 +76,8 @@ export class BusinessesService {
       throw new NotFoundException('Negocio no encontrado');
     }
 
-    return this.toResponseDto(business);
+    const twoStepMinVersion = await this.clientVersionService.getTwoStepMinVersion();
+    return this.toResponseDto(business, twoStepMinVersion);
   }
 
   async update(id: string, dto: UpdateBusinessDto): Promise<BusinessResponseDto> {
@@ -131,7 +139,8 @@ export class BusinessesService {
       this.logger.log(`[update] OK businessId=${id}`);
     }
 
-    return this.toResponseDto(updated);
+    const twoStepMinVersion = await this.clientVersionService.getTwoStepMinVersion();
+    return this.toResponseDto(updated, twoStepMinVersion);
   }
 
   async updateSlug(businessId: string, rawSlug: string): Promise<BusinessResponseDto> {
@@ -145,8 +154,10 @@ export class BusinessesService {
       throw new NotFoundException('Negocio no encontrado');
     }
 
+    const twoStepMinVersion = await this.clientVersionService.getTwoStepMinVersion();
+
     if (business.slug === slug) {
-      return this.toResponseDto(business);
+      return this.toResponseDto(business, twoStepMinVersion);
     }
 
     const existing = await this.prisma.business.findUnique({
@@ -163,6 +174,6 @@ export class BusinessesService {
     });
 
     this.logger.log(`[updateSlug] OK businessId=${businessId} slug=${slug}`);
-    return this.toResponseDto(updated);
+    return this.toResponseDto(updated, twoStepMinVersion);
   }
 }

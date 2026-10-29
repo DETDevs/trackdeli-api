@@ -69,38 +69,63 @@ export class ClientVersionGuard implements CanActivate {
       return true;
     }
 
-    // 5. Consultar versión mínima configurada
-    let minVersion = await this.clientVersionService.getMinVersion(platform);
+    const clientVersion = String(rawVersion || '').trim();
 
-    // 213a: Si el negocio tiene venta en dos pasos activa y el usuario es CAJERO o VENDEDOR,
-    // exigir versión mínima de desktop (>= 2.13.0) para que respete reservas y vea tickets
-    const authHeader = req.headers['authorization'];
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      try {
-        const parts = authHeader.split(' ')[1].split('.');
-        if (parts.length === 3) {
-          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-          if (payload.businessId && (payload.role === 'CAJERO' || payload.role === 'VENDEDOR')) {
-            const twoStepActive = await this.clientVersionService.isTwoStepSaleEnabled(payload.businessId);
-            if (twoStepActive) {
-              const TWO_STEP_MIN_VERSION = '2.13.0';
-              if (!minVersion || compareSemver(TWO_STEP_MIN_VERSION, minVersion) > 0) {
-                minVersion = TWO_STEP_MIN_VERSION;
-              }
-            }
+    // 5. Venta en dos pasos (213a):
+    // Si el negocio tiene venta en dos pasos activa y el usuario es CAJERO o VENDEDOR,
+    // validar la versión mínima configurada para el modo. Si no hay ninguna configurada para el modo, no se bloquea a nadie.
+    let isTwoStepModeActive = false;
+    let userRole: string | undefined = (req as any).user?.role;
+    let businessId: string | undefined = (req as any).user?.businessId;
+
+    if (!userRole || !businessId) {
+      const authHeader = req.headers['authorization'];
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const parts = authHeader.split(' ')[1].split('.');
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+            businessId = businessId || payload.businessId;
+            userRole = userRole || payload.role;
           }
-        }
-      } catch {}
+        } catch {}
+      }
     }
 
-    // Por defecto vacía = sin restricción
+    if (businessId && (userRole === 'CAJERO' || userRole === 'VENDEDOR')) {
+      isTwoStepModeActive = await this.clientVersionService.isTwoStepSaleEnabled(businessId);
+    }
+
+    if (isTwoStepModeActive) {
+      const twoStepMinVersion = await this.clientVersionService.getTwoStepMinVersion(platform);
+      if (twoStepMinVersion && twoStepMinVersion.trim() !== '') {
+        if (!clientVersion || compareSemver(clientVersion, twoStepMinVersion) < 0) {
+          this.logger.warn(
+            `[ClientVersionGuard] 426 CLIENT_UPDATE_REQUIRED (venta en dos pasos): plataforma="${platform}", versionActual="${clientVersion || 'desconocida'}", versionMinima="${twoStepMinVersion}", ruta="${rawUrl}"`,
+          );
+
+          throw new HttpException(
+            {
+              statusCode: HTTP_STATUS_UPGRADE_REQUIRED,
+              error: 'Upgrade Required',
+              code: 'CLIENT_UPDATE_REQUIRED',
+              message: 'Actualizá el POS de escritorio para usar la venta en dos pasos.',
+              minVersion: twoStepMinVersion,
+              currentVersion: clientVersion || 'unknown',
+            },
+            HTTP_STATUS_UPGRADE_REQUIRED,
+          );
+        }
+      }
+    }
+
+    // 6. Validación de versión mínima general de la plataforma
+    const minVersion = await this.clientVersionService.getMinVersion(platform);
     if (!minVersion || minVersion.trim() === '') {
       return true;
     }
 
-    const clientVersion = String(rawVersion || '').trim();
-
-    // 6. Comparación semver: si clientVersion es menor a minVersion -> 426 Upgrade Required
+    // Comparación semver: si clientVersion es menor a minVersion -> 426 Upgrade Required
     if (!clientVersion || compareSemver(clientVersion, minVersion) < 0) {
       this.logger.warn(
         `[ClientVersionGuard] 426 CLIENT_UPDATE_REQUIRED: plataforma="${platform}", versionActual="${clientVersion || 'desconocida'}", versionMinima="${minVersion}", ruta="${rawUrl}"`,

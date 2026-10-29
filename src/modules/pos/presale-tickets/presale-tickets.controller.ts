@@ -52,10 +52,11 @@ export class PresaleTicketsController {
   @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
   findAll(
     @CurrentUser() user: any,
+    @Query('status') qStatus?: string,
     @Query('businessId') qBid?: string,
   ) {
     const businessId = resolveBusinessId(user, qBid);
-    return this.service.findPending(businessId);
+    return this.service.findPending(businessId, qStatus);
   }
 
   @Get('mine')
@@ -76,7 +77,7 @@ export class PresaleTicketsController {
     @Query('businessId') qBid?: string,
   ) {
     const businessId = resolveBusinessId(user, qBid);
-    return this.service.findByCode(businessId, scanCode);
+    return this.service.findByCode(businessId, scanCode, user);
   }
 
   @Get(':id')
@@ -87,7 +88,7 @@ export class PresaleTicketsController {
     @Query('businessId') qBid?: string,
   ) {
     const businessId = resolveBusinessId(user, qBid);
-    return this.service.findById(businessId, id);
+    return this.service.findById(businessId, id, user);
   }
 
   @Post(':id/claim')

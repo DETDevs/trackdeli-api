@@ -47,6 +47,9 @@ export class BusinessResponseDto {
 
   tracksBatches?: boolean;
   useListPrice?: boolean;
+  twoStepSaleEnabled?: boolean;
+  twoStepTicketTtlHours?: number;
+  twoStepMinVersion?: string | null;
   taxEnabled?: boolean;
   taxIncluded?: boolean;
   defaultMarkupPct?: number | null;

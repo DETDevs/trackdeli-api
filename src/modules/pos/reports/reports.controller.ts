@@ -272,11 +272,12 @@ export class ReportsController {
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
   salesBySeller(
     @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("sellerId") sellerId?: string,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.getSalesBySeller(resolveBusinessId(user, qBid), user, from, to, sellerId);
+    return this.service.getSalesBySeller(resolveBusinessId(user, qBid), user, period, from, to, sellerId);
   }
 }

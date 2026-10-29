@@ -359,6 +359,41 @@ export class SalesService {
 
       const subtotal = calcResult.subtotal;
       const discountAmount = calcResult.discountAmount;
+
+      // Validación de descuento según políticas
+      const requestedDiscount = dto.discountAmount || 0;
+      if (requestedDiscount > 0) {
+        if (!policies.discountsEnabled) {
+          throw new ForbiddenException({
+            statusCode: 403,
+            code: 'DISCOUNTS_DISABLED',
+            message: 'Los descuentos están deshabilitados en este negocio',
+          });
+        }
+        if (userRole === UserRole.CAJERO) {
+          const subtotalBase = calcResult.subtotal;
+          const maxAllowedPercent = policies.cashierMaxDiscountPercent ?? 10;
+          const discountPercent = subtotalBase > 0 ? (requestedDiscount / subtotalBase) * 100 : 0;
+          if (discountPercent > maxAllowedPercent + 0.01) {
+            if (dto.approvalToken) {
+              await this.approvalsService.consumeToken(
+                businessId,
+                PosAction.APLICAR_DESCUENTO,
+                dto.approvalToken,
+                tx,
+              );
+            } else {
+              throw new ForbiddenException({
+                statusCode: 403,
+                code: 'DISCOUNT_LIMIT_EXCEEDED',
+                message: `El descuento aplicado (${discountPercent.toFixed(1)}%) supera el tope permitido para cajeros (${maxAllowedPercent}%). Requiere autorización de encargado.`,
+                maxAllowedPercent,
+                requestedPercent: discountPercent,
+              });
+            }
+          }
+        }
+      }
       const appliedTaxEnabled = calcResult.taxEnabled;
       const appliedTaxIncluded = calcResult.taxIncluded;
       const appliedTaxRate = calcResult.taxRate;
