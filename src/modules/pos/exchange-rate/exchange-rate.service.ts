@@ -31,15 +31,16 @@ export class ExchangeRateService {
     };
   }
 
-  async getCurrentRate(businessId: string) {
-    let latest = await this.prisma.posExchangeRate.findFirst({
+  async getCurrentRate(businessId: string, tx?: Prisma.TransactionClient) {
+    const db = tx || this.prisma;
+    let latest = await db.posExchangeRate.findFirst({
       where: { businessId, quote: 'USD' },
       orderBy: { effectiveFrom: 'desc' },
     });
 
     if (!latest) {
       this.logger.log(`[getCurrentRate] Creando tasa inicial de 36.6243 para negocio=${businessId}`);
-      latest = await this.prisma.posExchangeRate.create({
+      latest = await db.posExchangeRate.create({
         data: {
           businessId,
           base: 'NIO',
@@ -130,11 +131,12 @@ export class ExchangeRateService {
     return history.map((record) => this.formatExchangeRate(record));
   }
 
-  async validateOfflineRate(businessId: string, clientRate: number, occurredAt: Date): Promise<boolean> {
+  async validateOfflineRate(businessId: string, clientRate: number, occurredAt: Date, tx?: Prisma.TransactionClient): Promise<boolean> {
     const msIn7Days = 7 * 24 * 60 * 60 * 1000;
     const minDate = new Date(occurredAt.getTime() - msIn7Days);
 
-    const rates = await this.prisma.posExchangeRate.findMany({
+    const db = tx || this.prisma;
+    const rates = await db.posExchangeRate.findMany({
       where: {
         businessId,
         quote: 'USD',

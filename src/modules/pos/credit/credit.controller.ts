@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Headers,
   Param,
@@ -157,12 +158,16 @@ export class CreditController {
   }
 
   @Delete(['pos/credit/groups/:id', 'credit/groups/:id'])
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   @RequirePosAction(PosAction.GROUP_MANAGE)
   deleteGroup(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
   ) {
+    if (user.role === UserRole.CAJERO || (user.role !== UserRole.ENCARGADO && user.role !== UserRole.SUPERADMIN)) {
+      throw new ForbiddenException('Solo el encargado puede eliminar una empresa cliente');
+    }
     return this.service.deleteGroup(
       resolveBusinessId(user, qBid),
       id,
@@ -301,6 +306,7 @@ export class CreditController {
 
   @Post(['pos/credit/statements/:id/cancel', 'credit/statements/:id/cancel'])
   @Patch(['pos/credit/statements/:id/cancel', 'credit/statements/:id/cancel'])
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
   @UseGuards(NoWebPlatformGuard)
   @RequirePosAction(PosAction.GROUP_SETTLE)
   @UseInterceptors(IdempotencyInterceptor)
@@ -311,6 +317,9 @@ export class CreditController {
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
   ) {
+    if (user.role === UserRole.CAJERO || (user.role !== UserRole.ENCARGADO && user.role !== UserRole.SUPERADMIN)) {
+      throw new ForbiddenException('Solo el encargado puede anular un estado de cuenta');
+    }
     const idempKey = headers['idempotency-key'] || headers['Idempotency-Key'];
     if (!idempKey) {
       throw new BadRequestException('El encabezado Idempotency-Key es obligatorio para cancelar cortes');

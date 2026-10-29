@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
-import { PosPolicies } from '@prisma/client';
+import { PosPolicies, Prisma } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PosAction } from '../permissions/permissions.service';
 
@@ -19,19 +19,20 @@ export class PoliciesService {
     private readonly auditService: AuditService
   ) {}
 
-  async get(businessId: string): Promise<PosPolicies> {
+  async get(businessId: string, tx?: Prisma.TransactionClient): Promise<PosPolicies> {
     const cached = this.cache.get(businessId);
     if (cached && cached.expiresAt > Date.now()) {
       return cached.data;
     }
 
-    let policies = await this.prisma.posPolicies.findUnique({
+    const db = tx || this.prisma;
+    let policies = await db.posPolicies.findUnique({
       where: { businessId }
     });
 
     if (!policies) {
       // Fallback por si acaso falló el backfill
-      policies = await this.prisma.posPolicies.create({
+      policies = await db.posPolicies.create({
         data: { businessId }
       });
     }

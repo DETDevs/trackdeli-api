@@ -131,8 +131,9 @@ export class SalesService {
     cashierId: string,
     userRole?: string,
     clientInfo?: { channel?: string; deviceId?: string },
+    externalTx?: Prisma.TransactionClient,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const runInTx = async (tx: Prisma.TransactionClient) => {
       let cashRegisterId: string;
       if (dto.cashRegisterId) {
         const explicitRegister = await tx.cashRegister.findFirst({
@@ -201,7 +202,7 @@ export class SalesService {
         data: { invoiceCounter: { increment: 1 } },
       });
 
-      const policies = await this.policiesService.get(businessId);
+      const policies = await this.policiesService.get(businessId, tx);
 
       let hasNegativeStock = false;
       const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
@@ -445,6 +446,8 @@ export class SalesService {
         const isCarteraActive = await this.businessProductsService.isActive(
           businessId,
           BusinessProductType.CARTERA_COBRO,
+          undefined,
+          tx,
         );
         if (!isCarteraActive) {
           throw new ForbiddenException('Este negocio no tiene Finanzas contratada');
@@ -893,7 +896,7 @@ export class SalesService {
 
         let appliedRate = new Prisma.Decimal(1);
         if (currency === 'USD') {
-          const activeRateData = await this.exchangeRateService.getCurrentRate(businessId);
+          const activeRateData = await this.exchangeRateService.getCurrentRate(businessId, tx);
           appliedRate = new Prisma.Decimal(activeRateData.rate.toString());
 
           if (p.exchangeRate) {
@@ -902,6 +905,7 @@ export class SalesService {
                 businessId,
                 Number(p.exchangeRate),
                 dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
+                tx,
               );
               if (isValidOffline) {
                 appliedRate = new Prisma.Decimal(p.exchangeRate.toString());
@@ -1273,7 +1277,12 @@ export class SalesService {
           logoUrl: business.logoUrl || null,
         },
       };
-    });
+    };
+
+    if (externalTx) {
+      return runInTx(externalTx);
+    }
+    return this.prisma.$transaction((tx) => runInTx(tx));
   }
 
   async findAll(

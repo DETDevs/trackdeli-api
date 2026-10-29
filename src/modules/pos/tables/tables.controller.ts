@@ -11,7 +11,9 @@ import {
   Query,
   Req,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { IdempotencyInterceptor } from '../idempotency/idempotency.interceptor';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PosGuard } from '../../../common/guards/pos.guard';
 import { WebBillingGuard } from '../../../common/guards/web-billing.guard';
@@ -230,6 +232,7 @@ export class TablesController {
   @UseGuards(WebBillingGuard)
   @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
   @HttpCode(HttpStatus.OK)
+  @UseInterceptors(IdempotencyInterceptor)
   checkout(
     @Param('id') tableId: string,
     @Body() dto: CheckoutTableOrderDto,

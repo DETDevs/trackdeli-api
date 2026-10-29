@@ -46,8 +46,10 @@ export class BusinessProductsService {
     businessId: string,
     productType: BusinessProductType,
     now: Date = new Date(),
+    tx?: Prisma.TransactionClient,
   ): Promise<boolean> {
-    const coverages = await this.prisma.membershipPaymentProduct.findMany({
+    const db = tx || this.prisma;
+    const coverages = await db.membershipPaymentProduct.findMany({
       where: {
         membershipPayment: {
           businessId,
@@ -99,10 +101,12 @@ export class BusinessProductsService {
     businessId: string,
     productType: BusinessProductType,
     now: Date = new Date(),
+    tx?: Prisma.TransactionClient,
   ): Promise<boolean> {
     if (!businessId) return false;
 
-    const subscription = await this.prisma.businessProductSubscription.findUnique({
+    const db = tx || this.prisma;
+    const subscription = await db.businessProductSubscription.findUnique({
       where: {
         businessId_productType: { businessId, productType },
       },
@@ -123,7 +127,7 @@ export class BusinessProductsService {
       return true;
     }
 
-    return this.hasActiveMembershipCoverage(businessId, productType, now);
+    return this.hasActiveMembershipCoverage(businessId, productType, now, tx);
   }
 
   async getProducts(businessId: string) {

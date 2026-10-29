@@ -68,11 +68,27 @@ export class IdempotencyInterceptor implements NestInterceptor {
             });
           }
 
+          // Si statusCode === 0, hay una petición en curso con la misma clave
+          let currentKey = existingKey;
+          if (currentKey.statusCode === 0) {
+            const completed = await this.waitForInFlightRequest(businessId, idempotencyKey);
+            if (completed && completed.statusCode !== 0) {
+              currentKey = completed;
+            } else {
+              throw new ConflictException({
+                statusCode: 409,
+                error: 'Conflict',
+                code: 'CONCURRENT_REQUEST_IN_PROGRESS',
+                message: 'Una solicitud con la misma Idempotency-Key aún está en proceso.',
+              });
+            }
+          }
+
           // Retornar la respuesta cacheada
           this.logger.debug(`[Idempotency] Devolviendo respuesta cacheada para key: ${idempotencyKey}`);
           const res = context.switchToHttp().getResponse();
-          res.status(existingKey.statusCode);
-          return of(existingKey.responseBody);
+          res.status(currentKey.statusCode);
+          return of(currentKey.responseBody);
         }
       }
 
@@ -110,13 +126,35 @@ export class IdempotencyInterceptor implements NestInterceptor {
           return throwError(() => err);
         })
       );
-    } catch (e) {
+    } catch (e: any) {
       // Si la BD falla o hay ConflictException, lo lanzamos
       if (e instanceof ConflictException) {
         return throwError(() => e);
       }
+      // Concurrencia exacta: si otra petición insertó el registro preliminar al mismo milisegundo
+      if (e?.code === 'P2002') {
+        const completed = await this.waitForInFlightRequest(businessId, idempotencyKey);
+        if (completed && completed.statusCode !== 0 && completed.requestHash === requestHash) {
+          const res = context.switchToHttp().getResponse();
+          res.status(completed.statusCode);
+          return of(completed.responseBody);
+        }
+      }
       this.logger.error(`Error en idempotency interceptor: ${e.message}`);
       return next.handle();
     }
+  }
+
+  private async waitForInFlightRequest(businessId: string, key: string, maxWaitMs = 10000, intervalMs = 100) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      const record = await this.prisma.idempotencyKey.findUnique({
+        where: { businessId_key: { businessId, key } },
+      });
+      if (!record) return null;
+      if (record.statusCode !== 0) return record;
+    }
+    return null;
   }
 }
