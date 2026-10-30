@@ -26,7 +26,7 @@ import { CreateReturnDto } from "./dto/create-return.dto";
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard, PosPermissionsGuard)
-@Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
+@Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
 @Controller("pos/sales")
 export class SalesController {
   constructor(private readonly service: SalesService) {}
@@ -48,17 +48,6 @@ export class SalesController {
     @Query("pedidosYaPaymentMode") pedidosYaPaymentMode?: string,
     @Query("pedidosYaSettlementStatus") pedidosYaSettlementStatus?: string,
   ) {
-    if (user.role === UserRole.VENDEDOR) {
-      if (sellerId && sellerId !== user.sub) {
-        throw new ForbiddenException({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'No tienes permiso para consultar comprobantes de otro vendedor',
-        });
-      }
-      sellerId = user.sub;
-    }
-
     return this.service.findAll(
       resolveBusinessId(user, qBid),
       {

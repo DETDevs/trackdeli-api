@@ -182,7 +182,6 @@ export class PosGuard implements CanActivate {
         (method === 'GET' && /^\/pos\/presale-tickets\/[^/]+$/.test(normalizedPath)) ||
         (method === 'POST' && /^\/pos\/presale-tickets\/[^/]+\/cancel$/.test(normalizedPath)) ||
         (method === 'GET' && (normalizedPath === '/pos/reports/sales-by-seller' || normalizedPath === '/reports/sales-by-seller')) ||
-        (method === 'GET' && (normalizedPath === '/pos/sales' || normalizedPath === '/sales')) ||
         (method === 'POST' && normalizedPath === '/pos/devices/register');
 
       if (!isAllowed) {

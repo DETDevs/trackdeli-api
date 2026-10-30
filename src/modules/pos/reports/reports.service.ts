@@ -409,6 +409,7 @@ export class ReportsService {
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
           AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
+          AND NOT (i."productId" IS NULL AND (LOWER(i."productName") LIKE '%envío%' OR LOWER(i."productName") LIKE '%envio%' OR LOWER(i."productName") LIKE '%domicilio%'))
           ${channelFilterSql}
       )
       SELECT
@@ -2011,18 +2012,28 @@ export class ReportsService {
               const sub = Number(item.subtotal);
               const qty = Number(item.quantity);
               grossSales += sub;
-              unitsSold += qty;
 
-              const key = item.productId || item.productName;
-              const existing = productStats.get(key) || {
-                productId: item.productId || '',
-                productName: item.productName,
-                quantity: 0,
-                subtotal: 0,
-              };
-              existing.quantity += qty;
-              existing.subtotal += sub;
-              productStats.set(key, existing);
+              // Excluir línea de envío de topProducts, productsCount y unitsSold
+              const isDeliveryItem =
+                !item.productId &&
+                (item.productName.toLowerCase().includes('envío') ||
+                  item.productName.toLowerCase().includes('envio') ||
+                  item.productName.toLowerCase().includes('domicilio'));
+
+              if (!isDeliveryItem) {
+                unitsSold += qty;
+
+                const key = item.productId || item.productName;
+                const existing = productStats.get(key) || {
+                  productId: item.productId || '',
+                  productName: item.productName,
+                  quantity: 0,
+                  subtotal: 0,
+                };
+                existing.quantity += qty;
+                existing.subtotal += sub;
+                productStats.set(key, existing);
+              }
             }
           }
         }
