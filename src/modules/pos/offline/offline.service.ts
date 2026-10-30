@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
@@ -230,8 +231,13 @@ export class OfflineService {
               useListPrice: true,
               defaultMarkupPct: true,
               autoUpdatePriceOnPurchase: true,
+              deliveryChannelEnabled: true,
+              deliveryDefaultFee: true,
+              deliveryRequireDriver: true,
+              pedidosYaChannelEnabled: true,
               pedidosYaCommissionPct: true,
               pedidosYaTaxPct: true,
+              pedidosYaRequireOrderNumber: true,
             },
           });
           if (!business) throw new NotFoundException("Negocio no encontrado");
@@ -707,8 +713,17 @@ export class OfflineService {
             finalNotes += ` [REVISIÓN: ${reviewReason}]`;
           }
 
-          const rawChannel = (saleDto.channel || 'MOSTRADOR').toUpperCase();
-          const channel = (rawChannel === 'DOMICILIO' || rawChannel === 'PEDIDOSYA') ? rawChannel : 'MOSTRADOR';
+          const rawChannel = (saleDto.channel || 'MOSTRADOR').toUpperCase().trim();
+          if (!['MOSTRADOR', 'DOMICILIO', 'PEDIDOSYA'].includes(rawChannel)) {
+            throw new BadRequestException('Canal de venta inválido. Los canales permitidos son MOSTRADOR, DOMICILIO o PEDIDOSYA');
+          }
+          if (rawChannel === 'DOMICILIO' && !business.deliveryChannelEnabled) {
+            throw new BadRequestException('El canal de venta "A domicilio" no está activo para este negocio');
+          }
+          if (rawChannel === 'PEDIDOSYA' && !business.pedidosYaChannelEnabled) {
+            throw new BadRequestException('El canal de venta "PedidosYa" no está activo para este negocio');
+          }
+          const channel = rawChannel;
 
           let pedidosYaCommissionPct: number | null = null;
           let pedidosYaTaxPct: number | null = null;
@@ -717,9 +732,27 @@ export class OfflineService {
           let pedidosYaNetPayout: number | null = null;
           let pedidosYaPaymentMode: string | null = null;
           let pedidosYaOrderNumber: string | null = null;
+          let pedidosYaSettlementStatus: string | null = null;
 
           if (channel === 'PEDIDOSYA') {
             pedidosYaOrderNumber = saleDto.pedidosYaOrderNumber?.trim() || null;
+            if (business.pedidosYaRequireOrderNumber && !pedidosYaOrderNumber) {
+              throw new BadRequestException('El número de pedido de PedidosYa es obligatorio');
+            }
+            if (pedidosYaOrderNumber) {
+              const existingPySale = await tx.sale.findFirst({
+                where: {
+                  businessId,
+                  pedidosYaOrderNumber,
+                  status: { notIn: ['CANCELLED', 'VOIDED', 'RETURNED'] },
+                },
+                select: { invoiceNumber: true },
+              });
+              if (existingPySale) {
+                throw new ConflictException(`Ese pedido de PedidosYa ya se registró (${existingPySale.invoiceNumber})`);
+              }
+            }
+
             pedidosYaPaymentMode = saleDto.pedidosYaPaymentMode === 'EFECTIVO' ? 'EFECTIVO' : 'APP';
             const commPct = Number(business.pedidosYaCommissionPct ?? 27);
             const taxPct = Number(business.pedidosYaTaxPct ?? 7);
@@ -732,9 +765,10 @@ export class OfflineService {
             pedidosYaNetPayout = pedidosYaPaymentMode === 'APP'
               ? Number((total - commAmount - tAmount).toFixed(2))
               : Number((-(commAmount + tAmount)).toFixed(2));
+            pedidosYaSettlementStatus = 'PENDIENTE';
           }
 
-          let deliveryFee: number | null = null;
+          let deliveryFee = 0;
           let deliveryAddress: string | null = null;
           let deliveryPhone: string | null = null;
           let deliveryReference: string | null = null;
@@ -742,17 +776,40 @@ export class OfflineService {
           let deliveryDriverName: string | null = null;
 
           if (channel === 'DOMICILIO') {
-            deliveryFee = saleDto.deliveryFee != null ? Number(saleDto.deliveryFee) : null;
-            deliveryAddress = saleDto.deliveryAddress || null;
-            deliveryPhone = saleDto.deliveryPhone || null;
-            deliveryReference = saleDto.deliveryReference || null;
+            const resolvedName = (saleDto.customerName || '').trim();
+            if (!resolvedName) {
+              throw new BadRequestException('Falta el nombre del cliente');
+            }
+
+            const resolvedPhone = (saleDto.deliveryPhone || saleDto.customerPhone || '').trim();
+            if (!resolvedPhone) {
+              throw new BadRequestException('Falta el teléfono del cliente');
+            }
+
+            const resolvedAddr = (saleDto.deliveryAddress || '').trim();
+            if (!resolvedAddr) {
+              throw new BadRequestException('Falta la dirección del cliente');
+            }
+
+            deliveryAddress = resolvedAddr;
+            deliveryPhone = resolvedPhone;
+            deliveryReference = saleDto.deliveryReference?.trim() || null;
             deliveryDriverId = saleDto.deliveryDriverId || null;
-            deliveryDriverName = saleDto.deliveryDriverName || null;
+            deliveryDriverName = saleDto.deliveryDriverName?.trim() || null;
+
+            if (business.deliveryRequireDriver && !deliveryDriverId && !deliveryDriverName) {
+              throw new BadRequestException('Se requiere asignar un repartidor para la entrega a domicilio');
+            }
+
+            deliveryFee = saleDto.deliveryFee != null ? Math.max(0, Number(saleDto.deliveryFee)) : (business.deliveryDefaultFee ?? 0);
           }
 
           const actualPaymentMethod = (channel === 'PEDIDOSYA' && pedidosYaPaymentMode === 'APP')
             ? ('PEDIDOSYA_APP' as PosPaymentMethod)
             : saleDto.paymentMethod;
+
+          const finalAmountPaid = actualPaymentMethod === 'PEDIDOSYA_APP' ? total : amountPaid;
+          const finalChange = actualPaymentMethod === 'PEDIDOSYA_APP' ? 0 : change;
 
           const createdSale = await tx.sale.create({
             data: {
@@ -769,8 +826,8 @@ export class OfflineService {
               clientGeneratedId: saleDto.clientGeneratedId,
               posTerminalId: terminal?.id || null,
               customerId,
-              customerName: saleDto.customerName || null,
-              customerPhone: saleDto.customerPhone || null,
+              customerName: channel === 'DOMICILIO' ? (saleDto.customerName?.trim() || null) : (saleDto.customerName || null),
+              customerPhone: channel === 'DOMICILIO' ? (deliveryPhone || null) : (saleDto.customerPhone || null),
               customerRuc: saleDto.customerRuc || null,
               sellerId,
               sellerName,
@@ -791,6 +848,7 @@ export class OfflineService {
               pedidosYaCommissionAmount,
               pedidosYaTaxAmount,
               pedidosYaNetPayout,
+              pedidosYaSettlementStatus,
               items: {
                 create: calcResult.lines.map((l, idx) => ({
                   productId: l.productId,
@@ -815,8 +873,8 @@ export class OfflineService {
                   {
                     method: actualPaymentMethod,
                     amount: total,
-                    amountTendered: saleDto.amountPaid,
-                    change,
+                    amountTendered: finalAmountPaid,
+                    change: finalChange,
                     reference: saleDto.reference || null,
                     currency: business.currency || 'NIO',
                     exchangeRate: 1,
@@ -932,11 +990,17 @@ export class OfflineService {
           discrepancies: syncResult.discrepancies,
         });
       } catch (err: any) {
-        this.logger.error(`[syncOfflineSales] Error sincronizando venta ${saleDto.clientGeneratedId}: ${err.message}`);
+        const errorMsg =
+          typeof err?.response?.message === 'string'
+            ? err.response.message
+            : Array.isArray(err?.response?.message)
+            ? err.response.message.join(', ')
+            : err.message || 'Error al sincronizar venta';
+        this.logger.error(`[syncOfflineSales] Error sincronizando venta ${saleDto.clientGeneratedId}: ${errorMsg}`);
         results.push({
           clientGeneratedId: saleDto.clientGeneratedId,
           status: "ERROR",
-          error: err.message,
+          error: errorMsg,
         });
       }
     }
