@@ -97,6 +97,7 @@ export class ReportsService {
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
           AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt}
+          AND NOT (i."productId" IS NULL AND (LOWER(i."productName") LIKE '%envío%' OR LOWER(i."productName") LIKE '%envio%' OR LOWER(i."productName") LIKE '%domicilio%'))
 
         UNION ALL
 
@@ -916,19 +917,77 @@ export class ReportsService {
     const r2 = (n: any) => Math.round((Number(n) || 0) * 100) / 100;
 
     const computeProfitMetrics = async (fromDt: Date, toDt: Date) => {
-      const rows: any[] = await this.prisma.$queryRaw`
-        WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-        ${this.getProfitItemsSql(businessId, fromDt, toDt)}
-        SELECT
-          cost_source AS source,
-          COALESCE(SUM(line_revenue), 0)::float AS revenue,
-          COALESCE(SUM(unit_cost * net_qty), 0)::float AS cost,
-          COUNT(*) FILTER (WHERE NOT is_orphan)::int AS lines,
-          COALESCE(SUM(line_revenue) FILTER (WHERE is_orphan), 0)::float AS "orphanRevenue"
-        FROM item_sales
-        WHERE net_qty > 0
-        GROUP BY cost_source;
-      `;
+      const [rows, deliveryRow, pedidosYaSales] = await Promise.all([
+        this.prisma.$queryRaw<any[]>`
+          WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
+          ${this.getProfitItemsSql(businessId, fromDt, toDt)}
+          SELECT
+            cost_source AS source,
+            COALESCE(SUM(line_revenue), 0)::float AS revenue,
+            COALESCE(SUM(unit_cost * net_qty), 0)::float AS cost,
+            COUNT(*) FILTER (WHERE NOT is_orphan)::int AS lines,
+            COALESCE(SUM(line_revenue) FILTER (WHERE is_orphan), 0)::float AS "orphanRevenue"
+          FROM item_sales
+          WHERE net_qty > 0
+          GROUP BY cost_source;
+        `,
+        this.prisma.$queryRaw<any[]>`
+          SELECT
+            COALESCE(SUM(
+              ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
+              * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
+            ), 0)::float AS delivery_revenue
+          FROM pos_sale_items i
+          JOIN pos_sales s ON s.id = i."saleId"
+          WHERE s."businessId" = ${businessId}
+            AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+            AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt}
+            AND i."productId" IS NULL
+            AND (LOWER(i."productName") LIKE '%envío%' OR LOWER(i."productName") LIKE '%envio%' OR LOWER(i."productName") LIKE '%domicilio%');
+        `,
+        this.prisma.sale.findMany({
+          where: {
+            businessId,
+            channel: 'PEDIDOSYA',
+            status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
+            createdAt: { gte: fromDt, lte: toDt },
+          },
+          select: {
+            id: true,
+            total: true,
+            pedidosYaCommissionPct: true,
+            pedidosYaTaxPct: true,
+            returns: {
+              select: {
+                refundAmount: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      const deliveryRevenue = r2(deliveryRow[0]?.delivery_revenue || 0);
+
+      let pedidosYaCommission = 0;
+      let pedidosYaTax = 0;
+      for (const s of pedidosYaSales) {
+        const refundSum = (s.returns || []).reduce((sum: number, r: any) => sum + Number(r.refundAmount || 0), 0);
+        const effectiveTotal = Math.max(0, Number(s.total || 0) - refundSum);
+        const commPct = s.pedidosYaCommissionPct != null ? Number(s.pedidosYaCommissionPct) : 27;
+        const taxPct = s.pedidosYaTaxPct != null ? Number(s.pedidosYaTaxPct) : 7;
+        const effectiveComm = Math.round(effectiveTotal * (commPct / 100) * 100) / 100;
+        const effectiveTax = Math.round(effectiveTotal * (taxPct / 100) * 100) / 100;
+        pedidosYaCommission += effectiveComm;
+        pedidosYaTax += effectiveTax;
+      }
+      pedidosYaCommission = r2(pedidosYaCommission);
+      pedidosYaTax = r2(pedidosYaTax);
+      const channelFeesTotal = r2(pedidosYaCommission + pedidosYaTax);
+      const channelFees = {
+        pedidosYaCommission,
+        pedidosYaTax,
+        total: channelFeesTotal,
+      };
 
       const bySource: Record<string, { revenue: number; cost: number; lines: number }> = {};
       for (const s of SOURCES) bySource[s] = { revenue: 0, cost: 0, lines: 0 };
@@ -954,8 +1013,8 @@ export class ReportsService {
 
       if (coveredRevenue > 0) {
         totalCost = r2(covered.reduce((a, s) => a + bySource[s].cost, 0));
-        estimatedProfit = r2(coveredRevenue - totalCost);
-        marginPercent = Math.round(((coveredRevenue - totalCost) / coveredRevenue) * 10000) / 100;
+        estimatedProfit = r2(coveredRevenue - totalCost - channelFees.total);
+        marginPercent = Math.round(((coveredRevenue - totalCost - channelFees.total) / coveredRevenue) * 10000) / 100;
       }
 
       return {
@@ -969,6 +1028,8 @@ export class ReportsService {
         marginPercent,
         bySource,
         uncategorizedRevenue: r2(uncategorizedRevenue),
+        deliveryRevenue,
+        channelFees,
       };
     };
 
@@ -1008,6 +1069,8 @@ export class ReportsService {
       laborRevenue: currentMetrics.laborRevenue,
       bySource: currentMetrics.bySource,
       uncategorizedRevenue: currentMetrics.uncategorizedRevenue,
+      deliveryRevenue: currentMetrics.deliveryRevenue,
+      channelFees: currentMetrics.channelFees,
       missingCostCount: missing.length,
       missingCostProducts: missing.slice(0, 10).map(m => ({
         id: m.id,
@@ -1859,6 +1922,7 @@ export class ReportsService {
     to?: string,
     targetSellerId?: string,
     channel?: string,
+    topLimit: number = 10,
   ) {
     const { current } = this.resolveDateRange(period, from, to);
     const fromDate = current.from;
@@ -1980,18 +2044,21 @@ export class ReportsService {
 
         const netSales = Math.max(0, Math.round((grossSales - returnsAmount) * 100) / 100);
         const salesCount = sales.length;
+        const chargedOrSalesCount = ticketsCharged > 0 ? ticketsCharged : salesCount;
         const averageTicket =
-          salesCount > 0 ? Math.round((netSales / salesCount) * 100) / 100 : 0;
+          chargedOrSalesCount > 0 ? Math.round((netSales / chargedOrSalesCount) * 100) / 100 : 0;
 
-        const topProducts = Array.from(productStats.values())
-          .sort((a, b) => b.quantity - a.quantity)
-          .slice(0, 10)
+        const allProductsSorted = Array.from(productStats.values())
+          .sort((a, b) => b.subtotal - a.subtotal)
           .map((p) => ({
             productId: p.productId,
             productName: p.productName,
             units: Math.round(p.quantity * 1000) / 1000,
             revenue: Math.round(p.subtotal * 100) / 100,
           }));
+
+        const productsCount = allProductsSorted.length;
+        const topProducts = allProductsSorted.slice(0, topLimit);
 
         return {
           sellerId: seller.id,
@@ -2007,7 +2074,9 @@ export class ReportsService {
           salesCount,
           averageTicket,
           unitsSold: Math.round(unitsSold * 1000) / 1000,
+          productsCount,
           topProducts,
+          _allProducts: allProductsSorted,
         };
       }),
     );
@@ -2017,8 +2086,80 @@ export class ReportsService {
         from: formatDateInTimezone(fromDate, 'America/Managua'),
         to: formatDateInTimezone(toDate, 'America/Managua'),
       },
-      sellers: results,
+      sellers: results.map(({ _allProducts, ...s }) => s),
+      _rawResults: results,
     };
+  }
+
+  async exportSalesBySellerCsv(
+    businessId: string,
+    currentUser: JwtPayload,
+    period?: string,
+    from?: string,
+    to?: string,
+    targetSellerId?: string,
+    channel?: string,
+  ): Promise<{ filename: string; csvData: string }> {
+    const report: any = await this.getSalesBySeller(
+      businessId,
+      currentUser,
+      period,
+      from,
+      to,
+      targetSellerId,
+      channel,
+      10000,
+    );
+    const rawSellers = report._rawResults || report.sellers;
+
+    const bom = '\uFEFF';
+    const sep = ',';
+    let csv = bom;
+
+    csv += `REPORTE DE VENTAS POR VENDEDOR\r\n`;
+    csv += `Período${sep}"${report.period.from}" al "${report.period.to}"\r\n`;
+    csv += `Generado${sep}"${new Date().toISOString()}"\r\n\r\n`;
+
+    csv += `RESUMEN POR VENDEDOR\r\n`;
+    csv += `Vendedor${sep}Tickets Enviados${sep}Tickets Cobrados${sep}Conversión${sep}Venta Bruta${sep}Devoluciones${sep}Venta Neta${sep}Ticket Promedio${sep}Unidades\r\n`;
+
+    let totalSent = 0;
+    let totalCharged = 0;
+    let totalGross = 0;
+    let totalReturns = 0;
+    let totalNet = 0;
+    let totalUnits = 0;
+
+    for (const s of rawSellers) {
+      totalSent += s.ticketsSent || 0;
+      totalCharged += s.ticketsCharged || 0;
+      totalGross += s.grossSales || 0;
+      totalReturns += s.returnsDiscounted || 0;
+      totalNet += s.netSales || 0;
+      totalUnits += s.unitsSold || 0;
+
+      csv += `"${s.sellerName}"${sep}${s.ticketsSent}${sep}${s.ticketsCharged}${sep}${s.conversionRate.toFixed(2)}%${sep}${s.grossSales.toFixed(2)}${sep}${s.returnsDiscounted.toFixed(2)}${sep}${s.netSales.toFixed(2)}${sep}${s.averageTicket.toFixed(2)}${sep}${s.unitsSold.toFixed(2)}\r\n`;
+    }
+
+    const totalAvgTicket = totalCharged > 0 ? (totalNet / totalCharged) : 0;
+    const totalConversion = totalSent > 0 ? ((totalCharged / totalSent) * 100) : 0;
+    csv += `TOTALES${sep}${totalSent}${sep}${totalCharged}${sep}${totalConversion.toFixed(2)}%${sep}${totalGross.toFixed(2)}${sep}${totalReturns.toFixed(2)}${sep}${totalNet.toFixed(2)}${sep}${totalAvgTicket.toFixed(2)}${sep}${totalUnits.toFixed(2)}\r\n\r\n`;
+
+    csv += `PRODUCTOS VENDIDOS POR VENDEDOR\r\n`;
+    csv += `Vendedor${sep}Producto${sep}Unidades${sep}Venta\r\n`;
+    for (const s of rawSellers) {
+      const prods = s._allProducts || s.topProducts || [];
+      for (const p of prods) {
+        csv += `"${s.sellerName}"${sep}"${p.productName}"${sep}${p.units.toFixed(2)}${sep}${p.revenue.toFixed(2)}\r\n`;
+      }
+    }
+    csv += `\r\n`;
+
+    const fromClean = (report.period.from || '').split('T')[0];
+    const toClean = (report.period.to || '').split('T')[0];
+    const filename = `ventas_por_vendedor_${fromClean}_${toClean}.csv`;
+
+    return { filename, csvData: csv };
   }
 
   // ═══════════════════════════════════════════════

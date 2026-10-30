@@ -1,5 +1,5 @@
 import {
-  Body, Controller, Get, Param, Post, Query, Req, UseGuards,
+  Body, Controller, ForbiddenException, Get, Param, Post, Query, Req, UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
@@ -26,7 +26,7 @@ import { CreateReturnDto } from "./dto/create-return.dto";
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard, PosPermissionsGuard)
-@Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN)
+@Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
 @Controller("pos/sales")
 export class SalesController {
   constructor(private readonly service: SalesService) {}
@@ -42,12 +42,39 @@ export class SalesController {
     @Query("cashRegisterId") cashRegisterId?: string,
     @Query("bankId") bankId?: string,
     @Query("channel") channel?: string,
+    @Query("sellerId") sellerId?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
     @Query("pedidosYaPaymentMode") pedidosYaPaymentMode?: string,
     @Query("pedidosYaSettlementStatus") pedidosYaSettlementStatus?: string,
   ) {
+    if (user.role === UserRole.VENDEDOR) {
+      if (sellerId && sellerId !== user.sub) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'No tienes permiso para consultar comprobantes de otro vendedor',
+        });
+      }
+      sellerId = user.sub;
+    }
+
     return this.service.findAll(
       resolveBusinessId(user, qBid),
-      { from, to, status, paymentMethod, cashRegisterId, bankId, channel, pedidosYaPaymentMode, pedidosYaSettlementStatus },
+      {
+        from,
+        to,
+        status,
+        paymentMethod,
+        cashRegisterId,
+        bankId,
+        channel,
+        sellerId,
+        page: page ? parseInt(page, 10) : undefined,
+        limit: limit ? parseInt(limit, 10) : undefined,
+        pedidosYaPaymentMode,
+        pedidosYaSettlementStatus,
+      },
       user.role,
     );
   }

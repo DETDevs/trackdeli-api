@@ -286,16 +286,32 @@ export class ReportsController {
 
   @Get("sales-by-seller")
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
-  salesBySeller(
+  async salesBySeller(
     @CurrentUser() user: JwtPayload,
     @Query("period") period?: string,
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("sellerId") sellerId?: string,
     @Query("channel") channel?: string,
+    @Query("topLimit") topLimit?: string,
+    @Query("format") format?: string,
+    @Res({ passthrough: true }) res?: any,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.getSalesBySeller(resolveBusinessId(user, qBid), user, period, from, to, sellerId, channel);
+    const businessId = resolveBusinessId(user, qBid);
+    const parsedLimit = topLimit ? parseInt(topLimit, 10) : 10;
+    const effectiveLimit = isNaN(parsedLimit) ? 10 : Math.max(1, Math.min(50, parsedLimit));
+
+    if (format === 'csv') {
+      const csvResult = await this.service.exportSalesBySellerCsv(businessId, user, period, from, to, sellerId, channel);
+      if (res) {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${csvResult.filename}"`);
+      }
+      return csvResult.csvData;
+    }
+
+    return this.service.getSalesBySeller(businessId, user, period, from, to, sellerId, channel, effectiveLimit);
   }
 
   @Get("sales-by-channel")

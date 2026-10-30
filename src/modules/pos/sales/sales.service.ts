@@ -1629,6 +1629,9 @@ export class SalesService {
       cashRegisterId?: string;
       bankId?: string;
       channel?: string;
+      sellerId?: string;
+      page?: number;
+      limit?: number;
       pedidosYaPaymentMode?: string;
       pedidosYaSettlementStatus?: string;
     },
@@ -1648,17 +1651,22 @@ export class SalesService {
       where.payments = { some: { bankId: filters.bankId } };
     }
     if (filters?.channel) where.channel = filters.channel.toUpperCase();
+    if (filters?.sellerId) where.sellerId = filters.sellerId;
     if (filters?.pedidosYaPaymentMode) where.pedidosYaPaymentMode = filters.pedidosYaPaymentMode.toUpperCase();
     if (filters?.pedidosYaSettlementStatus) where.pedidosYaSettlementStatus = filters.pedidosYaSettlementStatus.toUpperCase();
     if (filters?.from || filters?.to) {
       where.createdAt = buildBusinessDateRange(filters.from, filters.to);
     }
 
+    const take = filters?.limit && filters.limit > 0 ? Math.min(filters.limit, 200) : 200;
+    const skip = filters?.page && filters.page > 1 ? (filters.page - 1) * take : undefined;
+
     const sales = await this.prisma.sale.findMany({
       where,
       include: {
         items: true,
         cashier: { select: { id: true, name: true } },
+        seller: { select: { id: true, name: true, email: true } },
         cashRegister: { select: { id: true, openedAt: true } },
         payments: true,
         creditAccount: {
@@ -1672,9 +1680,16 @@ export class SalesService {
         },
       },
       orderBy: { createdAt: "desc" },
-      take: 200,
+      take,
+      skip,
     });
-    return sales.map(s => this.formatSale(s, userRole));
+    return sales.map(s => {
+      const formatted = this.formatSale(s, userRole);
+      return {
+        ...formatted,
+        linesCount: s.items ? s.items.length : 0,
+      };
+    });
   }
 
   async findOne(id: string, businessId: string, userRole?: string) {
