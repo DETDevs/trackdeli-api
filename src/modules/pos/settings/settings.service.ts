@@ -62,6 +62,8 @@ export class SettingsService {
         },
         pedidosYa: {
           enabled: Boolean(business.pedidosYaChannelEnabled),
+          commissionPct: business.pedidosYaCommissionPct ?? 27,
+          taxPct: business.pedidosYaTaxPct ?? 7,
           priceMode: business.pedidosYaPriceMode || 'MANTENER_GANANCIA',
           rounding: business.pedidosYaRounding || 'REDONDEO_1',
           capAtListPrice: Boolean(business.pedidosYaCapAtListPrice),
