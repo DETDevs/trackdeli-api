@@ -1214,6 +1214,8 @@ export class TablesService {
               notes: finalNotes,
               reference: dto.reference || dto.paymentReference,
               payments: dto.payments,
+              bankId: dto.bankId,
+              bankName: dto.bankName,
               items: splitResult.items,
             };
           }
@@ -1319,6 +1321,8 @@ export class TablesService {
             : formatTableDisplayName(labels.table, order.table?.number),
           reference: dto.reference || dto.paymentReference,
           payments: dto.payments,
+          bankId: dto.bankId,
+          bankName: dto.bankName,
           items: order.items.map((i) => ({
             productId: i.productId,
             productName: i.productName,

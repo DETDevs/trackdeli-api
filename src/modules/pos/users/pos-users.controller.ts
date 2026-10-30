@@ -10,18 +10,14 @@ import { SetUserPinDto } from './dto/set-user-pin.dto';
 
 @Controller('pos/users')
 @UseGuards(RolesGuard)
+@Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
 export class PosUsersController {
   constructor(private readonly posUsersService: PosUsersService) {}
 
   @Get()
-  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.CAJERO)
   async getBusinessUsers(@CurrentUser() user: JwtPayload, @Query('businessId') qBid?: string) {
     const businessId = resolveBusinessId(user, qBid);
-    const users = await this.posUsersService.getUsers(businessId);
-    if (user.role === UserRole.CAJERO) {
-      return (users.users || []).filter((u: any) => u.role === UserRole.VENDEDOR && u.isActive);
-    }
-    return users;
+    return this.posUsersService.getUsers(businessId);
   }
 
   @Post()

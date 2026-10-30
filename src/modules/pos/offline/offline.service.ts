@@ -16,7 +16,7 @@ import { validateProductQuantity, round3 } from "../products/product-unit.util";
 
 import { BatchesService } from "../batches/batches.service";
 import { calculateSaleTotals, RawSaleItemCalculationInput } from "../sales/utils/sale-calculation.util";
-import { ProductFieldDataType, UserRole } from "@prisma/client";
+import { PosPaymentMethod, ProductFieldDataType, UserRole } from "@prisma/client";
 
 @Injectable()
 export class OfflineService {
@@ -230,6 +230,8 @@ export class OfflineService {
               useListPrice: true,
               defaultMarkupPct: true,
               autoUpdatePriceOnPurchase: true,
+              pedidosYaCommissionPct: true,
+              pedidosYaTaxPct: true,
             },
           });
           if (!business) throw new NotFoundException("Negocio no encontrado");
@@ -705,6 +707,51 @@ export class OfflineService {
             finalNotes += ` [REVISIÓN: ${reviewReason}]`;
           }
 
+          const rawChannel = (saleDto.channel || 'MOSTRADOR').toUpperCase();
+          const channel = (rawChannel === 'DOMICILIO' || rawChannel === 'PEDIDOSYA') ? rawChannel : 'MOSTRADOR';
+
+          let pedidosYaCommissionPct: number | null = null;
+          let pedidosYaTaxPct: number | null = null;
+          let pedidosYaCommissionAmount: number | null = null;
+          let pedidosYaTaxAmount: number | null = null;
+          let pedidosYaNetPayout: number | null = null;
+          let pedidosYaPaymentMode: string | null = null;
+          let pedidosYaOrderNumber: string | null = null;
+
+          if (channel === 'PEDIDOSYA') {
+            pedidosYaOrderNumber = saleDto.pedidosYaOrderNumber?.trim() || null;
+            pedidosYaPaymentMode = saleDto.pedidosYaPaymentMode === 'EFECTIVO' ? 'EFECTIVO' : 'APP';
+            const commPct = Number(business.pedidosYaCommissionPct ?? 27);
+            const taxPct = Number(business.pedidosYaTaxPct ?? 7);
+            pedidosYaCommissionPct = commPct;
+            pedidosYaTaxPct = taxPct;
+            const commAmount = Number(((total * commPct) / 100).toFixed(2));
+            const tAmount = Number(((commAmount * taxPct) / 100).toFixed(2));
+            pedidosYaCommissionAmount = commAmount;
+            pedidosYaTaxAmount = tAmount;
+            pedidosYaNetPayout = Number((total - commAmount - tAmount).toFixed(2));
+          }
+
+          let deliveryFee: number | null = null;
+          let deliveryAddress: string | null = null;
+          let deliveryPhone: string | null = null;
+          let deliveryReference: string | null = null;
+          let deliveryDriverId: string | null = null;
+          let deliveryDriverName: string | null = null;
+
+          if (channel === 'DOMICILIO') {
+            deliveryFee = saleDto.deliveryFee != null ? Number(saleDto.deliveryFee) : null;
+            deliveryAddress = saleDto.deliveryAddress || null;
+            deliveryPhone = saleDto.deliveryPhone || null;
+            deliveryReference = saleDto.deliveryReference || null;
+            deliveryDriverId = saleDto.deliveryDriverId || null;
+            deliveryDriverName = saleDto.deliveryDriverName || null;
+          }
+
+          const actualPaymentMethod = (channel === 'PEDIDOSYA' && pedidosYaPaymentMode === 'APP')
+            ? ('PEDIDOSYA_APP' as PosPaymentMethod)
+            : saleDto.paymentMethod;
+
           const createdSale = await tx.sale.create({
             data: {
               businessId,
@@ -728,6 +775,20 @@ export class OfflineService {
               presaleTicketId,
               needsReview,
               reviewReason,
+              channel,
+              deliveryFee,
+              deliveryAddress,
+              deliveryPhone,
+              deliveryReference,
+              deliveryDriverId,
+              deliveryDriverName,
+              pedidosYaOrderNumber,
+              pedidosYaPaymentMode,
+              pedidosYaCommissionPct,
+              pedidosYaTaxPct,
+              pedidosYaCommissionAmount,
+              pedidosYaTaxAmount,
+              pedidosYaNetPayout,
               items: {
                 create: calcResult.lines.map((l, idx) => ({
                   productId: l.productId,
@@ -750,7 +811,7 @@ export class OfflineService {
               payments: {
                 create: [
                   {
-                    method: saleDto.paymentMethod,
+                    method: actualPaymentMethod,
                     amount: total,
                     amountTendered: saleDto.amountPaid,
                     change,
@@ -773,7 +834,7 @@ export class OfflineService {
               taxRate,
               taxEnabled,
               taxIncluded,
-              paymentMethod: saleDto.paymentMethod,
+              paymentMethod: actualPaymentMethod,
               amountPaid,
               change,
               reference: saleDto.reference || null,

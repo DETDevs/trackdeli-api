@@ -216,6 +216,14 @@ export class UpdateBusinessDto {
 
   @IsOptional()
   @IsBoolean()
+  deliveryChannelEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  pedidosYaChannelEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   confirm?: boolean;
 }
 

@@ -29,33 +29,26 @@ export class BanksService {
   ) {}
 
   /**
-   * Asegura la inicialización de los bancos por defecto del negocio
+   * Asegura la inicialización atómica de los bancos por defecto del negocio
+   * protegida contra llamadas simultáneas (advisory xact lock + ON CONFLICT DO NOTHING)
    */
   async ensureDefaultBanks(businessId: string): Promise<void> {
     const count = await this.prisma.posBank.count({ where: { businessId } });
-    if (count > 0) return;
+    if (count >= DEFAULT_BANKS.length) return;
 
     try {
-      for (const b of DEFAULT_BANKS) {
-        await this.prisma.posBank.upsert({
-          where: {
-            businessId_name: {
-              businessId,
-              name: b.name,
-            },
-          },
-          update: {},
-          create: {
-            businessId,
-            name: b.name,
-            code: b.code,
-            order: b.order,
-            isActive: true,
-            isDefault: true,
-          },
-        });
-      }
-      this.logger.log(`[ensureDefaultBanks] Bancos iniciales creados para negocio ${businessId}`);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('pos_banks_seed_' || ${businessId}))`;
+
+        for (const b of DEFAULT_BANKS) {
+          await tx.$executeRaw`
+            INSERT INTO "pos_banks" ("id", "businessId", "name", "code", "order", "isActive", "isDefault", "createdAt", "updatedAt")
+            VALUES (gen_random_uuid(), ${businessId}, ${b.name}, ${b.code}, ${b.order}, true, true, NOW(), NOW())
+            ON CONFLICT ("businessId", "name") DO NOTHING
+          `;
+        }
+      });
+      this.logger.log(`[ensureDefaultBanks] Bancos iniciales verificados para negocio ${businessId}`);
     } catch (err: any) {
       this.logger.warn(`[ensureDefaultBanks] Error al crear bancos iniciales: ${err.message}`);
     }

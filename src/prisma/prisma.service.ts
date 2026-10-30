@@ -2312,6 +2312,7 @@ WHERE a."customerId" = c."id"
       await this.ensureProductTaxAndMarkupSchema();
       await this.ensureTwoStepSaleSchema();
       await this.ensureBankPaymentsSchema();
+      await this.ensureSalesChannelsSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -3745,6 +3746,9 @@ WHERE a."customerId" = c."id"
             CREATE UNIQUE INDEX IF NOT EXISTS "pos_banks_businessId_name_key" ON "pos_banks"("businessId", "name");
           `);
           await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_banks_businessId_code_key" ON "pos_banks"("businessId", "code") WHERE "code" IS NOT NULL;
+          `);
+          await tx.$executeRawUnsafe(`
             CREATE INDEX IF NOT EXISTS "pos_banks_businessId_isActive_order_idx" ON "pos_banks"("businessId", "isActive", "order");
           `);
 
@@ -3770,7 +3774,29 @@ WHERE a."customerId" = c."id"
             END $$;
           `);
 
-          // 4. pos_cash_registers.closingBreakdown
+          // 4. pos_credit_payments.bankId, bankName
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_credit_payments" ADD COLUMN IF NOT EXISTS "bankId" TEXT`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_credit_payments" ADD COLUMN IF NOT EXISTS "bankName" VARCHAR(100)`,
+          );
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_credit_payments_bankId_idx" ON "pos_credit_payments"("bankId");
+          `);
+          await tx.$executeRawUnsafe(`
+            DO $$ BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'pos_credit_payments_bankId_fkey'
+              ) THEN
+                ALTER TABLE "pos_credit_payments"
+                  ADD CONSTRAINT "pos_credit_payments_bankId_fkey"
+                  FOREIGN KEY ("bankId") REFERENCES "pos_banks"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+              END IF;
+            END $$;
+          `);
+
+          // 5. pos_cash_registers.closingBreakdown
           await tx.$executeRawUnsafe(
             `ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "closingBreakdown" JSONB`,
           );
@@ -3781,6 +3807,176 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 218a - Advertencia sincronizando esquema de bancos: ${err.message}`);
+    }
+  }
+
+  /**
+   * 221a - Canales de venta "A domicilio" y "PedidosYa":
+   * - PosPaymentMethod enum: PEDIDOSYA_APP
+   * - businesses: deliveryChannelEnabled, pedidosYaChannelEnabled, deliveryDefaultFee, deliveryTaxable, deliveryRequireDriver,
+   *               pedidosYaCommissionPct, pedidosYaTaxPct, pedidosYaPriceMode, pedidosYaRounding, pedidosYaCapAtListPrice, pedidosYaRequireOrderNumber
+   * - pos_sales: deliveryFee, deliveryAddress, deliveryPhone, deliveryReference, deliveryDriverId, deliveryDriverName,
+   *              pedidosYaOrderNumber, pedidosYaPaymentMode, pedidosYaCommissionPct, pedidosYaTaxPct, pedidosYaCommissionAmount,
+   *              pedidosYaTaxAmount, pedidosYaNetPayout, pedidosYaSettlementStatus, pedidosYaSettlementId
+   * - pos_pedidosya_settlements: tabla para registrar depósitos de liquidación de PedidosYa
+   */
+  private async ensureSalesChannelsSchema(): Promise<void> {
+    try {
+      // 1. Candado de asesoría PostgreSQL (221001) para arranque concurrente seguro
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(221001)`);
+      try {
+        // PosPaymentMethod enum - fuera de multi-transacción para compatibilidad Postgres
+        await this.$executeRawUnsafe(`
+          DO $$ BEGIN
+            ALTER TYPE "PosPaymentMethod" ADD VALUE IF NOT EXISTS 'PEDIDOSYA_APP';
+          EXCEPTION
+            WHEN duplicate_object THEN null;
+          END $$;
+        `);
+
+        // 2. Columnas en businesses
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "deliveryChannelEnabled" BOOLEAN NOT NULL DEFAULT false`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "pedidosYaChannelEnabled" BOOLEAN NOT NULL DEFAULT false`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "deliveryDefaultFee" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "deliveryTaxable" BOOLEAN`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "deliveryRequireDriver" BOOLEAN NOT NULL DEFAULT false`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "pedidosYaCommissionPct" DOUBLE PRECISION NOT NULL DEFAULT 27`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "pedidosYaTaxPct" DOUBLE PRECISION NOT NULL DEFAULT 7`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "pedidosYaPriceMode" VARCHAR(30) NOT NULL DEFAULT 'MANTENER_GANANCIA'`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "pedidosYaRounding" VARCHAR(30) NOT NULL DEFAULT 'REDONDEO_1'`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "pedidosYaCapAtListPrice" BOOLEAN NOT NULL DEFAULT false`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "pedidosYaRequireOrderNumber" BOOLEAN NOT NULL DEFAULT true`,
+        );
+
+        // 3. Tabla pos_pedidosya_settlements
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_pedidosya_settlements" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "depositDate" TIMESTAMP(3) NOT NULL,
+            "depositAmount" DOUBLE PRECISION NOT NULL,
+            "expectedAmount" DOUBLE PRECISION NOT NULL,
+            "difference" DOUBLE PRECISION NOT NULL,
+            "bankId" TEXT,
+            "bankName" VARCHAR(100),
+            "reference" VARCHAR(100),
+            "notes" TEXT,
+            "ordersCount" INTEGER NOT NULL DEFAULT 0,
+            "createdById" TEXT,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_pedidosya_settlements_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_pedidosya_settlements_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_pedidosya_settlements_bankId_fkey" FOREIGN KEY ("bankId") REFERENCES "pos_banks"("id") ON DELETE SET NULL ON UPDATE CASCADE
+          )
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_pedidosya_settlements_businessId_depositDate_idx"
+          ON "pos_pedidosya_settlements"("businessId", "depositDate");
+        `);
+
+        // 4. Columnas en pos_sales
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "deliveryFee" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "deliveryAddress" VARCHAR(300)`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "deliveryPhone" VARCHAR(30)`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "deliveryReference" VARCHAR(300)`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "deliveryDriverId" TEXT`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "deliveryDriverName" VARCHAR(100)`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "pedidosYaOrderNumber" VARCHAR(50)`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "pedidosYaPaymentMode" VARCHAR(20)`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "pedidosYaCommissionPct" DOUBLE PRECISION`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "pedidosYaTaxPct" DOUBLE PRECISION`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "pedidosYaCommissionAmount" DOUBLE PRECISION`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "pedidosYaTaxAmount" DOUBLE PRECISION`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "pedidosYaNetPayout" DOUBLE PRECISION`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "pedidosYaSettlementStatus" VARCHAR(20) DEFAULT 'PENDIENTE'`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "pedidosYaSettlementId" TEXT`,
+        );
+
+        await this.$executeRawUnsafe(`
+          DO $$ BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'pos_sales_pedidosYaSettlementId_fkey'
+            ) THEN
+              ALTER TABLE "pos_sales"
+                ADD CONSTRAINT "pos_sales_pedidosYaSettlementId_fkey"
+                FOREIGN KEY ("pedidosYaSettlementId") REFERENCES "pos_pedidosya_settlements"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_sales_businessId_pedidosYaSettlementStatus_idx"
+          ON "pos_sales"("businessId", "pedidosYaSettlementStatus");
+        `);
+
+        // Recrear índice único liberando órdenes canceladas, anuladas o devueltas
+        await this.$executeRawUnsafe(`
+          DROP INDEX IF EXISTS "pos_sales_business_pedidosya_order_idx";
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE UNIQUE INDEX IF NOT EXISTS "pos_sales_business_pedidosya_order_idx"
+          ON "pos_sales"("businessId", "pedidosYaOrderNumber")
+          WHERE "pedidosYaOrderNumber" IS NOT NULL AND "status" NOT IN ('CANCELLED', 'VOIDED', 'RETURNED');
+        `);
+
+        this.logger.log('[PrismaService] ✓ 221a - Esquema de canales de venta (Domicilio, PedidosYa y Liquidaciones) sincronizado');
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(221001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 221a - Advertencia sincronizando esquema de canales de venta: ${err.message}`);
     }
   }
 

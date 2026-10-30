@@ -20,6 +20,7 @@ import { validateProductQuantity, round3 } from "./product-unit.util";
 import { BatchesService } from '../batches/batches.service';
 import { buildBusinessDateRange, formatDateInTimezone } from '../../../common/utils/date.util';
 import { normalizeOptionLabel } from '../../../common/utils/field-key.util';
+import { resolveChannelUnitPrice } from '../sales/utils/pricing.util';
 
 @Injectable()
 export class ProductsService {
@@ -76,6 +77,7 @@ export class ProductsService {
     userRole?: string,
     wholesaleEnabled?: boolean,
     twoStepSaleEnabled?: boolean,
+    businessChannelConfig?: any,
   ) {
     if (!product) return product;
     const rawAttrs =
@@ -117,6 +119,20 @@ export class ProductsService {
       wholesale_enabled: isWholesaleEnabled,
       wholesaleEnabled: isWholesaleEnabled,
     };
+
+    if (businessChannelConfig?.pedidosYaChannelEnabled) {
+      const { unitPrice: pedidosYaPrice } = resolveChannelUnitPrice(
+        product,
+        1,
+        businessChannelConfig,
+        'PEDIDOSYA',
+      );
+      mapped.pedidosYaPrice = pedidosYaPrice;
+      mapped.channelPrice = pedidosYaPrice;
+    } else {
+      mapped.pedidosYaPrice = null;
+      mapped.channelPrice = null;
+    }
 
     if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER || userRole === UserRole.VENDEDOR) {
       delete mapped.cost;
@@ -437,7 +453,18 @@ export class ProductsService {
       }),
       this.prisma.business.findUnique({
         where: { id: businessId },
-        select: { wholesaleEnabled: true, tracksBatches: true, twoStepSaleEnabled: true },
+        select: {
+          wholesaleEnabled: true,
+          tracksBatches: true,
+          twoStepSaleEnabled: true,
+          pedidosYaChannelEnabled: true,
+          useListPrice: true,
+          pedidosYaCommissionPct: true,
+          pedidosYaTaxPct: true,
+          pedidosYaPriceMode: true,
+          pedidosYaRounding: true,
+          pedidosYaCapAtListPrice: true,
+        },
       }),
     ]);
 
@@ -494,7 +521,7 @@ export class ProductsService {
     const todayMs = new Date(todayStr + 'T00:00:00.000Z').getTime();
 
     let mapped = products.map((p) => {
-      const item = this.filterActiveAttributes(p, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled);
+      const item = this.filterActiveAttributes(p, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled, business);
       if (business?.tracksBatches) {
         const b = batchMap.get(p.id);
         item.nextExpiryDate = b?.nextExpiryDate ?? null;
@@ -590,10 +617,21 @@ export class ProductsService {
 
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { wholesaleEnabled: true, tracksBatches: true, twoStepSaleEnabled: true },
+      select: {
+        wholesaleEnabled: true,
+        tracksBatches: true,
+        twoStepSaleEnabled: true,
+        pedidosYaChannelEnabled: true,
+        useListPrice: true,
+        pedidosYaCommissionPct: true,
+        pedidosYaTaxPct: true,
+        pedidosYaPriceMode: true,
+        pedidosYaRounding: true,
+        pedidosYaCapAtListPrice: true,
+      },
     });
 
-    const item = this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled);
+    const item = this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled, business);
 
     if (business?.tracksBatches) {
       const batchAggs: any[] = await this.prisma.$queryRaw`
@@ -640,10 +678,20 @@ export class ProductsService {
 
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { wholesaleEnabled: true, twoStepSaleEnabled: true },
+      select: {
+        wholesaleEnabled: true,
+        twoStepSaleEnabled: true,
+        pedidosYaChannelEnabled: true,
+        useListPrice: true,
+        pedidosYaCommissionPct: true,
+        pedidosYaTaxPct: true,
+        pedidosYaPriceMode: true,
+        pedidosYaRounding: true,
+        pedidosYaCapAtListPrice: true,
+      },
     });
 
-    return this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled);
+    return this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled, business);
   }
 
   async create(dto: CreateProductDto, businessId: string, userId?: string) {

@@ -164,6 +164,28 @@ export class CreditService {
         );
       }
 
+      let resolvedBankId: string | null = null;
+      let resolvedBankName: string | null = null;
+      const isCardOrTransfer =
+        dto.paymentMethod === PosPaymentMethod.TARJETA || dto.paymentMethod === PosPaymentMethod.TRANSFERENCIA;
+
+      if (isCardOrTransfer) {
+        const rawBankId = dto.bankId ? dto.bankId.toString().trim() : null;
+        if (rawBankId) {
+          const bank = await tx.posBank.findFirst({
+            where: { id: rawBankId, businessId },
+            select: { id: true, name: true },
+          });
+          if (!bank) {
+            throw new NotFoundException('Banco no encontrado');
+          }
+          resolvedBankId = bank.id;
+          resolvedBankName = bank.name;
+        } else if (dto.bankName) {
+          resolvedBankName = dto.bankName.toString().trim().substring(0, 100);
+        }
+      }
+
       const payment = await tx.creditPayment.create({
         data: {
           creditAccountId,
@@ -171,12 +193,15 @@ export class CreditService {
           interestPortion: new Prisma.Decimal(interestPortion.toFixed(2)),
           principalPortion: new Prisma.Decimal(principalPortion.toFixed(2)),
           paymentMethod: dto.paymentMethod,
+          bankId: resolvedBankId,
+          bankName: resolvedBankName,
           receivedByUserId: userId,
           notes: dto.notes ? dto.notes.trim() : null,
           receivedAt: new Date(),
         },
         include: {
           receivedByUser: { select: { id: true, name: true, email: true } },
+          bank: { select: { id: true, name: true, code: true } },
         },
       });
 
@@ -1315,7 +1340,7 @@ export class CreditService {
 
     if (format === 'csv') {
       const bom = '\uFEFF';
-      const sep = ';';
+      const sep = ',';
       let csv = bom;
 
       csv += `REPORTE DE DEDUCCIÓN POR EMPRESA (CONVENIO)\r\n`;

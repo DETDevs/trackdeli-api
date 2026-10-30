@@ -146,6 +146,7 @@ export class ReportsService {
     from?: string,
     to?: string,
     bankId?: string,
+    channel?: string,
   ) {
     const range = this.resolveDateRange(period, from, to);
     const startDate = range.current.from;
@@ -153,6 +154,10 @@ export class ReportsService {
 
     const bankFilterSql = bankId
       ? Prisma.sql`AND s.id IN (SELECT p."saleId" FROM pos_payments p WHERE p."bankId" = ${bankId})`
+      : Prisma.empty;
+
+    const channelFilterSql = channel
+      ? Prisma.sql`AND s."channel" = ${channel}`
       : Prisma.empty;
 
     const summaryAgg: any[] = await this.prisma.$queryRaw`
@@ -200,7 +205,8 @@ export class ReportsService {
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
-        ${bankFilterSql};
+        ${bankFilterSql}
+        ${channelFilterSql};
     `;
 
     const byPaymentMethodRaw: any[] = await this.prisma.$queryRaw`
@@ -219,6 +225,7 @@ export class ReportsService {
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
         ${bankFilterSql}
+        ${channelFilterSql}
       GROUP BY s."paymentMethod";
     `;
 
@@ -239,6 +246,7 @@ export class ReportsService {
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
         ${bankFilterSql}
+        ${channelFilterSql}
       GROUP BY TO_CHAR((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua', 'YYYY-MM-DD')
       ORDER BY date ASC;
     `;
@@ -255,6 +263,7 @@ export class ReportsService {
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         ${bankId ? Prisma.sql`AND p."bankId" = ${bankId}` : Prisma.empty}
+        ${channelFilterSql}
       GROUP BY p.method, p."bankId", p."bankName";
     `;
 
@@ -319,8 +328,9 @@ export class ReportsService {
     from?: string,
     to?: string,
     bankId?: string,
+    channel?: string,
   ): Promise<{ filename: string; csvData: string }> {
-    const summary = await this.getSalesSummary(businessId, period, from, to, bankId);
+    const summary = await this.getSalesSummary(businessId, period, from, to, bankId, channel);
     let bankNameFilter = 'Todos';
     if (bankId) {
       const b = await this.prisma.posBank.findFirst({ where: { id: bankId, businessId } });
@@ -328,12 +338,13 @@ export class ReportsService {
     }
 
     const bom = '\uFEFF';
-    const sep = ';';
+    const sep = ',';
     let csv = bom;
 
     csv += `REPORTE DE VENTAS Y PAGOS\r\n`;
     csv += `Período${sep}"${summary.period.from}" al "${summary.period.to}"\r\n`;
     csv += `Filtro Banco${sep}"${bankNameFilter}"\r\n`;
+    csv += `Filtro Canal${sep}"${channel || 'Todos'}"\r\n`;
     csv += `Generado${sep}"${new Date().toISOString()}"\r\n\r\n`;
 
     csv += `RESUMEN GENERAL\r\n`;
@@ -367,7 +378,7 @@ export class ReportsService {
     return { filename, csvData: csv };
   }
 
-  async getTopProducts(businessId: string, period?: string, from?: string, to?: string, limit = 10) {
+  async getTopProducts(businessId: string, period?: string, from?: string, to?: string, limit = 10, channel?: string) {
     let startDate: Date;
     let endDate: Date;
     if (period || from || to) {
@@ -378,6 +389,10 @@ export class ReportsService {
       startDate = new Date('2000-01-01');
       endDate = new Date('2100-01-01');
     }
+
+    const channelFilterSql = channel
+      ? Prisma.sql`AND s."channel" = ${channel}`
+      : Prisma.empty;
 
     const topsRaw: any[] = await this.prisma.$queryRaw`
       WITH item_sales AS (
@@ -393,6 +408,7 @@ export class ReportsService {
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
           AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
+          ${channelFilterSql}
       )
       SELECT
         "productName" AS name,
@@ -1288,10 +1304,14 @@ export class ReportsService {
     };
   }
 
-  async getSalesByTime(businessId: string, period?: string, from?: string, to?: string) {
+  async getSalesByTime(businessId: string, period?: string, from?: string, to?: string, channel?: string) {
     const range = this.resolveDateRange(period, from, to);
     const startDate = range.current.from;
     const endDate = range.current.to;
+
+    const channelFilterSql = channel
+      ? Prisma.sql`AND s."channel" = ${channel}`
+      : Prisma.empty;
 
     const hoursRaw: any[] = await this.prisma.$queryRaw`
       SELECT
@@ -1309,6 +1329,7 @@ export class ReportsService {
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
+        ${channelFilterSql}
       GROUP BY hour
       ORDER BY hour ASC;
     `;
@@ -1345,6 +1366,7 @@ export class ReportsService {
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
+        ${channelFilterSql}
       GROUP BY dow
       ORDER BY dow ASC;
     `;
@@ -1665,10 +1687,14 @@ export class ReportsService {
     };
   }
 
-  async getSalesByCashier(businessId: string, period?: string, from?: string, to?: string) {
+  async getSalesByCashier(businessId: string, period?: string, from?: string, to?: string, channel?: string) {
     const range = this.resolveDateRange(period, from, to);
     const startDate = range.current.from;
     const endDate = range.current.to;
+
+    const channelFilterSql = channel
+      ? Prisma.sql`AND s."channel" = ${channel}`
+      : Prisma.empty;
 
     const rows: any[] = await this.prisma.$queryRaw`
       SELECT
@@ -1689,6 +1715,7 @@ export class ReportsService {
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
+        ${channelFilterSql}
       GROUP BY u.id, u.name, u.email
       ORDER BY "totalSales" DESC;
     `;
@@ -1831,6 +1858,7 @@ export class ReportsService {
     from?: string,
     to?: string,
     targetSellerId?: string,
+    channel?: string,
   ) {
     const { current } = this.resolveDateRange(period, from, to);
     const fromDate = current.from;
@@ -1879,13 +1907,18 @@ export class ReportsService {
           ticketsSent > 0 ? Math.round((ticketsCharged / ticketsSent) * 10000) / 100 : 0;
 
         // Ventas asociadas a este vendedor
+        const salesWhere: any = {
+          businessId,
+          sellerId: seller.id,
+          createdAt: { gte: fromDate, lte: toDate },
+          status: { not: 'CANCELLED' },
+        };
+        if (channel) {
+          salesWhere.channel = channel;
+        }
+
         const sales = await this.prisma.sale.findMany({
-          where: {
-            businessId,
-            sellerId: seller.id,
-            createdAt: { gte: fromDate, lte: toDate },
-            status: { not: 'CANCELLED' },
-          },
+          where: salesWhere,
           select: {
             id: true,
             items: {
@@ -1986,5 +2019,513 @@ export class ReportsService {
       },
       sellers: results,
     };
+  }
+
+  // ═══════════════════════════════════════════════
+  // REPORTES DE CANALES DE VENTA (221a)
+  // ═══════════════════════════════════════════════
+
+  /**
+   * GET /pos/reports/sales-by-channel
+   * Resumen y desglose por canal (MOSTRADOR, DOMICILIO, PEDIDOSYA)
+   */
+  async getSalesByChannelReport(
+    businessId: string,
+    period?: string,
+    from?: string,
+    to?: string,
+  ) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
+
+    const channelsRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        COALESCE(s."channel", 'MOSTRADOR') AS channel,
+        COUNT(s.id)::int AS count,
+        COALESCE(SUM(s.total), 0)::float AS gross,
+        COALESCE(SUM(s."taxAmount"), 0)::float AS tax,
+        COALESCE(SUM(s.subtotal - s."discountAmount"), 0)::float AS net,
+        COALESCE(SUM(items_sum.qty), 0)::float AS units
+      FROM pos_sales s
+      LEFT JOIN (
+        SELECT "saleId", SUM(quantity)::float AS qty
+        FROM pos_sale_items
+        GROUP BY "saleId"
+      ) items_sum ON items_sum."saleId" = s.id
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
+      GROUP BY COALESCE(s."channel", 'MOSTRADOR')
+    `;
+
+    const totalGrossAll = channelsRaw.reduce((sum, r) => sum + Number(r.gross || 0), 0);
+
+    const validChannels = ['MOSTRADOR', 'DOMICILIO', 'PEDIDOSYA'];
+    const summary = validChannels.map((ch) => {
+      const found = channelsRaw.find((r) => r.channel === ch) || {
+        count: 0,
+        gross: 0,
+        tax: 0,
+        net: 0,
+        units: 0,
+      };
+      const count = Number(found.count || 0);
+      const gross = Math.round(Number(found.gross || 0) * 100) / 100;
+      const tax = Math.round(Number(found.tax || 0) * 100) / 100;
+      const net = Math.round(Number(found.net || 0) * 100) / 100;
+      const units = Math.round(Number(found.units || 0) * 1000) / 1000;
+      const avgTicket = count > 0 ? Math.round((gross / count) * 100) / 100 : 0;
+      const pctOfTotal = totalGrossAll > 0 ? Math.round((gross / totalGrossAll) * 10000) / 100 : 0;
+
+      return {
+        channel: ch,
+        count,
+        gross,
+        tax,
+        net,
+        units,
+        avgTicket,
+        pctOfTotal,
+      };
+    });
+
+    const byDayRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        TO_CHAR((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua', 'YYYY-MM-DD') AS date,
+        COALESCE(s."channel", 'MOSTRADOR') AS channel,
+        COUNT(s.id)::int AS count,
+        COALESCE(SUM(s.total), 0)::float AS gross
+      FROM pos_sales s
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
+      GROUP BY TO_CHAR((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua', 'YYYY-MM-DD'), COALESCE(s."channel", 'MOSTRADOR')
+      ORDER BY date ASC, channel ASC;
+    `;
+
+    const byHourRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        EXTRACT(HOUR FROM (s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua')::int AS hour,
+        COALESCE(s."channel", 'MOSTRADOR') AS channel,
+        COUNT(s.id)::int AS count,
+        COALESCE(SUM(s.total), 0)::float AS gross
+      FROM pos_sales s
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
+      GROUP BY hour, COALESCE(s."channel", 'MOSTRADOR')
+      ORDER BY hour ASC, channel ASC;
+    `;
+
+    return {
+      period: { from: range.current.fromIso, to: range.current.toIso },
+      totalGross: Math.round(totalGrossAll * 100) / 100,
+      summary,
+      byDay: byDayRaw.map((r) => ({
+        date: r.date,
+        channel: r.channel,
+        count: r.count,
+        gross: Math.round(r.gross * 100) / 100,
+      })),
+      byHour: byHourRaw.map((r) => ({
+        hour: r.hour,
+        channel: r.channel,
+        count: r.count,
+        gross: Math.round(r.gross * 100) / 100,
+      })),
+    };
+  }
+
+  async exportSalesByChannelCsv(
+    businessId: string,
+    period?: string,
+    from?: string,
+    to?: string,
+  ): Promise<{ filename: string; csvData: string }> {
+    const report = await this.getSalesByChannelReport(businessId, period, from, to);
+    const bom = '\uFEFF';
+    const sep = ',';
+    let csv = bom;
+
+    csv += `REPORTE DE VENTAS POR CANAL\r\n`;
+    csv += `Período${sep}"${report.period.from}" al "${report.period.to}"\r\n`;
+    csv += `Generado${sep}"${new Date().toISOString()}"\r\n\r\n`;
+
+    csv += `RESUMEN POR CANAL\r\n`;
+    csv += `Canal${sep}Ventas (Cant)${sep}Bruto${sep}Impuesto${sep}Neto${sep}Unidades${sep}Ticket Promedio${sep}% del Total\r\n`;
+    for (const s of report.summary) {
+      csv += `"${s.channel}"${sep}${s.count}${sep}${s.gross.toFixed(2)}${sep}${s.tax.toFixed(2)}${sep}${s.net.toFixed(2)}${sep}${s.units.toFixed(2)}${sep}${s.avgTicket.toFixed(2)}${sep}${s.pctOfTotal.toFixed(2)}%\r\n`;
+    }
+    csv += `\r\n`;
+
+    csv += `VENTAS POR DÍA Y CANAL\r\n`;
+    csv += `Fecha${sep}Canal${sep}Ventas (Cant)${sep}Monto Bruto\r\n`;
+    for (const d of report.byDay) {
+      csv += `"${d.date}"${sep}"${d.channel}"${sep}${d.count}${sep}${d.gross.toFixed(2)}\r\n`;
+    }
+    csv += `\r\n`;
+
+    const fromClean = (report.period.from || '').split('T')[0];
+    const toClean = (report.period.to || '').split('T')[0];
+    const filename = `ventas_por_canal_${fromClean}_${toClean}.csv`;
+
+    return { filename, csvData: csv };
+  }
+
+  /**
+   * GET /pos/reports/domicilio
+   * Pedidos a domicilio, tarifas cobradas y desglose por repartidor y dirección
+   */
+  async getDomicilioReport(
+    businessId: string,
+    period?: string,
+    from?: string,
+    to?: string,
+    driverId?: string,
+  ) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
+
+    const driverFilter = driverId ? { deliveryDriverId: driverId } : {};
+
+    const sales = await this.prisma.sale.findMany({
+      where: {
+        businessId,
+        channel: 'DOMICILIO',
+        status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
+        createdAt: { gte: startDate, lte: endDate },
+        ...driverFilter,
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        createdAt: true,
+        occurredAt: true,
+        customerName: true,
+        deliveryAddress: true,
+        deliveryPhone: true,
+        deliveryReference: true,
+        deliveryDriverId: true,
+        deliveryDriverName: true,
+        deliveryFee: true,
+        total: true,
+        status: true,
+      },
+    });
+
+    const totalOrders = sales.length;
+    const totalSales = sales.reduce((sum, s) => sum + Number(s.total || 0), 0);
+    const totalDeliveryFees = sales.reduce((sum, s) => sum + Number(s.deliveryFee || 0), 0);
+
+    const driverStatsMap = new Map<string, { driverId: string | null; driverName: string; ordersCount: number; totalFees: number; totalSales: number }>();
+    const addressStatsMap = new Map<string, { address: string; ordersCount: number }>();
+
+    for (const s of sales) {
+      const dKey = s.deliveryDriverId || s.deliveryDriverName || 'SIN_ASIGNAR';
+      const dName = s.deliveryDriverName || (s.deliveryDriverId ? 'Repartidor' : 'Sin asignar');
+      const dEntry = driverStatsMap.get(dKey) || {
+        driverId: s.deliveryDriverId || null,
+        driverName: dName,
+        ordersCount: 0,
+        totalFees: 0,
+        totalSales: 0,
+      };
+      dEntry.ordersCount++;
+      dEntry.totalFees += Number(s.deliveryFee || 0);
+      dEntry.totalSales += Number(s.total || 0);
+      driverStatsMap.set(dKey, dEntry);
+
+      if (s.deliveryAddress) {
+        const addrKey = s.deliveryAddress.trim().toLowerCase();
+        const aEntry = addressStatsMap.get(addrKey) || { address: s.deliveryAddress.trim(), ordersCount: 0 };
+        aEntry.ordersCount++;
+        addressStatsMap.set(addrKey, aEntry);
+      }
+    }
+
+    const byDriver = Array.from(driverStatsMap.values()).map((d) => ({
+      ...d,
+      totalFees: Math.round(d.totalFees * 100) / 100,
+      totalSales: Math.round(d.totalSales * 100) / 100,
+    })).sort((a, b) => b.ordersCount - a.ordersCount);
+
+    const byAddress = Array.from(addressStatsMap.values())
+      .sort((a, b) => b.ordersCount - a.ordersCount)
+      .slice(0, 15);
+
+    return {
+      period: { from: range.current.fromIso, to: range.current.toIso },
+      totalOrders,
+      totalSales: Math.round(totalSales * 100) / 100,
+      totalDeliveryFees: Math.round(totalDeliveryFees * 100) / 100,
+      byDriver,
+      byAddress,
+      orders: sales.map((s) => ({
+        id: s.id,
+        invoiceNumber: s.invoiceNumber,
+        date: s.occurredAt || s.createdAt,
+        customerName: s.customerName,
+        deliveryAddress: s.deliveryAddress,
+        deliveryPhone: s.deliveryPhone,
+        deliveryReference: s.deliveryReference,
+        deliveryDriverName: s.deliveryDriverName,
+        deliveryFee: s.deliveryFee != null ? Number(s.deliveryFee) : 0,
+        total: Number(s.total),
+        status: s.status,
+      })),
+    };
+  }
+
+  async exportDomicilioReportCsv(
+    businessId: string,
+    period?: string,
+    from?: string,
+    to?: string,
+    driverId?: string,
+  ): Promise<{ filename: string; csvData: string }> {
+    const report = await this.getDomicilioReport(businessId, period, from, to, driverId);
+    const bom = '\uFEFF';
+    const sep = ',';
+    let csv = bom;
+
+    csv += `REPORTE DE VENTAS A DOMICILIO\r\n`;
+    csv += `Período${sep}"${report.period.from}" al "${report.period.to}"\r\n`;
+    csv += `Generado${sep}"${new Date().toISOString()}"\r\n\r\n`;
+
+    csv += `RESUMEN\r\n`;
+    csv += `Total Pedidos${sep}${report.totalOrders}\r\n`;
+    csv += `Total Ventas${sep}${report.totalSales.toFixed(2)}\r\n`;
+    csv += `Total Envíos Cobrados${sep}${report.totalDeliveryFees.toFixed(2)}\r\n\r\n`;
+
+    csv += `POR REPARTIDOR\r\n`;
+    csv += `Repartidor${sep}Pedidos${sep}Total Envíos${sep}Total Ventas\r\n`;
+    for (const d of report.byDriver) {
+      csv += `"${d.driverName}"${sep}${d.ordersCount}${sep}${d.totalFees.toFixed(2)}${sep}${d.totalSales.toFixed(2)}\r\n`;
+    }
+    csv += `\r\n`;
+
+    csv += `DETALLE DE PEDIDOS\r\n`;
+    csv += `Comprobante${sep}Fecha${sep}Cliente${sep}Dirección${sep}Teléfono${sep}Repartidor${sep}Envío${sep}Total\r\n`;
+    for (const o of report.orders) {
+      const dateStr = o.date ? new Date(o.date).toISOString().split('T')[0] : '';
+      csv += `"${o.invoiceNumber}"${sep}"${dateStr}"${sep}"${o.customerName || ''}"${sep}"${o.deliveryAddress || ''}"${sep}"${o.deliveryPhone || ''}"${sep}"${o.deliveryDriverName || ''}"${sep}${o.deliveryFee.toFixed(2)}${sep}${o.total.toFixed(2)}\r\n`;
+    }
+    csv += `\r\n`;
+
+    const fromClean = (report.period.from || '').split('T')[0];
+    const toClean = (report.period.to || '').split('T')[0];
+    const filename = `ventas_domicilio_${fromClean}_${toClean}.csv`;
+
+    return { filename, csvData: csv };
+  }
+
+  /**
+   * GET /pos/reports/pedidosya
+   * Reporte financiero de PedidosYa (comisiones, impuestos, net payout, estatus de liquidación)
+   */
+  async getPedidosYaReport(
+    businessId: string,
+    period?: string,
+    from?: string,
+    to?: string,
+    status?: string,
+    paymentMode?: string,
+  ) {
+    const range = this.resolveDateRange(period, from, to);
+    const startDate = range.current.from;
+    const endDate = range.current.to;
+
+    const extraWhere: any = {};
+    if (status) {
+      extraWhere.pedidosYaSettlementStatus = status;
+    }
+    if (paymentMode) {
+      extraWhere.pedidosYaPaymentMode = paymentMode;
+    }
+
+    const sales = await this.prisma.sale.findMany({
+      where: {
+        businessId,
+        channel: 'PEDIDOSYA',
+        status: { in: ['COMPLETED', 'PARTIALLY_RETURNED'] },
+        createdAt: { gte: startDate, lte: endDate },
+        ...extraWhere,
+      },
+      include: {
+        items: true,
+        pedidosYaSettlement: {
+          select: {
+            depositDate: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const totalOrders = sales.length;
+    let grossTotal = 0;
+    let totalCommission = 0;
+    let totalTax = 0;
+    let totalAppGross = 0;
+
+    const byPaymentMode = {
+      APP: { count: 0, total: 0, commission: 0, tax: 0, netPayout: 0 },
+      EFECTIVO: { count: 0, total: 0, commission: 0, tax: 0, netPayout: 0 },
+    };
+
+    const bySettlementStatus = {
+      PENDIENTE: { count: 0, total: 0, netPayout: 0 },
+      LIQUIDADO: { count: 0, total: 0, netPayout: 0 },
+    };
+
+    const productMap = new Map<string, { productId: string | null; productName: string; quantity: number; gross: number }>();
+
+    for (const s of sales) {
+      const tot = Number(s.total || 0);
+      const comm = Number(s.pedidosYaCommissionAmount || 0);
+      const tx = Number(s.pedidosYaTaxAmount || 0);
+      const pMode = s.pedidosYaPaymentMode === 'EFECTIVO' ? 'EFECTIVO' : 'APP';
+      const sStatus = s.pedidosYaSettlementStatus === 'LIQUIDADO' ? 'LIQUIDADO' : 'PENDIENTE';
+
+      grossTotal += tot;
+      totalCommission += comm;
+      totalTax += tx;
+
+      if (pMode === 'APP') {
+        totalAppGross += tot;
+        byPaymentMode.APP.count++;
+        byPaymentMode.APP.total += tot;
+        byPaymentMode.APP.commission += comm;
+        byPaymentMode.APP.tax += tx;
+      } else {
+        byPaymentMode.EFECTIVO.count++;
+        byPaymentMode.EFECTIVO.total += tot;
+        byPaymentMode.EFECTIVO.commission += comm;
+        byPaymentMode.EFECTIVO.tax += tx;
+      }
+
+      const orderNet = pMode === 'APP' ? (tot - comm - tx) : (-comm - tx);
+
+      if (sStatus === 'LIQUIDADO') {
+        bySettlementStatus.LIQUIDADO.count++;
+        bySettlementStatus.LIQUIDADO.total += tot;
+        bySettlementStatus.LIQUIDADO.netPayout += orderNet;
+      } else {
+        bySettlementStatus.PENDIENTE.count++;
+        bySettlementStatus.PENDIENTE.total += tot;
+        bySettlementStatus.PENDIENTE.netPayout += orderNet;
+      }
+
+      for (const item of s.items) {
+        const pKey = item.productId || item.productName;
+        const pEntry = productMap.get(pKey) || {
+          productId: item.productId || null,
+          productName: item.productName,
+          quantity: 0,
+          gross: 0,
+        };
+        pEntry.quantity += Number(item.quantity || 0);
+        pEntry.gross += Number(item.subtotal || 0);
+        productMap.set(pKey, pEntry);
+      }
+    }
+
+    // netPayout = ventas APP - comisiones e impuestos de TODOS los pedidos
+    const netPayout = totalAppGross - totalCommission - totalTax;
+
+    byPaymentMode.APP.netPayout = Math.round((byPaymentMode.APP.total - byPaymentMode.APP.commission - byPaymentMode.APP.tax) * 100) / 100;
+    byPaymentMode.APP.total = Math.round(byPaymentMode.APP.total * 100) / 100;
+    byPaymentMode.APP.commission = Math.round(byPaymentMode.APP.commission * 100) / 100;
+    byPaymentMode.APP.tax = Math.round(byPaymentMode.APP.tax * 100) / 100;
+
+    byPaymentMode.EFECTIVO.total = Math.round(byPaymentMode.EFECTIVO.total * 100) / 100;
+    byPaymentMode.EFECTIVO.commission = Math.round(byPaymentMode.EFECTIVO.commission * 100) / 100;
+    byPaymentMode.EFECTIVO.tax = Math.round(byPaymentMode.EFECTIVO.tax * 100) / 100;
+    byPaymentMode.EFECTIVO.netPayout = Math.round((-byPaymentMode.EFECTIVO.commission - byPaymentMode.EFECTIVO.tax) * 100) / 100;
+
+    bySettlementStatus.PENDIENTE.total = Math.round(bySettlementStatus.PENDIENTE.total * 100) / 100;
+    bySettlementStatus.PENDIENTE.netPayout = Math.round(bySettlementStatus.PENDIENTE.netPayout * 100) / 100;
+    bySettlementStatus.LIQUIDADO.total = Math.round(bySettlementStatus.LIQUIDADO.total * 100) / 100;
+    bySettlementStatus.LIQUIDADO.netPayout = Math.round(bySettlementStatus.LIQUIDADO.netPayout * 100) / 100;
+
+    const topProducts = Array.from(productMap.values())
+      .sort((a, b) => b.quantity - a.quantity)
+      .slice(0, 10)
+      .map((p) => ({
+        ...p,
+        quantity: Math.round(p.quantity * 1000) / 1000,
+        gross: Math.round(p.gross * 100) / 100,
+      }));
+
+    return {
+      period: { from: range.current.fromIso, to: range.current.toIso },
+      summary: {
+        totalOrders,
+        grossTotal: Math.round(grossTotal * 100) / 100,
+        totalCommission: Math.round(totalCommission * 100) / 100,
+        totalTax: Math.round(totalTax * 100) / 100,
+        netPayout: Math.round(netPayout * 100) / 100,
+      },
+      byPaymentMode,
+      bySettlementStatus,
+      topProducts,
+      orders: sales.map((s) => ({
+        id: s.id,
+        invoiceNumber: s.invoiceNumber,
+        pedidosYaOrderNumber: s.pedidosYaOrderNumber,
+        date: s.occurredAt || s.createdAt,
+        total: Number(s.total),
+        commissionPct: s.pedidosYaCommissionPct != null ? Number(s.pedidosYaCommissionPct) : null,
+        taxPct: s.pedidosYaTaxPct != null ? Number(s.pedidosYaTaxPct) : null,
+        commissionAmount: s.pedidosYaCommissionAmount != null ? Number(s.pedidosYaCommissionAmount) : 0,
+        taxAmount: s.pedidosYaTaxAmount != null ? Number(s.pedidosYaTaxAmount) : 0,
+        netPayout: s.pedidosYaNetPayout != null ? Number(s.pedidosYaNetPayout) : 0,
+        paymentMode: s.pedidosYaPaymentMode,
+        settlementStatus: s.pedidosYaSettlementStatus || 'PENDIENTE',
+        settlementDate: s.pedidosYaSettlement?.depositDate || null,
+      })),
+    };
+  }
+
+  async exportPedidosYaReportCsv(
+    businessId: string,
+    period?: string,
+    from?: string,
+    to?: string,
+    status?: string,
+    paymentMode?: string,
+  ): Promise<{ filename: string; csvData: string }> {
+    const report = await this.getPedidosYaReport(businessId, period, from, to, status, paymentMode);
+    const bom = '\uFEFF';
+    const sep = ',';
+    let csv = bom;
+
+    csv += `REPORTE DE PEDIDOSYA\r\n`;
+    csv += `Período${sep}"${report.period.from}" al "${report.period.to}"\r\n`;
+    csv += `Generado${sep}"${new Date().toISOString()}"\r\n\r\n`;
+
+    csv += `RESUMEN GENERAL\r\n`;
+    csv += `Total Pedidos${sep}${report.summary.totalOrders}\r\n`;
+    csv += `Venta Bruta Total${sep}${report.summary.grossTotal.toFixed(2)}\r\n`;
+    csv += `Comisión Total${sep}${report.summary.totalCommission.toFixed(2)}\r\n`;
+    csv += `Impuesto s/Comisión${sep}${report.summary.totalTax.toFixed(2)}\r\n`;
+    csv += `Neto a Cobrar / Pagar${sep}${report.summary.netPayout.toFixed(2)}\r\n\r\n`;
+
+    csv += `DETALLE DE PEDIDOS\r\n`;
+    csv += `Comprobante${sep}Nº PedidosYa${sep}Fecha${sep}Modo Pago${sep}Total${sep}Comisión${sep}Impuesto${sep}Neto${sep}Estado Liquidación\r\n`;
+    for (const o of report.orders) {
+      const dateStr = o.date ? new Date(o.date).toISOString().split('T')[0] : '';
+      csv += `"${o.invoiceNumber}"${sep}"${o.pedidosYaOrderNumber || ''}"${sep}"${dateStr}"${sep}"${o.paymentMode || ''}"${sep}${o.total.toFixed(2)}${sep}${o.commissionAmount.toFixed(2)}${sep}${o.taxAmount.toFixed(2)}${sep}${o.netPayout.toFixed(2)}${sep}"${o.settlementStatus}"\r\n`;
+    }
+    csv += `\r\n`;
+
+    const fromClean = (report.period.from || '').split('T')[0];
+    const toClean = (report.period.to || '').split('T')[0];
+    const filename = `pedidosya_${fromClean}_${toClean}.csv`;
+
+    return { filename, csvData: csv };
   }
 }

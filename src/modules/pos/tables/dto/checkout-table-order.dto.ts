@@ -63,6 +63,14 @@ export class CheckoutTableOrderDto {
   paymentReference?: string;
 
   @IsOptional()
+  @IsString()
+  bankId?: string;
+
+  @IsOptional()
+  @IsString()
+  bankName?: string;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => PaymentDto)

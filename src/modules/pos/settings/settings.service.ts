@@ -18,6 +18,11 @@ export class SettingsService {
         posVertical: true, salonProfile: true, gridColumns: true, gridRows: true,
         taxRate: true, taxEnabled: true, taxIncluded: true, currency: true, invoicePrefix: true, invoiceCounter: true,
         posAddress: true, posPhone: true, posFooter: true, wholesaleEnabled: true,
+        deliveryChannelEnabled: true, pedidosYaChannelEnabled: true,
+        deliveryDefaultFee: true, deliveryTaxable: true, deliveryRequireDriver: true,
+        pedidosYaCommissionPct: true, pedidosYaTaxPct: true,
+        pedidosYaPriceMode: true, pedidosYaRounding: true,
+        pedidosYaCapAtListPrice: true, pedidosYaRequireOrderNumber: true,
         productSubscriptions: {
           where: { productType: { in: ['POS', 'CARTERA_COBRO', 'CITAS'] } },
           select: { productType: true, posVertical: true, status: true },
@@ -34,6 +39,10 @@ export class SettingsService {
     const isCitasActive = citasSub ? citasSub.status === 'ACTIVE' : Boolean((business as any).hasCitas);
     const resolvedSalonProfile = resolveSalonProfile(business.salonProfile);
 
+    const deliveryTaxable = business.deliveryTaxable !== null && business.deliveryTaxable !== undefined
+      ? business.deliveryTaxable
+      : Boolean(business.taxEnabled);
+
     const { productSubscriptions, ...businessData } = business;
     return {
       ...businessData,
@@ -44,6 +53,21 @@ export class SettingsService {
       salonLabels: getSalonLabels(resolvedSalonProfile),
       wholesale_enabled: Boolean(business.wholesaleEnabled),
       wholesaleEnabled: Boolean(business.wholesaleEnabled),
+      channels: {
+        delivery: {
+          enabled: Boolean(business.deliveryChannelEnabled),
+          defaultFee: business.deliveryDefaultFee ?? 0,
+          taxable: deliveryTaxable,
+          requireDriver: Boolean(business.deliveryRequireDriver),
+        },
+        pedidosYa: {
+          enabled: Boolean(business.pedidosYaChannelEnabled),
+          priceMode: business.pedidosYaPriceMode || 'MANTENER_GANANCIA',
+          rounding: business.pedidosYaRounding || 'REDONDEO_1',
+          capAtListPrice: Boolean(business.pedidosYaCapAtListPrice),
+          requireOrderNumber: business.pedidosYaRequireOrderNumber !== false,
+        },
+      },
     };
   }
 

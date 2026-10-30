@@ -16,4 +16,12 @@ export class RegisterCreditPaymentDto {
   @SanitizeText()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  bankId?: string;
+
+  @IsOptional()
+  @IsString()
+  bankName?: string;
 }

@@ -148,6 +148,31 @@ export class CashRegisterService {
     const movementsInUsd = Number(decMovementsInUsd.toDecimalPlaces(2));
     const movementsOutUsd = Number(decMovementsOutUsd.toDecimalPlaces(2));
 
+    const closingBreakdown = (register.closingBreakdown as any) || {};
+    const byMethodAndBank = closingBreakdown.byMethodAndBank || (closingBreakdown.CARD || closingBreakdown.TRANSFER || closingBreakdown.CASH ? closingBreakdown : this.calculateByMethodAndBank(register));
+    const denominations = closingBreakdown.denominations || null;
+    const countMode = closingBreakdown.countMode || (denominations?.length ? 'DENOMINATIONS' : 'TOTAL');
+
+    const salesByChannel: Record<string, { count: number; total: number }> = {
+      MOSTRADOR: { count: 0, total: 0 },
+      DOMICILIO: { count: 0, total: 0 },
+      PEDIDOSYA: { count: 0, total: 0 },
+    };
+
+    for (const s of activeSales) {
+      const ch = (s.channel || 'MOSTRADOR').toUpperCase();
+      if (!salesByChannel[ch]) {
+        salesByChannel[ch] = { count: 0, total: 0 };
+      }
+      salesByChannel[ch].count += 1;
+      const refundsTotal = (s.returns || []).reduce(
+        (sum: number, r: any) => sum + (r.refundAmount != null ? Number(r.refundAmount) : 0),
+        0,
+      );
+      const netTotal = Math.max(0, Number(s.total || 0) - refundsTotal);
+      salesByChannel[ch].total = Math.round((salesByChannel[ch].total + netTotal) * 100) / 100;
+    }
+
     return {
       ...register,
       openingCash: initialAmount,
@@ -170,12 +195,16 @@ export class CashRegisterService {
       movementsInUsd,
       movementsOutUsd,
       salesCount: activeSales.length || register._count?.sales || 0,
+      salesByChannel,
       openedById: register.cashierId || register.openedById,
       openedBy: cashierInfo,
       closedBy,
       movements,
       sales: register.sales || [],
-      byMethodAndBank: register.closingBreakdown || this.calculateByMethodAndBank(register),
+      byMethodAndBank,
+      denominations,
+      countMode,
+      closingBreakdown: register.closingBreakdown || null,
     };
   }
 
@@ -183,6 +212,30 @@ export class CashRegisterService {
     if (userRole !== 'CAJERO') return registerData;
     const policies = await this.policiesService.get(businessId);
     if (!policies.blindCashClose) return registerData;
+
+    const obfuscateByMethodAndBank = (bmb: any) => {
+      if (!bmb || typeof bmb !== 'object') return bmb;
+      const obfuscated: any = {};
+      for (const [method, val] of Object.entries(bmb)) {
+        if (!val || typeof val !== 'object') {
+          obfuscated[method] = val;
+          continue;
+        }
+        const mVal: any = val;
+        const methodObj: any = {
+          reported: mVal.reported !== undefined ? mVal.reported : null,
+        };
+        if (Array.isArray(mVal.byBank)) {
+          methodObj.byBank = mVal.byBank.map((b: any) => ({
+            bankId: b.bankId,
+            bankName: b.bankName,
+            reported: b.reported !== undefined ? b.reported : null,
+          }));
+        }
+        obfuscated[method] = methodObj;
+      }
+      return obfuscated;
+    };
 
     const whitelistBlindRegister = (reg: any) => {
       if (!reg) return null;
@@ -201,6 +254,12 @@ export class CashRegisterService {
         notes: reg.notes ?? null,
         createdAt: reg.createdAt,
         cashier: reg.cashier ?? null,
+        closingCash: reg.closingCash ?? reg.actualAmount ?? null,
+        actualAmount: reg.closingCash ?? reg.actualAmount ?? null,
+        closingCashUsd: reg.closingCashUsd ?? null,
+        denominations: reg.denominations ?? reg.closingBreakdown?.denominations ?? null,
+        countMode: reg.countMode ?? reg.closingBreakdown?.countMode ?? null,
+        byMethodAndBank: obfuscateByMethodAndBank(reg.byMethodAndBank),
       };
     };
 
@@ -209,6 +268,7 @@ export class CashRegisterService {
         register: whitelistBlindRegister(registerData.register),
         summary: {
           salesCount: registerData.summary.salesCount ?? 0,
+          byMethodAndBank: obfuscateByMethodAndBank(registerData.summary.byMethodAndBank),
         },
       };
     }
@@ -326,11 +386,33 @@ export class CashRegisterService {
 
     const policies = await this.policiesService.get(businessId);
     let closingCashDec = new Prisma.Decimal(0);
-    
-    if (dto.counted && dto.counted.CASH !== undefined) {
+
+    const denominations = dto.denominations || dto.counted?.denominations || null;
+    const countMode = dto.countMode || dto.counted?.countMode || (denominations?.length ? 'DENOMINATIONS' : 'TOTAL');
+
+    if (typeof (dto as any).counted === 'number') {
+      closingCashDec = new Prisma.Decimal((dto as any).counted);
+    } else if (dto.counted && dto.counted.CASH !== undefined) {
       closingCashDec = new Prisma.Decimal(dto.counted.CASH);
-    } else {
+    } else if (dto.closingCash !== undefined || dto.actualAmount !== undefined || dto.amount !== undefined) {
       closingCashDec = new Prisma.Decimal(dto.closingCash ?? dto.actualAmount ?? dto.amount ?? 0);
+    } else if (denominations && denominations.length > 0) {
+      const dTotal = denominations.reduce((sum: number, d: any) => sum + (Number(d.value) * Number(d.qty)), 0);
+      closingCashDec = new Prisma.Decimal(dTotal);
+    }
+
+    if (countMode === 'DENOMINATIONS' || (denominations && denominations.length > 0)) {
+      const denomTotal = (denominations || []).reduce(
+        (sum: number, d: any) => sum + (Number(d.value) * Number(d.qty)),
+        0,
+      );
+      if (Math.abs(denomTotal - Number(closingCashDec)) > 0.01) {
+        throw new BadRequestException({
+          statusCode: 400,
+          code: 'DENOMINATIONS_MISMATCH',
+          message: `El total de billetes y monedas (${denomTotal.toFixed(2)}) no coincide con el efectivo contado (${Number(closingCashDec).toFixed(2)})`,
+        });
+      }
     }
 
     let closingCashUsdDec: Prisma.Decimal | null = null;
@@ -446,6 +528,13 @@ export class CashRegisterService {
       };
     }
 
+    const closingBreakdownData: any = {
+      ...byMethodAndBank,
+      byMethodAndBank,
+      denominations,
+      countMode,
+    };
+
     const updateResult = await this.prisma.cashRegister.updateMany({
       where: { id: register.id, status: 'OPEN' },
       data: {
@@ -461,7 +550,7 @@ export class CashRegisterService {
         totalCashUsd: totalCashUsdDec,
         totalCard: totalCardDec,
         totalTransfer: totalTransferDec,
-        closingBreakdown: byMethodAndBank,
+        closingBreakdown: closingBreakdownData,
         notes: finalNotes,
         status: "CLOSED",
       },

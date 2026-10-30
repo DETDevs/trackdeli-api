@@ -132,8 +132,8 @@ export class PosUsersService {
       if (!business?.twoStepSaleEnabled) {
         throw new BadRequestException('El modo Venta en dos pasos no está habilitado para este negocio. No se pueden crear usuarios con rol VENDEDOR.');
       }
-    } else if (dto.role !== UserRole.CAJERO) {
-      throw new UnprocessableEntityException('Rol inválido. Solo puede crear CAJERO o VENDEDOR.');
+    } else if (dto.role !== UserRole.CAJERO && dto.role !== UserRole.REPARTIDOR) {
+      throw new UnprocessableEntityException('Rol inválido. Solo puede crear CAJERO, VENDEDOR o REPARTIDOR.');
     }
     
     await this.quotaService.checkQuota(businessId);

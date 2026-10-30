@@ -114,6 +114,45 @@ export class SyncOfflineSaleItemDto {
   @IsOptional()
   @IsString()
   presaleTicketId?: string;
+
+  // Canales de venta (221a)
+  @IsOptional()
+  @IsString()
+  channel?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  deliveryFee?: number;
+
+  @IsOptional()
+  @IsString()
+  deliveryAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryReference?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryDriverId?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryDriverName?: string;
+
+  @IsOptional()
+  @IsString()
+  pedidosYaOrderNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  pedidosYaPaymentMode?: string;
 }
 
 export class SyncOfflineBatchDto {

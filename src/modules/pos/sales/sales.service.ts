@@ -15,7 +15,7 @@ import { AuditService } from '../audit/audit.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { PosAction } from '../permissions/permissions.service';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
-import { resolveLineUnitPrice } from './utils/pricing.util';
+import { resolveLineUnitPrice, resolveChannelUnitPrice } from './utils/pricing.util';
 
 import { BatchesService } from '../batches/batches.service';
 import { buildBusinessDateRange } from '../../../common/utils/date.util';
@@ -194,6 +194,17 @@ export class SalesService {
           defaultMarkupPct: true,
           autoUpdatePriceOnPurchase: true,
           twoStepSaleEnabled: true,
+          deliveryChannelEnabled: true,
+          pedidosYaChannelEnabled: true,
+          deliveryDefaultFee: true,
+          deliveryTaxable: true,
+          deliveryRequireDriver: true,
+          pedidosYaCommissionPct: true,
+          pedidosYaTaxPct: true,
+          pedidosYaPriceMode: true,
+          pedidosYaRounding: true,
+          pedidosYaCapAtListPrice: true,
+          pedidosYaRequireOrderNumber: true,
         },
       });
       if (!business) throw new NotFoundException("Negocio no encontrado");
@@ -206,6 +217,149 @@ export class SalesService {
       });
 
       const policies = await this.policiesService.get(businessId, tx);
+
+      // 221a: Validación y resolución del canal de venta
+      const rawChannel = (dto.channel || 'MOSTRADOR').toUpperCase().trim();
+      if (!['MOSTRADOR', 'DOMICILIO', 'PEDIDOSYA'].includes(rawChannel)) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Canal de venta inválido. Los canales permitidos son MOSTRADOR, DOMICILIO o PEDIDOSYA',
+        });
+      }
+      if (rawChannel === 'DOMICILIO' && !business.deliveryChannelEnabled) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'El canal de venta "A domicilio" no está activo para este negocio',
+        });
+      }
+      if (rawChannel === 'PEDIDOSYA' && !business.pedidosYaChannelEnabled) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'El canal de venta "PedidosYa" no está activo para este negocio',
+        });
+      }
+      const saleChannel = rawChannel;
+
+      // 221a: Datos de entrega para A Domicilio y datos cliente
+      let customerId: string | null = dto.customerId || null;
+      let customerName: string | null = dto.customerName || null;
+      let customerPhone: string | null = dto.customerPhone || null;
+      let deliveryAddress: string | null = null;
+      let deliveryPhone: string | null = null;
+      let deliveryReference: string | null = null;
+      let deliveryDriverId: string | null = null;
+      let deliveryDriverName: string | null = null;
+      let effectiveDeliveryFee = 0;
+
+      if (saleChannel === 'DOMICILIO') {
+        let domCustomer: any = null;
+        if (dto.customerId) {
+          domCustomer = await tx.customer.findFirst({
+            where: { id: dto.customerId, businessId },
+          });
+          if (!domCustomer) {
+            throw new BadRequestException('Cliente no encontrado o no pertenece a este negocio');
+          }
+        } else if (dto.customerPhone || dto.deliveryPhone) {
+          const cleanP = (dto.deliveryPhone || dto.customerPhone || '').trim();
+          if (cleanP) {
+            domCustomer = await tx.customer.findUnique({
+              where: { businessId_phone: { businessId, phone: cleanP } },
+            });
+          }
+        }
+
+        const resolvedName = (dto.customerName || customerName || domCustomer?.name || '').trim();
+        if (!resolvedName) {
+          throw new BadRequestException({
+            statusCode: 400,
+            message: 'Falta el nombre del cliente',
+          });
+        }
+
+        const resolvedPhone = (dto.deliveryPhone || dto.customerPhone || customerPhone || domCustomer?.phone || '').trim();
+        if (!resolvedPhone) {
+          throw new BadRequestException({
+            statusCode: 400,
+            message: 'Falta el teléfono del cliente',
+          });
+        }
+
+        const resolvedAddr = (dto.deliveryAddress || domCustomer?.lastAddressText || '').trim();
+        if (!resolvedAddr) {
+          throw new BadRequestException({
+            statusCode: 400,
+            message: 'Falta la dirección del cliente',
+          });
+        }
+
+        deliveryAddress = resolvedAddr;
+        deliveryPhone = resolvedPhone;
+        deliveryReference = dto.deliveryReference?.trim() || null;
+        customerName = resolvedName;
+        customerPhone = resolvedPhone;
+        customerId = domCustomer?.id || customerId;
+
+        if (dto.deliveryDriverId) {
+          const driverUser = await tx.user.findFirst({
+            where: { id: dto.deliveryDriverId, businessId },
+          });
+          if (driverUser) {
+            deliveryDriverId = driverUser.id;
+            deliveryDriverName = driverUser.name;
+          }
+        } else if (dto.deliveryDriverName) {
+          deliveryDriverName = dto.deliveryDriverName.trim();
+        }
+
+        if (business.deliveryRequireDriver && !deliveryDriverId && !deliveryDriverName) {
+          throw new BadRequestException({
+            statusCode: 400,
+            message: 'Se requiere asignar un repartidor para la entrega a domicilio',
+          });
+        }
+
+        effectiveDeliveryFee = dto.deliveryFee !== undefined && dto.deliveryFee !== null
+          ? Math.max(0, Number(dto.deliveryFee))
+          : (business.deliveryDefaultFee ?? 0);
+      }
+
+      // 221a: Validaciones para PedidosYa
+      let pedidosYaOrderNumber: string | null = null;
+      let pedidosYaPaymentMode: string = 'APP';
+
+      if (saleChannel === 'PEDIDOSYA') {
+        pedidosYaOrderNumber = dto.pedidosYaOrderNumber ? dto.pedidosYaOrderNumber.trim() : null;
+        if (business.pedidosYaRequireOrderNumber && !pedidosYaOrderNumber) {
+          throw new BadRequestException({
+            statusCode: 400,
+            message: 'El número de pedido de PedidosYa es obligatorio',
+          });
+        }
+
+        if (pedidosYaOrderNumber) {
+          const existingSale = await tx.sale.findFirst({
+            where: {
+              businessId,
+              pedidosYaOrderNumber,
+              status: { notIn: ['CANCELLED', 'VOIDED', 'RETURNED'] },
+            },
+            select: { invoiceNumber: true },
+          });
+          if (existingSale) {
+            throw new ConflictException({
+              statusCode: 409,
+              message: `Ese pedido de PedidosYa ya se registró (${existingSale.invoiceNumber})`,
+            });
+          }
+        }
+
+        const rawPayMode = (dto.pedidosYaPaymentMode || 'APP').toUpperCase().trim();
+        pedidosYaPaymentMode = rawPayMode === 'EFECTIVO' ? 'EFECTIVO' : 'APP';
+      }
 
       let hasNegativeStock = false;
       const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
@@ -229,24 +383,25 @@ export class SalesService {
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
           const requestedQty = validateProductQuantity(product.unit, item.quantity, product.name, Boolean(dto.isSplitSale));
 
-          // 176a: Resolver precio unitario según regla de venta por mayor
-          const resolved = resolveLineUnitPrice(product, requestedQty, business);
+          // 221a: Resolver precio unitario según regla de venta por mayor y canal de venta
+          const resolved = resolveChannelUnitPrice(product, requestedQty, business, saleChannel);
           priceTier = resolved.priceTier;
+          const expectedPrice = resolved.unitPrice;
 
           if (item.unitPrice !== undefined && item.unitPrice !== null) {
-            const diff = Math.abs(item.unitPrice - resolved.unitPrice);
+            const diff = Math.abs(item.unitPrice - expectedPrice);
             const isPresaleSellerLine = Boolean(dto.presaleTicketId && (item as any).origin === 'SELLER');
             if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale && !isPresaleSellerLine) {
               throw new BadRequestException({
                 statusCode: 400,
                 error: 'Bad Request',
                 code: 'PRICE_MISMATCH',
-                message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${resolved.unitPrice}) para "${product.name}"`,
+                message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${expectedPrice}) para "${product.name}"`,
               });
             }
             effectiveUnitPrice = item.unitPrice;
           } else {
-            effectiveUnitPrice = resolved.unitPrice;
+            effectiveUnitPrice = expectedPrice;
           }
 
           if (product.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
@@ -350,6 +505,29 @@ export class SalesService {
           listPrice,
           taxable,
         });
+      }
+
+      // 221a: Si es A Domicilio y hay costo de envío, agregar línea de envío al comprobante
+      if (saleChannel === 'DOMICILIO' && effectiveDeliveryFee > 0) {
+        const alreadyHasDeliveryItem = dto.items.some(
+          (it) => !it.productId && (it.productName.toLowerCase().includes('envío') || it.productName.toLowerCase().includes('domicilio')),
+        );
+        if (!alreadyHasDeliveryItem) {
+          const isDeliveryTaxable = business.deliveryTaxable !== null && business.deliveryTaxable !== undefined
+            ? business.deliveryTaxable
+            : Boolean(business.taxEnabled);
+          rawItemsForCalc.push({
+            productId: null,
+            productName: 'Envío a domicilio',
+            barcode: null,
+            unitPrice: effectiveDeliveryFee,
+            priceTier: 'RETAIL',
+            quantity: 1,
+            discount: 0,
+            listPrice: null,
+            taxable: isDeliveryTaxable,
+          });
+        }
       }
 
       const calcResult = calculateSaleTotals(
@@ -468,9 +646,9 @@ export class SalesService {
         ? PosPaymentMethod.CREDITO
         : (dto.payments && dto.payments.length > 1 ? PosPaymentMethod.MIXTO : dto.paymentMethod);
 
-      let customerId: string | null = null;
-      let customerName = dto.customerName || null;
-      let customerPhone = dto.customerPhone || null;
+      if (!customerId && dto.customerId) customerId = dto.customerId;
+      if (!customerName && dto.customerName) customerName = dto.customerName;
+      if (!customerPhone && dto.customerPhone) customerPhone = dto.customerPhone;
       let dueDate: Date | null = null;
       let creditPlanResult: {
         totalAPagar: number;
@@ -870,13 +1048,18 @@ export class SalesService {
 
       let paymentsPayload = dto.payments;
       if (!paymentsPayload || paymentsPayload.length === 0) {
-        // Fallback for older clients
+        let defaultMethod = paymentMethod || PosPaymentMethod.EFECTIVO;
+        if (saleChannel === 'PEDIDOSYA') {
+          defaultMethod = pedidosYaPaymentMode === 'APP' ? PosPaymentMethod.PEDIDOSYA_APP : PosPaymentMethod.EFECTIVO;
+        }
         const tendered = dto.amountPaid != null ? dto.amountPaid : total;
         paymentsPayload = [{
-          method: paymentMethod || PosPaymentMethod.EFECTIVO,
+          method: defaultMethod,
           amount: total,
           amountTendered: tendered,
-          reference: dto.reference
+          reference: dto.reference || pedidosYaOrderNumber || undefined,
+          bankId: dto.bankId,
+          bankName: dto.bankName,
         }];
       }
 
@@ -930,7 +1113,11 @@ export class SalesService {
           }
         }
 
-        if (!enabledMethods.includes(p.method) && p.method !== PosPaymentMethod.CREDITO) {
+        if (
+          !enabledMethods.includes(p.method) &&
+          p.method !== PosPaymentMethod.CREDITO &&
+          p.method !== PosPaymentMethod.PEDIDOSYA_APP
+        ) {
           throw new BadRequestException({
             statusCode: 400,
             error: 'Bad Request',
@@ -1129,13 +1316,49 @@ export class SalesService {
         sellerName = dto.sellerName;
       }
 
+      // 221a: Cálculos financieros de PedidosYa
+      let pedidosYaCommissionPct: number | null = null;
+      let pedidosYaTaxPct: number | null = null;
+      let pedidosYaCommissionAmount: number | null = null;
+      let pedidosYaTaxAmount: number | null = null;
+      let pedidosYaNetPayout: number | null = null;
+      let pedidosYaSettlementStatus: string | null = null;
+
+      if (saleChannel === 'PEDIDOSYA') {
+        pedidosYaCommissionPct = business.pedidosYaCommissionPct ?? 27;
+        pedidosYaTaxPct = business.pedidosYaTaxPct ?? 7;
+        pedidosYaCommissionAmount = Math.round(total * (pedidosYaCommissionPct / 100) * 100) / 100;
+        pedidosYaTaxAmount = Math.round(total * (pedidosYaTaxPct / 100) * 100) / 100;
+
+        if (pedidosYaPaymentMode === 'APP') {
+          pedidosYaNetPayout = Math.round((total - pedidosYaCommissionAmount - pedidosYaTaxAmount) * 100) / 100;
+        } else {
+          pedidosYaNetPayout = Math.round(-(pedidosYaCommissionAmount + pedidosYaTaxAmount) * 100) / 100;
+        }
+        pedidosYaSettlementStatus = 'PENDIENTE';
+      }
+
       const sale = await tx.sale.create({
         data: {
           businessId,
           cashRegisterId,
           cashierId,
           invoiceNumber,
-          channel: clientInfo?.channel || 'DESKTOP',
+          channel: saleChannel,
+          deliveryFee: effectiveDeliveryFee,
+          deliveryAddress,
+          deliveryPhone,
+          deliveryReference,
+          deliveryDriverId,
+          deliveryDriverName,
+          pedidosYaOrderNumber,
+          pedidosYaPaymentMode: saleChannel === 'PEDIDOSYA' ? pedidosYaPaymentMode : null,
+          pedidosYaCommissionPct,
+          pedidosYaTaxPct,
+          pedidosYaCommissionAmount,
+          pedidosYaTaxAmount,
+          pedidosYaNetPayout,
+          pedidosYaSettlementStatus,
           deviceId: clientInfo?.deviceId || null,
           customerId,
           customerName,
@@ -1398,7 +1621,17 @@ export class SalesService {
 
   async findAll(
     businessId: string,
-    filters?: { from?: string; to?: string; status?: string; paymentMethod?: string; cashRegisterId?: string; bankId?: string },
+    filters?: {
+      from?: string;
+      to?: string;
+      status?: string;
+      paymentMethod?: string;
+      cashRegisterId?: string;
+      bankId?: string;
+      channel?: string;
+      pedidosYaPaymentMode?: string;
+      pedidosYaSettlementStatus?: string;
+    },
     userRole?: string,
   ) {
     const where: any = { businessId };
@@ -1414,6 +1647,9 @@ export class SalesService {
     if (filters?.bankId) {
       where.payments = { some: { bankId: filters.bankId } };
     }
+    if (filters?.channel) where.channel = filters.channel.toUpperCase();
+    if (filters?.pedidosYaPaymentMode) where.pedidosYaPaymentMode = filters.pedidosYaPaymentMode.toUpperCase();
+    if (filters?.pedidosYaSettlementStatus) where.pedidosYaSettlementStatus = filters.pedidosYaSettlementStatus.toUpperCase();
     if (filters?.from || filters?.to) {
       where.createdAt = buildBusinessDateRange(filters.from, filters.to);
     }
@@ -2646,6 +2882,14 @@ export class SalesService {
       change: sale.change,
       paymentMethod: sale.paymentMethod,
       currency: sale.business.currency,
+      channel: sale.channel || 'MOSTRADOR',
+      deliveryFee: sale.deliveryFee ?? 0,
+      deliveryAddress: sale.deliveryAddress || null,
+      deliveryPhone: sale.deliveryPhone || null,
+      deliveryReference: sale.deliveryReference || null,
+      deliveryDriverName: sale.deliveryDriverName || null,
+      pedidosYaOrderNumber: sale.pedidosYaOrderNumber || null,
+      pedidosYaPaymentMode: sale.pedidosYaPaymentMode || null,
     };
   }
 }

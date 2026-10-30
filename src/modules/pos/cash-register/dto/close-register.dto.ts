@@ -1,6 +1,18 @@
-import { IsNumber, Min, IsOptional, IsString } from 'class-validator';
+import { IsNumber, Min, IsOptional, IsString, IsArray, IsEnum, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
+
+export class DenominationItemDto {
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  value: number;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  qty: number;
+}
 
 export class CountedBreakdownDto {
   @IsOptional()
@@ -32,6 +44,16 @@ export class CountedBreakdownDto {
 
   @IsOptional()
   transferByBank?: any;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DenominationItemDto)
+  denominations?: DenominationItemDto[];
+
+  @IsOptional()
+  @IsEnum(['DENOMINATIONS', 'TOTAL'])
+  countMode?: 'DENOMINATIONS' | 'TOTAL';
 }
 
 export class CloseCashRegisterDto {
@@ -61,6 +83,16 @@ export class CloseCashRegisterDto {
 
   @IsOptional()
   counted?: CountedBreakdownDto;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DenominationItemDto)
+  denominations?: DenominationItemDto[];
+
+  @IsOptional()
+  @IsEnum(['DENOMINATIONS', 'TOTAL'])
+  countMode?: 'DENOMINATIONS' | 'TOTAL';
 
   @IsOptional()
   @SanitizeText()

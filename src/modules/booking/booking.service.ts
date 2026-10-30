@@ -1890,6 +1890,10 @@ export class BookingService implements OnModuleInit {
       customerId: appointment.customerId,
       creditDueDate: dto?.creditDueDate,
       notes: dto?.notes ? `${dto.notes} (Cita ${appointment.id})` : `Cita ${appointment.id}`,
+      reference: dto?.reference || dto?.paymentReference,
+      bankId: dto?.bankId,
+      bankName: dto?.bankName,
+      payments: dto?.payments,
       items: saleItems,
     };
 

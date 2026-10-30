@@ -167,6 +167,14 @@ export class CreateBusinessSuperAdminDto {
   @Min(1)
   twoStepTicketTtlHours?: number;
 
+  @IsOptional()
+  @IsBoolean()
+  deliveryChannelEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  pedidosYaChannelEnabled?: boolean;
+
   @IsObject()
   @IsOptional()
   @ValidateNested()

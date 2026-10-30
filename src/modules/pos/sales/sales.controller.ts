@@ -41,8 +41,15 @@ export class SalesController {
     @Query("paymentMethod") paymentMethod?: string,
     @Query("cashRegisterId") cashRegisterId?: string,
     @Query("bankId") bankId?: string,
+    @Query("channel") channel?: string,
+    @Query("pedidosYaPaymentMode") pedidosYaPaymentMode?: string,
+    @Query("pedidosYaSettlementStatus") pedidosYaSettlementStatus?: string,
   ) {
-    return this.service.findAll(resolveBusinessId(user, qBid), { from, to, status, paymentMethod, cashRegisterId, bankId }, user.role);
+    return this.service.findAll(
+      resolveBusinessId(user, qBid),
+      { from, to, status, paymentMethod, cashRegisterId, bankId, channel, pedidosYaPaymentMode, pedidosYaSettlementStatus },
+      user.role,
+    );
   }
 
   @Post()

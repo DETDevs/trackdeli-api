@@ -124,6 +124,7 @@ enum PosPaymentMethod {
   TRANSFERENCIA
   CREDITO
   MIXTO
+  PEDIDOSYA_APP
 }
 
 enum SaleStatus {
@@ -391,6 +392,20 @@ model Business {
 
   // Bancos para pagos tarjeta/transferencia (218a)
   banks                 PosBank[]
+
+  // Canales de venta (221a)
+  deliveryChannelEnabled       Boolean                 @default(false)
+  pedidosYaChannelEnabled      Boolean                 @default(false)
+  deliveryDefaultFee           Float                   @default(0)
+  deliveryTaxable              Boolean?
+  deliveryRequireDriver        Boolean                 @default(false)
+  pedidosYaCommissionPct       Float                   @default(27)
+  pedidosYaTaxPct              Float                   @default(7)
+  pedidosYaPriceMode           String                  @default("MANTENER_GANANCIA") @db.VarChar(30)
+  pedidosYaRounding            String                  @default("REDONDEO_1") @db.VarChar(30)
+  pedidosYaCapAtListPrice      Boolean                 @default(false)
+  pedidosYaRequireOrderNumber  Boolean                 @default(true)
+  pedidosYaSettlements         PedidosYaSettlement[]
 
   @@map("businesses")
 }
@@ -1137,6 +1152,24 @@ model Sale {
   needsReview     Boolean          @default(false)
   reviewReason    String?
 
+  // Canales de venta (221a)
+  deliveryFee                  Float                   @default(0)
+  deliveryAddress              String?                 @db.VarChar(300)
+  deliveryPhone                String?                 @db.VarChar(30)
+  deliveryReference            String?                 @db.VarChar(300)
+  deliveryDriverId             String?
+  deliveryDriverName           String?                 @db.VarChar(100)
+  pedidosYaOrderNumber         String?                 @db.VarChar(50)
+  pedidosYaPaymentMode         String?                 @db.VarChar(20)
+  pedidosYaCommissionPct       Float?
+  pedidosYaTaxPct              Float?
+  pedidosYaCommissionAmount    Float?
+  pedidosYaTaxAmount           Float?
+  pedidosYaNetPayout           Float?
+  pedidosYaSettlementStatus    String?                 @default("PENDIENTE") @db.VarChar(20)
+  pedidosYaSettlementId        String?
+  pedidosYaSettlement          PedidosYaSettlement?    @relation(fields: [pedidosYaSettlementId], references: [id], onDelete: SetNull)
+
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
@@ -1144,6 +1177,8 @@ model Sale {
   @@index([businessId, customerId])
   @@index([businessId, status, createdAt])
   @@index([businessId, channel])
+  @@index([businessId, pedidosYaSettlementStatus])
+  @@index([businessId, pedidosYaOrderNumber])
   @@map("pos_sales")
 }
 
@@ -1302,9 +1337,15 @@ model CreditPayment {
   notes            String?
   interestPortion  Decimal          @default(0) @db.Decimal(12, 2)
   principalPortion Decimal?         @db.Decimal(12, 2)
+  
+  bankId           String?
+  bankName         String?          @db.VarChar(100)
+  bank             PosBank?         @relation(fields: [bankId], references: [id], onDelete: Restrict)
+
   createdAt        DateTime         @default(now())
 
   @@index([creditAccountId])
+  @@index([bankId])
   @@map("pos_credit_payments")
 }
 
@@ -1449,11 +1490,38 @@ model PosBank {
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
 
-  payments   PosPayment[]
+  payments       PosPayment[]
+  creditPayments CreditPayment[]
+  pedidosYaSettlements PedidosYaSettlement[]
 
   @@unique([businessId, name])
+  @@unique([businessId, code])
   @@index([businessId, isActive, order])
   @@map("pos_banks")
+}
+
+model PedidosYaSettlement {
+  id             String    @id @default(uuid())
+  businessId     String
+  business       Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  depositDate    DateTime
+  depositAmount  Float
+  expectedAmount Float
+  difference     Float
+  bankId         String?
+  bank           PosBank?  @relation(fields: [bankId], references: [id], onDelete: SetNull)
+  bankName       String?   @db.VarChar(100)
+  reference      String?   @db.VarChar(100)
+  notes          String?
+  ordersCount    Int       @default(0)
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  sales          Sale[]
+
+  @@index([businessId, depositDate])
+  @@map("pos_pedidosya_settlements")
 }
 
 model CashMovement {

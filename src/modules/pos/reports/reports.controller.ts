@@ -40,20 +40,21 @@ export class ReportsController {
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("bankId") bankId?: string,
+    @Query("channel") channel?: string,
     @Query("format") format?: string,
     @Res({ passthrough: true }) res?: any,
     @Query("businessId") qBid?: string,
   ) {
     const businessId = resolveBusinessId(user, qBid);
     if (format === 'csv') {
-      const csvResult = await this.service.exportSalesSummaryCsv(businessId, period, from, to, bankId);
+      const csvResult = await this.service.exportSalesSummaryCsv(businessId, period, from, to, bankId, channel);
       if (res) {
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="${csvResult.filename}"`);
       }
       return csvResult.csvData;
     }
-    return this.service.getSalesSummary(businessId, period, from, to, bankId);
+    return this.service.getSalesSummary(businessId, period, from, to, bankId, channel);
   }
 
   @Get("products")
@@ -63,9 +64,10 @@ export class ReportsController {
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("limit") limit?: string,
+    @Query("channel") channel?: string,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.getTopProducts(resolveBusinessId(user, qBid), period, from, to, limit ? +limit : 10);
+    return this.service.getTopProducts(resolveBusinessId(user, qBid), period, from, to, limit ? +limit : 10, channel);
   }
 
   @Get("daily")
@@ -175,9 +177,10 @@ export class ReportsController {
     @Query("period") period?: string,
     @Query("from") from?: string,
     @Query("to") to?: string,
+    @Query("channel") channel?: string,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.getSalesByTime(resolveBusinessId(user, qBid), period, from, to);
+    return this.service.getSalesByTime(resolveBusinessId(user, qBid), period, from, to, channel);
   }
 
   @Get("sales-by-category")
@@ -208,9 +211,10 @@ export class ReportsController {
     @Query("period") period?: string,
     @Query("from") from?: string,
     @Query("to") to?: string,
+    @Query("channel") channel?: string,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.getSalesByCashier(resolveBusinessId(user, qBid), period, from, to);
+    return this.service.getSalesByCashier(resolveBusinessId(user, qBid), period, from, to, channel);
   }
 
   @Get("workshop")
@@ -288,8 +292,78 @@ export class ReportsController {
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("sellerId") sellerId?: string,
+    @Query("channel") channel?: string,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.getSalesBySeller(resolveBusinessId(user, qBid), user, period, from, to, sellerId);
+    return this.service.getSalesBySeller(resolveBusinessId(user, qBid), user, period, from, to, sellerId, channel);
+  }
+
+  @Get("sales-by-channel")
+  async salesByChannel(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("format") format?: string,
+    @Res({ passthrough: true }) res?: any,
+    @Query("businessId") qBid?: string,
+  ) {
+    const businessId = resolveBusinessId(user, qBid);
+    if (format === 'csv') {
+      const csvResult = await this.service.exportSalesByChannelCsv(businessId, period, from, to);
+      if (res) {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${csvResult.filename}"`);
+      }
+      return csvResult.csvData;
+    }
+    return this.service.getSalesByChannelReport(businessId, period, from, to);
+  }
+
+  @Get("domicilio")
+  async domicilio(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("driverId") driverId?: string,
+    @Query("format") format?: string,
+    @Res({ passthrough: true }) res?: any,
+    @Query("businessId") qBid?: string,
+  ) {
+    const businessId = resolveBusinessId(user, qBid);
+    if (format === 'csv') {
+      const csvResult = await this.service.exportDomicilioReportCsv(businessId, period, from, to, driverId);
+      if (res) {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${csvResult.filename}"`);
+      }
+      return csvResult.csvData;
+    }
+    return this.service.getDomicilioReport(businessId, period, from, to, driverId);
+  }
+
+  @Get("pedidosya")
+  async pedidosYa(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("status") status?: string,
+    @Query("paymentMode") paymentMode?: string,
+    @Query("format") format?: string,
+    @Res({ passthrough: true }) res?: any,
+    @Query("businessId") qBid?: string,
+  ) {
+    const businessId = resolveBusinessId(user, qBid);
+    if (format === 'csv') {
+      const csvResult = await this.service.exportPedidosYaReportCsv(businessId, period, from, to, status, paymentMode);
+      if (res) {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${csvResult.filename}"`);
+      }
+      return csvResult.csvData;
+    }
+    return this.service.getPedidosYaReport(businessId, period, from, to, status, paymentMode);
   }
 }

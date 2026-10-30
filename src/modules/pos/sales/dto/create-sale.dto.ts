@@ -187,6 +187,14 @@ export class CreateSaleDto {
   @IsString()
   reference?: string;
 
+  @IsOptional()
+  @IsString()
+  bankId?: string;
+
+  @IsOptional()
+  @IsString()
+  bankName?: string;
+
   // New multi-payment structure
   @IsOptional()
   @IsArray()
@@ -274,4 +282,48 @@ export class CreateSaleDto {
   @IsOptional()
   @IsString()
   presaleTicketId?: string;
+
+  // Canales de venta (221a)
+  @IsOptional()
+  @IsString()
+  channel?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  deliveryFee?: number;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  deliveryAddress?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  deliveryPhone?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  deliveryReference?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryDriverId?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  deliveryDriverName?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  pedidosYaOrderNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  pedidosYaPaymentMode?: string;
 }

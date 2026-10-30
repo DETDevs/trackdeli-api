@@ -1070,6 +1070,15 @@ export class PresaleTicketsService {
         customerName,
         customerPhone,
         customerRuc,
+        channel: dto.channel,
+        deliveryFee: dto.deliveryFee,
+        deliveryAddress: dto.deliveryAddress,
+        deliveryPhone: dto.deliveryPhone,
+        deliveryReference: dto.deliveryReference,
+        deliveryDriverId: dto.deliveryDriverId,
+        deliveryDriverName: dto.deliveryDriverName,
+        pedidosYaOrderNumber: dto.pedidosYaOrderNumber,
+        pedidosYaPaymentMode: dto.pedidosYaPaymentMode,
         notes: dto.notes
           ? `${dto.notes} [Ticket ${ticket.displayNumber}]`
           : `[Ticket ${ticket.displayNumber}]`,
