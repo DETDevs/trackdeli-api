@@ -726,10 +726,12 @@ export class OfflineService {
             pedidosYaCommissionPct = commPct;
             pedidosYaTaxPct = taxPct;
             const commAmount = Number(((total * commPct) / 100).toFixed(2));
-            const tAmount = Number(((commAmount * taxPct) / 100).toFixed(2));
+            const tAmount = Number(((total * taxPct) / 100).toFixed(2));
             pedidosYaCommissionAmount = commAmount;
             pedidosYaTaxAmount = tAmount;
-            pedidosYaNetPayout = Number((total - commAmount - tAmount).toFixed(2));
+            pedidosYaNetPayout = pedidosYaPaymentMode === 'APP'
+              ? Number((total - commAmount - tAmount).toFixed(2))
+              : Number((-(commAmount + tAmount)).toFixed(2));
           }
 
           let deliveryFee: number | null = null;

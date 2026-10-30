@@ -3962,14 +3962,19 @@ WHERE a."customerId" = c."id"
         `);
 
         // Recrear índice único liberando órdenes canceladas, anuladas o devueltas
-        await this.$executeRawUnsafe(`
-          DROP INDEX IF EXISTS "pos_sales_business_pedidosya_order_idx";
-        `);
-        await this.$executeRawUnsafe(`
-          CREATE UNIQUE INDEX IF NOT EXISTS "pos_sales_business_pedidosya_order_idx"
-          ON "pos_sales"("businessId", "pedidosYaOrderNumber")
-          WHERE "pedidosYaOrderNumber" IS NOT NULL AND "status" NOT IN ('CANCELLED', 'VOIDED', 'RETURNED');
-        `);
+        try {
+          await this.$executeRawUnsafe(`
+            DROP INDEX IF EXISTS "pos_sales_business_pedidosya_order_idx";
+          `);
+          await this.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_sales_business_pedidosya_order_idx"
+            ON "pos_sales"("businessId", "pedidosYaOrderNumber")
+            WHERE "pedidosYaOrderNumber" IS NOT NULL AND "status" NOT IN ('CANCELLED', 'VOIDED', 'RETURNED');
+          `);
+        } catch (idxErr: any) {
+          this.logger.warn(`[PrismaService] ⚠ 221a - Error creando índice pos_sales_business_pedidosya_order_idx: ${idxErr.message}`);
+          throw idxErr;
+        }
 
         this.logger.log('[PrismaService] ✓ 221a - Esquema de canales de venta (Domicilio, PedidosYa y Liquidaciones) sincronizado');
       } finally {

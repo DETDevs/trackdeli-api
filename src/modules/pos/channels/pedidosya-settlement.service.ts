@@ -24,7 +24,7 @@ export class PedidosYaSettlementService {
     const where: any = {
       businessId,
       channel: 'PEDIDOSYA',
-      status: 'COMPLETED',
+      status: { in: ['COMPLETED', 'PARTIALLY_RETURNED'] },
     };
 
     if (query?.from || query?.to) {
@@ -43,6 +43,7 @@ export class PedidosYaSettlementService {
         invoiceDate: true,
         createdAt: true,
         total: true,
+        status: true,
         pedidosYaOrderNumber: true,
         pedidosYaPaymentMode: true,
         pedidosYaCommissionPct: true,
@@ -52,22 +53,82 @@ export class PedidosYaSettlementService {
         pedidosYaNetPayout: true,
         pedidosYaSettlementStatus: true,
         pedidosYaSettlementId: true,
+        returns: {
+          select: {
+            refundAmount: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
 
-    const appSales = sales.filter((s) => (s.pedidosYaPaymentMode || 'APP') === 'APP');
-    const cashSales = sales.filter((s) => s.pedidosYaPaymentMode === 'EFECTIVO');
+    let appGross = 0;
+    let appCommission = 0;
+    let appTax = 0;
+    let appNet = 0;
+    let appCount = 0;
 
-    const appGross = Math.round(appSales.reduce((sum, s) => sum + s.total, 0) * 100) / 100;
-    const appCommission = Math.round(appSales.reduce((sum, s) => sum + (s.pedidosYaCommissionAmount || 0), 0) * 100) / 100;
-    const appTax = Math.round(appSales.reduce((sum, s) => sum + (s.pedidosYaTaxAmount || 0), 0) * 100) / 100;
-    const appNet = Math.round(appSales.reduce((sum, s) => sum + (s.pedidosYaNetPayout || 0), 0) * 100) / 100;
+    let cashGross = 0;
+    let cashCommission = 0;
+    let cashTax = 0;
+    let cashNet = 0;
+    let cashCount = 0;
 
-    const cashGross = Math.round(cashSales.reduce((sum, s) => sum + s.total, 0) * 100) / 100;
-    const cashCommission = Math.round(cashSales.reduce((sum, s) => sum + (s.pedidosYaCommissionAmount || 0), 0) * 100) / 100;
-    const cashTax = Math.round(cashSales.reduce((sum, s) => sum + (s.pedidosYaTaxAmount || 0), 0) * 100) / 100;
-    const cashNet = Math.round(cashSales.reduce((sum, s) => sum + (s.pedidosYaNetPayout || 0), 0) * 100) / 100;
+    const mappedOrders = sales.map((s) => {
+      const refundSum = (s.returns || []).reduce((sum: number, r: any) => sum + Number(r.refundAmount || 0), 0);
+      const effectiveTotal = Math.max(0, Number(s.total || 0) - refundSum);
+      const commPct = s.pedidosYaCommissionPct != null ? Number(s.pedidosYaCommissionPct) : 27;
+      const taxPct = s.pedidosYaTaxPct != null ? Number(s.pedidosYaTaxPct) : 7;
+      const effectiveComm = Math.round(effectiveTotal * (commPct / 100) * 100) / 100;
+      const effectiveTax = Math.round(effectiveTotal * (taxPct / 100) * 100) / 100;
+      const pMode = s.pedidosYaPaymentMode === 'EFECTIVO' ? 'EFECTIVO' : 'APP';
+
+      let orderNet = 0;
+      if (pMode === 'APP') {
+        orderNet = Math.round((effectiveTotal - effectiveComm - effectiveTax) * 100) / 100;
+        appGross += effectiveTotal;
+        appCommission += effectiveComm;
+        appTax += effectiveTax;
+        appNet += orderNet;
+        appCount++;
+      } else {
+        orderNet = Math.round((-effectiveComm - effectiveTax) * 100) / 100;
+        cashGross += effectiveTotal;
+        cashCommission += effectiveComm;
+        cashTax += effectiveTax;
+        cashNet += orderNet;
+        cashCount++;
+      }
+
+      return {
+        id: s.id,
+        invoiceNumber: s.invoiceNumber,
+        date: s.invoiceDate || s.createdAt,
+        total: effectiveTotal,
+        originalTotal: Number(s.total || 0),
+        refundedAmount: refundSum,
+        status: s.status,
+        pedidosYaOrderNumber: s.pedidosYaOrderNumber,
+        pedidosYaPaymentMode: pMode,
+        commissionPct: commPct,
+        taxPct,
+        commissionAmount: effectiveComm,
+        taxAmount: effectiveTax,
+        netPayout: orderNet,
+        settlementStatus: s.pedidosYaSettlementStatus || 'PENDIENTE',
+        settlementId: s.pedidosYaSettlementId,
+      };
+    });
+
+    appGross = Math.round(appGross * 100) / 100;
+    appCommission = Math.round(appCommission * 100) / 100;
+    appTax = Math.round(appTax * 100) / 100;
+    appNet = Math.round(appNet * 100) / 100;
+
+    cashGross = Math.round(cashGross * 100) / 100;
+    cashCommission = Math.round(cashCommission * 100) / 100;
+    cashTax = Math.round(cashTax * 100) / 100;
+    cashNet = Math.round(cashNet * 100) / 100;
 
     const grossTotal = Math.round((appGross + cashGross) * 100) / 100;
     const commissionTotal = Math.round((appCommission + cashCommission) * 100) / 100;
@@ -84,20 +145,20 @@ export class PedidosYaSettlementService {
       taxTotal,
       netPayout,
       appSales: {
-        ordersCount: appSales.length,
+        ordersCount: appCount,
         gross: appGross,
         commission: appCommission,
         tax: appTax,
         net: appNet,
       },
       cashSales: {
-        ordersCount: cashSales.length,
+        ordersCount: cashCount,
         gross: cashGross,
         commission: cashCommission,
         tax: cashTax,
         net: cashNet,
       },
-      orders: sales,
+      orders: mappedOrders,
     };
   }
 
@@ -117,6 +178,11 @@ export class PedidosYaSettlementService {
           businessId,
           channel: 'PEDIDOSYA',
         },
+        include: {
+          returns: {
+            select: { refundAmount: true },
+          },
+        },
       });
 
       if (sales.length !== dto.saleIds.length) {
@@ -131,10 +197,25 @@ export class PedidosYaSettlementService {
         throw new BadRequestException(`Los siguientes pedidos ya estaban liquidados: ${numbers}`);
       }
 
-      const appSales = sales.filter((s) => (s.pedidosYaPaymentMode || 'APP') === 'APP');
-      const appGross = appSales.reduce((sum, s) => sum + s.total, 0);
-      const allCommission = sales.reduce((sum, s) => sum + (s.pedidosYaCommissionAmount || 0), 0);
-      const allTax = sales.reduce((sum, s) => sum + (s.pedidosYaTaxAmount || 0), 0);
+      let appGross = 0;
+      let allCommission = 0;
+      let allTax = 0;
+
+      for (const s of sales) {
+        const refundSum = (s.returns || []).reduce((sum: number, r: any) => sum + Number(r.refundAmount || 0), 0);
+        const effectiveTotal = Math.max(0, Number(s.total || 0) - refundSum);
+        const commPct = s.pedidosYaCommissionPct != null ? Number(s.pedidosYaCommissionPct) : 27;
+        const taxPct = s.pedidosYaTaxPct != null ? Number(s.pedidosYaTaxPct) : 7;
+        const effectiveComm = Math.round(effectiveTotal * (commPct / 100) * 100) / 100;
+        const effectiveTax = Math.round(effectiveTotal * (taxPct / 100) * 100) / 100;
+        const pMode = s.pedidosYaPaymentMode === 'EFECTIVO' ? 'EFECTIVO' : 'APP';
+
+        allCommission += effectiveComm;
+        allTax += effectiveTax;
+        if (pMode === 'APP') {
+          appGross += effectiveTotal;
+        }
+      }
 
       // Neto esperado según fórmula de PedidosYa
       const expectedAmount = Math.round((appGross - allCommission - allTax) * 100) / 100;

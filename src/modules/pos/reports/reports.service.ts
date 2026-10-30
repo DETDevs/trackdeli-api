@@ -2356,6 +2356,11 @@ export class ReportsService {
       },
       include: {
         items: true,
+        returns: {
+          select: {
+            refundAmount: true,
+          },
+        },
         pedidosYaSettlement: {
           select: {
             depositDate: true,
@@ -2384,9 +2389,12 @@ export class ReportsService {
     const productMap = new Map<string, { productId: string | null; productName: string; quantity: number; gross: number }>();
 
     for (const s of sales) {
-      const tot = Number(s.total || 0);
-      const comm = Number(s.pedidosYaCommissionAmount || 0);
-      const tx = Number(s.pedidosYaTaxAmount || 0);
+      const refundSum = (s.returns || []).reduce((sum: number, r: any) => sum + Number(r.refundAmount || 0), 0);
+      const tot = Math.max(0, Number(s.total || 0) - refundSum);
+      const commPct = s.pedidosYaCommissionPct != null ? Number(s.pedidosYaCommissionPct) : 27;
+      const taxPct = s.pedidosYaTaxPct != null ? Number(s.pedidosYaTaxPct) : 7;
+      const comm = Math.round(tot * (commPct / 100) * 100) / 100;
+      const tx = Math.round(tot * (taxPct / 100) * 100) / 100;
       const pMode = s.pedidosYaPaymentMode === 'EFECTIVO' ? 'EFECTIVO' : 'APP';
       const sStatus = s.pedidosYaSettlementStatus === 'LIQUIDADO' ? 'LIQUIDADO' : 'PENDIENTE';
 
@@ -2472,21 +2480,34 @@ export class ReportsService {
       byPaymentMode,
       bySettlementStatus,
       topProducts,
-      orders: sales.map((s) => ({
-        id: s.id,
-        invoiceNumber: s.invoiceNumber,
-        pedidosYaOrderNumber: s.pedidosYaOrderNumber,
-        date: s.occurredAt || s.createdAt,
-        total: Number(s.total),
-        commissionPct: s.pedidosYaCommissionPct != null ? Number(s.pedidosYaCommissionPct) : null,
-        taxPct: s.pedidosYaTaxPct != null ? Number(s.pedidosYaTaxPct) : null,
-        commissionAmount: s.pedidosYaCommissionAmount != null ? Number(s.pedidosYaCommissionAmount) : 0,
-        taxAmount: s.pedidosYaTaxAmount != null ? Number(s.pedidosYaTaxAmount) : 0,
-        netPayout: s.pedidosYaNetPayout != null ? Number(s.pedidosYaNetPayout) : 0,
-        paymentMode: s.pedidosYaPaymentMode,
-        settlementStatus: s.pedidosYaSettlementStatus || 'PENDIENTE',
-        settlementDate: s.pedidosYaSettlement?.depositDate || null,
-      })),
+      orders: sales.map((s) => {
+        const refundSum = (s.returns || []).reduce((sum: number, r: any) => sum + Number(r.refundAmount || 0), 0);
+        const tot = Math.max(0, Number(s.total || 0) - refundSum);
+        const commPct = s.pedidosYaCommissionPct != null ? Number(s.pedidosYaCommissionPct) : 27;
+        const taxPct = s.pedidosYaTaxPct != null ? Number(s.pedidosYaTaxPct) : 7;
+        const comm = Math.round(tot * (commPct / 100) * 100) / 100;
+        const tx = Math.round(tot * (taxPct / 100) * 100) / 100;
+        const pMode = s.pedidosYaPaymentMode === 'EFECTIVO' ? 'EFECTIVO' : 'APP';
+        const orderNet = pMode === 'APP' ? Math.round((tot - comm - tx) * 100) / 100 : Math.round((-comm - tx) * 100) / 100;
+
+        return {
+          id: s.id,
+          invoiceNumber: s.invoiceNumber,
+          pedidosYaOrderNumber: s.pedidosYaOrderNumber,
+          date: s.occurredAt || s.createdAt,
+          total: tot,
+          originalTotal: Number(s.total || 0),
+          refundedAmount: refundSum,
+          commissionPct: commPct,
+          taxPct,
+          commissionAmount: comm,
+          taxAmount: tx,
+          netPayout: orderNet,
+          paymentMode: pMode,
+          settlementStatus: s.pedidosYaSettlementStatus || 'PENDIENTE',
+          settlementDate: s.pedidosYaSettlement?.depositDate || null,
+        };
+      }),
     };
   }
 
