@@ -10,16 +10,10 @@ export class CountedBreakdownDto {
   CASH?: number;
 
   @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(0)
-  CARD?: number;
+  CARD?: number | any;
 
   @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(0)
-  TRANSFER?: number;
+  TRANSFER?: number | any;
 
   @IsOptional()
   @Type(() => Number)
@@ -32,6 +26,12 @@ export class CountedBreakdownDto {
   @IsNumber()
   @Min(0)
   CASH_USD?: number;
+
+  @IsOptional()
+  cardByBank?: any;
+
+  @IsOptional()
+  transferByBank?: any;
 }
 
 export class CloseCashRegisterDto {

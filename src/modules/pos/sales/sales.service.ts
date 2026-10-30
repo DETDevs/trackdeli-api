@@ -77,6 +77,8 @@ export class SalesService {
       })),
       payments: (sale.payments || []).map((p: any) => ({
         ...p,
+        bankId: p.bankId || null,
+        bankName: p.bankName || null,
         amount: p.amount != null ? Number(new Prisma.Decimal(p.amount.toString()).toDecimalPlaces(2)) : 0,
         amountTendered: p.amountTendered != null ? Number(new Prisma.Decimal(p.amountTendered.toString()).toDecimalPlaces(2)) : null,
         change: p.change != null ? Number(new Prisma.Decimal(p.change.toString()).toDecimalPlaces(2)) : 0,
@@ -1001,6 +1003,40 @@ export class SalesService {
           throw new BadRequestException({ statusCode: 400, error: 'Bad Request', code: 'PAYMENT_REFERENCE_REQUIRED', message: { code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Referencia requerida para pago con transferencia' } });
         }
 
+        let resolvedBankId: string | null = null;
+        let resolvedBankName: string | null = null;
+
+        const isCardOrTransfer =
+          p.method === PosPaymentMethod.TARJETA || p.method === PosPaymentMethod.TRANSFERENCIA;
+
+        if (isCardOrTransfer) {
+          const rawBankId = p.bankId ? p.bankId.toString().trim() : null;
+
+          if (policies.requireBankCardTransfer && !rawBankId) {
+            throw new BadRequestException({
+              statusCode: 400,
+              error: 'Bad Request',
+              code: 'BANK_REQUIRED',
+              message:
+                p.method === PosPaymentMethod.TARJETA
+                  ? 'Debe especificar el banco para el pago con tarjeta'
+                  : 'Debe especificar el banco para el pago con transferencia',
+            });
+          }
+
+          if (rawBankId) {
+            const bank = await tx.posBank.findFirst({
+              where: { id: rawBankId, businessId },
+              select: { id: true, name: true },
+            });
+            if (!bank) {
+              throw new NotFoundException('Banco no encontrado');
+            }
+            resolvedBankId = bank.id;
+            resolvedBankName = bank.name;
+          }
+        }
+
         const safeReference = p.reference ? p.reference.toString().substring(0, 50).trim() : null;
 
         totalBaseTenderedDec = totalBaseTenderedDec.plus(amountBaseDec);
@@ -1011,6 +1047,8 @@ export class SalesService {
           amountTendered: pTenderedDec,
           change: new Prisma.Decimal(0),
           reference: safeReference,
+          bankId: resolvedBankId,
+          bankName: resolvedBankName,
           currency,
           exchangeRate: appliedRate,
           amountBase: amountBaseDec,
@@ -1360,7 +1398,7 @@ export class SalesService {
 
   async findAll(
     businessId: string,
-    filters?: { from?: string; to?: string; status?: string; paymentMethod?: string; cashRegisterId?: string },
+    filters?: { from?: string; to?: string; status?: string; paymentMethod?: string; cashRegisterId?: string; bankId?: string },
     userRole?: string,
   ) {
     const where: any = { businessId };
@@ -1373,6 +1411,9 @@ export class SalesService {
     }
     if (filters?.paymentMethod) where.paymentMethod = filters.paymentMethod;
     if (filters?.cashRegisterId) where.cashRegisterId = filters.cashRegisterId;
+    if (filters?.bankId) {
+      where.payments = { some: { bankId: filters.bankId } };
+    }
     if (filters?.from || filters?.to) {
       where.createdAt = buildBusinessDateRange(filters.from, filters.to);
     }

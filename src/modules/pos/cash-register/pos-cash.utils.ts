@@ -124,3 +124,85 @@ export function getSalePaymentBreakdown(sale: any): SalePaymentBreakdown {
     cashUsdBase: 0,
   };
 }
+
+export function parseCountedMethod(
+  input: any,
+  separateByBank?: any,
+): { total: number | null; byBank: Record<string, number> } {
+  if (input === undefined && separateByBank === undefined) {
+    return { total: null, byBank: {} };
+  }
+
+  let total: number | null = null;
+  const byBank: Record<string, number> = {};
+
+  if (typeof input === 'number') {
+    total = Number(input) || 0;
+  } else if (Array.isArray(input)) {
+    let sum = 0;
+    for (const item of input) {
+      const key = item.bankId || item.bankName || 'Sin banco';
+      const amt = Number(item.amount || item.counted || 0);
+      byBank[key] = (byBank[key] || 0) + amt;
+      sum += amt;
+    }
+    total = sum;
+  } else if (input && typeof input === 'object') {
+    if (input.byBank && Array.isArray(input.byBank)) {
+      let sum = 0;
+      for (const item of input.byBank) {
+        const key = item.bankId || item.bankName || 'Sin banco';
+        const amt = Number(item.amount || item.counted || 0);
+        byBank[key] = (byBank[key] || 0) + amt;
+        sum += amt;
+      }
+      total = input.total !== undefined ? Number(input.total) : sum;
+    } else if (input.byBank && typeof input.byBank === 'object') {
+      let sum = 0;
+      for (const [key, val] of Object.entries(input.byBank)) {
+        const amt = Number(val || 0);
+        byBank[key] = amt;
+        sum += amt;
+      }
+      total = input.total !== undefined ? Number(input.total) : sum;
+    } else {
+      let hasKeys = false;
+      let sum = 0;
+      for (const [key, val] of Object.entries(input)) {
+        if (key === 'total') {
+          total = Number(val) || 0;
+        } else {
+          hasKeys = true;
+          const amt = Number(val || 0);
+          byBank[key] = amt;
+          sum += amt;
+        }
+      }
+      if (input.total === undefined && hasKeys) {
+        total = sum;
+      }
+    }
+  }
+
+  if (separateByBank) {
+    if (Array.isArray(separateByBank)) {
+      for (const item of separateByBank) {
+        const key = item.bankId || item.bankName || 'Sin banco';
+        const amt = Number(item.amount || item.counted || 0);
+        byBank[key] = (byBank[key] || 0) + amt;
+      }
+    } else if (typeof separateByBank === 'object') {
+      for (const [key, val] of Object.entries(separateByBank)) {
+        byBank[key] = (byBank[key] || 0) + Number(val || 0);
+      }
+    }
+    if (total === null && Object.keys(byBank).length > 0) {
+      total = Object.values(byBank).reduce((a, b) => a + b, 0);
+    }
+  }
+
+  return {
+    total: total !== null ? Math.round(total * 100) / 100 : null,
+    byBank,
+  };
+}

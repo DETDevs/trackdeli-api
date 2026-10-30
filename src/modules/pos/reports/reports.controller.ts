@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from "@nestjs/common";
+import { Controller, Get, Query, Res, UseGuards } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
 import { RolesGuard } from "../../../common/guards/roles.guard";
@@ -34,14 +34,26 @@ export class ReportsController {
   }
 
   @Get("sales-summary")
-  salesSummary(
+  async salesSummary(
     @CurrentUser() user: JwtPayload,
     @Query("period") period?: string,
     @Query("from") from?: string,
     @Query("to") to?: string,
+    @Query("bankId") bankId?: string,
+    @Query("format") format?: string,
+    @Res({ passthrough: true }) res?: any,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.getSalesSummary(resolveBusinessId(user, qBid), period, from, to);
+    const businessId = resolveBusinessId(user, qBid);
+    if (format === 'csv') {
+      const csvResult = await this.service.exportSalesSummaryCsv(businessId, period, from, to, bankId);
+      if (res) {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${csvResult.filename}"`);
+      }
+      return csvResult.csvData;
+    }
+    return this.service.getSalesSummary(businessId, period, from, to, bankId);
   }
 
   @Get("products")

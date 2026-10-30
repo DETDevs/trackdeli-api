@@ -140,10 +140,20 @@ export class ReportsService {
     return buildBusinessDateRange(from, to);
   }
 
-  async getSalesSummary(businessId: string, period?: string, from?: string, to?: string) {
+  async getSalesSummary(
+    businessId: string,
+    period?: string,
+    from?: string,
+    to?: string,
+    bankId?: string,
+  ) {
     const range = this.resolveDateRange(period, from, to);
     const startDate = range.current.from;
     const endDate = range.current.to;
+
+    const bankFilterSql = bankId
+      ? Prisma.sql`AND s.id IN (SELECT p."saleId" FROM pos_payments p WHERE p."bankId" = ${bankId})`
+      : Prisma.empty;
 
     const summaryAgg: any[] = await this.prisma.$queryRaw`
       SELECT
@@ -189,7 +199,8 @@ export class ReportsService {
       WHERE s."businessId" = ${businessId}
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
-        AND s.total > COALESCE(refunds.total_refund, 0);
+        AND s.total > COALESCE(refunds.total_refund, 0)
+        ${bankFilterSql};
     `;
 
     const byPaymentMethodRaw: any[] = await this.prisma.$queryRaw`
@@ -207,6 +218,7 @@ export class ReportsService {
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
+        ${bankFilterSql}
       GROUP BY s."paymentMethod";
     `;
 
@@ -226,14 +238,46 @@ export class ReportsService {
         AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
         AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
         AND s.total > COALESCE(refunds.total_refund, 0)
+        ${bankFilterSql}
       GROUP BY TO_CHAR((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua', 'YYYY-MM-DD')
       ORDER BY date ASC;
+    `;
+
+    const byBankRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        p.method,
+        p."bankId",
+        p."bankName",
+        COALESCE(SUM(COALESCE(p."amountBase", p.amount)), 0)::float AS revenue
+      FROM pos_payments p
+      JOIN pos_sales s ON s.id = p."saleId"
+      WHERE s."businessId" = ${businessId}
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
+        ${bankId ? Prisma.sql`AND p."bankId" = ${bankId}` : Prisma.empty}
+      GROUP BY p.method, p."bankId", p."bankName";
     `;
 
     const byPaymentMethod: Record<string, number> = {};
     for (const r of byPaymentMethodRaw) {
       if (r.revenue > 0) {
         byPaymentMethod[r.paymentMethod] = Math.round(r.revenue * 100) / 100;
+      }
+    }
+
+    const byBank: Record<string, Array<{ bankId: string | null; bankName: string; amount: number }>> = {
+      TARJETA: [],
+      TRANSFERENCIA: [],
+    };
+    for (const r of byBankRaw) {
+      const m = (r.method || '').toUpperCase();
+      const methodKey = m === 'CARD' ? 'TARJETA' : (m === 'TRANSFER' ? 'TRANSFERENCIA' : m);
+      if (byBank[methodKey]) {
+        byBank[methodKey].push({
+          bankId: r.bankId || null,
+          bankName: r.bankName || 'Sin banco',
+          amount: Math.round(r.revenue * 100) / 100,
+        });
       }
     }
 
@@ -264,8 +308,63 @@ export class ReportsService {
       exemptSales: Math.round(exemptSales * 100) / 100,
       averageTicket: totalSales > 0 ? Math.round((totalRevenue / totalSales) * 100) / 100 : 0,
       byPaymentMethod,
+      byBank,
       byDay,
     };
+  }
+
+  async exportSalesSummaryCsv(
+    businessId: string,
+    period?: string,
+    from?: string,
+    to?: string,
+    bankId?: string,
+  ): Promise<{ filename: string; csvData: string }> {
+    const summary = await this.getSalesSummary(businessId, period, from, to, bankId);
+    let bankNameFilter = 'Todos';
+    if (bankId) {
+      const b = await this.prisma.posBank.findFirst({ where: { id: bankId, businessId } });
+      if (b) bankNameFilter = b.name;
+    }
+
+    const bom = '\uFEFF';
+    const sep = ';';
+    let csv = bom;
+
+    csv += `REPORTE DE VENTAS Y PAGOS\r\n`;
+    csv += `Período${sep}"${summary.period.from}" al "${summary.period.to}"\r\n`;
+    csv += `Filtro Banco${sep}"${bankNameFilter}"\r\n`;
+    csv += `Generado${sep}"${new Date().toISOString()}"\r\n\r\n`;
+
+    csv += `RESUMEN GENERAL\r\n`;
+    csv += `Total Ventas (Cantidad)${sep}${summary.totalSales}\r\n`;
+    csv += `Ingresos Netos${sep}${summary.netRevenue.toFixed(2)}\r\n`;
+    csv += `Total Comprobantes (con impuestos)${sep}${summary.totalRevenue.toFixed(2)}\r\n`;
+    csv += `Ticket Promedio${sep}${summary.averageTicket.toFixed(2)}\r\n\r\n`;
+
+    csv += `DESGLOSE POR MÉTODO DE PAGO\r\n`;
+    csv += `Método${sep}Total\r\n`;
+    for (const [m, amt] of Object.entries(summary.byPaymentMethod)) {
+      csv += `"${m}"${sep}${Number(amt).toFixed(2)}\r\n`;
+    }
+    csv += `\r\n`;
+
+    csv += `DESGLOSE POR BANCO\r\n`;
+    csv += `Método${sep}Banco${sep}Monto\r\n`;
+    if (summary.byBank) {
+      for (const [method, banks] of Object.entries(summary.byBank)) {
+        for (const b of banks as any[]) {
+          csv += `"${method}"${sep}"${b.bankName}"${sep}${Number(b.amount).toFixed(2)}\r\n`;
+        }
+      }
+    }
+    csv += `\r\n`;
+
+    const fromClean = (summary.period.from || '').split('T')[0];
+    const toClean = (summary.period.to || '').split('T')[0];
+    const filename = `ventas_pagos_${fromClean}_${toClean}.csv`;
+
+    return { filename, csvData: csv };
   }
 
   async getTopProducts(businessId: string, period?: string, from?: string, to?: string, limit = 10) {

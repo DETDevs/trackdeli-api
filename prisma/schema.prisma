@@ -389,6 +389,9 @@ model Business {
   presaleTickets        PresaleTicket[]
   presaleCounters       PresaleCounter[]
 
+  // Bancos para pagos tarjeta/transferencia (218a)
+  banks                 PosBank[]
+
   @@map("businesses")
 }
 
@@ -707,6 +710,7 @@ model PosPolicies {
   requireReferenceCard       Boolean  @default(true)
   requireReferenceTransfer   Boolean  @default(true)
   requireReferenceOther      Boolean  @default(false)
+  requireBankCardTransfer    Boolean  @default(false)
   
   multiCurrencyEnabled       Boolean  @default(false)
   acceptedCurrencies         String   @default("NIO") // NIO,USD
@@ -1238,6 +1242,10 @@ model PosPayment {
   exchangeRate   Decimal          @default(1) @db.Decimal(10,4)
   amountBase     Decimal          @default(0) @db.Decimal(12,2)
   
+  bankId         String?
+  bankName       String?          @db.VarChar(100)
+  bank           PosBank?         @relation(fields: [bankId], references: [id], onDelete: Restrict)
+
   shiftId        String?
   shift          CashRegister?    @relation(fields: [shiftId], references: [id])
   createdById    String
@@ -1246,6 +1254,7 @@ model PosPayment {
 
   @@index([saleId])
   @@index([shiftId])
+  @@index([bankId])
   @@map("pos_payments")
 }
 
@@ -1415,6 +1424,7 @@ model CashRegister {
 
   notes         String?
   status        CashStatus @default(OPEN)
+  closingBreakdown Json?
 
   sales         Sale[]
   movements     CashMovement[]
@@ -1425,6 +1435,25 @@ model CashRegister {
 
   @@index([businessId, status, closedAt])
   @@map("pos_cash_registers")
+}
+
+model PosBank {
+  id         String       @id @default(uuid())
+  businessId String
+  business   Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String       @db.VarChar(100)
+  code       String?      @db.VarChar(50)
+  order      Int          @default(0)
+  isActive   Boolean      @default(true)
+  isDefault  Boolean      @default(false)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  payments   PosPayment[]
+
+  @@unique([businessId, name])
+  @@index([businessId, isActive, order])
+  @@map("pos_banks")
 }
 
 model CashMovement {

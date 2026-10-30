@@ -522,6 +522,10 @@ export class BackofficeService {
       where.paymentMethod = query.paymentMethod as any;
     }
 
+    if (query.bankId) {
+      where.payments = { some: { bankId: query.bankId } };
+    }
+
     if (query.cashierId) {
       where.cashierId = query.cashierId;
     }

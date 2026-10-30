@@ -29,6 +29,10 @@ export class BackofficeSalesQueryDto {
 
   @IsOptional()
   @IsString()
+  bankId?: string;
+
+  @IsOptional()
+  @IsString()
   cashierId?: string;
 
   @IsOptional()

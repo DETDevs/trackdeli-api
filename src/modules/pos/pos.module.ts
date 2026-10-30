@@ -34,6 +34,7 @@ import { PrintAuditModule } from './print-audit/print-audit.module';
 import { BatchesModule } from './batches/batches.module';
 import { ReceiptLinksModule } from './receipt-links/receipt-links.module';
 import { PresaleTicketsModule } from './presale-tickets/presale-tickets.module';
+import { BanksModule } from './banks/banks.module';
 
 @Module({
   imports: [
@@ -68,10 +69,11 @@ import { PresaleTicketsModule } from './presale-tickets/presale-tickets.module';
     BatchesModule,
     ReceiptLinksModule,
     PresaleTicketsModule,
+    BanksModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
-  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule, PrintAuditModule, BatchesModule, ReceiptLinksModule, PresaleTicketsModule],
+  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule, PrintAuditModule, BatchesModule, ReceiptLinksModule, PresaleTicketsModule, BanksModule],
 })
 export class PosModule {}
 

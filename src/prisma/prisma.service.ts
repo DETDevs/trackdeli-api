@@ -2311,6 +2311,7 @@ WHERE a."customerId" = c."id"
       await this.ensureReceiptLinksSchema();
       await this.ensureProductTaxAndMarkupSchema();
       await this.ensureTwoStepSaleSchema();
+      await this.ensureBankPaymentsSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -3703,6 +3704,83 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 213a - Advertencia sincronizando esquema de venta en dos pasos: ${err.message}`);
+    }
+  }
+
+  /**
+   * 218a - Banco en los pagos con tarjeta y transferencia, y control por banco en el cierre:
+   * - pos_policies: requireBankCardTransfer (boolean default false)
+   * - pos_banks: tabla para bancos por negocio
+   * - pos_payments: bankId, bankName
+   * - pos_cash_registers: closingBreakdown (JSONB)
+   */
+  private async ensureBankPaymentsSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(2180100)`);
+
+          // 1. pos_policies.requireBankCardTransfer
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_policies" ADD COLUMN IF NOT EXISTS "requireBankCardTransfer" BOOLEAN NOT NULL DEFAULT false`,
+          );
+
+          // 2. pos_banks
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_banks" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "name" VARCHAR(100) NOT NULL,
+              "code" VARCHAR(50),
+              "order" INTEGER NOT NULL DEFAULT 0,
+              "isActive" BOOLEAN NOT NULL DEFAULT true,
+              "isDefault" BOOLEAN NOT NULL DEFAULT false,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_banks_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_banks_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            );
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_banks_businessId_name_key" ON "pos_banks"("businessId", "name");
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_banks_businessId_isActive_order_idx" ON "pos_banks"("businessId", "isActive", "order");
+          `);
+
+          // 3. pos_payments.bankId, bankName
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_payments" ADD COLUMN IF NOT EXISTS "bankId" TEXT`,
+          );
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_payments" ADD COLUMN IF NOT EXISTS "bankName" VARCHAR(100)`,
+          );
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_payments_bankId_idx" ON "pos_payments"("bankId");
+          `);
+          await tx.$executeRawUnsafe(`
+            DO $$ BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'pos_payments_bankId_fkey'
+              ) THEN
+                ALTER TABLE "pos_payments"
+                  ADD CONSTRAINT "pos_payments_bankId_fkey"
+                  FOREIGN KEY ("bankId") REFERENCES "pos_banks"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+              END IF;
+            END $$;
+          `);
+
+          // 4. pos_cash_registers.closingBreakdown
+          await tx.$executeRawUnsafe(
+            `ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "closingBreakdown" JSONB`,
+          );
+
+          this.logger.log('[PrismaService] ✓ 218a - Esquema de bancos en pagos y cierre sincronizado');
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 218a - Advertencia sincronizando esquema de bancos: ${err.message}`);
     }
   }
 

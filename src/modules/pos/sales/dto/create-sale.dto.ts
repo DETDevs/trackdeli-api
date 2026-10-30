@@ -88,6 +88,14 @@ export class PaymentDto {
   @Type(() => Number)
   @IsNumber()
   exchangeRate?: number;
+
+  @IsOptional()
+  @IsString()
+  bankId?: string;
+
+  @IsOptional()
+  @IsString()
+  bankName?: string;
 }
 
 export class CreditPlanDto {

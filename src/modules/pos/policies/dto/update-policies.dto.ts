@@ -16,6 +16,7 @@ export class UpdatePosPoliciesDto {
   @IsOptional() @IsBoolean() requireReferenceCard?: boolean;
   @IsOptional() @IsBoolean() requireReferenceTransfer?: boolean;
   @IsOptional() @IsBoolean() requireReferenceOther?: boolean;
+  @IsOptional() @IsBoolean() requireBankCardTransfer?: boolean;
 
   @IsOptional() @IsBoolean() multiCurrencyEnabled?: boolean;
   @IsOptional() @IsString() acceptedCurrencies?: string;

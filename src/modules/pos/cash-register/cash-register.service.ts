@@ -1,10 +1,10 @@
 import { Injectable, NotFoundException, BadRequestException, Logger, ForbiddenException } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { OpenCashRegisterDto } from "./dto/open-register.dto";
-import { CloseCashRegisterDto } from "./dto/close-register.dto";
+import { CloseCashRegisterDto, CountedBreakdownDto } from "./dto/close-register.dto";
 import { CashMovementDto } from "./dto/cash-movement.dto";
 import { MovementType, Prisma, UserRole } from "@prisma/client";
-import { getSalePaymentBreakdown } from "./pos-cash.utils";
+import { getSalePaymentBreakdown, parseCountedMethod } from "./pos-cash.utils";
 import { PoliciesService } from '../policies/policies.service';
 import { AuditService } from '../audit/audit.service';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
@@ -175,6 +175,7 @@ export class CashRegisterService {
       closedBy,
       movements,
       sales: register.sales || [],
+      byMethodAndBank: register.closingBreakdown || this.calculateByMethodAndBank(register),
     };
   }
 
@@ -426,6 +427,25 @@ export class CashRegisterService {
 
     const finalNotes = dto.reason ? `[FORZADO: ${dto.reason}] ${dto.notes || ''}`.trim() : (dto.notes || register.notes);
 
+    const businessBanks = await this.prisma.posBank.findMany({
+      where: { businessId },
+      orderBy: [{ order: 'asc' }, { name: 'asc' }],
+    });
+
+    const byMethodAndBank: any = this.calculateByMethodAndBank(register, dto.counted, businessBanks);
+    byMethodAndBank.CASH = {
+      expected: Number(expectedCashDec.toDecimalPlaces(2)),
+      reported: Number(closingCashDec.toDecimalPlaces(2)),
+      difference: Number(differenceDec.toDecimalPlaces(2)),
+    };
+    if (closingCashUsdDec != null || expectedCashUsdDec.greaterThan(0)) {
+      byMethodAndBank.CASH_USD = {
+        expected: Number(expectedCashUsdDec.toDecimalPlaces(2)),
+        reported: closingCashUsdDec != null ? Number(closingCashUsdDec.toDecimalPlaces(2)) : null,
+        difference: differenceUsdDec != null ? Number(differenceUsdDec.toDecimalPlaces(2)) : null,
+      };
+    }
+
     const updateResult = await this.prisma.cashRegister.updateMany({
       where: { id: register.id, status: 'OPEN' },
       data: {
@@ -441,6 +461,7 @@ export class CashRegisterService {
         totalCashUsd: totalCashUsdDec,
         totalCard: totalCardDec,
         totalTransfer: totalTransferDec,
+        closingBreakdown: byMethodAndBank,
         notes: finalNotes,
         status: "CLOSED",
       },
@@ -679,6 +700,20 @@ export class CashRegisterService {
 
     const formatted = this.formatRegister(register);
 
+    const businessBanks = await this.prisma.posBank.findMany({
+      where: { businessId },
+      orderBy: [{ order: 'asc' }, { name: 'asc' }],
+    });
+
+    const byMethodAndBank: any = register.closingBreakdown || this.calculateByMethodAndBank(register, undefined, businessBanks);
+    if (!byMethodAndBank.CASH) {
+      byMethodAndBank.CASH = {
+        expected: Number(currentCashDec.toDecimalPlaces(2)),
+        reported: register.closingCash != null ? Number(new Prisma.Decimal(register.closingCash.toString()).toDecimalPlaces(2)) : null,
+        difference: register.difference != null ? Number(new Prisma.Decimal(register.difference.toString()).toDecimalPlaces(2)) : null,
+      };
+    }
+
     const result = {
       register: formatted,
       summary: {
@@ -694,6 +729,7 @@ export class CashRegisterService {
         currentCash: Number(currentCashDec.toDecimalPlaces(2)),
         currentCashUsd: Number(currentCashUsdDec.toDecimalPlaces(2)),
         salesCount: register.sales.length,
+        byMethodAndBank,
       },
     };
 
@@ -758,5 +794,187 @@ export class CashRegisterService {
     });
 
     return { success: true, movement };
+  }
+
+  private calculateByMethodAndBank(
+    register: any,
+    counted?: CountedBreakdownDto,
+    businessBanks?: any[],
+  ) {
+    const parsedCard = parseCountedMethod(counted?.CARD, counted?.cardByBank);
+    const parsedTransfer = parseCountedMethod(counted?.TRANSFER, counted?.transferByBank);
+
+    const cardExpectedMap = new Map<string, { bankId: string | null; bankName: string; amount: Prisma.Decimal }>();
+    const transferExpectedMap = new Map<string, { bankId: string | null; bankName: string; amount: Prisma.Decimal }>();
+
+    for (const s of (register.sales || [])) {
+      if (s.status === 'CANCELLED' || s.status === 'VOIDED') continue;
+
+      if (s.payments && Array.isArray(s.payments) && s.payments.length > 0) {
+        for (const p of s.payments) {
+          const method = (p.method || '').toUpperCase();
+          const amt = new Prisma.Decimal(
+            p.amountBase != null
+              ? p.amountBase.toString()
+              : (p.amount != null ? p.amount.toString() : 0),
+          );
+          const key = p.bankId || 'NO_BANK';
+          const name = p.bankName || 'Sin banco';
+
+          if (method === 'TARJETA') {
+            const current = cardExpectedMap.get(key) || {
+              bankId: p.bankId || null,
+              bankName: name,
+              amount: new Prisma.Decimal(0),
+            };
+            current.amount = current.amount.plus(amt);
+            cardExpectedMap.set(key, current);
+          } else if (method === 'TRANSFERENCIA') {
+            const current = transferExpectedMap.get(key) || {
+              bankId: p.bankId || null,
+              bankName: name,
+              amount: new Prisma.Decimal(0),
+            };
+            current.amount = current.amount.plus(amt);
+            transferExpectedMap.set(key, current);
+          }
+        }
+      } else {
+        const method = (s.paymentMethod || '').toUpperCase();
+        const amt = new Prisma.Decimal(s.total != null ? s.total.toString() : 0);
+        if (method === 'TARJETA') {
+          const current = cardExpectedMap.get('NO_BANK') || {
+            bankId: null,
+            bankName: 'Sin banco',
+            amount: new Prisma.Decimal(0),
+          };
+          current.amount = current.amount.plus(amt);
+          cardExpectedMap.set('NO_BANK', current);
+        } else if (method === 'TRANSFERENCIA') {
+          const current = transferExpectedMap.get('NO_BANK') || {
+            bankId: null,
+            bankName: 'Sin banco',
+            amount: new Prisma.Decimal(0),
+          };
+          current.amount = current.amount.plus(amt);
+          transferExpectedMap.set('NO_BANK', current);
+        }
+      }
+    }
+
+    const allBanks = [...(businessBanks || [])];
+    const knownBankIds = new Set(allBanks.map((b) => b.id));
+
+    for (const [, val] of cardExpectedMap.entries()) {
+      if (val.bankId && !knownBankIds.has(val.bankId)) {
+        allBanks.push({ id: val.bankId, name: val.bankName, order: 50 });
+        knownBankIds.add(val.bankId);
+      }
+    }
+    for (const [, val] of transferExpectedMap.entries()) {
+      if (val.bankId && !knownBankIds.has(val.bankId)) {
+        allBanks.push({ id: val.bankId, name: val.bankName, order: 50 });
+        knownBankIds.add(val.bankId);
+      }
+    }
+
+    allBanks.sort((a, b) => (a.order || 0) - (b.order || 0) || a.name.localeCompare(b.name));
+
+    const cardByBankList: any[] = [];
+    const transferByBankList: any[] = [];
+
+    let totalCardExpected = new Prisma.Decimal(0);
+    const totalCardReported: number | null =
+      counted?.CARD !== undefined || counted?.cardByBank !== undefined ? parsedCard.total : null;
+
+    for (const b of allBanks) {
+      const exp = cardExpectedMap.get(b.id)?.amount || new Prisma.Decimal(0);
+      totalCardExpected = totalCardExpected.plus(exp);
+      const rep =
+        parsedCard.byBank[b.id] !== undefined
+          ? parsedCard.byBank[b.id]
+          : (parsedCard.byBank[b.name] !== undefined ? parsedCard.byBank[b.name] : null);
+
+      cardByBankList.push({
+        bankId: b.id,
+        bankName: b.name,
+        expected: Number(exp.toDecimalPlaces(2)),
+        reported: rep !== null ? Number(rep.toFixed(2)) : null,
+        difference: rep !== null ? Number((rep - Number(exp)).toFixed(2)) : null,
+      });
+    }
+
+    const noBankCardExp = cardExpectedMap.get('NO_BANK')?.amount || new Prisma.Decimal(0);
+    totalCardExpected = totalCardExpected.plus(noBankCardExp);
+    const noBankCardRep =
+      parsedCard.byBank['NO_BANK'] !== undefined
+        ? parsedCard.byBank['NO_BANK']
+        : (parsedCard.byBank['Sin banco'] !== undefined ? parsedCard.byBank['Sin banco'] : null);
+
+    cardByBankList.push({
+      bankId: null,
+      bankName: 'Sin banco',
+      expected: Number(noBankCardExp.toDecimalPlaces(2)),
+      reported: noBankCardRep !== null ? Number(noBankCardRep.toFixed(2)) : null,
+      difference: noBankCardRep !== null ? Number((noBankCardRep - Number(noBankCardExp)).toFixed(2)) : null,
+    });
+
+    let totalTransferExpected = new Prisma.Decimal(0);
+    const totalTransferReported: number | null =
+      counted?.TRANSFER !== undefined || counted?.transferByBank !== undefined
+        ? parsedTransfer.total
+        : null;
+
+    for (const b of allBanks) {
+      const exp = transferExpectedMap.get(b.id)?.amount || new Prisma.Decimal(0);
+      totalTransferExpected = totalTransferExpected.plus(exp);
+      const rep =
+        parsedTransfer.byBank[b.id] !== undefined
+          ? parsedTransfer.byBank[b.id]
+          : (parsedTransfer.byBank[b.name] !== undefined ? parsedTransfer.byBank[b.name] : null);
+
+      transferByBankList.push({
+        bankId: b.id,
+        bankName: b.name,
+        expected: Number(exp.toDecimalPlaces(2)),
+        reported: rep !== null ? Number(rep.toFixed(2)) : null,
+        difference: rep !== null ? Number((rep - Number(exp)).toFixed(2)) : null,
+      });
+    }
+
+    const noBankTransferExp = transferExpectedMap.get('NO_BANK')?.amount || new Prisma.Decimal(0);
+    totalTransferExpected = totalTransferExpected.plus(noBankTransferExp);
+    const noBankTransferRep =
+      parsedTransfer.byBank['NO_BANK'] !== undefined
+        ? parsedTransfer.byBank['NO_BANK']
+        : (parsedTransfer.byBank['Sin banco'] !== undefined ? parsedTransfer.byBank['Sin banco'] : null);
+
+    transferByBankList.push({
+      bankId: null,
+      bankName: 'Sin banco',
+      expected: Number(noBankTransferExp.toDecimalPlaces(2)),
+      reported: noBankTransferRep !== null ? Number(noBankTransferRep.toFixed(2)) : null,
+      difference:
+        noBankTransferRep !== null ? Number((noBankTransferRep - Number(noBankTransferExp)).toFixed(2)) : null,
+    });
+
+    const expCardNum = Number(totalCardExpected.toDecimalPlaces(2));
+    const expTransferNum = Number(totalTransferExpected.toDecimalPlaces(2));
+
+    return {
+      CARD: {
+        expected: expCardNum,
+        reported: totalCardReported,
+        difference: totalCardReported !== null ? Number((totalCardReported - expCardNum).toFixed(2)) : null,
+        byBank: cardByBankList,
+      },
+      TRANSFER: {
+        expected: expTransferNum,
+        reported: totalTransferReported,
+        difference:
+          totalTransferReported !== null ? Number((totalTransferReported - expTransferNum).toFixed(2)) : null,
+        byBank: transferByBankList,
+      },
+    };
   }
 }

@@ -40,8 +40,9 @@ export class SalesController {
     @Query("status") status?: string,
     @Query("paymentMethod") paymentMethod?: string,
     @Query("cashRegisterId") cashRegisterId?: string,
+    @Query("bankId") bankId?: string,
   ) {
-    return this.service.findAll(resolveBusinessId(user, qBid), { from, to, status, paymentMethod, cashRegisterId }, user.role);
+    return this.service.findAll(resolveBusinessId(user, qBid), { from, to, status, paymentMethod, cashRegisterId, bankId }, user.role);
   }
 
   @Post()
