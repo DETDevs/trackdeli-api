@@ -24,7 +24,10 @@ export class BookingEmailService {
     private readonly configService: ConfigService,
     private readonly emailChannel: EmailChannel,
   ) {
-    this.appUrl = this.configService.getOrThrow<string>('BOOKING_APP_URL');
+    this.appUrl = (
+      this.configService.get<string>('BOOKING_APP_URL') ||
+      'https://trackdeli-web-booking.vercel.app'
+    ).replace(/\/+$/, '');
   }
 
   async sendBookingReceipt(data: BookingReceiptData): Promise<boolean> {

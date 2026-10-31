@@ -524,9 +524,10 @@ export class CustomersService {
       },
     });
 
-    const trackingBaseUrl = this.configService
-      .getOrThrow<string>('TRACKING_URL')
-      .replace(/\/+$/, '');
+    const trackingBaseUrl = (
+      this.configService.get<string>('TRACKING_URL') ||
+      'https://trackdeli-web-tracking.vercel.app'
+    ).replace(/\/+$/, '');
     const url = `${trackingBaseUrl}/c/${shortCode}`;
 
     const business = await this.prisma.business.findUnique({
@@ -625,9 +626,10 @@ export class CustomersService {
       },
     });
 
-    const trackingBaseUrl = this.configService
-      .getOrThrow<string>('TRACKING_URL')
-      .replace(/\/+$/, '');
+    const trackingBaseUrl = (
+      this.configService.get<string>('TRACKING_URL') ||
+      'https://trackdeli-web-tracking.vercel.app'
+    ).replace(/\/+$/, '');
     const url = `${trackingBaseUrl}/c/${shortCode}`;
 
     const business = await this.prisma.business.findUnique({

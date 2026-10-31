@@ -1195,7 +1195,10 @@ export class BookingService implements OnModuleInit {
         (appointment.items && appointment.items.length > 0
           ? appointment.items.map((i) => i.serviceName).join(', ')
           : 'Servicio');
-      const bookingAppUrl = this.configService.get<string>('BOOKING_APP_URL') || '';
+      const bookingAppUrl = (
+        this.configService.get<string>('BOOKING_APP_URL') ||
+        'https://trackdeli-web-booking.vercel.app'
+      ).replace(/\/+$/, '');
       const manageUrl = `${bookingAppUrl.replace(/\/$/, '')}/manage/${appointment.manageToken}`;
 
       this.notificationsService
@@ -1400,7 +1403,10 @@ export class BookingService implements OnModuleInit {
         (updated.items && updated.items.length > 0
           ? updated.items.map((i) => i.serviceName).join(', ')
           : 'Servicio');
-      const bookingAppUrl = this.configService.get<string>('BOOKING_APP_URL') || '';
+      const bookingAppUrl = (
+        this.configService.get<string>('BOOKING_APP_URL') ||
+        'https://trackdeli-web-booking.vercel.app'
+      ).replace(/\/+$/, '');
       const manageUrl = `${bookingAppUrl.replace(/\/$/, '')}/manage/${updated.manageToken}`;
 
       this.notificationsService
@@ -1580,7 +1586,10 @@ export class BookingService implements OnModuleInit {
       ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`
       : '';
 
-    const bookingAppUrl = this.configService.get<string>('BOOKING_APP_URL') || '';
+    const bookingAppUrl = (
+      this.configService.get<string>('BOOKING_APP_URL') ||
+      'https://trackdeli-web-booking.vercel.app'
+    ).replace(/\/+$/, '');
     const manageUrl = `${bookingAppUrl.replace(/\/$/, '')}/manage/${updated.manageToken}`;
 
     // 1. Envío automático por WhatsApp vía NotificationsModule (awaitDirect para retornar autoSent sin fallar la aprobación)

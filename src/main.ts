@@ -20,6 +20,28 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
 
+  // Orígenes de producción autorizados (dominios nuevos nexolsoft.com y anteriores)
+  const TRUSTED_PRODUCTION_ORIGINS = [
+    // Dominios nuevos (nexolsoft.com)
+    'https://www.nexolsoft.com',
+    'https://nexolsoft.com',
+    'https://pos.nexolsoft.com',
+    'https://recibo.nexolsoft.com',
+    'https://admin.nexolsoft.com',
+    'https://super.nexolsoft.com',
+    'https://citas.nexolsoft.com',
+    'https://mesero.nexolsoft.com',
+    // Dominios anteriores (deben seguir funcionando)
+    'https://www.detdevs.com',
+    'https://detdevs.com',
+    'https://trackdeli-web-uwio.vercel.app',
+    'https://trackdeli-web-tracking.vercel.app',
+    'https://trackdeli-web-admin.vercel.app',
+    'https://trackdeli-web-superadmin.vercel.app',
+    'https://trackdeli-web-booking.vercel.app',
+    'https://trackdeli-web-mesero.vercel.app',
+  ];
+
   const corsOrigins = configService.get<string>('CORS_ORIGINS');
   const originsArray = corsOrigins
     ? corsOrigins
@@ -28,24 +50,33 @@ async function bootstrap() {
         .filter(Boolean)
     : [];
 
-  const trackingUrl = configService.get<string>('TRACKING_URL');
-  if (trackingUrl) {
-    try {
-      const trackingOrigin = new URL(trackingUrl).origin;
-      if (!originsArray.includes(trackingOrigin)) {
-        originsArray.push(trackingOrigin);
-      }
-    } catch {}
+  // Agregar los orígenes de producción conocidos (nuevos y anteriores) sin duplicados
+  for (const origin of TRUSTED_PRODUCTION_ORIGINS) {
+    if (!originsArray.includes(origin)) {
+      originsArray.push(origin);
+    }
   }
 
-  const receiptPublicUrl = configService.get<string>('RECEIPT_PUBLIC_URL');
-  if (receiptPublicUrl) {
-    try {
-      const receiptOrigin = new URL(receiptPublicUrl).origin;
-      if (!originsArray.includes(receiptOrigin)) {
-        originsArray.push(receiptOrigin);
-      }
-    } catch {}
+  const frontendUrlKeys = [
+    'TRACKING_URL',
+    'RECEIPT_PUBLIC_URL',
+    'BOOKING_APP_URL',
+    'ADMIN_APP_URL',
+    'SUPERADMIN_APP_URL',
+    'MESERO_APP_URL',
+    'POS_LANDING_URL',
+  ];
+
+  for (const key of frontendUrlKeys) {
+    const val = configService.get<string>(key);
+    if (val) {
+      try {
+        const urlOrigin = new URL(val).origin;
+        if (!originsArray.includes(urlOrigin)) {
+          originsArray.push(urlOrigin);
+        }
+      } catch {}
+    }
   }
 
   const isProduction = configService.get<string>('NODE_ENV') === 'production';
