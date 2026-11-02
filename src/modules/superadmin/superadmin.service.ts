@@ -1484,7 +1484,41 @@ export class SuperAdminService {
         if (!targetIndustry) {
           throw new NotFoundException(`La industria '${dto.industryId}' no existe`);
         }
+      }
 
+      // 240a ajuste 3: Si el negocio pertenece a una empresa, verificar que el cambio no mezcle rubros
+      if (business.organizationId) {
+        const siblingBusinesses = await this.prisma.business.findMany({
+          where: {
+            organizationId: business.organizationId,
+            id: { not: id },
+          },
+          include: {
+            industry: { select: { id: true, name: true } },
+          },
+        });
+
+        if (siblingBusinesses.length > 0) {
+          const siblingIndustry = siblingBusinesses.find((b) => b.industry)?.industry || null;
+          if (siblingIndustry && siblingIndustry.id !== dto.industryId) {
+            throw new ConflictException({
+              statusCode: 409,
+              error: 'Conflict',
+              code: 'ORGANIZATION_INDUSTRY_MISMATCH',
+              message: `Esta empresa agrupa negocios de rubro ${siblingIndustry.name}; no se puede cambiar este negocio a un rubro distinto.`,
+              organizationIndustry: {
+                id: siblingIndustry.id,
+                name: siblingIndustry.name,
+              },
+              businessIndustry: targetIndustry
+                ? { id: targetIndustry.id, name: targetIndustry.name }
+                : null,
+            });
+          }
+        }
+      }
+
+      if (dto.industryId !== null && targetIndustry) {
         // Si no se proporcionó posVertical explícitamente, tomamos el de la industria
         if (updatePosVertical === undefined) {
           updatePosVertical = targetIndustry.posVertical;
@@ -3683,15 +3717,27 @@ export class SuperAdminService {
         _count: {
           select: { businesses: true },
         },
+        businesses: {
+          select: {
+            industry: {
+              select: { id: true, name: true },
+            },
+          },
+          take: 5,
+        },
       },
     });
 
-    return orgs.map((org) => ({
-      id: org.id,
-      name: org.name,
-      businessCount: org._count.businesses,
-      createdAt: org.createdAt,
-    }));
+    return orgs.map((org) => {
+      const firstIndustry = org.businesses.find((b) => b.industry)?.industry || null;
+      return {
+        id: org.id,
+        name: org.name,
+        businessCount: org._count.businesses,
+        industry: firstIndustry ? { id: firstIndustry.id, name: firstIndustry.name } : null,
+        createdAt: org.createdAt,
+      };
+    });
   }
 
   async createOrganization(dto: CreateOrganizationDto, actorUser?: JwtPayload) {
@@ -3703,7 +3749,10 @@ export class SuperAdminService {
       data: { name },
     });
     this.logger.log(`[createOrganization] Empresa creada: id=${org.id}, name="${org.name}" por ${actorUser?.email || 'superadmin'}`);
-    return org;
+    return {
+      ...org,
+      industry: null,
+    };
   }
 
   async getOrganization(id: string) {
@@ -3717,6 +3766,13 @@ export class SuperAdminService {
             slug: true,
             isActive: true,
             type: true,
+            industryId: true,
+            industry: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
           },
         },
       },
@@ -3752,8 +3808,11 @@ export class SuperAdminService {
       orderBy: { createdAt: 'desc' },
     });
 
+    const firstIndustry = org.businesses.find((b) => b.industry)?.industry || null;
+
     return {
       ...org,
+      industry: firstIndustry ? { id: firstIndustry.id, name: firstIndustry.name } : null,
       accesses,
     };
   }
@@ -3765,6 +3824,9 @@ export class SuperAdminService {
   ) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
+      include: {
+        industry: { select: { id: true, name: true } },
+      },
     });
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
@@ -3773,9 +3835,50 @@ export class SuperAdminService {
     if (dto.organizationId) {
       const org = await this.prisma.organization.findUnique({
         where: { id: dto.organizationId },
+        include: {
+          businesses: {
+            where: { id: { not: businessId } },
+            include: {
+              industry: { select: { id: true, name: true } },
+            },
+          },
+        },
       });
       if (!org) {
         throw new NotFoundException('Empresa no encontrada');
+      }
+
+      // 240a ajuste 3: El negocio debe tener un rubro definido
+      if (!business.industryId || !business.industry) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'ORGANIZATION_INDUSTRY_MISMATCH',
+          message: 'El negocio no tiene un rubro definido. Debe asignarle un rubro antes de vincularlo a una empresa.',
+          organizationIndustry: null,
+          businessIndustry: null,
+        });
+      }
+
+      // 240a ajuste 3: Si la empresa ya tiene sucursales, verificar que pertenezcan al mismo rubro
+      if (org.businesses.length > 0) {
+        const orgIndustry = org.businesses.find((b) => b.industry)?.industry || null;
+        if (orgIndustry && orgIndustry.id !== business.industryId) {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            code: 'ORGANIZATION_INDUSTRY_MISMATCH',
+            message: `Esta empresa agrupa negocios de rubro ${orgIndustry.name}; este negocio es de rubro ${business.industry.name}.`,
+            organizationIndustry: {
+              id: orgIndustry.id,
+              name: orgIndustry.name,
+            },
+            businessIndustry: {
+              id: business.industry.id,
+              name: business.industry.name,
+            },
+          });
+        }
       }
     }
 
