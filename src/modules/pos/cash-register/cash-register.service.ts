@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException, BadRequestException, Logger, ForbiddenException } from "@nestjs/common";
+import { Injectable, NotFoundException, BadRequestException, Logger, ForbiddenException, ConflictException, HttpException, HttpStatus } from "@nestjs/common";
+import * as bcrypt from 'bcrypt';
 import { PrismaService } from "../../../prisma/prisma.service";
 import { OpenCashRegisterDto } from "./dto/open-register.dto";
 import { CloseCashRegisterDto, CountedBreakdownDto } from "./dto/close-register.dto";
@@ -8,6 +9,7 @@ import { getSalePaymentBreakdown, parseCountedMethod } from "./pos-cash.utils";
 import { PoliciesService } from '../policies/policies.service';
 import { AuditService } from '../audit/audit.service';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
+import { ALLOWED_DISCREPANCY_REASONS } from './constants/discrepancy-reasons.constant';
 
 @Injectable()
 export class CashRegisterService {
@@ -205,11 +207,24 @@ export class CashRegisterService {
       denominations,
       countMode,
       closingBreakdown: register.closingBreakdown || null,
+      recountAttempts: register.recountAttempts ?? 0,
+      discrepancyReason: register.discrepancyReason ?? null,
+      discrepancyNote: register.discrepancyNote ?? null,
+      discrepancyAuthorizedById: register.discrepancyAuthorizedById ?? null,
+      discrepancyAuthorizedAt: register.discrepancyAuthorizedAt ?? null,
+      discrepancyAuthorizer: register.discrepancyAuthorizer ? {
+        id: register.discrepancyAuthorizer.id,
+        name: register.discrepancyAuthorizer.name,
+        role: register.discrepancyAuthorizer.role,
+      } : null,
+      deviceId: register.deviceId ?? null,
+      deviceName: register.deviceName ?? null,
     };
   }
 
   async obfuscateRegister(registerData: any, businessId: string, userRole?: string) {
-    if (userRole !== 'CAJERO') return registerData;
+    const isCashierOrSeller = userRole === UserRole.CAJERO || userRole === UserRole.VENDEDOR;
+    if (!isCashierOrSeller) return registerData;
     const policies = await this.policiesService.get(businessId);
     if (!policies.blindCashClose) return registerData;
 
@@ -224,12 +239,16 @@ export class CashRegisterService {
         const mVal: any = val;
         const methodObj: any = {
           reported: mVal.reported !== undefined ? mVal.reported : null,
+          expected: null,
+          difference: null,
         };
         if (Array.isArray(mVal.byBank)) {
           methodObj.byBank = mVal.byBank.map((b: any) => ({
             bankId: b.bankId,
             bankName: b.bankName,
             reported: b.reported !== undefined ? b.reported : null,
+            expected: null,
+            difference: null,
           }));
         }
         obfuscated[method] = methodObj;
@@ -259,7 +278,35 @@ export class CashRegisterService {
         closingCashUsd: reg.closingCashUsd ?? null,
         denominations: reg.denominations ?? reg.closingBreakdown?.denominations ?? null,
         countMode: reg.countMode ?? reg.closingBreakdown?.countMode ?? null,
+        recountAttempts: reg.recountAttempts ?? 0,
+        discrepancyReason: reg.discrepancyReason ?? null,
+        discrepancyNote: reg.discrepancyNote ?? null,
+        discrepancyAuthorizedById: reg.discrepancyAuthorizedById ?? null,
+        discrepancyAuthorizedAt: reg.discrepancyAuthorizedAt ?? null,
+        discrepancyAuthorizer: reg.discrepancyAuthorizer ?? null,
+        deviceId: reg.deviceId ?? null,
+        deviceName: reg.deviceName ?? null,
         byMethodAndBank: obfuscateByMethodAndBank(reg.byMethodAndBank),
+
+        // Valores sensibles devueltos EXPLICITAMENTE como null (NUNCA 0)
+        openingCash: null,
+        initialAmount: null,
+        cashSales: null,
+        expectedCash: null,
+        expectedAmount: null,
+        difference: null,
+        expectedCashUsd: null,
+        differenceUsd: null,
+        totalSales: null,
+        totalCash: null,
+        totalCashUsd: null,
+        totalCard: null,
+        totalTransfer: null,
+        movementsIn: null,
+        movementsOut: null,
+        movementsInUsd: null,
+        movementsOutUsd: null,
+        salesByChannel: null,
       };
     };
 
@@ -269,6 +316,15 @@ export class CashRegisterService {
         summary: {
           salesCount: registerData.summary.salesCount ?? 0,
           byMethodAndBank: obfuscateByMethodAndBank(registerData.summary.byMethodAndBank),
+          totalSales: null,
+          totalCash: null,
+          totalCashUsd: null,
+          totalCard: null,
+          totalTransfer: null,
+          movementsIn: null,
+          movementsOut: null,
+          movementsInUsd: null,
+          movementsOutUsd: null,
         },
       };
     }
@@ -276,26 +332,66 @@ export class CashRegisterService {
     return whitelistBlindRegister(registerData);
   }
 
-  async getCurrent(businessId: string, cashierId: string, userRole?: string) {
-    let register = await this.prisma.cashRegister.findFirst({
-      where: { businessId, cashierId, status: "OPEN" },
-      include: {
-        cashier: { select: { id: true, name: true } },
-        movements: true,
-        sales: {
-          orderBy: { createdAt: "desc" },
-          include: { payments: true, returns: { include: { items: true } } },
-        },
-        _count: { select: { sales: true } },
-      },
-      orderBy: { openedAt: "desc" },
-    });
+  async getCurrent(businessId: string, cashierId?: string, userRole?: string, deviceId?: string) {
+    const cleanDeviceId = deviceId?.trim() || null;
+    let register = null;
 
-    if (!register) {
+    if (cleanDeviceId) {
       register = await this.prisma.cashRegister.findFirst({
-        where: { businessId, status: "OPEN" },
+        where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
         include: {
           cashier: { select: { id: true, name: true } },
+          discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
+          movements: true,
+          sales: {
+            orderBy: { createdAt: "desc" },
+            include: { payments: true, returns: { include: { items: true } } },
+          },
+          _count: { select: { sales: true } },
+        },
+        orderBy: { openedAt: "desc" },
+      });
+
+      // Adopción en getCurrent: si esa computadora no tiene turno pero el usuario tiene uno abierto con deviceId nulo
+      if (!register && cashierId) {
+        const legacyShift = await this.prisma.cashRegister.findFirst({
+          where: { businessId, cashierId, deviceId: null, status: "OPEN" },
+          orderBy: { openedAt: "desc" },
+        });
+        if (legacyShift) {
+          const posDev = await this.prisma.posDevice.findFirst({
+            where: { businessId, deviceId: cleanDeviceId },
+            select: { name: true },
+          });
+          await this.prisma.cashRegister.update({
+            where: { id: legacyShift.id },
+            data: {
+              deviceId: cleanDeviceId,
+              deviceName: posDev?.name || legacyShift.deviceName,
+            },
+          });
+          register = await this.prisma.cashRegister.findUnique({
+            where: { id: legacyShift.id },
+            include: {
+              cashier: { select: { id: true, name: true } },
+              discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
+              movements: true,
+              sales: {
+                orderBy: { createdAt: "desc" },
+                include: { payments: true, returns: { include: { items: true } } },
+              },
+              _count: { select: { sales: true } },
+            },
+          });
+        }
+      }
+    } else if (cashierId) {
+      // Sin X-Device-Id: busca por usuario (SIN ATAJO AL NEGOCIO)
+      register = await this.prisma.cashRegister.findFirst({
+        where: { businessId, cashierId, status: "OPEN" },
+        include: {
+          cashier: { select: { id: true, name: true } },
+          discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
           movements: true,
           sales: {
             orderBy: { createdAt: "desc" },
@@ -316,6 +412,7 @@ export class CashRegisterService {
       where: { businessId },
       include: {
         cashier: { select: { id: true, name: true } },
+        discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
         movements: true,
         sales: {
           orderBy: { createdAt: "desc" },
@@ -330,20 +427,91 @@ export class CashRegisterService {
     return Promise.all(formatted.map(f => this.obfuscateRegister(f, businessId, userRole)));
   }
 
-  async open(dto: OpenCashRegisterDto, businessId: string, cashierId: string) {
-    const existing = await this.prisma.cashRegister.findFirst({
-      where: { businessId, cashierId, status: "OPEN" },
-    });
-    if (existing) {
-      throw new BadRequestException("Ya tienes una caja abierta. Ciérrala antes de abrir una nueva.");
+  async open(
+    dto: OpenCashRegisterDto,
+    businessId: string,
+    cashierId: string,
+    deviceId?: string,
+    deviceName?: string,
+  ) {
+    const cleanDeviceId = deviceId?.trim() || null;
+    let cleanDeviceName = deviceName?.trim() || null;
+
+    if (cleanDeviceId) {
+      if (!cleanDeviceName) {
+        const posDev = await this.prisma.posDevice.findFirst({
+          where: { businessId, deviceId: cleanDeviceId },
+          select: { name: true },
+        });
+        cleanDeviceName = posDev?.name || null;
+      }
+
+      // Validar si esa computadora ya tiene turno abierto
+      const openOnDevice = await this.prisma.cashRegister.findFirst({
+        where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
+      });
+      if (openOnDevice) {
+        throw new BadRequestException({
+          statusCode: 400,
+          code: 'DEVICE_REGISTER_ALREADY_OPEN',
+          message: 'Esta computadora ya tiene un turno de caja abierto.',
+          error: 'Bad Request',
+        });
+      }
+
+      // Adopción de turnos viejos: si no tiene turno y existe uno abierto del mismo usuario con deviceId nulo
+      const legacyShift = await this.prisma.cashRegister.findFirst({
+        where: { businessId, cashierId, deviceId: null, status: "OPEN" },
+        include: {
+          cashier: { select: { id: true, name: true } },
+          discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
+          movements: true,
+          sales: { include: { payments: true, returns: { include: { items: true } } } },
+        },
+        orderBy: { openedAt: "desc" },
+      });
+
+      if (legacyShift) {
+        const adopted = await this.prisma.cashRegister.update({
+          where: { id: legacyShift.id },
+          data: {
+            deviceId: cleanDeviceId,
+            deviceName: cleanDeviceName || legacyShift.deviceName,
+          },
+          include: {
+            cashier: { select: { id: true, name: true } },
+            discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
+            movements: true,
+            sales: { include: { payments: true, returns: { include: { items: true } } } },
+          },
+        });
+        return this.formatRegister(adopted);
+      }
+    } else {
+      // Sin X-Device-Id: validación por usuario
+      const existing = await this.prisma.cashRegister.findFirst({
+        where: { businessId, cashierId, status: "OPEN" },
+      });
+      if (existing) {
+        throw new BadRequestException("Ya tienes una caja abierta. Ciérrala antes de abrir una nueva.");
+      }
     }
 
     const openingCash = Number(dto.openingCash ?? dto.initialAmount ?? dto.amount ?? 0);
-    this.logger.log(`[open] cashier=${cashierId} businessId=${businessId} openingCash=${openingCash}`);
+    this.logger.log(`[open] cashier=${cashierId} businessId=${businessId} deviceId=${cleanDeviceId} openingCash=${openingCash}`);
     const created = await this.prisma.cashRegister.create({
-      data: { businessId, cashierId, openingCash, notes: dto.notes },
+      data: {
+        businessId,
+        cashierId,
+        openingCash,
+        notes: dto.notes,
+        status: "OPEN",
+        deviceId: cleanDeviceId,
+        deviceName: cleanDeviceName,
+      },
       include: {
         cashier: { select: { id: true, name: true } },
+        discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
         movements: true,
         sales: { include: { payments: true, returns: { include: { items: true } } } },
       },
@@ -351,37 +519,80 @@ export class CashRegisterService {
     return this.formatRegister(created);
   }
 
-  async close(registerId: string | null | undefined, dto: CloseCashRegisterDto, businessId: string, cashierId?: string, userRole?: string) {
+  async close(
+    registerId: string | null | undefined,
+    dto: CloseCashRegisterDto,
+    businessId: string,
+    cashierId?: string,
+    userRole?: string,
+    deviceId?: string,
+  ) {
+    const cleanDeviceId = (deviceId || dto.deviceId || '').trim() || null;
     let register;
+
     if (registerId && registerId !== 'close' && registerId !== 'current') {
       register = await this.prisma.cashRegister.findFirst({
         where: { id: registerId, businessId, status: "OPEN" },
         include: {
           cashier: { select: { id: true, name: true } },
+          discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
           sales: { include: { payments: true, returns: { include: { items: true } } } },
           movements: true,
         },
       });
     } else {
-      register = await this.prisma.cashRegister.findFirst({
-        where: { businessId, ...(cashierId ? { cashierId } : {}), status: "OPEN" },
-        include: {
-          cashier: { select: { id: true, name: true } },
-          sales: { include: { payments: true, returns: { include: { items: true } } } },
-          movements: true,
-        },
-        orderBy: { openedAt: "desc" },
-      });
+      if (cleanDeviceId) {
+        register = await this.prisma.cashRegister.findFirst({
+          where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
+          include: {
+            cashier: { select: { id: true, name: true } },
+            discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
+            sales: { include: { payments: true, returns: { include: { items: true } } } },
+            movements: true,
+          },
+          orderBy: { openedAt: "desc" },
+        });
+
+        // Adopción si hay turno de este usuario con deviceId null
+        if (!register && cashierId) {
+          register = await this.prisma.cashRegister.findFirst({
+            where: { businessId, cashierId, deviceId: null, status: "OPEN" },
+            include: {
+              cashier: { select: { id: true, name: true } },
+              discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
+              sales: { include: { payments: true, returns: { include: { items: true } } } },
+              movements: true,
+            },
+            orderBy: { openedAt: "desc" },
+          });
+        }
+      } else {
+        register = await this.prisma.cashRegister.findFirst({
+          where: { businessId, ...(cashierId ? { cashierId } : {}), status: "OPEN" },
+          include: {
+            cashier: { select: { id: true, name: true } },
+            discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
+            sales: { include: { payments: true, returns: { include: { items: true } } } },
+            movements: true,
+          },
+          orderBy: { openedAt: "desc" },
+        });
+      }
     }
 
     if (!register) throw new NotFoundException("Caja no encontrada o ya cerrada");
 
-    if (registerId && userRole === UserRole.CAJERO && register.cashierId !== cashierId) {
-      throw new ForbiddenException(
-        dto.reason
-          ? 'Solo el encargado puede forzar el cierre de turno de otro usuario'
-          : 'Solo el encargado puede cerrar el turno de otro usuario',
-      );
+    if (userRole === UserRole.CAJERO) {
+      if (register.cashierId !== cashierId) {
+        throw new ForbiddenException(
+          dto.reason
+            ? 'Solo el encargado puede forzar el cierre de turno de otro usuario'
+            : 'Solo el encargado puede cerrar el turno de otro usuario',
+        );
+      }
+      if (cleanDeviceId && register.deviceId && register.deviceId !== cleanDeviceId) {
+        throw new ForbiddenException('Los cajeros solo pueden cerrar el turno de su propia computadora');
+      }
     }
 
     const policies = await this.policiesService.get(businessId);
@@ -490,23 +701,184 @@ export class CashRegisterService {
     const expectedCashUsdDec = totalCashUsdDec.plus(movementsInUsdDec).minus(movementsOutUsdDec);
     const differenceUsdDec = closingCashUsdDec != null ? closingCashUsdDec.minus(expectedCashUsdDec) : null;
 
-    const tolerance = new Prisma.Decimal(policies.cashDifferenceTolerance != null ? policies.cashDifferenceTolerance.toString() : 0);
-    if (differenceDec.abs().greaterThan(tolerance) && !dto.notes && !dto.reason) {
-      throw new (require('@nestjs/common').UnprocessableEntityException)({
-        statusCode: 422,
-        error: 'Unprocessable Entity',
-        code: 'CASH_DIFFERENCE_NOTE_REQUIRED',
-        message: {
-          code: 'CASH_DIFFERENCE_NOTE_REQUIRED',
-          message: 'La diferencia de caja supera la tolerancia. Debe incluir una nota.'
+    const discrepancyPolicy = (policies as any).cashCloseDiscrepancyPolicy || 'AUTORIZACION';
+    const tolerance = new Prisma.Decimal(
+      (policies as any).cashCloseTolerance != null
+        ? (policies as any).cashCloseTolerance.toString()
+        : (policies.cashDifferenceTolerance != null ? policies.cashDifferenceTolerance.toString() : 0)
+    );
+    const maxRecounts = (policies as any).cashCloseMaxRecounts != null ? (policies as any).cashCloseMaxRecounts : 1;
+
+    const isAboveTolerance = differenceDec.abs().greaterThan(tolerance);
+    const isCashierOrSeller = userRole === UserRole.CAJERO || userRole === UserRole.VENDEDOR;
+    const isSupervisor = userRole === UserRole.ENCARGADO || userRole === UserRole.SUPERADMIN;
+
+    let authorizedById: string | null = null;
+    let authorizedAt: Date | null = null;
+    let currentRecounts = register.recountAttempts ?? 0;
+
+    if (dto.discrepancyReason) {
+      if (!ALLOWED_DISCREPANCY_REASONS.includes(dto.discrepancyReason as any)) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'DISCREPANCY_REASON_INVALID',
+          message: `Motivo de descuadre no válido. Debe ser uno de: ${ALLOWED_DISCREPANCY_REASONS.join(', ')}`,
+        });
+      }
+      if (dto.discrepancyReason === 'OTRO') {
+        const effectiveNote = (dto.discrepancyNote || dto.notes || '').trim();
+        if (effectiveNote.length < 10) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'DISCREPANCY_NOTE_TOO_SHORT',
+            message: 'Para el motivo OTRO, la nota explicativa debe tener al menos 10 caracteres.',
+          });
         }
-      });
+      }
+    }
+
+    if (isAboveTolerance && discrepancyPolicy === 'AUTORIZACION' && !dto.reason) {
+      if (isCashierOrSeller) {
+        if (currentRecounts < maxRecounts) {
+          await this.prisma.cashRegister.update({
+            where: { id: register.id },
+            data: { recountAttempts: { increment: 1 } },
+          });
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            code: 'CASH_CLOSE_COUNT_MISMATCH',
+            message: 'El conteo no coincide con lo registrado. Revisa el efectivo y vuelve a contar.',
+          });
+        }
+
+        // Reconteos agotados -> Exige motivo, nota y autorización por PIN de ENCARGADO o SUPERADMIN
+        const hasReason = Boolean(dto.discrepancyReason && dto.discrepancyReason.trim());
+        const hasNote = Boolean((dto.discrepancyNote && dto.discrepancyNote.trim()) || (dto.notes && dto.notes.trim()));
+        const hasPin = Boolean(dto.authorizerPin && dto.authorizerPin.trim());
+
+        if (!hasReason || !hasNote || !hasPin) {
+          throw new ForbiddenException({
+            statusCode: 403,
+            error: 'Forbidden',
+            code: 'CASH_CLOSE_AUTH_REQUIRED',
+            message: 'Se requiere autorización del encargado para cerrar la caja con descuadre.',
+          });
+        }
+
+        const cleanPin = dto.authorizerPin!.trim();
+
+        // 230a ajuste: Límite de intentos de PIN: máximo 5 fallidos en 15 minutos por negocio y usuario
+        const PIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
+        const MAX_PIN_FAILURES = 5;
+        const windowStart = new Date(Date.now() - PIN_LOCK_WINDOW_MS);
+
+        const failedAttemptsCount = await this.prisma.posAuditLog.count({
+          where: {
+            businessId,
+            userId: cashierId,
+            action: 'CIERRE_PIN_INVALIDO',
+            createdAt: { gte: windowStart },
+          },
+        });
+
+        if (failedAttemptsCount >= MAX_PIN_FAILURES) {
+          await this.auditService.record({
+            businessId,
+            userId: cashierId || 'UNKNOWN',
+            userRole: userRole || 'UNKNOWN',
+            action: 'CIERRE_PIN_BLOQUEADO',
+            entityType: 'CashRegister',
+            entityId: register.id,
+            reason: 'Intento de cierre de caja bloqueado por exceder el límite de intentos de PIN',
+          });
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.TOO_MANY_REQUESTS,
+              error: 'Too Many Requests',
+              code: 'CASH_CLOSE_PIN_LOCKED',
+              message: 'Demasiados intentos con el PIN. Espera unos minutos o pide al encargado que cierre el turno.',
+            },
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+        }
+
+        const authorizers = await this.prisma.user.findMany({
+          where: {
+            businessId,
+            isActive: true,
+            role: { in: [UserRole.ENCARGADO, UserRole.SUPERADMIN] },
+            pinHash: { not: null },
+            ...(dto.authorizerEmail ? { email: dto.authorizerEmail.trim().toLowerCase() } : {}),
+          },
+          select: { id: true, name: true, role: true, pinHash: true, email: true },
+        });
+
+        let matchedAuthorizer: any = null;
+        for (const auth of authorizers) {
+          if (auth.pinHash && (await bcrypt.compare(cleanPin, auth.pinHash))) {
+            matchedAuthorizer = auth;
+            break;
+          }
+        }
+
+        if (!matchedAuthorizer) {
+          await this.auditService.record({
+            businessId,
+            userId: cashierId || 'UNKNOWN',
+            userRole: userRole || 'UNKNOWN',
+            action: 'CIERRE_PIN_INVALIDO',
+            entityType: 'CashRegister',
+            entityId: register.id,
+            reason: 'PIN de autorización incorrecto o usuario sin permisos al intentar cerrar caja con descuadre',
+          });
+          throw new ForbiddenException({
+            statusCode: 403,
+            error: 'Forbidden',
+            code: 'CASH_CLOSE_AUTH_REQUIRED',
+            message: 'PIN de autorización inválido o usuario no autorizado.',
+          });
+        }
+
+        authorizedById = matchedAuthorizer.id;
+        authorizedAt = new Date();
+      } else if (isSupervisor) {
+        const hasReason = Boolean(dto.discrepancyReason && dto.discrepancyReason.trim()) || Boolean(dto.reason && dto.reason.trim());
+        const hasNote = Boolean((dto.discrepancyNote && dto.discrepancyNote.trim()) || (dto.notes && dto.notes.trim()));
+        if (!hasReason || !hasNote) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'CASH_DIFFERENCE_NOTE_REQUIRED',
+            message: 'Se requiere indicar motivo y nota explicativa del descuadre.',
+          });
+        }
+        authorizedById = cashierId || null;
+        authorizedAt = new Date();
+      }
+    } else if (isAboveTolerance) {
+      if (!dto.notes && !dto.reason && !dto.discrepancyNote) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'CASH_DIFFERENCE_NOTE_REQUIRED',
+          message: 'La diferencia de caja supera la tolerancia. Debe incluir una nota.',
+        });
+      }
+      if (isSupervisor) {
+        authorizedById = cashierId || null;
+        authorizedAt = new Date();
+      }
     }
 
     this.logger.log(
       `[close] id=${register.id} expectedCash=${expectedCashDec.toFixed(2)} closingCash=${closingCashDec.toFixed(2)} diff=${differenceDec.toFixed(2)}`
     );
 
+    const finalReason = isAboveTolerance ? (dto.discrepancyReason || dto.reason || 'DESCUADRE') : null;
+    const finalDiscrepancyNote = isAboveTolerance ? (dto.discrepancyNote || dto.notes || null) : null;
     const finalNotes = dto.reason ? `[FORZADO: ${dto.reason}] ${dto.notes || ''}`.trim() : (dto.notes || register.notes);
 
     const businessBanks = await this.prisma.posBank.findMany({
@@ -553,18 +925,20 @@ export class CashRegisterService {
         closingBreakdown: closingBreakdownData,
         notes: finalNotes,
         status: "CLOSED",
+        recountAttempts: currentRecounts,
+        discrepancyReason: finalReason,
+        discrepancyNote: finalDiscrepancyNote,
+        discrepancyAuthorizedById: authorizedById,
+        discrepancyAuthorizedAt: authorizedAt,
       },
     });
 
     if (updateResult.count === 0) {
-      throw new (require('@nestjs/common').ConflictException)({
+      throw new ConflictException({
         statusCode: 409,
         error: 'Conflict',
         code: 'SHIFT_ALREADY_CLOSED',
-        message: {
-          code: 'SHIFT_ALREADY_CLOSED',
-          message: 'El turno ya se encuentra cerrado (posible doble click).'
-        }
+        message: 'El turno ya se encuentra cerrado (posible doble click).'
       });
     }
 
@@ -572,6 +946,7 @@ export class CashRegisterService {
       where: { id: register.id },
       include: {
         cashier: { select: { id: true, name: true } },
+        discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
         movements: true,
       },
     });
@@ -580,13 +955,22 @@ export class CashRegisterService {
       businessId,
       userId: cashierId || 'SYSTEM',
       userRole: userRole || 'SYSTEM',
-      action: !differenceDec.isZero() ? 'CIERRE_TURNO_CON_DIFERENCIA' : (dto.reason ? 'CIERRE_TURNO_FORZADO' : 'CIERRE_TURNO'),
+      action: isAboveTolerance ? 'CIERRE_TURNO_CON_DESCUADRE' : (dto.reason ? 'CIERRE_TURNO_FORZADO' : 'CIERRE_TURNO'),
       entityType: 'CashRegister',
       entityId: register.id,
+      approvedById: authorizedById || undefined,
       reason: finalNotes,
+      before: isAboveTolerance ? {
+        expectedCash: Number(expectedCashDec.toDecimalPlaces(2)),
+        closingCash: Number(closingCashDec.toDecimalPlaces(2)),
+        difference: Number(differenceDec.toDecimalPlaces(2)),
+        recountAttempts: currentRecounts,
+        reason: finalReason,
+        note: finalDiscrepancyNote,
+      } : undefined,
     });
 
-    // 213a: Barrido de vencimiento y corrección de reservas al cerrar caja
+        // 213a: Barrido de vencimiento y corrección de reservas al cerrar caja
     try {
       const now = new Date();
       const expiredTickets = await this.prisma.presaleTicket.findMany({
@@ -633,7 +1017,7 @@ export class CashRegisterService {
     return this.obfuscateRegister(formatted, businessId, userRole);
   }
 
-  async addMovement(registerId: string | null | undefined, dto: CashMovementDto, businessId: string, userId: string, userRole: string) {
+  async addMovement(registerId: string | null | undefined, dto: CashMovementDto, businessId: string, userId: string, userRole: string, deviceId?: string) {
     let register;
     const isTargetingOther = registerId && registerId !== 'movements' && registerId !== 'movement' && registerId !== 'current';
     
@@ -645,10 +1029,19 @@ export class CashRegisterService {
         where: { id: registerId, businessId, status: "OPEN" },
       });
     } else {
-      register = await this.prisma.cashRegister.findFirst({
-        where: { businessId, cashierId: userId, status: "OPEN" },
-        orderBy: { openedAt: "desc" },
-      });
+      const cleanDeviceId = deviceId?.trim() || null;
+      if (cleanDeviceId) {
+        register = await this.prisma.cashRegister.findFirst({
+          where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
+          orderBy: { openedAt: "desc" },
+        });
+      }
+      if (!register) {
+        register = await this.prisma.cashRegister.findFirst({
+          where: { businessId, cashierId: userId, status: "OPEN" },
+          orderBy: { openedAt: "desc" },
+        });
+      }
     }
 
     if (!register) throw new NotFoundException("No hay una caja abierta para registrar movimientos");
@@ -726,6 +1119,7 @@ export class CashRegisterService {
       where: { id: registerId, businessId },
       include: {
         cashier: { select: { id: true, name: true } },
+        discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
         sales: { include: { payments: true, returns: { include: { items: true } } } },
         movements: true,
       },
@@ -825,17 +1219,26 @@ export class CashRegisterService {
     const obfuscated = await this.obfuscateRegister(result, businessId, userRole);
     return obfuscated;
   }
-  async drawerOpen(registerId: string | null | undefined, reason: string, businessId: string, userId: string, userRole: string) {
+  async drawerOpen(registerId: string | null | undefined, reason: string, businessId: string, userId: string, userRole: string, deviceId?: string) {
     let register;
     if (registerId && registerId !== 'current') {
       register = await this.prisma.cashRegister.findFirst({
         where: { id: registerId, businessId, status: "OPEN" },
       });
     } else {
-      register = await this.prisma.cashRegister.findFirst({
-        where: { businessId, cashierId: userId, status: "OPEN" },
-        orderBy: { openedAt: "desc" },
-      });
+      const cleanDeviceId = deviceId?.trim() || null;
+      if (cleanDeviceId) {
+        register = await this.prisma.cashRegister.findFirst({
+          where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
+          orderBy: { openedAt: "desc" },
+        });
+      }
+      if (!register) {
+        register = await this.prisma.cashRegister.findFirst({
+          where: { businessId, cashierId: userId, status: "OPEN" },
+          orderBy: { openedAt: "desc" },
+        });
+      }
     }
 
     if (!register) throw new NotFoundException("No hay una caja abierta");
@@ -1065,5 +1468,25 @@ export class CashRegisterService {
         byBank: transferByBankList,
       },
     };
+  }
+  async getOpenList(businessId: string) {
+    const openShifts = await this.prisma.cashRegister.findMany({
+      where: { businessId, status: "OPEN" },
+      include: {
+        cashier: { select: { id: true, name: true } },
+      },
+      orderBy: { openedAt: "asc" },
+    });
+
+    return openShifts.map((s) => ({
+      id: s.id,
+      deviceId: s.deviceId ?? null,
+      deviceName: s.deviceName ?? null,
+      cashierId: s.cashierId,
+      cashierName: s.cashier?.name ?? null,
+      openedAt: s.openedAt,
+      openingCash: Number(s.openingCash),
+      status: s.status,
+    }));
   }
 }

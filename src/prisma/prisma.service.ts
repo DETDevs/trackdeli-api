@@ -116,6 +116,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
             "acceptedCurrencies" TEXT NOT NULL DEFAULT 'NIO',
             "blindCashClose" BOOLEAN NOT NULL DEFAULT true,
             "cashDifferenceTolerance" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "cashCloseDiscrepancyPolicy" VARCHAR(20) NOT NULL DEFAULT 'AUTORIZACION',
+            "cashCloseTolerance" DECIMAL(12,2) NOT NULL DEFAULT 0,
+            "cashCloseMaxRecounts" INTEGER NOT NULL DEFAULT 1,
             "noSaleDrawerOpenAllowed" BOOLEAN NOT NULL DEFAULT true,
             "allowNegativeStock" BOOLEAN NOT NULL DEFAULT false,
             "inventoryAdjustRequireApproval" BOOLEAN NOT NULL DEFAULT true,
@@ -2313,6 +2316,8 @@ WHERE a."customerId" = c."id"
       await this.ensureTwoStepSaleSchema();
       await this.ensureBankPaymentsSchema();
       await this.ensureSalesChannelsSchema();
+      await this.ensureCashCloseAuthSchema();
+      await this.ensureDeviceCashRegisterSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -3985,6 +3990,116 @@ WHERE a."customerId" = c."id"
     }
   }
 
+  /**
+   * 230a - Cierre de caja con descuadre: autorización de encargado y ocultamiento de datos falsos al cajero.
+   * - pos_policies:
+   *   - cashCloseDiscrepancyPolicy (varchar(20) not null default 'AUTORIZACION')
+   *   - cashCloseTolerance (decimal(12,2) not null default 0)
+   *   - cashCloseMaxRecounts (integer not null default 1)
+   * - pos_cash_registers:
+   *   - recountAttempts (integer not null default 0)
+   *   - discrepancyReason (varchar(100) null)
+   *   - discrepancyNote (text null)
+   *   - discrepancyAuthorizedById (text null)
+   *   - discrepancyAuthorizedAt (timestamp(3) null)
+   * DDL idempotente con advisory lock 230001.
+   */
+  private async ensureCashCloseAuthSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(230001)`);
+      try {
+        // 1. Columnas en pos_policies
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_policies" ADD COLUMN IF NOT EXISTS "cashCloseDiscrepancyPolicy" VARCHAR(20) NOT NULL DEFAULT 'AUTORIZACION'`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_policies" ADD COLUMN IF NOT EXISTS "cashCloseTolerance" DECIMAL(12,2) NOT NULL DEFAULT 0`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_policies" ADD COLUMN IF NOT EXISTS "cashCloseMaxRecounts" INTEGER NOT NULL DEFAULT 1`,
+        );
+
+        // 2. Columnas en pos_cash_registers
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "recountAttempts" INTEGER NOT NULL DEFAULT 0`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "discrepancyReason" VARCHAR(100)`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "discrepancyNote" TEXT`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "discrepancyAuthorizedById" TEXT`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "discrepancyAuthorizedAt" TIMESTAMP(3)`,
+        );
+
+        // 3. FK a users si no existe
+        await this.$executeRawUnsafe(`
+          DO $ BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'pos_cash_registers_discrepancyAuthorizedById_fkey'
+            ) THEN
+              ALTER TABLE "pos_cash_registers"
+                ADD CONSTRAINT "pos_cash_registers_discrepancyAuthorizedById_fkey"
+                FOREIGN KEY ("discrepancyAuthorizedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $;
+        `);
+
+        // 4. Índice
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_cash_registers_discrepancyAuthorizedById_idx"
+          ON "pos_cash_registers"("discrepancyAuthorizedById");
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(230001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 230a - Advertencia sincronizando esquema de autorización de cierre de caja: ${err.message}`);
+    }
+  }
+
+  /**
+   * 231a - El turno de caja pertenece a la computadora:
+   * - pos_cash_registers:
+   *   - deviceId (varchar(100) null)
+   *   - deviceName (varchar(150) null)
+   *   - Índice único parcial: un solo turno OPEN por (businessId, deviceId) cuando deviceId is not null.
+   * DDL idempotente con advisory lock 231001.
+   */
+  private async ensureDeviceCashRegisterSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(231001)`);
+      try {
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "deviceId" VARCHAR(100)`,
+        );
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "deviceName" VARCHAR(150)`,
+        );
+
+        // Índice único parcial para garantizar un único turno OPEN por computadora
+        await this.$executeRawUnsafe(`
+          CREATE UNIQUE INDEX IF NOT EXISTS "pos_cash_registers_business_device_open_idx"
+          ON "pos_cash_registers"("businessId", "deviceId")
+          WHERE "deviceId" IS NOT NULL AND "status" = 'OPEN';
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_cash_registers_businessId_deviceId_idx"
+          ON "pos_cash_registers"("businessId", "deviceId");
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(231001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 231a - Advertencia sincronizando esquema de turnos por computadora: ${err.message}`);
+    }
+  }
+
   private async ensureBusinessProductsBackfilled() {
     try {
       this.logger.log('[PrismaService] Verificando backfill de BusinessProductSubscription...');
@@ -4824,6 +4939,9 @@ WHERE a."customerId" = c."id"
               acceptedCurrencies: "NIO",
               blindCashClose: true,
               cashDifferenceTolerance: 0,
+              cashCloseDiscrepancyPolicy: 'AUTORIZACION',
+              cashCloseTolerance: 0,
+              cashCloseMaxRecounts: 1,
               noSaleDrawerOpenAllowed: true,
               allowNegativeStock: false,
               inventoryAdjustRequireApproval: true

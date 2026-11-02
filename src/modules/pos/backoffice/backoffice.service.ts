@@ -1033,6 +1033,8 @@ export class BackofficeService {
         totalSales: this.round2(totalSales),
         salesCount: reg.sales.length,
         notes: reg.notes || null,
+        deviceId: reg.deviceId ?? null,
+        deviceName: reg.deviceName ?? null,
       };
     });
 

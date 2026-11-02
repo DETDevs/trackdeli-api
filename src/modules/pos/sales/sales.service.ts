@@ -137,10 +137,12 @@ export class SalesService {
   ) {
     const runInTx = async (tx: Prisma.TransactionClient) => {
       let cashRegisterId: string;
+      const cleanDeviceId = clientInfo?.deviceId?.trim() || null;
+
       if (dto.cashRegisterId) {
         const explicitRegister = await tx.cashRegister.findFirst({
           where: { id: dto.cashRegisterId, businessId, status: "OPEN" },
-          select: { id: true },
+          select: { id: true, deviceId: true },
         });
         if (!explicitRegister) {
           throw new ConflictException({
@@ -150,19 +152,48 @@ export class SalesService {
             error: 'Conflict',
           });
         }
-        cashRegisterId = explicitRegister.id;
-      } else {
-        let activeRegister = await tx.cashRegister.findFirst({
-          where: { businessId, cashierId, status: "OPEN" },
-          select: { id: true },
-        });
-        if (!activeRegister) {
-          activeRegister = await tx.cashRegister.findFirst({
-            where: { businessId, status: "OPEN" },
-            orderBy: { openedAt: "desc" },
-            select: { id: true },
+        if (cleanDeviceId && explicitRegister.deviceId && explicitRegister.deviceId !== cleanDeviceId) {
+          throw new ConflictException({
+            statusCode: 409,
+            code: 'NO_OPEN_SHIFT',
+            message: 'La caja especificada no pertenece a esta computadora.',
+            error: 'Conflict',
           });
         }
+        cashRegisterId = explicitRegister.id;
+      } else {
+        let activeRegister = null;
+        if (cleanDeviceId) {
+          activeRegister = await tx.cashRegister.findFirst({
+            where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
+            select: { id: true },
+            orderBy: { openedAt: "desc" },
+          });
+
+          // Adopción de turno viejo sin deviceId para este usuario
+          if (!activeRegister && cashierId) {
+            const legacyShift = await tx.cashRegister.findFirst({
+              where: { businessId, cashierId, deviceId: null, status: "OPEN" },
+              select: { id: true },
+              orderBy: { openedAt: "desc" },
+            });
+            if (legacyShift) {
+              await tx.cashRegister.update({
+                where: { id: legacyShift.id },
+                data: { deviceId: cleanDeviceId },
+              });
+              activeRegister = legacyShift;
+            }
+          }
+        } else {
+          // Sin X-Device-Id: busca por usuario (SIN ATAJO AL NEGOCIO)
+          activeRegister = await tx.cashRegister.findFirst({
+            where: { businessId, cashierId, status: "OPEN" },
+            select: { id: true },
+            orderBy: { openedAt: "desc" },
+          });
+        }
+
         if (!activeRegister) {
           throw new ConflictException({
             statusCode: 409,
@@ -1745,7 +1776,16 @@ export class SalesService {
     businessId: string,
     executorUserId: string,
     approvedById?: string | null,
+    deviceId?: string | null,
   ) {
+    const cleanDeviceId = deviceId?.trim() || null;
+    if (cleanDeviceId) {
+      const shift = await tx.cashRegister.findFirst({
+        where: { businessId, deviceId: cleanDeviceId, status: 'OPEN' },
+        select: { id: true },
+      });
+      if (shift) return shift;
+    }
     // 1. Turno abierto del usuario que ejecuta
     let openShift = await tx.cashRegister.findFirst({
       where: { businessId, cashierId: executorUserId, status: 'OPEN' },
@@ -1767,6 +1807,7 @@ export class SalesService {
     userId: string,
     userRole: string,
     dto: { reason: string; approvalToken?: string },
+    deviceId?: string,
   ) {
     if (!dto.reason || !dto.reason.trim()) {
       throw new BadRequestException({
@@ -1994,7 +2035,7 @@ export class SalesService {
 
       let cashRefundMovement: any = null;
       if (netCashPaidDec.greaterThan(0)) {
-        const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById);
+        const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById, deviceId);
         if (!openShift) {
           throw new UnprocessableEntityException({
             statusCode: 422,
@@ -2035,7 +2076,7 @@ export class SalesService {
 
         // Si el cliente ya hizo abonos, se le deben reembolsar en efectivo en el turno abierto actual
         if (totalAbonosPaidDec.greaterThan(0)) {
-          const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById);
+          const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById, deviceId);
           if (!openShift) {
             throw new UnprocessableEntityException({
               statusCode: 422,
@@ -2167,6 +2208,7 @@ export class SalesService {
     userId: string,
     userRole: string,
     dto: CreateReturnDto,
+    deviceId?: string,
   ) {
     if (!dto.items || dto.items.length === 0) {
       throw new BadRequestException({
@@ -2483,7 +2525,7 @@ export class SalesService {
       let excessCashMovement: any = null;
 
       if (refundMethod === PosPaymentMethod.EFECTIVO && totalReturnRefundDec.greaterThan(0)) {
-        const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById);
+        const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById, deviceId);
         if (!openShift) {
           throw new UnprocessableEntityException({
             statusCode: 422,
@@ -2519,7 +2561,7 @@ export class SalesService {
           // El excedente se reembolsa al cliente en efectivo en el turno abierto actual.
           const excessRefundDec = totalReturnRefundDec.minus(currentBalDec);
 
-          const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById);
+          const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById, deviceId);
           if (!openShift) {
             throw new UnprocessableEntityException({
               statusCode: 422,

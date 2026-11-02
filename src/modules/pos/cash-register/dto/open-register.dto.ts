@@ -23,4 +23,12 @@ export class OpenCashRegisterDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  deviceId?: string;
+
+  @IsOptional()
+  @IsString()
+  deviceName?: string;
 }

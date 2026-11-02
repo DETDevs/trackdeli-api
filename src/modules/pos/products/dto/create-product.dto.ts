@@ -65,6 +65,53 @@ export class CreateProductDto {
   supplierId?: string;
 
   @IsOptional()
+  @IsString()
+  supplier_id?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  laboratorio?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  laboratory?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  presentacion?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  presentation?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  principio_activo?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  activeIngredient?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  active_ingredient?: string;
+
+  @IsOptional()
+  @IsNumber()
+  list_price?: number;
+
+  @IsOptional()
+  @IsNumber()
+  min_stock?: number;
+
+  @IsOptional()
   @IsBoolean()
   trackStock?: boolean;
 

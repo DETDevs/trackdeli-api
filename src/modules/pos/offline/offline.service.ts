@@ -183,7 +183,7 @@ export class OfflineService {
     }
   }
 
-  async syncOfflineSales(businessId: string, cashierId: string, dto: SyncOfflineBatchDto) {
+  async syncOfflineSales(businessId: string, cashierId: string, dto: SyncOfflineBatchDto, deviceId?: string) {
     this.logger.log(
       `[syncOfflineSales] Inicio de sync: businessId=${businessId} device=${dto.deviceIdentifier} totalVentas=${dto.sales.length}`
     );
@@ -586,15 +586,23 @@ export class OfflineService {
           }
 
           if (!cashRegisterId) {
+            const coveringWhere: any = {
+              businessId,
+              openedAt: { lte: validOccurredAt },
+              OR: [
+                { closedAt: null },
+                { closedAt: { gte: validOccurredAt } },
+              ],
+            };
+            const cleanDeviceId = (deviceId || dto.deviceIdentifier || '').trim() || null;
+            if (cleanDeviceId) {
+              coveringWhere.deviceId = cleanDeviceId;
+            } else {
+              coveringWhere.cashierId = cashierId;
+            }
+
             const coveringReg = await tx.cashRegister.findFirst({
-              where: {
-                businessId,
-                openedAt: { lte: validOccurredAt },
-                OR: [
-                  { closedAt: null },
-                  { closedAt: { gte: validOccurredAt } },
-                ],
-              },
+              where: coveringWhere,
               orderBy: { openedAt: "desc" },
               select: { id: true },
             });

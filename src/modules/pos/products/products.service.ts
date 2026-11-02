@@ -21,6 +21,11 @@ import { BatchesService } from '../batches/batches.service';
 import { buildBusinessDateRange, formatDateInTimezone } from '../../../common/utils/date.util';
 import { normalizeOptionLabel } from '../../../common/utils/field-key.util';
 import { resolveChannelUnitPrice } from '../sales/utils/pricing.util';
+import {
+  validateProductCreationForIndustry,
+  validateProductUpdateForIndustry,
+  normalizePharmacyAttributes,
+} from './product-industry-rules.util';
 
 @Injectable()
 export class ProductsService {
@@ -31,6 +36,38 @@ export class ProductsService {
     private readonly auditService: AuditService,
     private readonly batchesService: BatchesService,
   ) { }
+
+  public async ensurePharmacyFieldDefinitions(businessId: string): Promise<void> {
+    const defaultFields = [
+      { key: 'laboratorio', label: 'Laboratorio', dataType: ProductFieldDataType.LIST, allowCreateInline: true, order: 1 },
+      { key: 'principio_activo', label: 'Principio activo', dataType: ProductFieldDataType.TEXT, searchable: true, order: 2 },
+      { key: 'presentacion', label: 'Presentación', dataType: ProductFieldDataType.LIST, allowCreateInline: true, order: 3 },
+    ];
+    for (const f of defaultFields) {
+      const existing = await this.prisma.productFieldDefinition.findUnique({
+        where: { businessId_key: { businessId, key: f.key } },
+      });
+      if (!existing) {
+        await this.prisma.productFieldDefinition.create({
+          data: {
+            businessId,
+            key: f.key,
+            label: f.label,
+            dataType: f.dataType,
+            searchable: (f as any).searchable ?? false,
+            allowCreateInline: (f as any).allowCreateInline ?? false,
+            order: f.order,
+            isActive: true,
+          },
+        });
+      } else if (!existing.isActive) {
+        await this.prisma.productFieldDefinition.update({
+          where: { id: existing.id },
+          data: { isActive: true },
+        });
+      }
+    }
+  }
 
   private mapProductWithInventory(product: any, twoStepSaleEnabled?: boolean) {
     if (!product) return product;
@@ -725,6 +762,46 @@ export class ProductsService {
       throw new BadRequestException("La categoría especificada no existe o no pertenece a este negocio");
     }
 
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: {
+        wholesaleEnabled: true,
+        posVertical: true,
+        industry: { select: { code: true } },
+      },
+    });
+    const industryCode = business?.industry?.code;
+
+    // Normalizar atributos y alias en dto
+    normalizePharmacyAttributes(dto);
+    if (dto.listPrice === undefined && (dto as any).list_price !== undefined) {
+      dto.listPrice = (dto as any).list_price;
+    }
+    if (dto.minStock === undefined && (dto as any).min_stock !== undefined) {
+      dto.minStock = (dto as any).min_stock;
+    }
+    if (dto.supplierId === undefined && (dto as any).supplier_id !== undefined) {
+      dto.supplierId = (dto as any).supplier_id;
+    }
+
+    const supplierId = dto.supplierId;
+    let supplierBelongsToBiz = false;
+    if (supplierId) {
+      const supplier = await this.prisma.supplier.findFirst({
+        where: { id: supplierId, businessId, isActive: true },
+      });
+      supplierBelongsToBiz = Boolean(supplier);
+      if (!supplierBelongsToBiz && industryCode !== 'farmacia') {
+        throw new BadRequestException("El proveedor especificado no existe o no pertenece a este negocio");
+      }
+    }
+
+    validateProductCreationForIndustry(industryCode, dto.type, dto, supplierBelongsToBiz);
+
+    if (industryCode === 'farmacia') {
+      await this.ensurePharmacyFieldDefinitions(businessId);
+    }
+
     let trackStock = dto.trackStock ?? dto.trackInventory;
     // 160d: tipo explícito; si no viene, PRODUCT (compatibilidad con desktop viejo)
     const type: 'PRODUCT' | 'SERVICE' = dto.type ?? 'PRODUCT';
@@ -736,17 +813,13 @@ export class ProductsService {
         where: { businessId_productType: { businessId, productType: BusinessProductType.POS } },
         select: { posVertical: true },
       });
-      const business = await this.prisma.business.findUnique({
-        where: { id: businessId },
-        select: { posVertical: true },
-      });
       const vertical = subscription?.posVertical || business?.posVertical || PosVertical.RETAIL;
       trackStock = vertical === PosVertical.RESTAURANTE ? false : true;
     }
 
     const validatedAttributes = await this.validateAttributes(businessId, dto.attributes);
 
-    const unit = (dto.unit || 'UND').trim().toUpperCase();
+    const unit = ((industryCode === 'farmacia' && !dto.unit) ? 'UND' : (dto.unit || 'UND')).trim().toUpperCase();
     if (dto.stock !== undefined && dto.stock !== null) {
       dto.stock = validateProductQuantity(unit, dto.stock, dto.name);
     }
@@ -756,11 +829,6 @@ export class ProductsService {
     if (dto.maxStock !== undefined && dto.maxStock !== null) {
       dto.maxStock = validateProductQuantity(unit, dto.maxStock, dto.name);
     }
-
-    const business = await this.prisma.business.findUnique({
-      where: { id: businessId },
-      select: { wholesaleEnabled: true },
-    });
 
     const rawWholesalePrice = dto.wholesalePrice !== undefined ? dto.wholesalePrice : dto.wholesale_price;
     const rawWholesaleMinQty = dto.wholesaleMinQty !== undefined ? dto.wholesaleMinQty : dto.wholesale_min_qty;
@@ -795,8 +863,22 @@ export class ProductsService {
       wholesale_min_qty: _wmq,
       initialLotNumber,
       initialExpiryDate,
+      laboratorio,
+      laboratory,
+      presentacion,
+      presentation,
+      principio_activo,
+      activeIngredient,
+      active_ingredient,
+      list_price,
+      min_stock,
+      supplier_id,
       ...productData
     } = dto as any;
+
+    if (dto.listPrice !== undefined) productData.listPrice = dto.listPrice;
+    if (dto.minStock !== undefined) productData.minStock = dto.minStock;
+    if (dto.supplierId !== undefined) productData.supplierId = dto.supplierId;
 
     const product = await this.prisma.product.create({
       data: {
@@ -877,6 +959,46 @@ export class ProductsService {
     const product = await this.prisma.product.findFirst({ where: { id, businessId } });
     if (!product) throw new NotFoundException("Producto no encontrado");
 
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: {
+        wholesaleEnabled: true,
+        industry: { select: { code: true } },
+      },
+    });
+    const industryCode = business?.industry?.code;
+
+    // Normalizar atributos y alias en dto
+    normalizePharmacyAttributes(dto);
+    if (dto.listPrice === undefined && (dto as any).list_price !== undefined) {
+      dto.listPrice = (dto as any).list_price;
+    }
+    if (dto.minStock === undefined && (dto as any).min_stock !== undefined) {
+      dto.minStock = (dto as any).min_stock;
+    }
+    if (dto.supplierId === undefined && (dto as any).supplier_id !== undefined) {
+      dto.supplierId = (dto as any).supplier_id;
+    }
+
+    const supplierId = dto.supplierId;
+    let supplierBelongsToBiz = false;
+    if (supplierId) {
+      const supplier = await this.prisma.supplier.findFirst({
+        where: { id: supplierId, businessId, isActive: true },
+      });
+      supplierBelongsToBiz = Boolean(supplier);
+      if (!supplierBelongsToBiz && industryCode !== 'farmacia') {
+        throw new BadRequestException("El proveedor especificado no existe o no pertenece a este negocio");
+      }
+    }
+
+    const effectiveType = dto.type ?? (product as any).type ?? 'PRODUCT';
+    validateProductUpdateForIndustry(industryCode, effectiveType, dto, supplierBelongsToBiz);
+
+    if (industryCode === 'farmacia') {
+      await this.ensurePharmacyFieldDefinitions(businessId);
+    }
+
     if (dto.barcode && dto.barcode !== product.barcode) {
       const existing = await this.prisma.product.findFirst({
         where: { businessId, barcode: dto.barcode, NOT: { id } },
@@ -898,7 +1020,6 @@ export class ProductsService {
 
     let trackStock = dto.trackStock ?? dto.trackInventory;
     // 160d: si no viene type se mantiene el actual. Un SERVICE nunca controla stock propio.
-    const effectiveType = dto.type ?? (product as any).type ?? 'PRODUCT';
     if (effectiveType === 'SERVICE') {
       trackStock = false;
     }
@@ -950,15 +1071,32 @@ export class ProductsService {
       }
     }
 
-    const { trackInventory, attributes: incomingAttributes, wholesale_price: _wp, wholesale_min_qty: _wmq, confirm: _confirm, ...updateData } = dto as any;
+    const {
+      trackInventory,
+      attributes: incomingAttributes,
+      wholesale_price: _wp,
+      wholesale_min_qty: _wmq,
+      confirm: _confirm,
+      laboratorio,
+      laboratory,
+      presentacion,
+      presentation,
+      principio_activo,
+      activeIngredient,
+      active_ingredient,
+      list_price,
+      min_stock,
+      supplier_id,
+      ...updateData
+    } = dto as any;
+
+    if (dto.listPrice !== undefined) (updateData as any).listPrice = dto.listPrice;
+    if (dto.minStock !== undefined) (updateData as any).minStock = dto.minStock;
+    if (dto.supplierId !== undefined) (updateData as any).supplierId = dto.supplierId;
+
     if (trackStock !== undefined) {
       (updateData as any).trackStock = trackStock;
     }
-
-    const business = await this.prisma.business.findUnique({
-      where: { id: businessId },
-      select: { wholesaleEnabled: true },
-    });
 
     const rawWholesalePrice = dto.wholesalePrice !== undefined ? dto.wholesalePrice : dto.wholesale_price;
     const rawWholesaleMinQty = dto.wholesaleMinQty !== undefined ? dto.wholesaleMinQty : dto.wholesale_min_qty;
@@ -1012,7 +1150,8 @@ export class ProductsService {
       (updateData as any).maxStock = dto.maxStock;
     }
 
-    if (incomingAttributes !== undefined) {
+    const effectiveAttributes = dto.attributes !== undefined ? dto.attributes : incomingAttributes;
+    if (effectiveAttributes !== undefined) {
       const existingAttrs =
         product.attributes && typeof product.attributes === 'object' && !Array.isArray(product.attributes)
           ? (product.attributes as Record<string, any>)
@@ -1020,7 +1159,7 @@ export class ProductsService {
 
       const validatedAttributes = await this.validateAttributes(
         businessId,
-        incomingAttributes,
+        effectiveAttributes,
         existingAttrs,
       );
       (updateData as any).attributes = validatedAttributes;

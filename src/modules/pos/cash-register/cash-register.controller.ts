@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards, BadRequestException, ForbiddenException, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards, BadRequestException, ForbiddenException, UseInterceptors } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { IdempotencyInterceptor } from "../idempotency/idempotency.interceptor";
 import { PosGuard } from "../../../common/guards/pos.guard";
@@ -27,7 +27,7 @@ export class CashRegisterController {
 
   @Get()
   findAll(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
-    return this.service.findAll(resolveBusinessId(user, qBid));
+    return this.service.findAll(resolveBusinessId(user, qBid), user.role);
   }
 
   @Get("history")
@@ -35,14 +35,31 @@ export class CashRegisterController {
     return this.service.findAll(resolveBusinessId(user, qBid), user.role);
   }
 
+  @Get("open-list")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  getOpenList(
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getOpenList(resolveBusinessId(user, qBid));
+  }
+
   @Get("current")
-  getCurrent(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
-    return this.service.getCurrent(resolveBusinessId(user, qBid), user.sub, user.role);
+  getCurrent(
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+    @Headers("x-device-id") deviceId?: string,
+  ) {
+    return this.service.getCurrent(resolveBusinessId(user, qBid), user.sub, user.role, deviceId);
   }
 
   @Get("status")
-  async getStatus(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
-    const current = await this.service.getCurrent(resolveBusinessId(user, qBid), user.sub, user.role);
+  async getStatus(
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+    @Headers("x-device-id") deviceId?: string,
+  ) {
+    const current = await this.service.getCurrent(resolveBusinessId(user, qBid), user.sub, user.role, deviceId);
     return {
       isOpen: !!current,
       shiftId: current?.id ?? null,
@@ -58,8 +75,12 @@ export class CashRegisterController {
     @Body() dto: OpenCashRegisterDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Headers("x-device-id") hDeviceId?: string,
+    @Headers("x-device-name") hDeviceName?: string,
   ) {
-    return this.service.open(dto, resolveBusinessId(user, qBid), user.sub);
+    const deviceId = (hDeviceId || dto.deviceId || '').trim() || undefined;
+    const deviceName = (hDeviceName || dto.deviceName || '').trim() || undefined;
+    return this.service.open(dto, resolveBusinessId(user, qBid), user.sub, deviceId, deviceName);
   }
 
   @Post("close")
@@ -70,8 +91,10 @@ export class CashRegisterController {
     @Body() dto: CloseCashRegisterDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Headers("x-device-id") hDeviceId?: string,
   ) {
-    return this.service.close(null, dto, resolveBusinessId(user, qBid), user.sub, user.role);
+    const deviceId = (hDeviceId || dto.deviceId || '').trim() || undefined;
+    return this.service.close(null, dto, resolveBusinessId(user, qBid), user.sub, user.role, deviceId);
   }
 
   @Post(":id/close")
@@ -83,8 +106,10 @@ export class CashRegisterController {
     @Body() dto: CloseCashRegisterDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Headers("x-device-id") hDeviceId?: string,
   ) {
-    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub, user.role);
+    const deviceId = (hDeviceId || dto.deviceId || '').trim() || undefined;
+    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub, user.role, deviceId);
   }
 
   @Post(":id/force-close")
@@ -97,6 +122,7 @@ export class CashRegisterController {
     @Body() dto: CloseCashRegisterDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Headers("x-device-id") hDeviceId?: string,
   ) {
     if (user.role === UserRole.CAJERO || (user.role !== UserRole.ENCARGADO && user.role !== UserRole.SUPERADMIN)) {
       throw new ForbiddenException('Solo el encargado puede forzar el cierre de turno de otro usuario');
@@ -108,7 +134,8 @@ export class CashRegisterController {
         message: 'El motivo es obligatorio para forzar el cierre del turno'
       });
     }
-    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub, user.role);
+    const deviceId = (hDeviceId || dto.deviceId || '').trim() || undefined;
+    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub, user.role, deviceId);
   }
 
   @Post("movements")
@@ -119,8 +146,9 @@ export class CashRegisterController {
     @Body() dto: CashMovementDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Headers("x-device-id") hDeviceId?: string,
   ) {
-    return this.service.addMovement(null, dto, resolveBusinessId(user, qBid), user.sub, user.role);
+    return this.service.addMovement(null, dto, resolveBusinessId(user, qBid), user.sub, user.role, hDeviceId);
   }
 
   @Post(":id/movements")
@@ -164,7 +192,8 @@ export class CashRegisterController {
     @Body() dto: { reason: string },
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Headers("x-device-id") hDeviceId?: string,
   ) {
-    return this.service.drawerOpen(null, dto.reason, resolveBusinessId(user, qBid), user.sub, user.role);
+    return this.service.drawerOpen(null, dto.reason, resolveBusinessId(user, qBid), user.sub, user.role, hDeviceId);
   }
 }

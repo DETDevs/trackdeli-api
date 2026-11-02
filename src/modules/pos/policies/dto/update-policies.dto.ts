@@ -1,4 +1,4 @@
-import { IsBoolean, IsNumber, IsString, IsOptional, Min, Max } from 'class-validator';
+import { IsBoolean, IsNumber, IsString, IsOptional, Min, Max, IsIn, IsInt } from 'class-validator';
 
 export class UpdatePosPoliciesDto {
   @IsOptional() @IsBoolean() returnsEnabled?: boolean;
@@ -23,6 +23,9 @@ export class UpdatePosPoliciesDto {
 
   @IsOptional() @IsBoolean() blindCashClose?: boolean;
   @IsOptional() @IsNumber() @Min(0) cashDifferenceTolerance?: number;
+  @IsOptional() @IsString() @IsIn(['AUTORIZACION', 'LIBRE']) cashCloseDiscrepancyPolicy?: string;
+  @IsOptional() @IsNumber() @Min(0) cashCloseTolerance?: number;
+  @IsOptional() @IsInt() @Min(0) cashCloseMaxRecounts?: number;
   @IsOptional() @IsBoolean() noSaleDrawerOpenAllowed?: boolean;
 
   @IsOptional() @IsBoolean() allowNegativeStock?: boolean;

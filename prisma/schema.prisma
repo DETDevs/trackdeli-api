@@ -501,6 +501,7 @@ model User {
   receivedCreditPayments CreditPayment[] @relation("CreditPaymentsReceived")
   posPayments    PosPayment[]    @relation("UserPayments")
   setExchangeRates PosExchangeRate[] @relation("UserSetExchangeRates")
+  discrepancyAuthorizedRegisters CashRegister[] @relation("DiscrepancyAuthorizer")
 
   purchases             Purchase[]          @relation("UserPurchases")
   voidedPurchases       Purchase[]          @relation("UserVoidedPurchases")
@@ -732,6 +733,9 @@ model PosPolicies {
 
   blindCashClose             Boolean  @default(true)
   cashDifferenceTolerance    Decimal  @default(0) @db.Decimal(12,2)
+  cashCloseDiscrepancyPolicy String   @default("AUTORIZACION") @db.VarChar(20)
+  cashCloseTolerance         Decimal  @default(0) @db.Decimal(12,2)
+  cashCloseMaxRecounts       Int      @default(1)
   noSaleDrawerOpenAllowed    Boolean  @default(true)
   
   allowNegativeStock         Boolean  @default(false)
@@ -1444,6 +1448,8 @@ model CashRegister {
   business      Business   @relation(fields: [businessId], references: [id])
   cashierId     String
   cashier       User       @relation("CashierRegisters", fields: [cashierId], references: [id])
+  deviceId      String?    @db.VarChar(100)
+  deviceName    String?    @db.VarChar(150)
 
   openedAt      DateTime   @default(now())
   closedAt      DateTime?
@@ -1463,6 +1469,13 @@ model CashRegister {
   totalCard     Decimal? @db.Decimal(12,2)
   totalTransfer Decimal? @db.Decimal(12,2)
 
+  recountAttempts            Int       @default(0)
+  discrepancyReason          String?   @db.VarChar(100)
+  discrepancyNote            String?
+  discrepancyAuthorizedById  String?
+  discrepancyAuthorizedAt    DateTime?
+  discrepancyAuthorizer      User?     @relation("DiscrepancyAuthorizer", fields: [discrepancyAuthorizedById], references: [id])
+
   notes         String?
   status        CashStatus @default(OPEN)
   closingBreakdown Json?
@@ -1475,6 +1488,7 @@ model CashRegister {
   createdAt     DateTime   @default(now())
 
   @@index([businessId, status, closedAt])
+  @@index([businessId, deviceId])
   @@map("pos_cash_registers")
 }
 

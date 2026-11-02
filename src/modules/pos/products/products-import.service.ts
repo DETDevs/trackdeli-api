@@ -351,10 +351,14 @@ export class ProductsImportService {
       this.getTargets(businessId),
       this.prisma.business.findUnique({
         where: { id: businessId },
-        select: { id: true, wholesaleEnabled: true, tracksBatches: true },
+        select: { id: true, wholesaleEnabled: true, tracksBatches: true, industry: { select: { code: true } } },
       }),
     ]);
     const targetMap = new Map(targets.map(t => [t.id, t]));
+
+    if (business?.industry?.code === 'farmacia') {
+      await this.productsService.ensurePharmacyFieldDefinitions(businessId);
+    }
 
     for (const [colKey, conf] of Object.entries(mapping)) {
       if (conf?.target && conf.target !== 'ignore' && conf.target !== 'append_description') {
@@ -709,6 +713,56 @@ export class ProductsImportService {
             toUpdate.push({ id: existing.id, rowNum, data: { ...coreUpdate, attributes: mergedAttrs }, stockDiff, oldStock: currentStockNum, lotNumber, expiryDate });
           }
         } else {
+          if (business?.industry?.code === 'farmacia') {
+            if (!payload.core.unit) {
+              payload.core.unit = 'UND';
+            }
+            const productType = (payload.core.type || 'PRODUCT').trim().toUpperCase();
+            if (productType === 'PRODUCT') {
+              const missingInRow: { column: string; label: string }[] = [];
+              if (!payload.core.name || !String(payload.core.name).trim()) {
+                missingInRow.push({ column: 'name', label: 'Nombre' });
+              }
+              if (!mergedAttrs?.laboratorio || !String(mergedAttrs.laboratorio).trim()) {
+                missingInRow.push({ column: 'laboratorio', label: 'Laboratorio' });
+              }
+              if (!mergedAttrs?.presentacion || !String(mergedAttrs.presentacion).trim()) {
+                missingInRow.push({ column: 'presentacion', label: 'Presentación' });
+              }
+              if (!mergedAttrs?.principio_activo || !String(mergedAttrs.principio_activo).trim()) {
+                missingInRow.push({ column: 'principio_activo', label: 'Principio activo' });
+              }
+              if (payload.core.listPrice == null || Number(payload.core.listPrice) <= 0 || isNaN(Number(payload.core.listPrice))) {
+                missingInRow.push({ column: 'listPrice', label: 'Precio de etiqueta' });
+              }
+              if (payload.core.cost == null || Number(payload.core.cost) <= 0 || isNaN(Number(payload.core.cost))) {
+                missingInRow.push({ column: 'cost', label: 'Costo' });
+              }
+              if (payload.core.price == null || Number(payload.core.price) <= 0 || isNaN(Number(payload.core.price))) {
+                missingInRow.push({ column: 'price', label: 'Precio de venta' });
+              }
+              if (payload.core.stock == null || Number(payload.core.stock) < 0 || isNaN(Number(payload.core.stock))) {
+                missingInRow.push({ column: 'stock', label: 'Stock actual' });
+              }
+              if (payload.core.minStock == null || Number(payload.core.minStock) < 0 || isNaN(Number(payload.core.minStock))) {
+                missingInRow.push({ column: 'minStock', label: 'Stock mínimo' });
+              }
+              if (!payload.core.supplierId) {
+                missingInRow.push({ column: 'supplierId', label: 'Proveedor' });
+              }
+
+              if (missingInRow.length > 0) {
+                for (const m of missingInRow) {
+                  result.errors.push({
+                    row: rowNum,
+                    column: m.column,
+                    message: `El campo '${m.label}' es obligatorio para el rubro farmacia`,
+                  });
+                }
+                continue;
+              }
+            }
+          }
           toCreate.push({ rowNum, data: { ...payload.core, attributes: mergedAttrs, businessId }, lotNumber, expiryDate });
         }
       } catch (e: any) {

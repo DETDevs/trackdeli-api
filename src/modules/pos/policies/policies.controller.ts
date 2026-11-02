@@ -36,6 +36,9 @@ export class PoliciesController {
     if (dto.cashDifferenceTolerance !== undefined) {
       dataToUpdate.cashDifferenceTolerance = dto.cashDifferenceTolerance;
     }
+    if (dto.cashCloseTolerance !== undefined) {
+      dataToUpdate.cashCloseTolerance = dto.cashCloseTolerance;
+    }
     
     return this.service.update(
       resolveBusinessId(user, qBid),

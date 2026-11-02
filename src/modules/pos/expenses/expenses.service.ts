@@ -213,7 +213,7 @@ export class ExpensesService {
     };
   }
 
-  async create(businessId: string, userId: string, dto: CreateExpenseDto) {
+  async create(businessId: string, userId: string, dto: CreateExpenseDto, deviceId?: string) {
     if (dto.amount <= 0) {
       throw new BadRequestException({
         statusCode: 400,
@@ -259,8 +259,15 @@ export class ExpensesService {
           });
         }
 
+        const cleanDeviceId = deviceId?.trim() || null;
+        const shiftWhere: any = { businessId, status: 'OPEN' };
+        if (cleanDeviceId) {
+          shiftWhere.deviceId = cleanDeviceId;
+        } else {
+          shiftWhere.cashierId = userId;
+        }
         const openShift = await tx.cashRegister.findFirst({
-          where: { businessId, cashierId: userId, status: 'OPEN' },
+          where: shiftWhere,
           orderBy: { openedAt: 'desc' },
         });
 

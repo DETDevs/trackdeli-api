@@ -8,14 +8,15 @@ describe('ProductsImportService', () => {
   let service: ProductsImportService;
   let prismaMock: any;
   let productsMock: any;
-  
+
   // In-memory db state
   let dbProducts: any[] = [];
-  
+
   beforeEach(() => {
     dbProducts = [];
-    
+
     prismaMock = {
+      business: { findUnique: jest.fn().mockResolvedValue({ id: 'b1', tracksBatches: false }) },
       productFieldDefinition: {
         findMany: jest.fn().mockResolvedValue([
           { key: 'color', label: 'Color', dataType: 'TEXT', required: false, isActive: true },
@@ -105,9 +106,9 @@ describe('ProductsImportService', () => {
       ws.addRow(['Prod A', 'C$ 100', 10, 'm', 'sí', '2026-12-31', 'POM-288']);
       ws.addRow(['Prod B', '250.50', 5, 'xl', 'no', '44197', '=-123']); // 44197 = 2021-01-01
       ws.addRow(['Prod C', '1,250.00', '20', 'S', '1', '2027-01-01', '@TEST']);
-      
+
       const buffer = await wb.xlsx.writeBuffer();
-      
+
       const mapping = {
         col_0: { target: 'name' },
         col_1: { target: 'price' },
@@ -120,17 +121,17 @@ describe('ProductsImportService', () => {
 
       // 2. First Import
       const import1 = await service.importFile('b-1', 'u-1', buffer as any, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'import.xlsx', mapping, 'Sheet1', 1, false);
-      
+
       expect(import1.errors).toHaveLength(0);
       expect(import1.created).toBe(3);
       expect(import1.updated).toBe(0);
       expect(import1.unchanged).toBe(0);
       expect(dbProducts).toHaveLength(3);
-      
+
       // Verify parsed attributes
       expect(dbProducts[0].attributes.talla).toBe('M'); // normalized SELECT con tilde/mayusc
       expect(dbProducts[0].attributes.is_fragile).toBe(true); // 'sí' -> true
-      expect(dbProducts[0].attributes.vencimiento).toBe('2026-12-31'); 
+      expect(dbProducts[0].attributes.vencimiento).toBe('2026-12-31');
       expect(dbProducts[1].price).toBe(250.50);
       expect(dbProducts[2].price).toBe(1250);
       expect(dbProducts[2].attributes.is_fragile).toBe(true); // '1' -> true
@@ -138,7 +139,7 @@ describe('ProductsImportService', () => {
       // 3. Export
       const exportWb = await service.exportProducts('b-1');
       const exportBuffer = await exportWb.xlsx.writeBuffer();
-      
+
       // We need mapping for the exported file. The exporter uses targets directly.
       const targets = await service.getTargets('b-1');
       const exportMapping: any = {};
@@ -148,7 +149,7 @@ describe('ProductsImportService', () => {
 
       // 4. Second Import (Re-import)
       const import2 = await service.importFile('b-1', 'u-1', exportBuffer as any, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'exported.xlsx', exportMapping, 'Productos', 1, false);
-      
+
       expect(import2.errors).toHaveLength(0);
       expect(import2.created).toBe(0);
       expect(import2.updated).toBe(0);
@@ -160,12 +161,12 @@ describe('ProductsImportService', () => {
       const ws = wb.addWorksheet('Sheet1');
       ws.addRow(['Nombre', 'Precio', 'Stock']);
       ws.addRow(['Prod D', '100', '1.5']);
-      
+
       const buffer = await wb.xlsx.writeBuffer();
       const mapping = { col_0: { target: 'name' }, col_1: { target: 'price' }, col_2: { target: 'stock' } };
-      
+
       const result = await service.importFile('b-1', 'u-1', buffer as any, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'import.xlsx', mapping, 'Sheet1', 1, false);
-      
+
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0].message).toContain('debe ser un número entero');
     });
@@ -177,12 +178,12 @@ describe('ProductsImportService', () => {
       ws.addRow(['Prod E', '100', 'SKU1']);
       ws.addRow(['Prod E', '200', 'SKU2']); // duplicate name
       ws.addRow(['Prod F', '300', 'SKU1']); // duplicate SKU
-      
+
       const buffer = await wb.xlsx.writeBuffer();
       const mapping = { col_0: { target: 'name' }, col_1: { target: 'price' }, col_2: { target: 'sku' } };
-      
+
       const result = await service.importFile('b-1', 'u-1', buffer as any, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'import.xlsx', mapping, 'Sheet1', 1, false);
-      
+
       expect(result.errors).toHaveLength(2);
       expect(result.errors[0].message).toContain('Fila duplicada en el archivo');
       expect(result.errors[1].message).toContain('Fila duplicada en el archivo');

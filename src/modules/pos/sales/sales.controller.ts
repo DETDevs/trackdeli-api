@@ -104,7 +104,8 @@ export class SalesController {
     @Req() req: any,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.voidSale(id, resolveBusinessId(user, qBid), user.sub, user.role, dto);
+    const deviceId = (req.headers['x-device-id'] || req.headers['X-Device-Id'] || null)?.toString().trim() || undefined;
+    return this.service.voidSale(id, resolveBusinessId(user, qBid), user.sub, user.role, dto, deviceId);
   }
 
   @Post(":id/cancel")
@@ -118,10 +119,11 @@ export class SalesController {
     @Req() req: any,
     @Query("businessId") qBid?: string,
   ) {
+    const deviceId = (req.headers['x-device-id'] || req.headers['X-Device-Id'] || null)?.toString().trim() || undefined;
     return this.service.voidSale(id, resolveBusinessId(user, qBid), user.sub, user.role, {
       reason: dto.reason || 'Cancelación de venta',
       approvalToken: dto.approvalToken,
-    });
+    }, deviceId);
   }
 
   @Post(":id/returns")
@@ -135,7 +137,8 @@ export class SalesController {
     @Req() req: any,
     @Query("businessId") qBid?: string,
   ) {
-    return this.service.createReturn(id, resolveBusinessId(user, qBid), user.sub, user.role, dto);
+    const deviceId = (req.headers['x-device-id'] || req.headers['X-Device-Id'] || null)?.toString().trim() || undefined;
+    return this.service.createReturn(id, resolveBusinessId(user, qBid), user.sub, user.role, dto, deviceId);
   }
 
   @Get(":id/receipt")

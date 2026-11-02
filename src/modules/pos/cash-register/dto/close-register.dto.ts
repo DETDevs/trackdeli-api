@@ -1,6 +1,7 @@
-import { IsNumber, Min, IsOptional, IsString, IsArray, IsEnum, ValidateNested } from 'class-validator';
+import { IsNumber, Min, IsOptional, IsString, IsArray, IsEnum, ValidateNested, IsIn } from 'class-validator';
 import { Type } from 'class-transformer';
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
+import { ALLOWED_DISCREPANCY_REASONS } from '../constants/discrepancy-reasons.constant';
 
 export class DenominationItemDto {
   @Type(() => Number)
@@ -102,4 +103,28 @@ export class CloseCashRegisterDto {
   @IsOptional()
   @IsString()
   reason?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(ALLOWED_DISCREPANCY_REASONS, {
+    message: `discrepancyReason must be one of: ${ALLOWED_DISCREPANCY_REASONS.join(', ')}`,
+  })
+  discrepancyReason?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  discrepancyNote?: string;
+
+  @IsOptional()
+  @IsString()
+  authorizerPin?: string;
+
+  @IsOptional()
+  @IsString()
+  authorizerEmail?: string;
+
+  @IsOptional()
+  @IsString()
+  deviceId?: string;
 }

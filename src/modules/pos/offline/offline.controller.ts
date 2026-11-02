@@ -52,8 +52,9 @@ export class OfflineController {
     @Body() dto: SyncOfflineBatchDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Headers("x-device-id") hDeviceId?: string,
   ) {
-    return this.service.syncOfflineSales(resolveBusinessId(user, qBid), user.sub, dto);
+    return this.service.syncOfflineSales(resolveBusinessId(user, qBid), user.sub, dto, hDeviceId);
   }
 
   @Get("catalog-snapshot")
