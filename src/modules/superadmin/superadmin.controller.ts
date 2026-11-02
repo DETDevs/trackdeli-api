@@ -366,6 +366,11 @@ export class SuperAdminController {
   }
 
   // 240a — Gestión de Empresas y Sucursales
+  @Get('organizations')
+  async listOrganizations() {
+    return this.superAdminService.listOrganizations();
+  }
+
   @Post('organizations')
   async createOrganization(
     @Body() dto: CreateOrganizationDto,

@@ -86,41 +86,57 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     if (payload.businessId && payload.businessId !== user.businessId) {
       // 240a: Si el token tiene una sucursal distinta a la principal, validar acceso multi-sucursal
-      if (user.role === UserRole.ENCARGADO && user.businessId) {
-        const [access, primaryBiz, targetBiz] = await Promise.all([
-          this.prisma.userBusinessAccess.findUnique({
-            where: {
-              userId_businessId: {
-                userId: user.id,
-                businessId: payload.businessId,
+      if (user.role === UserRole.SUPERADMIN) {
+        activeBusinessId = payload.businessId;
+      } else if (user.role === UserRole.ENCARGADO && user.businessId) {
+        const access = await this.prisma.userBusinessAccess.findUnique({
+          where: {
+            userId_businessId: {
+              userId: user.id,
+              businessId: payload.businessId,
+            },
+          },
+          include: {
+            business: { select: { organizationId: true } },
+            user: {
+              select: {
+                business: { select: { organizationId: true } },
               },
             },
-          }),
-          this.prisma.business.findUnique({
-            where: { id: user.businessId },
-            select: { organizationId: true },
-          }),
-          this.prisma.business.findUnique({
-            where: { id: payload.businessId },
-            select: { organizationId: true },
-          }),
-        ]);
+          },
+        });
+
+        const primaryOrgId = access?.user?.business?.organizationId;
+        const targetOrgId = access?.business?.organizationId;
 
         if (
           access &&
-          primaryBiz?.organizationId &&
-          targetBiz?.organizationId &&
-          primaryBiz.organizationId === targetBiz.organizationId
+          primaryOrgId &&
+          targetOrgId &&
+          primaryOrgId === targetOrgId
         ) {
           activeBusinessId = payload.businessId;
         } else {
           this.logger.warn(
-            `[validate] Intento de acceso a sucursal no autorizada en JWT: sub=${user.id}, target=${payload.businessId}`,
+            `[validate] Acceso a sucursal revocado o inválido en JWT: sub=${user.id}, target=${payload.businessId}`,
           );
-          throw new UnauthorizedException('Acceso no autorizado a la sucursal especificada en el token');
+          throw new UnauthorizedException({
+            statusCode: 401,
+            error: 'Unauthorized',
+            code: 'BRANCH_ACCESS_REVOKED',
+            message: 'El acceso a la sucursal ha sido revocado. Por favor iniciá sesión nuevamente.',
+          });
         }
-      } else if (user.role === UserRole.SUPERADMIN) {
-        activeBusinessId = payload.businessId;
+      } else {
+        this.logger.warn(
+          `[validate] Token con sucursal no permitida para el rol ${user.role}: sub=${user.id}, target=${payload.businessId}`,
+        );
+        throw new UnauthorizedException({
+          statusCode: 401,
+          error: 'Unauthorized',
+          code: 'BRANCH_ACCESS_REVOKED',
+          message: 'El acceso a la sucursal ha sido revocado. Por favor iniciá sesión nuevamente.',
+        });
       }
     }
 

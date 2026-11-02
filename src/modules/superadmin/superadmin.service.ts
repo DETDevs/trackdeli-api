@@ -3670,6 +3670,24 @@ export class SuperAdminService {
 
   // 240a — Gestión de Empresas y Sucursales (Superadmin)
 
+  async listOrganizations() {
+    const orgs = await this.prisma.organization.findMany({
+      orderBy: { name: 'asc' },
+      include: {
+        _count: {
+          select: { businesses: true },
+        },
+      },
+    });
+
+    return orgs.map((org) => ({
+      id: org.id,
+      name: org.name,
+      businessCount: org._count.businesses,
+      createdAt: org.createdAt,
+    }));
+  }
+
   async createOrganization(dto: CreateOrganizationDto, actorUser?: JwtPayload) {
     const name = dto.name.trim();
     if (!name) {

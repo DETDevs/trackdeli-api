@@ -74,11 +74,17 @@ export class PosUsersService {
   }
 
   async setUserPin(businessId: string, userId: string, pin: string, updaterId: string) {
-    const user = await this.prisma.user.findFirst({
-      where: { id: userId, businessId, isActive: true },
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
     });
     if (!user) {
-      throw new NotFoundException('Usuario no encontrado en este negocio');
+      throw new NotFoundException('Usuario no encontrado');
+    }
+    if (user.businessId !== businessId) {
+      throw new ForbiddenException('No puedes modificar usuarios de otra sucursal');
+    }
+    if (!user.isActive) {
+      throw new BadRequestException('El usuario está inactivo');
     }
 
     const pinHash = await this.validateAndHashPin(businessId, pin, userId);
@@ -134,15 +140,21 @@ export class PosUsersService {
               isActive: true,
               pinHash: true,
               createdAt: true,
+              business: {
+                select: { name: true },
+              },
             },
           },
         },
       });
-      multiBranchUsers = accesses.map((a) => a.user);
+      multiBranchUsers = accesses.map((a) => ({
+        ...a.user,
+        isVisiting: true,
+        primaryBusinessName: a.user.business?.name || null,
+      }));
     }
 
-    const allRaw = [...rawUsers, ...multiBranchUsers];
-    const users = allRaw.map((u) => ({
+    const localUsers = rawUsers.map((u) => ({
       id: u.id,
       name: u.name,
       email: u.email,
@@ -151,7 +163,24 @@ export class PosUsersService {
       isActive: u.isActive,
       hasPin: Boolean(u.pinHash),
       createdAt: u.createdAt,
+      isVisiting: false,
+      primaryBusinessName: null,
     }));
+
+    const visitingUsers = multiBranchUsers.map((u) => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      phone: u.phone,
+      role: u.role,
+      isActive: u.isActive,
+      hasPin: Boolean(u.pinHash),
+      createdAt: u.createdAt,
+      isVisiting: true,
+      primaryBusinessName: u.primaryBusinessName,
+    }));
+
+    const users = [...localUsers, ...visitingUsers];
     const usage = await this.quotaService.getUsage(businessId);
     return { users, usage };
   }
@@ -211,8 +240,11 @@ export class PosUsersService {
   }
 
   async updateUser(businessId: string, id: string, dto: any, updaterId: string) {
-    const user = await this.prisma.user.findFirst({ where: { id, businessId } });
-    if (!user) throw new NotFoundException('Usuario no encontrado en este negocio');
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('Usuario no encontrado');
+    if (user.businessId !== businessId) {
+      throw new ForbiddenException('No puedes modificar usuarios de otra sucursal');
+    }
 
     const updateData: any = {};
     if (dto.name) updateData.name = dto.name;
@@ -252,8 +284,11 @@ export class PosUsersService {
   }
 
   async deactivateUser(businessId: string, id: string, updaterId: string) {
-    const user = await this.prisma.user.findFirst({ where: { id, businessId } });
+    const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('Usuario no encontrado');
+    if (user.businessId !== businessId) {
+      throw new ForbiddenException('No puedes desactivar usuarios de otra sucursal');
+    }
     if (user.id === updaterId) throw new ForbiddenException('No puede desactivarse a sí mismo');
 
     if (user.role === UserRole.ENCARGADO) {
@@ -275,8 +310,11 @@ export class PosUsersService {
   }
 
   async activateUser(businessId: string, id: string, updaterId: string) {
-    const user = await this.prisma.user.findFirst({ where: { id, businessId } });
+    const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('Usuario no encontrado');
+    if (user.businessId !== businessId) {
+      throw new ForbiddenException('No puedes reactivar usuarios de otra sucursal');
+    }
     
     if (!user.isActive) {
       await this.quotaService.checkQuota(businessId);
@@ -292,8 +330,11 @@ export class PosUsersService {
   }
 
   async resetPassword(businessId: string, id: string, updaterId: string) {
-    const user = await this.prisma.user.findFirst({ where: { id, businessId } });
+    const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('Usuario no encontrado');
+    if (user.businessId !== businessId) {
+      throw new ForbiddenException('No puedes reiniciar la contraseña de usuarios de otra sucursal');
+    }
 
     const tempPassword = this.generateTempPassword();
     const passwordHash = await bcrypt.hash(tempPassword, 10);

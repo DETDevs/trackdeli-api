@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -80,8 +80,11 @@ export class UsersService {
       where: { id },
     });
 
-    if (!user || user.businessId !== businessId) {
+    if (!user) {
       throw new NotFoundException('Usuario no encontrado');
+    }
+    if (user.businessId !== businessId) {
+      throw new ForbiddenException('No puedes modificar usuarios de otra sucursal');
     }
 
     const updatedUser = await this.prisma.user.update({
@@ -106,8 +109,11 @@ export class UsersService {
       where: { id },
     });
 
-    if (!user || user.businessId !== businessId) {
+    if (!user) {
       throw new NotFoundException('Usuario no encontrado');
+    }
+    if (user.businessId !== businessId) {
+      throw new ForbiddenException('No puedes desactivar usuarios de otra sucursal');
     }
 
     const updatedUser = await this.prisma.user.update({
