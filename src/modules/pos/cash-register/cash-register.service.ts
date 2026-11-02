@@ -222,7 +222,13 @@ export class CashRegisterService {
     };
   }
 
-  async obfuscateRegister(registerData: any, businessId: string, userRole?: string) {
+  async obfuscateRegister(
+    registerData: any,
+    businessId: string,
+    userRole?: string,
+    userId?: string,
+    deviceId?: string,
+  ) {
     const isCashierOrSeller = userRole === UserRole.CAJERO || userRole === UserRole.VENDEDOR;
     if (!isCashierOrSeller) return registerData;
     const policies = await this.policiesService.get(businessId);
@@ -259,6 +265,25 @@ export class CashRegisterService {
     const whitelistBlindRegister = (reg: any) => {
       if (!reg) return null;
       const isClosed = reg.status === 'CLOSED' || !!reg.closedAt;
+
+      // 235a (ajuste fail-closed): sin userId identificado, el fondo inicial NO se muestra.
+      // Con userId, solo en turnos propios o de la computadora del cajero.
+      const isAllowedToSeeOpening =
+        !!userId &&
+        (reg.cashierId === userId ||
+          reg.openedById === userId ||
+          (!!deviceId && !!reg.deviceId && reg.deviceId === deviceId));
+
+      const rawOpeningCash =
+        reg.openingCash != null
+          ? Number(reg.openingCash)
+          : reg.initialAmount != null
+          ? Number(reg.initialAmount)
+          : 0;
+
+      const openingCash = isAllowedToSeeOpening ? rawOpeningCash : null;
+      const initialAmount = isAllowedToSeeOpening ? rawOpeningCash : null;
+
       return {
         id: reg.id,
         businessId: reg.businessId,
@@ -288,9 +313,11 @@ export class CashRegisterService {
         deviceName: reg.deviceName ?? null,
         byMethodAndBank: obfuscateByMethodAndBank(reg.byMethodAndBank),
 
+        // 235a: Fondo inicial visible con su valor real para el cajero en sus turnos
+        openingCash,
+        initialAmount,
+
         // Valores sensibles devueltos EXPLICITAMENTE como null (NUNCA 0)
-        openingCash: null,
-        initialAmount: null,
         cashSales: null,
         expectedCash: null,
         expectedAmount: null,
@@ -404,10 +431,10 @@ export class CashRegisterService {
     }
 
     if (!register) return null;
-    return this.obfuscateRegister(this.formatRegister(register), businessId, userRole);
+    return this.obfuscateRegister(this.formatRegister(register), businessId, userRole, cashierId, cleanDeviceId);
   }
 
-  async findAll(businessId: string, userRole?: string) {
+  async findAll(businessId: string, userRole?: string, userId?: string) {
     const registers = await this.prisma.cashRegister.findMany({
       where: { businessId },
       include: {
@@ -424,7 +451,7 @@ export class CashRegisterService {
       take: 100,
     });
     const formatted = registers.map((r) => this.formatRegister(r));
-    return Promise.all(formatted.map(f => this.obfuscateRegister(f, businessId, userRole)));
+    return Promise.all(formatted.map(f => this.obfuscateRegister(f, businessId, userRole, userId)));
   }
 
   async open(
@@ -433,6 +460,7 @@ export class CashRegisterService {
     cashierId: string,
     deviceId?: string,
     deviceName?: string,
+    userRole: string = UserRole.CAJERO,
   ) {
     const cleanDeviceId = deviceId?.trim() || null;
     let cleanDeviceName = deviceName?.trim() || null;
@@ -485,7 +513,7 @@ export class CashRegisterService {
             sales: { include: { payments: true, returns: { include: { items: true } } } },
           },
         });
-        return this.formatRegister(adopted);
+        return this.obfuscateRegister(this.formatRegister(adopted), businessId, userRole, cashierId, cleanDeviceId ?? undefined);
       }
     } else {
       // Sin X-Device-Id: validación por usuario
@@ -516,7 +544,7 @@ export class CashRegisterService {
         sales: { include: { payments: true, returns: { include: { items: true } } } },
       },
     });
-    return this.formatRegister(created);
+    return this.obfuscateRegister(this.formatRegister(created), businessId, userRole, cashierId, cleanDeviceId ?? undefined);
   }
 
   async close(
@@ -1014,7 +1042,7 @@ export class CashRegisterService {
     }
 
     const formatted = this.formatRegister(updated);
-    return this.obfuscateRegister(formatted, businessId, userRole);
+    return this.obfuscateRegister(formatted, businessId, userRole, cashierId, cleanDeviceId);
   }
 
   async addMovement(registerId: string | null | undefined, dto: CashMovementDto, businessId: string, userId: string, userRole: string, deviceId?: string) {
@@ -1114,7 +1142,7 @@ export class CashRegisterService {
     };
   }
 
-  async getSummary(registerId: string, businessId: string, userRole?: string) {
+  async getSummary(registerId: string, businessId: string, userRole?: string, userId?: string, deviceId?: string) {
     const register = await this.prisma.cashRegister.findFirst({
       where: { id: registerId, businessId },
       include: {
@@ -1216,7 +1244,7 @@ export class CashRegisterService {
       },
     };
 
-    const obfuscated = await this.obfuscateRegister(result, businessId, userRole);
+    const obfuscated = await this.obfuscateRegister(result, businessId, userRole, userId, deviceId);
     return obfuscated;
   }
   async drawerOpen(registerId: string | null | undefined, reason: string, businessId: string, userId: string, userRole: string, deviceId?: string) {

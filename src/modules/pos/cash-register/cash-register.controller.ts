@@ -27,12 +27,12 @@ export class CashRegisterController {
 
   @Get()
   findAll(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
-    return this.service.findAll(resolveBusinessId(user, qBid), user.role);
+    return this.service.findAll(resolveBusinessId(user, qBid), user.role, user.sub);
   }
 
   @Get("history")
   getHistory(@CurrentUser() user: JwtPayload, @Query("businessId") qBid?: string) {
-    return this.service.findAll(resolveBusinessId(user, qBid), user.role);
+    return this.service.findAll(resolveBusinessId(user, qBid), user.role, user.sub);
   }
 
   @Get("open-list")
@@ -80,7 +80,7 @@ export class CashRegisterController {
   ) {
     const deviceId = (hDeviceId || dto.deviceId || '').trim() || undefined;
     const deviceName = (hDeviceName || dto.deviceName || '').trim() || undefined;
-    return this.service.open(dto, resolveBusinessId(user, qBid), user.sub, deviceId, deviceName);
+    return this.service.open(dto, resolveBusinessId(user, qBid), user.sub, deviceId, deviceName, user.role);
   }
 
   @Post("close")
@@ -169,8 +169,9 @@ export class CashRegisterController {
     @Param("id") id: string,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Headers("x-device-id") deviceId?: string,
   ) {
-    return this.service.getSummary(id, resolveBusinessId(user, qBid), user.role);
+    return this.service.getSummary(id, resolveBusinessId(user, qBid), user.role, user.sub, deviceId);
   }
 
   @Post(":id/drawer-open")
