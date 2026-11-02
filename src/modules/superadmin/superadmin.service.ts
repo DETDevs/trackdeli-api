@@ -312,6 +312,7 @@ export class SuperAdminService {
         whatsappDisplay: (b as any).whatsappDisplay ?? null,
         industryId: b.industryId,
         industry: b.industry,
+        organizationId: b.organizationId ?? null,
         usesVariants: b.usesVariants,
         tracksBatches: b.tracksBatches,
         useListPrice: b.useListPrice,
@@ -778,6 +779,9 @@ export class SuperAdminService {
         industry: {
           select: { id: true, code: true, name: true },
         },
+        organization: {
+          select: { id: true, name: true },
+        },
       },
     });
 
@@ -919,6 +923,8 @@ export class SuperAdminService {
       whatsappDisplay: (business as any).whatsappDisplay ?? null,
       industryId: business.industryId,
       industry: business.industry,
+      organizationId: business.organizationId ?? null,
+      organization: (business as any).organization ?? null,
       usesVariants: business.usesVariants,
       tracksBatches: business.tracksBatches,
       useListPrice: business.useListPrice,
