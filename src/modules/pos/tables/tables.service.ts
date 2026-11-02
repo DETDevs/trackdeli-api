@@ -2314,7 +2314,7 @@ export class TablesService {
         const cleanPin = dto.authorizerPin.trim();
 
         // 170d: Solo CAJERO/ENCARGADO/SUPERADMIN con pinHash asignado (no contraseñas)
-        const staffUsers = await this.prisma.user.findMany({
+        const directStaff = await this.prisma.user.findMany({
           where: {
             businessId,
             isActive: true,
@@ -2323,6 +2323,32 @@ export class TablesService {
           },
           select: { id: true, name: true, role: true, pinHash: true },
         });
+
+        const tableBiz = await this.prisma.business.findUnique({
+          where: { id: businessId },
+          select: { organizationId: true },
+        });
+
+        let multiBranchStaff: any[] = [];
+        if (tableBiz?.organizationId) {
+          const accesses = await this.prisma.userBusinessAccess.findMany({
+            where: {
+              businessId,
+              user: {
+                isActive: true,
+                role: UserRole.ENCARGADO,
+                pinHash: { not: null },
+                business: { organizationId: tableBiz.organizationId },
+              },
+            },
+            include: {
+              user: { select: { id: true, name: true, role: true, pinHash: true } },
+            },
+          });
+          multiBranchStaff = accesses.map((a) => a.user);
+        }
+
+        const staffUsers = [...directStaff, ...multiBranchStaff];
 
         let matchedStaff: { id: string; name: string } | null = null;
         for (const staff of staffUsers) {

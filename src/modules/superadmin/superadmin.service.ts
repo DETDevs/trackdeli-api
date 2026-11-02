@@ -15,6 +15,9 @@ import { UpdateMembershipDto } from './dto/update-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
 import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
 import { DeleteBusinessDto } from './dto/delete-business.dto';
+import { CreateOrganizationDto } from './dto/create-organization.dto';
+import { UpdateBusinessOrganizationDto } from './dto/update-business-organization.dto';
+import { GrantBranchAccessDto } from './dto/grant-branch-access.dto';
 import { BusinessType, MembershipStatus, OrderStatus, Prisma, UserRole, BusinessProductType, BusinessProductStatus, BusinessProductAction, PosVertical, PaymentMethod, PosDeviceStatus } from '@prisma/client';
 import { AuditService } from '../pos/audit/audit.service';
 import { UpdateDeviceDto } from '../pos/devices/dto/update-device.dto';
@@ -3663,5 +3666,265 @@ export class SuperAdminService {
       deleted: true,
       counts,
     };
+  }
+
+  // 240a — Gestión de Empresas y Sucursales (Superadmin)
+
+  async createOrganization(dto: CreateOrganizationDto, actorUser?: JwtPayload) {
+    const name = dto.name.trim();
+    if (!name) {
+      throw new BadRequestException('El nombre de la empresa es requerido');
+    }
+    const org = await this.prisma.organization.create({
+      data: { name },
+    });
+    this.logger.log(`[createOrganization] Empresa creada: id=${org.id}, name="${org.name}" por ${actorUser?.email || 'superadmin'}`);
+    return org;
+  }
+
+  async getOrganization(id: string) {
+    const org = await this.prisma.organization.findUnique({
+      where: { id },
+      include: {
+        businesses: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            isActive: true,
+            type: true,
+          },
+        },
+      },
+    });
+
+    if (!org) {
+      throw new NotFoundException('Empresa no encontrada');
+    }
+
+    const businessIds = org.businesses.map((b) => b.id);
+    const accesses = await this.prisma.userBusinessAccess.findMany({
+      where: {
+        businessId: { in: businessIds },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+            businessId: true,
+          },
+        },
+        business: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      ...org,
+      accesses,
+    };
+  }
+
+  async updateBusinessOrganization(
+    businessId: string,
+    dto: UpdateBusinessOrganizationDto,
+    actorUser?: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    if (dto.organizationId) {
+      const org = await this.prisma.organization.findUnique({
+        where: { id: dto.organizationId },
+      });
+      if (!org) {
+        throw new NotFoundException('Empresa no encontrada');
+      }
+    }
+
+    const beforeOrgId = business.organizationId;
+    const afterOrgId = dto.organizationId ?? null;
+
+    if (beforeOrgId && beforeOrgId !== afterOrgId) {
+      await this.prisma.userBusinessAccess.deleteMany({
+        where: { businessId },
+      });
+    }
+
+    const updated = await this.prisma.business.update({
+      where: { id: businessId },
+      data: { organizationId: afterOrgId },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        organizationId: true,
+      },
+    });
+
+    await this.auditService.record({
+      businessId,
+      userId: actorUser?.sub || 'system-superadmin',
+      userRole: actorUser?.role || 'SUPERADMIN',
+      action: 'BUSINESS_ORGANIZATION_UPDATED',
+      entityType: 'Business',
+      entityId: businessId,
+      before: { organizationId: beforeOrgId },
+      after: { organizationId: afterOrgId },
+    });
+
+    this.logger.log(
+      `[updateBusinessOrganization] Negocio ${businessId} asignado a empresa ${afterOrgId} por ${actorUser?.email || 'superadmin'}`,
+    );
+
+    return updated;
+  }
+
+  async grantBranchAccess(
+    organizationId: string,
+    dto: GrantBranchAccessDto,
+    actorUser?: JwtPayload,
+  ) {
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+    });
+    if (!org) {
+      throw new NotFoundException('Empresa no encontrada');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: dto.userId },
+      include: {
+        business: { select: { id: true, organizationId: true } },
+      },
+    });
+
+    if (!user || !user.isActive) {
+      throw new NotFoundException('Usuario no encontrado o inactivo');
+    }
+
+    if (user.role !== UserRole.ENCARGADO) {
+      throw new BadRequestException('Solo los usuarios con rol ENCARGADO pueden tener acceso a múltiples sucursales.');
+    }
+
+    if (!user.businessId || user.business?.organizationId !== organizationId) {
+      throw new BadRequestException('El usuario no pertenece a una sucursal principal de esta empresa.');
+    }
+
+    const targetBusiness = await this.prisma.business.findUnique({
+      where: { id: dto.businessId },
+    });
+
+    if (!targetBusiness || targetBusiness.organizationId !== organizationId) {
+      throw new BadRequestException('La sucursal destino no pertenece a esta empresa.');
+    }
+
+    if (dto.businessId === user.businessId) {
+      throw new BadRequestException('El negocio destino no puede ser la sucursal principal del usuario.');
+    }
+
+    const existing = await this.prisma.userBusinessAccess.findUnique({
+      where: {
+        userId_businessId: {
+          userId: dto.userId,
+          businessId: dto.businessId,
+        },
+      },
+    });
+
+    if (existing) {
+      throw new ConflictException('El usuario ya tiene acceso a esta sucursal.');
+    }
+
+    const access = await this.prisma.userBusinessAccess.create({
+      data: {
+        userId: dto.userId,
+        businessId: dto.businessId,
+        createdById: actorUser?.sub || null,
+      },
+      include: {
+        user: { select: { id: true, name: true, email: true, role: true } },
+        business: { select: { id: true, name: true, slug: true } },
+      },
+    });
+
+    await this.auditService.record({
+      businessId: dto.businessId,
+      userId: actorUser?.sub || 'system-superadmin',
+      userRole: actorUser?.role || 'SUPERADMIN',
+      action: 'BRANCH_ACCESS_GRANTED',
+      entityType: 'UserBusinessAccess',
+      entityId: access.id,
+      after: {
+        userId: dto.userId,
+        businessId: dto.businessId,
+        organizationId,
+      },
+    });
+
+    this.logger.log(
+      `[grantBranchAccess] Acceso otorgado a user ${dto.userId} (${user.email}) para business ${dto.businessId} en org ${organizationId}`,
+    );
+
+    return access;
+  }
+
+  async revokeBranchAccess(
+    organizationId: string,
+    accessId: string,
+    actorUser?: JwtPayload,
+  ) {
+    const access = await this.prisma.userBusinessAccess.findUnique({
+      where: { id: accessId },
+      include: {
+        business: { select: { id: true, organizationId: true } },
+        user: { select: { id: true, email: true } },
+      },
+    });
+
+    if (!access) {
+      throw new NotFoundException('Acceso no encontrado');
+    }
+
+    if (access.business.organizationId !== organizationId) {
+      throw new BadRequestException('El acceso no pertenece a esta empresa.');
+    }
+
+    await this.prisma.userBusinessAccess.delete({
+      where: { id: accessId },
+    });
+
+    await this.auditService.record({
+      businessId: access.businessId,
+      userId: actorUser?.sub || 'system-superadmin',
+      userRole: actorUser?.role || 'SUPERADMIN',
+      action: 'BRANCH_ACCESS_REVOKED',
+      entityType: 'UserBusinessAccess',
+      entityId: accessId,
+      before: {
+        userId: access.userId,
+        businessId: access.businessId,
+        organizationId,
+      },
+    });
+
+    this.logger.log(
+      `[revokeBranchAccess] Acceso ${accessId} revocado a user ${access.userId} para business ${access.businessId}`,
+    );
+
+    return { success: true, message: 'Acceso retirado exitosamente' };
   }
 }

@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { randomBytes, createHash } from 'crypto';
@@ -46,7 +47,7 @@ export class ApprovalsService {
       this.throwError('APPROVAL_LOCKED', 'Demasiados intentos fallidos. Intente más tarde.');
     }
 
-    const approver = await this.prisma.user.findFirst({
+    let approver = await this.prisma.user.findFirst({
       where: {
         email: dto.approverEmail,
         businessId,
@@ -54,6 +55,33 @@ export class ApprovalsService {
         role: { in: ['ENCARGADO', 'SUPERADMIN'] }
       }
     });
+
+    if (!approver) {
+      // 240a: Verificar si es un ENCARGADO con acceso multi-sucursal a este negocio
+      const candidate = await this.prisma.user.findUnique({
+        where: { email: dto.approverEmail },
+        include: { business: { select: { organizationId: true } } },
+      });
+      if (candidate && candidate.isActive && candidate.role === UserRole.ENCARGADO && candidate.business?.organizationId) {
+        const targetBiz = await this.prisma.business.findUnique({
+          where: { id: businessId },
+          select: { organizationId: true },
+        });
+        if (targetBiz?.organizationId && targetBiz.organizationId === candidate.business.organizationId) {
+          const access = await this.prisma.userBusinessAccess.findUnique({
+            where: {
+              userId_businessId: {
+                userId: candidate.id,
+                businessId,
+              },
+            },
+          });
+          if (access) {
+            approver = candidate;
+          }
+        }
+      }
+    }
 
     if (!approver) {
       await this.auditService.record({

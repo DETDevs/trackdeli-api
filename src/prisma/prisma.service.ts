@@ -2318,6 +2318,7 @@ WHERE a."customerId" = c."id"
       await this.ensureSalesChannelsSchema();
       await this.ensureCashCloseAuthSchema();
       await this.ensureDeviceCashRegisterSchema();
+      await this.ensureMultiBranchSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4097,6 +4098,80 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 231a - Advertencia sincronizando esquema de turnos por computadora: ${err.message}`);
+    }
+  }
+
+  /**
+   * 240a - Sucursales (Fase 1) - Empresa y acceso multi-sucursal:
+   * - organizations: id, name, created_at, updated_at
+   * - businesses: organization_id (nullable, FK a organizations)
+   * - user_business_access: id, user_id, business_id, created_by_id, created_at, unique(user_id, business_id)
+   * DDL idempotente con advisory lock 240001.
+   */
+  private async ensureMultiBranchSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(240001)`);
+      try {
+        // 1. Tabla organizations
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "organizations" (
+            "id" TEXT NOT NULL,
+            "name" VARCHAR(150) NOT NULL,
+            "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "organizations_pkey" PRIMARY KEY ("id")
+          );
+        `);
+
+        // 2. Columna organization_id en businesses
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "organization_id" TEXT;
+        `);
+
+        // Constraint FK businesses -> organizations
+        await this.$executeRawUnsafe(`
+          DO $$ BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'businesses_organization_id_fkey'
+            ) THEN
+              ALTER TABLE "businesses"
+              ADD CONSTRAINT "businesses_organization_id_fkey"
+              FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "businesses_organization_id_idx" ON "businesses"("organization_id");
+        `);
+
+        // 3. Tabla user_business_access
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "user_business_access" (
+            "id" TEXT NOT NULL,
+            "user_id" TEXT NOT NULL,
+            "business_id" TEXT NOT NULL,
+            "created_by_id" TEXT,
+            "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "user_business_access_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "user_business_access_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "user_business_access_business_id_fkey" FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "user_business_access_user_id_business_id_key" UNIQUE ("user_id", "business_id")
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "user_business_access_user_id_idx" ON "user_business_access"("user_id");
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "user_business_access_business_id_idx" ON "user_business_access"("business_id");
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(240001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠️ 240a - Advertencia sincronizando esquema multi-sucursal: ${err.message}`);
     }
   }
 

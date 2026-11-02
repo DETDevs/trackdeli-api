@@ -407,6 +407,11 @@ model Business {
   pedidosYaRequireOrderNumber  Boolean                 @default(true)
   pedidosYaSettlements         PedidosYaSettlement[]
 
+  // 240a - Empresa y sucursales
+  organizationId               String?                 @map("organization_id")
+  organization                 Organization?           @relation(fields: [organizationId], references: [id])
+  userBusinessAccesses         UserBusinessAccess[]
+
   @@map("businesses")
 }
 
@@ -531,6 +536,9 @@ model User {
   cancelledPresaleTickets PresaleTicket[]     @relation("CancelledPresaleTickets")
   removedPresaleItems     PresaleTicketItem[] @relation("RemovedPresaleItems")
   presaleEvents           PresaleTicketEvent[]
+
+  // 240a - Acceso a múltiples sucursales
+  businessAccesses             UserBusinessAccess[]
 
   @@map("users")
 }
@@ -2729,6 +2737,34 @@ model PresaleTicketEvent {
   @@index([ticketId])
   @@index([businessId, eventType])
   @@map("pos_presale_ticket_events")
+}
+
+// 240a - Empresa y sucursales (Fase 1)
+model Organization {
+  id         String     @id @default(uuid())
+  name       String     @db.VarChar(150)
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+
+  businesses Business[]
+
+  @@map("organizations")
+}
+
+model UserBusinessAccess {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  businessId  String   @map("business_id")
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, businessId])
+  @@index([userId])
+  @@index([businessId])
+  @@map("user_business_access")
 }
 
 

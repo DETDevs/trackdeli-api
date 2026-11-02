@@ -54,6 +54,160 @@ export class AuthService {
     return user;
   }
 
+  async canAccessBusiness(
+    user: { id: string; role: UserRole; businessId?: string | null; isActive?: boolean },
+    targetBusinessId: string,
+  ): Promise<boolean> {
+    if (!targetBusinessId) return false;
+    if (user.isActive === false) return false;
+    if (user.role === UserRole.SUPERADMIN) return true;
+    if (user.businessId === targetBusinessId) return true;
+
+    // Solo ENCARGADO puede acceder a múltiples sucursales
+    if (user.role !== UserRole.ENCARGADO || !user.businessId) return false;
+
+    // Verificar si existe registro de acceso
+    const access = await this.prisma.userBusinessAccess.findUnique({
+      where: {
+        userId_businessId: {
+          userId: user.id,
+          businessId: targetBusinessId,
+        },
+      },
+    });
+    if (!access) return false;
+
+    // Verificar que ambas sucursales pertenezcan a la misma organización no nula
+    const [primaryBiz, targetBiz] = await Promise.all([
+      this.prisma.business.findUnique({
+        where: { id: user.businessId },
+        select: { organizationId: true, isActive: true },
+      }),
+      this.prisma.business.findUnique({
+        where: { id: targetBusinessId },
+        select: { organizationId: true, isActive: true },
+      }),
+    ]);
+
+    if (!primaryBiz || !targetBiz) return false;
+    if (!primaryBiz.organizationId || !targetBiz.organizationId) return false;
+    if (primaryBiz.organizationId !== targetBiz.organizationId) return false;
+
+    return true;
+  }
+
+  async getUserBranches(user: { id: string; role: UserRole; businessId?: string | null }): Promise<Array<{ id: string; name: string; slug: string | null; isPrimary: boolean }>> {
+    if (!user.businessId) {
+      return [];
+    }
+
+    const primaryBiz = await this.prisma.business.findUnique({
+      where: { id: user.businessId },
+      select: { id: true, name: true, slug: true, organizationId: true },
+    });
+
+    if (!primaryBiz) {
+      return [];
+    }
+
+    const branches: Array<{ id: string; name: string; slug: string | null; isPrimary: boolean }> = [
+      {
+        id: primaryBiz.id,
+        name: primaryBiz.name,
+        slug: primaryBiz.slug,
+        isPrimary: true,
+      },
+    ];
+
+    if (user.role === UserRole.ENCARGADO && primaryBiz.organizationId) {
+      const accesses = await this.prisma.userBusinessAccess.findMany({
+        where: {
+          userId: user.id,
+          business: {
+            organizationId: primaryBiz.organizationId,
+          },
+        },
+        include: {
+          business: {
+            select: { id: true, name: true, slug: true },
+          },
+        },
+      });
+
+      for (const acc of accesses) {
+        if (acc.business && acc.business.id !== primaryBiz.id) {
+          branches.push({
+            id: acc.business.id,
+            name: acc.business.name,
+            slug: acc.business.slug,
+            isPrimary: false,
+          });
+        }
+      }
+    }
+
+    return branches;
+  }
+
+  async getUserBranchesByUserId(userId: string): Promise<Array<{ id: string; name: string; slug: string | null; isPrimary: boolean }>> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, role: true, businessId: true },
+    });
+    if (!user) return [];
+    return this.getUserBranches(user);
+  }
+
+  private async buildBusinessData(businessId: string) {
+    const b = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      include: {
+        memberships: {
+          include: { paymentProducts: true },
+          orderBy: { endDate: 'desc' },
+        },
+      },
+    });
+    if (!b) return null;
+    const salonProfile = resolveSalonProfile(b.salonProfile);
+    const salonLabels = getSalonLabels(salonProfile);
+    const billing = computeBusinessMembershipBilling(b, b.memberships);
+    return {
+      businessData: {
+        id: b.id,
+        name: b.name,
+        salonProfile,
+        salonLabels,
+        posVertical: b.posVertical,
+        tracksBatches: b.tracksBatches ?? false,
+        useListPrice: b.useListPrice ?? false,
+        defaultMarkupPct: b.defaultMarkupPct != null ? Number(b.defaultMarkupPct) : null,
+        autoUpdatePriceOnPurchase: b.autoUpdatePriceOnPurchase ?? false,
+        twoStepSaleEnabled: b.twoStepSaleEnabled ?? false,
+        twoStepTicketTtlHours: b.twoStepTicketTtlHours ?? 4,
+        taxId: b.taxId ?? null,
+        billing_anchor_day: billing.billing_anchor_day,
+        current_period_start: billing.current_period_start,
+        due_date: billing.due_date,
+        grace_ends_at: billing.grace_ends_at,
+        membership_status: billing.membership_status,
+        days_until_due: billing.days_until_due,
+        membership: {
+          status: billing.membership_status,
+          billing_anchor_day: billing.billing_anchor_day,
+          current_period_start: billing.current_period_start,
+          due_date: billing.due_date,
+          grace_ends_at: billing.grace_ends_at,
+          days_until_due: billing.days_until_due,
+          daysLeft: billing.days_until_due,
+          endDate: billing.due_date_date,
+        },
+      },
+      salonProfile,
+      salonLabels,
+    };
+  }
+
   async login(dto: LoginDto, req?: any): Promise<TokenResponseDto> {
     const user = await this.validateUser(dto.email, dto.password);
 
@@ -61,15 +215,30 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
+    let activeBusinessId: string | null = user.businessId;
+
+    if (dto.businessId) {
+      const allowed = await this.canAccessBusiness(user, dto.businessId);
+      if (!allowed) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'BRANCH_ACCESS_DENIED',
+          message: 'No tenés acceso a esta sucursal.',
+        });
+      }
+      activeBusinessId = dto.businessId;
+    }
+
     let posSub: any = null;
     let trialData: { endsAt: string | null; serverNow: string; remainingSeconds: number | null } | null = null;
     let maxExpiresAt: Date | null = null;
 
-    if (user.businessId && user.role !== UserRole.SUPERADMIN) {
+    if (activeBusinessId && user.role !== UserRole.SUPERADMIN) {
       posSub = await this.prisma.businessProductSubscription.findUnique({
         where: {
           businessId_productType: {
-            businessId: user.businessId,
+            businessId: activeBusinessId,
             productType: BusinessProductType.POS,
           },
         },
@@ -79,7 +248,7 @@ export class AuthService {
         const now = new Date();
 
         if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {
-          this.logger.warn(`[login] Rechazado por prueba vencida: businessId=${user.businessId}, email=${dto.email}`);
+          this.logger.warn(`[login] Rechazado por prueba vencida: businessId=${activeBusinessId}, email=${dto.email}`);
           throw new ForbiddenException({
             statusCode: 403,
             error: 'Forbidden',
@@ -103,7 +272,7 @@ export class AuthService {
             },
           });
           this.logger.log(
-            `[login] Reloj de prueba iniciado para businessId=${user.businessId}: ${posSub.trialHours}h hasta ${trialEndsAt.toISOString()}`,
+            `[login] Reloj de prueba iniciado para businessId=${activeBusinessId}: ${posSub.trialHours}h hasta ${trialEndsAt.toISOString()}`,
           );
         }
 
@@ -125,23 +294,23 @@ export class AuthService {
     }
 
     // 132a — Control de dispositivos POS
-    await this.posDevicesService.validateAndRegisterOnLogin(user, req);
+    await this.posDevicesService.validateAndRegisterOnLogin({ ...user, businessId: activeBusinessId }, req);
 
-    this.logger.log(`[login] OK email=${dto.email}, rol=${user.role}`);
+    this.logger.log(`[login] OK email=${dto.email}, rol=${user.role}, businessId=${activeBusinessId}`);
 
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
       role: user.role,
-      businessId: user.businessId,
-          phone: user.phone,
-          vehicleType: user.vehicleType,
-          vehiclePlate: user.vehiclePlate,
-          vehicleColor: user.vehicleColor,
-          vehiclePhotoUrl: user.vehiclePhotoUrl,
-          profilePhotoUrl: user.profilePhotoUrl,
-          isAvailable: user.isAvailable,
-          profileComplete: user.profileComplete,
+      businessId: activeBusinessId || undefined,
+      phone: user.phone,
+      vehicleType: user.vehicleType,
+      vehiclePlate: user.vehiclePlate,
+      vehicleColor: user.vehicleColor,
+      vehiclePhotoUrl: user.vehiclePhotoUrl,
+      profilePhotoUrl: user.profilePhotoUrl,
+      isAvailable: user.isAvailable,
+      profileComplete: user.profileComplete,
     };
 
     const tokens = this.generateTokens(payload, maxExpiresAt);
@@ -149,52 +318,16 @@ export class AuthService {
     let businessData: any = null;
     let salonProfile = 'RESTAURANTE';
     let salonLabels = getSalonLabels('RESTAURANTE');
-    if (user.businessId) {
-      const b = await this.prisma.business.findUnique({
-        where: { id: user.businessId },
-        include: {
-          memberships: {
-            include: { paymentProducts: true },
-            orderBy: { endDate: 'desc' },
-          },
-        },
-      });
-      if (b) {
-        salonProfile = resolveSalonProfile(b.salonProfile);
-        salonLabels = getSalonLabels(salonProfile);
-        const billing = computeBusinessMembershipBilling(b, b.memberships);
-        businessData = {
-          id: b.id,
-          name: b.name,
-          salonProfile,
-          salonLabels,
-          posVertical: b.posVertical,
-          tracksBatches: b.tracksBatches ?? false,
-          useListPrice: b.useListPrice ?? false,
-          defaultMarkupPct: b.defaultMarkupPct != null ? Number(b.defaultMarkupPct) : null,
-          autoUpdatePriceOnPurchase: b.autoUpdatePriceOnPurchase ?? false,
-          twoStepSaleEnabled: b.twoStepSaleEnabled ?? false,
-          twoStepTicketTtlHours: b.twoStepTicketTtlHours ?? 4,
-          taxId: b.taxId ?? null,
-          billing_anchor_day: billing.billing_anchor_day,
-          current_period_start: billing.current_period_start,
-          due_date: billing.due_date,
-          grace_ends_at: billing.grace_ends_at,
-          membership_status: billing.membership_status,
-          days_until_due: billing.days_until_due,
-          membership: {
-            status: billing.membership_status,
-            billing_anchor_day: billing.billing_anchor_day,
-            current_period_start: billing.current_period_start,
-            due_date: billing.due_date,
-            grace_ends_at: billing.grace_ends_at,
-            days_until_due: billing.days_until_due,
-            daysLeft: billing.days_until_due,
-            endDate: billing.due_date_date,
-          },
-        };
+    if (activeBusinessId) {
+      const bRes = await this.buildBusinessData(activeBusinessId);
+      if (bRes) {
+        businessData = bRes.businessData;
+        salonProfile = bRes.salonProfile;
+        salonLabels = bRes.salonLabels;
       }
     }
+
+    const branches = await this.getUserBranches(user);
 
     return {
       accessToken: tokens.accessToken,
@@ -204,7 +337,7 @@ export class AuthService {
         name: user.name,
         email: user.email,
         role: user.role,
-        businessId: user.businessId,
+        businessId: activeBusinessId || user.businessId,
         phone: user.phone,
         vehicleType: user.vehicleType,
         vehiclePlate: user.vehiclePlate,
@@ -217,6 +350,128 @@ export class AuthService {
         salonProfile,
         salonLabels,
       },
+      branches,
+      trial: trialData,
+    };
+  }
+
+  async switchBranch(userId: string, targetBusinessId: string, req?: any): Promise<TokenResponseDto> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Usuario no válido o inactivo');
+    }
+
+    const allowed = await this.canAccessBusiness(user, targetBusinessId);
+    if (!allowed) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'BRANCH_ACCESS_DENIED',
+        message: 'No tenés acceso a esta sucursal.',
+      });
+    }
+
+    let posSub: any = null;
+    let trialData: { endsAt: string | null; serverNow: string; remainingSeconds: number | null } | null = null;
+    let maxExpiresAt: Date | null = null;
+
+    if (user.role !== UserRole.SUPERADMIN) {
+      posSub = await this.prisma.businessProductSubscription.findUnique({
+        where: {
+          businessId_productType: {
+            businessId: targetBusinessId,
+            productType: BusinessProductType.POS,
+          },
+        },
+      });
+
+      if (posSub && posSub.trialHours !== null && posSub.trialHours >= 1) {
+        const now = new Date();
+        if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {
+          throw new ForbiddenException({
+            statusCode: 403,
+            error: 'Forbidden',
+            code: 'TRIAL_EXPIRED',
+            message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
+          });
+        }
+        if (posSub.trialEndsAt) {
+          maxExpiresAt = posSub.trialEndsAt;
+        }
+        const serverNow = new Date();
+        const remainingSeconds = posSub.trialEndsAt
+          ? Math.max(0, Math.floor((posSub.trialEndsAt.getTime() - serverNow.getTime()) / 1000))
+          : posSub.trialHours * 3600;
+
+        trialData = {
+          endsAt: posSub.trialEndsAt ? posSub.trialEndsAt.toISOString() : null,
+          serverNow: serverNow.toISOString(),
+          remainingSeconds,
+        };
+      }
+    }
+
+    await this.posDevicesService.validateAndRegisterOnLogin(
+      { ...user, businessId: targetBusinessId },
+      req,
+    );
+
+    this.logger.log(`[switchBranch] OK userId=${user.id}, targetBusinessId=${targetBusinessId}`);
+
+    const payload: JwtPayload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      businessId: targetBusinessId,
+      phone: user.phone,
+      vehicleType: user.vehicleType,
+      vehiclePlate: user.vehiclePlate,
+      vehicleColor: user.vehicleColor,
+      vehiclePhotoUrl: user.vehiclePhotoUrl,
+      profilePhotoUrl: user.profilePhotoUrl,
+      isAvailable: user.isAvailable,
+      profileComplete: user.profileComplete,
+    };
+
+    const tokens = this.generateTokens(payload, maxExpiresAt);
+
+    let businessData: any = null;
+    let salonProfile = 'RESTAURANTE';
+    let salonLabels = getSalonLabels('RESTAURANTE');
+    const bRes = await this.buildBusinessData(targetBusinessId);
+    if (bRes) {
+      businessData = bRes.businessData;
+      salonProfile = bRes.salonProfile;
+      salonLabels = bRes.salonLabels;
+    }
+
+    const branches = await this.getUserBranches(user);
+
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        businessId: targetBusinessId,
+        phone: user.phone,
+        vehicleType: user.vehicleType,
+        vehiclePlate: user.vehiclePlate,
+        vehicleColor: user.vehicleColor,
+        vehiclePhotoUrl: user.vehiclePhotoUrl,
+        profilePhotoUrl: user.profilePhotoUrl,
+        isAvailable: user.isAvailable,
+        profileComplete: user.profileComplete,
+        business: businessData,
+        salonProfile,
+        salonLabels,
+      },
+      branches,
       trial: trialData,
     };
   }
@@ -428,15 +683,29 @@ export class AuthService {
         throw new UnauthorizedException('Usuario no válido o inactivo');
       }
 
+      const activeBusinessId = decoded.businessId || user.businessId;
+
+      if (activeBusinessId) {
+        const hasAccess = await this.canAccessBusiness(user, activeBusinessId);
+        if (!hasAccess) {
+          throw new UnauthorizedException({
+            statusCode: 401,
+            error: 'Unauthorized',
+            code: 'BRANCH_ACCESS_REVOKED',
+            message: 'El acceso a la sucursal ha sido revocado. Por favor iniciá sesión nuevamente.',
+          });
+        }
+      }
+
       let posSub: any = null;
       let trialData: { endsAt: string | null; serverNow: string; remainingSeconds: number | null } | null = null;
       let maxExpiresAt: Date | null = null;
 
-      if (user.businessId && user.role !== UserRole.SUPERADMIN) {
+      if (activeBusinessId && user.role !== UserRole.SUPERADMIN) {
         posSub = await this.prisma.businessProductSubscription.findUnique({
           where: {
             businessId_productType: {
-              businessId: user.businessId,
+              businessId: activeBusinessId,
               productType: BusinessProductType.POS,
             },
           },
@@ -446,7 +715,7 @@ export class AuthService {
           const now = new Date();
 
           if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {
-            this.logger.warn(`[refresh] Rechazado por prueba vencida: businessId=${user.businessId}, userId=${user.id}`);
+            this.logger.warn(`[refresh] Rechazado por prueba vencida: businessId=${activeBusinessId}, userId=${user.id}`);
             throw new ForbiddenException({
               statusCode: 403,
               error: 'Forbidden',
@@ -476,7 +745,7 @@ export class AuthService {
         sub: user.id,
         email: user.email,
         role: user.role,
-        businessId: user.businessId,
+        businessId: activeBusinessId || undefined,
         phone: user.phone,
         vehicleType: user.vehicleType,
         vehiclePlate: user.vehiclePlate,
@@ -489,7 +758,21 @@ export class AuthService {
 
       const tokens = this.generateTokens(payload, maxExpiresAt);
 
-      this.logger.log(`[refresh] OK — userId=${user.id}, nuevos tokens generados`);
+      this.logger.log(`[refresh] OK — userId=${user.id}, businessId=${activeBusinessId}, nuevos tokens generados`);
+
+      let businessData: any = null;
+      let salonProfile = 'RESTAURANTE';
+      let salonLabels = getSalonLabels('RESTAURANTE');
+      if (activeBusinessId) {
+        const bRes = await this.buildBusinessData(activeBusinessId);
+        if (bRes) {
+          businessData = bRes.businessData;
+          salonProfile = bRes.salonProfile;
+          salonLabels = bRes.salonLabels;
+        }
+      }
+
+      const branches = await this.getUserBranches(user);
 
       return {
         accessToken: tokens.accessToken,
@@ -499,7 +782,7 @@ export class AuthService {
           name: user.name,
           email: user.email,
           role: user.role,
-          businessId: user.businessId,
+          businessId: activeBusinessId || user.businessId,
           phone: user.phone,
           vehicleType: user.vehicleType,
           vehiclePlate: user.vehiclePlate,
@@ -508,11 +791,15 @@ export class AuthService {
           profilePhotoUrl: user.profilePhotoUrl,
           isAvailable: user.isAvailable,
           profileComplete: user.profileComplete,
+          business: businessData,
+          salonProfile,
+          salonLabels,
         },
+        branches,
         trial: trialData,
       };
     } catch (error) {
-      if (error instanceof ForbiddenException) {
+      if (error instanceof ForbiddenException || error instanceof UnauthorizedException) {
         throw error;
       }
       this.logger.warn(`[refresh] WARN — token inválido: ${error.message}`);
@@ -520,7 +807,7 @@ export class AuthService {
     }
   }
 
-  async getProfile(userId: string) {
+  async getProfile(userId: string, activeBusinessId?: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -539,23 +826,6 @@ export class AuthService {
         profileComplete: true,
         currentLatitude: true,
         currentLongitude: true,
-        business: {
-          select: {
-            id: true,
-            name: true,
-            latitude: true,
-            longitude: true,
-            salonProfile: true,
-            posVertical: true,
-            tracksBatches: true,
-            useListPrice: true,
-            defaultMarkupPct: true,
-            autoUpdatePriceOnPurchase: true,
-            twoStepSaleEnabled: true,
-            twoStepTicketTtlHours: true,
-            taxId: true,
-          },
-        },
       },
     });
 
@@ -563,58 +833,36 @@ export class AuthService {
       throw new NotFoundException('Usuario no encontrado');
     }
 
-    const salonProfile = resolveSalonProfile(user.business?.salonProfile);
-    const salonLabels = getSalonLabels(salonProfile);
+    let targetBid = user.businessId;
+    if (activeBusinessId) {
+      const allowed = await this.canAccessBusiness(user, activeBusinessId);
+      if (allowed) {
+        targetBid = activeBusinessId;
+      }
+    }
 
     let businessData: any = null;
-    if (user.business) {
-      const b = await this.prisma.business.findUnique({
-        where: { id: user.business.id },
-        include: {
-          memberships: {
-            include: { paymentProducts: true },
-            orderBy: { endDate: 'desc' },
-          },
-        },
-      });
-      const billing = b ? computeBusinessMembershipBilling(b, b.memberships) : null;
-      businessData = {
-        ...user.business,
-        tracksBatches: user.business.tracksBatches ?? false,
-        useListPrice: user.business.useListPrice ?? false,
-        defaultMarkupPct: user.business.defaultMarkupPct != null ? Number(user.business.defaultMarkupPct) : null,
-        autoUpdatePriceOnPurchase: user.business.autoUpdatePriceOnPurchase ?? false,
-        twoStepSaleEnabled: user.business.twoStepSaleEnabled ?? false,
-        twoStepTicketTtlHours: user.business.twoStepTicketTtlHours ?? 4,
-        taxId: user.business.taxId ?? null,
-        salonProfile,
-        salonLabels,
-        billing_anchor_day: billing?.billing_anchor_day ?? null,
-        current_period_start: billing?.current_period_start ?? null,
-        due_date: billing?.due_date ?? null,
-        grace_ends_at: billing?.grace_ends_at ?? null,
-        membership_status: billing?.membership_status ?? null,
-        days_until_due: billing?.days_until_due ?? null,
-        membership: billing
-          ? {
-              status: billing.membership_status,
-              billing_anchor_day: billing.billing_anchor_day,
-              current_period_start: billing.current_period_start,
-              due_date: billing.due_date,
-              grace_ends_at: billing.grace_ends_at,
-              days_until_due: billing.days_until_due,
-              daysLeft: billing.days_until_due,
-              endDate: billing.due_date_date,
-            }
-          : null,
-      };
+    let salonProfile = 'RESTAURANTE';
+    let salonLabels = getSalonLabels('RESTAURANTE');
+
+    if (targetBid) {
+      const bRes = await this.buildBusinessData(targetBid);
+      if (bRes) {
+        businessData = bRes.businessData;
+        salonProfile = bRes.salonProfile;
+        salonLabels = bRes.salonLabels;
+      }
     }
+
+    const branches = await this.getUserBranches(user);
 
     return {
       ...user,
+      businessId: targetBid || user.businessId,
       salonProfile,
       salonLabels,
       business: businessData,
+      branches,
     };
   }
 

@@ -82,11 +82,53 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Usuario inactivo');
     }
 
+    let activeBusinessId = user.businessId;
+
+    if (payload.businessId && payload.businessId !== user.businessId) {
+      // 240a: Si el token tiene una sucursal distinta a la principal, validar acceso multi-sucursal
+      if (user.role === UserRole.ENCARGADO && user.businessId) {
+        const [access, primaryBiz, targetBiz] = await Promise.all([
+          this.prisma.userBusinessAccess.findUnique({
+            where: {
+              userId_businessId: {
+                userId: user.id,
+                businessId: payload.businessId,
+              },
+            },
+          }),
+          this.prisma.business.findUnique({
+            where: { id: user.businessId },
+            select: { organizationId: true },
+          }),
+          this.prisma.business.findUnique({
+            where: { id: payload.businessId },
+            select: { organizationId: true },
+          }),
+        ]);
+
+        if (
+          access &&
+          primaryBiz?.organizationId &&
+          targetBiz?.organizationId &&
+          primaryBiz.organizationId === targetBiz.organizationId
+        ) {
+          activeBusinessId = payload.businessId;
+        } else {
+          this.logger.warn(
+            `[validate] Intento de acceso a sucursal no autorizada en JWT: sub=${user.id}, target=${payload.businessId}`,
+          );
+          throw new UnauthorizedException('Acceso no autorizado a la sucursal especificada en el token');
+        }
+      } else if (user.role === UserRole.SUPERADMIN) {
+        activeBusinessId = payload.businessId;
+      }
+    }
+
     return {
       sub: user.id,
       email: user.email,
       role: user.role,
-      businessId: user.businessId,
+      businessId: activeBusinessId || undefined,
       phone: user.phone,
       vehicleType: user.vehicleType,
       vehiclePlate: user.vehiclePlate,

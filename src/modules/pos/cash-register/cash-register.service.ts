@@ -833,7 +833,8 @@ export class CashRegisterService {
           );
         }
 
-        const authorizers = await this.prisma.user.findMany({
+        // 1. Encargados directos de esta sucursal (y superadmins)
+        const directAuthorizers = await this.prisma.user.findMany({
           where: {
             businessId,
             isActive: true,
@@ -843,6 +844,36 @@ export class CashRegisterService {
           },
           select: { id: true, name: true, role: true, pinHash: true, email: true },
         });
+
+        // 2. Encargados con acceso multi-sucursal a esta sucursal (240a)
+        const currentBiz = await this.prisma.business.findUnique({
+          where: { id: businessId },
+          select: { organizationId: true },
+        });
+
+        let multiBranchAuthorizers: any[] = [];
+        if (currentBiz?.organizationId) {
+          const accesses = await this.prisma.userBusinessAccess.findMany({
+            where: {
+              businessId,
+              user: {
+                isActive: true,
+                role: UserRole.ENCARGADO,
+                pinHash: { not: null },
+                business: { organizationId: currentBiz.organizationId },
+                ...(dto.authorizerEmail ? { email: dto.authorizerEmail.trim().toLowerCase() } : {}),
+              },
+            },
+            include: {
+              user: {
+                select: { id: true, name: true, role: true, pinHash: true, email: true },
+              },
+            },
+          });
+          multiBranchAuthorizers = accesses.map((a) => a.user);
+        }
+
+        const authorizers = [...directAuthorizers, ...multiBranchAuthorizers];
 
         let matchedAuthorizer: any = null;
         for (const auth of authorizers) {

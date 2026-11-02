@@ -40,6 +40,9 @@ import { UpdateDeviceDto } from '../pos/devices/dto/update-device.dto';
 import { UpdatePosSubscriptionDto } from '../pos/devices/dto/update-pos-subscription.dto';
 
 import { BusinessesQueryDto } from './dto/businesses-query.dto';
+import { CreateOrganizationDto } from './dto/create-organization.dto';
+import { UpdateBusinessOrganizationDto } from './dto/update-business-organization.dto';
+import { GrantBranchAccessDto } from './dto/grant-branch-access.dto';
 
 @Controller('superadmin')
 @UseGuards(SuperAdminGuard)
@@ -360,6 +363,47 @@ export class SuperAdminController {
       { trialAction: 'terminate' },
       user,
     );
+  }
+
+  // 240a — Gestión de Empresas y Sucursales
+  @Post('organizations')
+  async createOrganization(
+    @Body() dto: CreateOrganizationDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.createOrganization(dto, user);
+  }
+
+  @Get('organizations/:id')
+  async getOrganization(@Param('id') id: string) {
+    return this.superAdminService.getOrganization(id);
+  }
+
+  @Patch('businesses/:id/organization')
+  async updateBusinessOrganization(
+    @Param('id') id: string,
+    @Body() dto: UpdateBusinessOrganizationDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.updateBusinessOrganization(id, dto, user);
+  }
+
+  @Post('organizations/:id/access')
+  async grantBranchAccess(
+    @Param('id') id: string,
+    @Body() dto: GrantBranchAccessDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.grantBranchAccess(id, dto, user);
+  }
+
+  @Delete('organizations/:id/access/:accessId')
+  async revokeBranchAccess(
+    @Param('id') id: string,
+    @Param('accessId') accessId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.revokeBranchAccess(id, accessId, user);
   }
 }
 

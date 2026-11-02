@@ -5,12 +5,17 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterRiderDto } from './dto/register-rider.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { TokenResponseDto } from './dto/token-response.dto';
+import { SwitchBranchDto } from './dto/switch-branch.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { SkipMembership } from '../../common/decorators/skip-membership.decorator';
+import { SkipWebAdminAccess } from '../../common/decorators/skip-web-admin-access.decorator';
 import { JwtRefreshGuard } from '../../common/guards/jwt-refresh.guard';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 
 @Controller('auth')
+@SkipMembership()
+@SkipWebAdminAccess()
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
@@ -49,6 +54,20 @@ export class AuthController {
 
   @Get('me')
   async me(@CurrentUser() user: JwtPayload) {
-    return this.authService.getProfile(user.sub);
+    return this.authService.getProfile(user.sub, user.businessId);
+  }
+
+  @Get('branches')
+  async getBranches(@CurrentUser() user: JwtPayload) {
+    return this.authService.getUserBranchesByUserId(user.sub);
+  }
+
+  @Post('switch-branch')
+  async switchBranch(
+    @Body() dto: SwitchBranchDto,
+    @CurrentUser() user: JwtPayload,
+    @Req() req: any,
+  ): Promise<TokenResponseDto> {
+    return this.authService.switchBranch(user.sub, dto.businessId, req);
   }
 }

@@ -106,7 +106,43 @@ export class PosUsersService {
       },
       orderBy: { createdAt: 'asc' },
     });
-    const users = rawUsers.map((u) => ({
+    // 240a: Incluir encargados con acceso multi-sucursal a este negocio
+    const currentBiz = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { organizationId: true },
+    });
+
+    let multiBranchUsers: any[] = [];
+    if (currentBiz?.organizationId) {
+      const accesses = await this.prisma.userBusinessAccess.findMany({
+        where: {
+          businessId,
+          user: {
+            isActive: true,
+            role: UserRole.ENCARGADO,
+            business: { organizationId: currentBiz.organizationId },
+          },
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+              role: true,
+              isActive: true,
+              pinHash: true,
+              createdAt: true,
+            },
+          },
+        },
+      });
+      multiBranchUsers = accesses.map((a) => a.user);
+    }
+
+    const allRaw = [...rawUsers, ...multiBranchUsers];
+    const users = allRaw.map((u) => ({
       id: u.id,
       name: u.name,
       email: u.email,

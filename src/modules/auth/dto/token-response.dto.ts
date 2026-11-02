@@ -38,4 +38,10 @@ export class TokenResponseDto {
     serverNow: string;
     remainingSeconds: number | null;
   } | null;
+  branches?: Array<{
+    id: string;
+    name: string;
+    slug: string | null;
+    isPrimary: boolean;
+  }>;
 }
