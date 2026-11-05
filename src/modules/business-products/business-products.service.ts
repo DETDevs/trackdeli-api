@@ -26,6 +26,7 @@ import {
   calculateDueDate,
   calculateGraceEndsAt,
   computeBusinessMembershipBilling,
+  resolveBusinessCoverage,
   getManaguaDateParts,
 } from '../superadmin/utils/membership-billing.util';
 
@@ -49,6 +50,12 @@ export class BusinessProductsService {
     tx?: Prisma.TransactionClient,
   ): Promise<boolean> {
     const db = tx || this.prisma;
+    const coverage = await resolveBusinessCoverage(db, businessId, now);
+
+    if (coverage.isCovered) {
+      return true;
+    }
+
     const coverages = await db.membershipPaymentProduct.findMany({
       where: {
         membershipPayment: {
@@ -112,6 +119,7 @@ export class BusinessProductsService {
       },
       select: {
         status: true,
+        trialEndsAt: true,
         business: {
           select: { businessType: true },
         },
@@ -120,6 +128,10 @@ export class BusinessProductsService {
 
     if (subscription?.status !== BusinessProductStatus.ACTIVE) {
       return false;
+    }
+
+    if (subscription.trialEndsAt && now < subscription.trialEndsAt) {
+      return true;
     }
 
     const isMembership = this.isMembershipProduct(productType, subscription.business?.businessType);
@@ -204,6 +216,14 @@ export class BusinessProductsService {
       }
     }
 
+    const coverage = await resolveBusinessCoverage(this.prisma, businessId, now);
+    if (coverage.isCovered && coverage.source === 'MAINTENANCE_FREE') {
+      coveredProductTypes.add(BusinessProductType.POS);
+      coveredProductTypes.add(BusinessProductType.DELIVERY);
+      coveredProductTypes.add(BusinessProductType.CARTERA_COBRO);
+      coveredProductTypes.add(BusinessProductType.CITAS);
+    }
+
     const isDeliveryMembership = business.businessType === BusinessType.NEGOCIO;
     const isDeliveryActive = deliverySub?.status === BusinessProductStatus.ACTIVE &&
       (!isDeliveryMembership || coveredProductTypes.has(BusinessProductType.DELIVERY));
@@ -220,6 +240,16 @@ export class BusinessProductsService {
       orderBy: { endDate: 'desc' },
     });
     const billing = computeBusinessMembershipBilling(business, allMemberships, now);
+
+    if (coverage.source === 'MAINTENANCE_FREE') {
+      billing.membership_status = coverage.status;
+      billing.due_date = coverage.coveredUntilStr;
+      billing.grace_ends_at = coverage.graceEndsAtStr;
+      billing.days_until_due = coverage.daysUntilDue;
+      billing.due_date_date = coverage.coveredUntil;
+      billing.is_active = coverage.isCovered;
+      billing.is_in_grace = coverage.isInGrace;
+    }
 
     return {
       businessId: business.id,

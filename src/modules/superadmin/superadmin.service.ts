@@ -29,6 +29,8 @@ import {
   calculateDueDate,
   calculateGraceEndsAt,
   computeBusinessMembershipBilling,
+  computeBusinessCoverage,
+  resolveBusinessCoverage,
   createManaguaDate,
   getManaguaDateParts,
   parseManaguaDate,
@@ -109,6 +111,13 @@ export class SuperAdminService {
           memberships: {
             orderBy: [{ endDate: 'desc' }, { startDate: 'desc' }],
           },
+          commercialAgreement: {
+            include: {
+              installments: {
+                orderBy: { installmentNumber: 'asc' },
+              },
+            },
+          },
           productSubscriptions: {
             select: {
               id: true,
@@ -184,7 +193,20 @@ export class SuperAdminService {
         ACTIVE_ORDER_STATUSES.includes(o.status),
       ).length;
 
+      const agreement = (b as any).commercialAgreement;
+      const coverage = computeBusinessCoverage(b, agreement, b.memberships, now);
+
       const billing = computeBusinessMembershipBilling(b, b.memberships, now);
+
+      if (coverage.source === 'MAINTENANCE_FREE') {
+        billing.membership_status = coverage.status;
+        billing.due_date = coverage.coveredUntilStr;
+        billing.grace_ends_at = coverage.graceEndsAtStr;
+        billing.days_until_due = coverage.daysUntilDue;
+        billing.due_date_date = coverage.coveredUntil;
+        billing.is_active = coverage.isCovered;
+        billing.is_in_grace = coverage.isInGrace;
+      }
 
       const deliverySub = (b.productSubscriptions as any[])?.find(
         (s: any) => s.productType === 'DELIVERY',
@@ -196,6 +218,7 @@ export class SuperAdminService {
       );
 
       const isTrial = Boolean(
+        !(agreement && coverage.isCovered) &&
         posSub &&
           (
             (posSub.trialHours !== null && posSub.trialStartedAt === null) ||
@@ -205,37 +228,52 @@ export class SuperAdminService {
       );
 
       let monthlyAmount = 0;
-      const activeMem = b.memberships.find(
-        (m) => m.status === MembershipStatus.ACTIVE && Number(m.amount) > 0,
-      );
-      if (activeMem) {
-        const durationDays =
-          (activeMem.endDate.getTime() - activeMem.startDate.getTime()) /
-          (1000 * 60 * 60 * 24);
-        if (durationDays > 300) {
-          monthlyAmount = Math.round((Number(activeMem.amount) / 12) * 100) / 100;
-        } else {
-          monthlyAmount = Number(activeMem.amount);
-        }
+      let monthlyAmountNio = 0;
+
+      if (coverage.source === 'MAINTENANCE_FREE' && coverage.isCovered) {
+        monthlyAmount = 0;
+        monthlyAmountNio = 0;
       } else {
-        for (const sub of b.productSubscriptions as any[]) {
-          if (sub.status === 'ACTIVE') {
-            if (sub.productType === 'POS') {
-              monthlyAmount += Number(sub.posMonthlyFee || 0);
-              if (sub.webBillingEnabled && sub.webBillingMonthlyUsd) {
-                monthlyAmount += Number(sub.webBillingMonthlyUsd);
+        const activeMem = b.memberships.find(
+          (m) => m.status === MembershipStatus.ACTIVE && Number(m.amount) > 0,
+        );
+        if (activeMem) {
+          const isNio = (activeMem.currency || '').toUpperCase() === 'NIO';
+          const durationDays =
+            (activeMem.endDate.getTime() - activeMem.startDate.getTime()) /
+            (1000 * 60 * 60 * 24);
+          const rawAmt = durationDays > 300
+            ? Math.round((Number(activeMem.amount) / 12) * 100) / 100
+            : Number(activeMem.amount);
+
+          if (isNio) {
+            monthlyAmountNio = rawAmt;
+            monthlyAmount = 0;
+          } else {
+            monthlyAmount = rawAmt;
+            monthlyAmountNio = 0;
+          }
+        } else {
+          for (const sub of b.productSubscriptions as any[]) {
+            if (sub.status === 'ACTIVE') {
+              if (sub.productType === 'POS') {
+                monthlyAmount += Number(sub.posMonthlyFee || 0);
+                if (sub.webBillingEnabled && sub.webBillingMonthlyUsd) {
+                  monthlyAmount += Number(sub.webBillingMonthlyUsd);
+                }
+              } else if (sub.productType === 'DELIVERY') {
+                monthlyAmount += Number(sub.deliveryMonthlyFee || 0);
+              } else if (sub.productType === 'CARTERA_COBRO') {
+                monthlyAmount += Number(sub.carteraMonthlyFee || 0);
+              } else if (sub.productType === 'CITAS') {
+                monthlyAmount += Number(sub.citasMonthlyFee || 0);
               }
-            } else if (sub.productType === 'DELIVERY') {
-              monthlyAmount += Number(sub.deliveryMonthlyFee || 0);
-            } else if (sub.productType === 'CARTERA_COBRO') {
-              monthlyAmount += Number(sub.carteraMonthlyFee || 0);
-            } else if (sub.productType === 'CITAS') {
-              monthlyAmount += Number(sub.citasMonthlyFee || 0);
             }
           }
         }
       }
       monthlyAmount = Math.round(monthlyAmount * 100) / 100;
+      monthlyAmountNio = Math.round(monthlyAmountNio * 100) / 100;
 
       const products = (b.productSubscriptions as any[]).map((s) => {
         let fee = 0;
@@ -359,8 +397,14 @@ export class SuperAdminService {
         hasCarteraCobro: b.hasCarteraCobro,
         hasCitas: b.hasCitas,
 
-        // Nuevos campos 178a
+        // Nuevos campos 178a / 244a
         monthly_amount: monthlyAmount,
+        monthly_amount_nio: monthlyAmountNio,
+        coverage_source: coverage.source,
+        maintenance_free_ends_at: agreement?.maintenanceFreeEndsAt
+          ? toManaguaDateString(new Date(agreement.maintenanceFreeEndsAt))
+          : null,
+        commercial_overdue: coverage.commercialOverdue,
         is_trial: isTrial,
         products,
         devices,
@@ -390,6 +434,7 @@ export class SuperAdminService {
 
     // MRR: suma de tarifa mensual de negocios activos no en prueba cuyo estado no sea VENCIDO ni NOT_CONTRACTED
     let mrr = 0;
+    let mrrNio = 0;
     for (const b of enriched) {
       if (
         b.isActive &&
@@ -398,9 +443,11 @@ export class SuperAdminService {
         b.membership_status !== 'NOT_CONTRACTED'
       ) {
         mrr += b.monthly_amount;
+        mrrNio += ((b as any).monthly_amount_nio || 0);
       }
     }
     mrr = Math.round(mrr * 100) / 100;
+    mrrNio = Math.round(mrrNio * 100) / 100;
 
     // due_next_7_days: membresías que vencen en los próximos 7 días (incluye hoy: days_until_due >= 0 && <= 7)
     let dueNext7DaysCount = 0;
@@ -582,6 +629,7 @@ export class SuperAdminService {
 
     return {
       mrr,
+      mrr_nio: mrrNio,
       due_next_7_days: {
         count: dueNext7DaysCount,
         amount: dueNext7DaysAmount,
@@ -775,6 +823,13 @@ export class SuperAdminService {
           include: { paymentProducts: true },
           orderBy: { endDate: 'desc' },
         },
+        commercialAgreement: {
+          include: {
+            installments: { orderBy: { installmentNumber: 'asc' } },
+            payments: { orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }] },
+            equipment: { orderBy: { createdAt: 'asc' } },
+          },
+        },
         productSubscriptions: true,
         industry: {
           select: { id: true, code: true, name: true },
@@ -854,11 +909,39 @@ export class SuperAdminService {
       }
     }
 
+    const agreement = (business as any).commercialAgreement;
+    const coverage = computeBusinessCoverage(
+      business,
+      agreement,
+      (business as any).memberships || [],
+      now,
+    );
+
+    if (coverage.source === 'MAINTENANCE_FREE' && coverage.isCovered) {
+      for (const sub of business.productSubscriptions) {
+        activeCoveredSubIds.add(sub.id);
+      }
+    }
+
     const billing = computeBusinessMembershipBilling(
       business,
       (business as any).memberships || [],
       now,
     );
+
+    (billing as any).coverage_source = coverage.source;
+    (billing as any).commercial_overdue = coverage.commercialOverdue;
+    (billing as any).is_commercial_blocked = coverage.isCommercialBlocked;
+    if (coverage.source === 'MAINTENANCE_FREE') {
+      billing.membership_status = coverage.status;
+      billing.due_date = coverage.coveredUntilStr;
+      billing.grace_ends_at = coverage.graceEndsAtStr;
+      billing.days_until_due = coverage.daysUntilDue;
+      billing.due_date_date = coverage.coveredUntil;
+      billing.is_active = coverage.isCovered;
+      billing.is_in_grace = coverage.isInGrace;
+      billing.monthly_amount = 0;
+    }
 
     const resolvedProductSubscriptions = business.productSubscriptions.map((sub) => {
       const isRiders = business.businessType === BusinessType.EMPRESA_RIDERS;
@@ -965,6 +1048,12 @@ export class SuperAdminService {
       grace_ends_at: billing.grace_ends_at,
       membership_status: billing.membership_status,
       days_until_due: billing.days_until_due,
+      coverage_source: coverage.source,
+      maintenance_free_ends_at: agreement?.maintenanceFreeEndsAt
+        ? toManaguaDateString(new Date(agreement.maintenanceFreeEndsAt))
+        : null,
+      commercial_overdue: coverage.commercialOverdue,
+      commercialAgreement: (business as any).commercialAgreement ?? null,
       membership: {
         status: billing.membership_status,
         billing_anchor_day: billing.billing_anchor_day,
@@ -2299,13 +2388,25 @@ export class SuperAdminService {
       newStartDate = prevDue;
       newEndDate = calculateDueDate(newStartDate, anchorDay);
     } else {
-      const paidDate =
-        parseManaguaDate(dto.paidAt) ||
-        parseManaguaDate(dto.startDate) ||
-        new Date();
-      const pParts = getManaguaDateParts(paidDate);
-      newStartDate = createManaguaDate(pParts.year, pParts.month, pParts.day, 0, 0, 0, 0);
-      newEndDate = calculateDueDate(newStartDate, anchorDay);
+      const agreement = await this.prisma.businessCommercialAgreement.findUnique({
+        where: { businessId: dto.businessId },
+        select: { maintenanceFreeEndsAt: true },
+      });
+
+      if (agreement?.maintenanceFreeEndsAt) {
+        // 244a: El primer pago de membresía del mes 13 debe cubrir desde maintenanceFreeEndsAt
+        const mParts = getManaguaDateParts(new Date(agreement.maintenanceFreeEndsAt));
+        newStartDate = createManaguaDate(mParts.year, mParts.month, mParts.day, 0, 0, 0, 0);
+        newEndDate = calculateDueDate(newStartDate, anchorDay);
+      } else {
+        const paidDate =
+          parseManaguaDate(dto.paidAt) ||
+          parseManaguaDate(dto.startDate) ||
+          new Date();
+        const pParts = getManaguaDateParts(paidDate);
+        newStartDate = createManaguaDate(pParts.year, pParts.month, pParts.day, 0, 0, 0, 0);
+        newEndDate = calculateDueDate(newStartDate, anchorDay);
+      }
     }
 
     // Normalizar lista de productos
@@ -2725,6 +2826,12 @@ export class SuperAdminService {
       });
 
       if (!hasOtherCoverage) {
+        // 244a: Comprobar si el negocio está cubierto por mantenimiento gratis
+        const coverage = await resolveBusinessCoverage(this.prisma, sub.businessId, targetDate);
+        if (coverage.isCovered && coverage.source === 'MAINTENANCE_FREE') {
+          continue;
+        }
+
         await this.prisma.businessProductSubscription.update({
           where: { id: subId },
           data: {

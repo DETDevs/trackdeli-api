@@ -105,4 +105,30 @@ export class UploadService {
       this.logger.warn(`[deleteReceiptPdf] Advertencia al borrar PDF de R2: key=${key}, error=${error.message}`);
     }
   }
+
+  /**
+   * 244a - Subida de documentos (PDF, imágenes, etc.) a R2 sin compresión Sharp.
+   */
+  async uploadDocument(file: Express.Multer.File, folder: string): Promise<string> {
+    this.logger.log(`[uploadDocument] Subiendo documento a R2: folder=${folder}, size=${file.size} bytes, mimetype=${file.mimetype}`);
+    try {
+      const extMatch = (file.originalname || '').match(/\.([0-9a-z]+)$/i);
+      const ext = extMatch ? `.${extMatch[1].toLowerCase()}` : (file.mimetype === 'application/pdf' ? '.pdf' : '.bin');
+      const key = `${folder}/${uuidv4()}${ext}`;
+
+      await this.s3Client.send(new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        Body: file.buffer,
+        ContentType: file.mimetype || 'application/octet-stream',
+      }));
+
+      const url = `${this.publicUrl}/${key}`;
+      this.logger.log(`[uploadDocument] OK documento subido: key=${key}, url=${url}`);
+      return url;
+    } catch (error: any) {
+      this.logger.error(`[uploadDocument] ERROR al subir documento a R2: folder=${folder}, error=${error.message}`, error.stack);
+      throw error;
+    }
+  }
 }

@@ -14,6 +14,7 @@ import {
   calculateDueDate,
   calculateGraceEndsAt,
   getManaguaDateParts,
+  resolveBusinessCoverage,
 } from '../../modules/superadmin/utils/membership-billing.util';
 
 @Injectable()
@@ -80,42 +81,21 @@ export class MembershipGuard implements CanActivate {
         }
       } else {
         const now = new Date();
-        const memberships = await this.prisma.membership.findMany({
-          where: {
-            businessId: user.businessId,
-            status: { in: [MembershipStatus.ACTIVE, MembershipStatus.EXPIRED] },
-            startDate: { lte: now },
-          },
-          include: {
-            business: {
-              select: {
-                id: true,
-                createdAt: true,
-                billingAnchorDay: true,
-              },
+        const coverage = await resolveBusinessCoverage(this.prisma, user.businessId, now);
+
+        if (coverage.isCommercialBlocked) {
+          throw new HttpException(
+            {
+              statusCode: 402,
+              error: 'Payment Required',
+              code: 'COMMERCIAL_PAYMENT_OVERDUE',
+              message: 'Tenés una cuota vencida. Contactá a NEXOL para regularizar.',
             },
-          },
-          orderBy: { endDate: 'desc' },
-        });
-
-        let isAuthorized = false;
-        for (const m of memberships) {
-          if (m.status === MembershipStatus.CANCELLED) continue;
-          const anchor =
-            m.business.billingAnchorDay ??
-            (m.paidAt
-              ? getManaguaDateParts(m.paidAt).day
-              : getManaguaDateParts(m.startDate).day);
-          const dueDate = calculateDueDate(m.startDate, anchor);
-          const graceEndsAt = calculateGraceEndsAt(dueDate);
-
-          if (now < graceEndsAt) {
-            isAuthorized = true;
-            break;
-          }
+            HttpStatus.PAYMENT_REQUIRED,
+          );
         }
 
-        if (!isAuthorized) {
+        if (!coverage.isCovered) {
           throw new HttpException(
             {
               statusCode: 402,

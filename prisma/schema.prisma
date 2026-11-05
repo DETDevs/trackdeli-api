@@ -412,6 +412,10 @@ model Business {
   organization                 Organization?           @relation(fields: [organizationId], references: [id])
   userBusinessAccesses         UserBusinessAccess[]
 
+  // 244a - Acuerdo comercial por negocio
+  commercialAgreement          BusinessCommercialAgreement?
+  commercialEquipments         CommercialEquipment[]
+
   @@map("businesses")
 }
 
@@ -2767,4 +2771,149 @@ model UserBusinessAccess {
   @@map("user_business_access")
 }
 
+// 244a - Acuerdo comercial por negocio
+enum CommercialSaleModality {
+  MEMBRESIA_MENSUAL
+  PAGO_UNICO_SISTEMA
+  COMBO_COMPLETO
+  COMBO_PARCIAL
+}
+
+enum CommercialPaymentType {
+  CONTADO
+  CREDITO
+}
+
+enum CommercialAgreementStatus {
+  VIGENTE
+  LIQUIDADO
+  CANCELADO
+}
+
+enum CommercialPaymentKind {
+  ADELANTO
+  CUOTA
+  PAGO
+}
+
+enum CommercialEquipmentType {
+  COMPUTADORA
+  MONITOR
+  TECLADO
+  MOUSE
+  IMPRESORA_TERMICA
+  GAVETA_DINERO
+  LECTOR_BARRA
+  IMPRESORA_COCINA
+  TABLET
+  OTRO
+}
+
+enum CommercialEquipmentStatus {
+  PENDIENTE
+  ENTREGADO
+  RETIRADO
+}
+
+model BusinessCommercialAgreement {
+  id                    String                    @id @default(uuid())
+  businessId            String                    @unique @map("business_id")
+  business              Business                  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  saleModality          CommercialSaleModality    @map("sale_modality")
+  paymentType           CommercialPaymentType     @default(CONTADO) @map("payment_type")
+  status                CommercialAgreementStatus @default(VIGENTE)
+
+  totalPrice            Decimal                   @db.Decimal(12, 2) @map("total_price")
+  currency              String                    @default("USD") @db.VarChar(10)
+  downPayment           Decimal                   @default(0) @db.Decimal(12, 2) @map("down_payment")
+  financedBalance       Decimal                   @default(0) @db.Decimal(12, 2) @map("financed_balance")
+  installmentsCount     Int                       @default(0) @map("installments_count")
+  firstInstallmentDate  DateTime?                 @map("first_installment_date")
+  graceDays             Int                       @default(3) @map("grace_days")
+  activatedAt           DateTime                  @default(now()) @map("activated_at")
+  maintenanceFreeMonths Int                       @default(12) @map("maintenance_free_months")
+  maintenanceFreeEndsAt DateTime?                 @map("maintenance_free_ends_at")
+  maintenanceFeeNio     Decimal                   @default(550) @db.Decimal(10, 2) @map("maintenance_fee_nio")
+  installationDoneAt    DateTime?                 @map("installation_done_at")
+  trainingDoneAt        DateTime?                 @map("training_done_at")
+  notes                 String?                   @db.Text
+  createdBy             String                    @map("created_by")
+  createdAt             DateTime                  @default(now()) @map("created_at")
+  updatedAt             DateTime                  @updatedAt @map("updated_at")
+
+  installments          CommercialInstallment[]
+  payments              CommercialPayment[]
+  equipment             CommercialEquipment[]
+
+  @@map("business_commercial_agreements")
+}
+
+model CommercialInstallment {
+  id                String                      @id @default(uuid())
+  agreementId       String                      @map("agreement_id")
+  agreement         BusinessCommercialAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+
+  installmentNumber Int                         @map("installment_number")
+  dueDate           DateTime                    @map("due_date")
+  amount            Decimal                     @db.Decimal(12, 2)
+  paidAmount        Decimal                     @default(0) @db.Decimal(12, 2) @map("paid_amount")
+  paidAt            DateTime?                   @map("paid_at")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+
+  @@unique([agreementId, installmentNumber])
+  @@index([agreementId])
+  @@map("commercial_installments")
+}
+
+model CommercialPayment {
+  id              String                      @id @default(uuid())
+  agreementId     String                      @map("agreement_id")
+  agreement       BusinessCommercialAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+
+  kind            CommercialPaymentKind
+  amount          Decimal                     @db.Decimal(12, 2)
+  paymentMethod   PaymentMethod               @default(TRANSFERENCIA) @map("payment_method")
+  referenceNumber String?                     @map("reference_number") @db.VarChar(100)
+  paymentProofUrl String?                     @map("payment_proof_url") @db.VarChar(500)
+  paidAt          DateTime                    @default(now()) @map("paid_at")
+  paidAmountNio   Decimal?                    @map("paid_amount_nio") @db.Decimal(12, 2)
+  exchangeRate    Decimal?                    @map("exchange_rate") @db.Decimal(10, 4)
+  notes           String?                     @db.Text
+  registeredBy    String                      @map("registered_by")
+  voidedAt        DateTime?                   @map("voided_at")
+  voidedBy        String?                     @map("voided_by")
+  voidReason      String?                     @map("void_reason") @db.VarChar(500)
+  createdAt       DateTime                    @default(now()) @map("created_at")
+
+  @@index([agreementId])
+  @@map("commercial_payments")
+}
+
+model CommercialEquipment {
+  id             String                      @id @default(uuid())
+  agreementId    String                      @map("agreement_id")
+  agreement      BusinessCommercialAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+  businessId     String                      @map("business_id")
+  business       Business                    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  equipmentType  CommercialEquipmentType     @map("equipment_type")
+  description    String?                     @db.VarChar(255)
+  brand          String                      @db.VarChar(100)
+  model          String                      @db.VarChar(100)
+  serialNumber   String                      @map("serial_number") @db.VarChar(100)
+  price          Decimal?                    @db.Decimal(12, 2)
+  status         CommercialEquipmentStatus   @default(PENDIENTE)
+  deliveredAt    DateTime?                   @map("delivered_at")
+  warrantyEndsAt DateTime?                   @map("warranty_ends_at")
+  notes          String?                     @db.Text
+  createdAt      DateTime                    @default(now()) @map("created_at")
+  updatedAt      DateTime                    @updatedAt @map("updated_at")
+
+  @@index([agreementId])
+  @@index([businessId])
+  @@index([serialNumber])
+  @@map("commercial_equipment")
+}
 

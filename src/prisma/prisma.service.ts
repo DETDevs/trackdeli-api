@@ -2319,6 +2319,7 @@ WHERE a."customerId" = c."id"
       await this.ensureCashCloseAuthSchema();
       await this.ensureDeviceCashRegisterSchema();
       await this.ensureMultiBranchSchema();
+      await this.ensureCommercialAgreementsSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4172,6 +4173,168 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠️ 240a - Advertencia sincronizando esquema multi-sucursal: ${err.message}`);
+    }
+  }
+
+  /**
+   * 244a - Acuerdo comercial por negocio:
+   * - Enums: CommercialSaleModality, CommercialPaymentType, CommercialAgreementStatus, CommercialPaymentKind, CommercialEquipmentType, CommercialEquipmentStatus
+   * - Tablas: business_commercial_agreements, commercial_installments, commercial_payments, commercial_equipment
+   * DDL idempotente con advisory lock 244001.
+   */
+  private async ensureCommercialAgreementsSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(244001)`);
+      try {
+        // 1. Enums
+        await this.$executeRawUnsafe(`
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'CommercialSaleModality') THEN
+              CREATE TYPE "CommercialSaleModality" AS ENUM ('MEMBRESIA_MENSUAL', 'PAGO_UNICO_SISTEMA', 'COMBO_COMPLETO', 'COMBO_PARCIAL');
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'CommercialPaymentType') THEN
+              CREATE TYPE "CommercialPaymentType" AS ENUM ('CONTADO', 'CREDITO');
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'CommercialAgreementStatus') THEN
+              CREATE TYPE "CommercialAgreementStatus" AS ENUM ('VIGENTE', 'LIQUIDADO', 'CANCELADO');
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'CommercialPaymentKind') THEN
+              CREATE TYPE "CommercialPaymentKind" AS ENUM ('ADELANTO', 'CUOTA', 'PAGO');
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'CommercialEquipmentType') THEN
+              CREATE TYPE "CommercialEquipmentType" AS ENUM ('COMPUTADORA', 'MONITOR', 'TECLADO', 'MOUSE', 'IMPRESORA_TERMICA', 'GAVETA_DINERO', 'LECTOR_BARRA', 'IMPRESORA_COCINA', 'TABLET', 'OTRO');
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'CommercialEquipmentStatus') THEN
+              CREATE TYPE "CommercialEquipmentStatus" AS ENUM ('PENDIENTE', 'ENTREGADO', 'RETIRADO');
+            END IF;
+          END $$;
+        `);
+
+        // 2. Tabla business_commercial_agreements
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "business_commercial_agreements" (
+            "id" TEXT NOT NULL,
+            "business_id" TEXT NOT NULL,
+            "sale_modality" "CommercialSaleModality" NOT NULL,
+            "payment_type" "CommercialPaymentType" NOT NULL DEFAULT 'CONTADO',
+            "status" "CommercialAgreementStatus" NOT NULL DEFAULT 'VIGENTE',
+            "total_price" DECIMAL(12, 2) NOT NULL,
+            "currency" VARCHAR(10) NOT NULL DEFAULT 'USD',
+            "down_payment" DECIMAL(12, 2) NOT NULL DEFAULT 0,
+            "financed_balance" DECIMAL(12, 2) NOT NULL DEFAULT 0,
+            "installments_count" INTEGER NOT NULL DEFAULT 0,
+            "first_installment_date" TIMESTAMP(3),
+            "grace_days" INTEGER NOT NULL DEFAULT 3,
+            "activated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "maintenance_free_months" INTEGER NOT NULL DEFAULT 12,
+            "maintenance_free_ends_at" TIMESTAMP(3),
+            "maintenance_fee_nio" DECIMAL(10, 2) NOT NULL DEFAULT 550,
+            "installation_done_at" TIMESTAMP(3),
+            "training_done_at" TIMESTAMP(3),
+            "notes" TEXT,
+            "created_by" TEXT NOT NULL,
+            "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "business_commercial_agreements_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "business_commercial_agreements_business_id_key" UNIQUE ("business_id"),
+            CONSTRAINT "business_commercial_agreements_business_id_fkey" FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "business_commercial_agreements_business_id_idx" ON "business_commercial_agreements"("business_id");
+        `);
+
+        // 3. Tabla commercial_installments
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "commercial_installments" (
+            "id" TEXT NOT NULL,
+            "agreement_id" TEXT NOT NULL,
+            "installment_number" INTEGER NOT NULL,
+            "due_date" TIMESTAMP(3) NOT NULL,
+            "amount" DECIMAL(12, 2) NOT NULL,
+            "paid_amount" DECIMAL(12, 2) NOT NULL DEFAULT 0,
+            "paid_at" TIMESTAMP(3),
+            "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "commercial_installments_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "commercial_installments_agreement_id_installment_number_key" UNIQUE ("agreement_id", "installment_number"),
+            CONSTRAINT "commercial_installments_agreement_id_fkey" FOREIGN KEY ("agreement_id") REFERENCES "business_commercial_agreements"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "commercial_installments_agreement_id_idx" ON "commercial_installments"("agreement_id");
+        `);
+
+        // 4. Tabla commercial_payments
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "commercial_payments" (
+            "id" TEXT NOT NULL,
+            "agreement_id" TEXT NOT NULL,
+            "kind" "CommercialPaymentKind" NOT NULL,
+            "amount" DECIMAL(12, 2) NOT NULL,
+            "payment_method" "PaymentMethod" NOT NULL DEFAULT 'TRANSFERENCIA',
+            "reference_number" VARCHAR(100),
+            "payment_proof_url" VARCHAR(500),
+            "paid_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "paid_amount_nio" DECIMAL(12, 2),
+            "exchange_rate" DECIMAL(10, 4),
+            "notes" TEXT,
+            "registered_by" TEXT NOT NULL,
+            "voided_at" TIMESTAMP(3),
+            "voided_by" TEXT,
+            "void_reason" VARCHAR(500),
+            "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "commercial_payments_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "commercial_payments_agreement_id_fkey" FOREIGN KEY ("agreement_id") REFERENCES "business_commercial_agreements"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "commercial_payments_agreement_id_idx" ON "commercial_payments"("agreement_id");
+        `);
+
+        // 5. Tabla commercial_equipment
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "commercial_equipment" (
+            "id" TEXT NOT NULL,
+            "agreement_id" TEXT NOT NULL,
+            "business_id" TEXT NOT NULL,
+            "equipment_type" "CommercialEquipmentType" NOT NULL,
+            "description" VARCHAR(255),
+            "brand" VARCHAR(100) NOT NULL,
+            "model" VARCHAR(100) NOT NULL,
+            "serial_number" VARCHAR(100) NOT NULL,
+            "price" DECIMAL(12, 2),
+            "status" "CommercialEquipmentStatus" NOT NULL DEFAULT 'PENDIENTE',
+            "delivered_at" TIMESTAMP(3),
+            "warranty_ends_at" TIMESTAMP(3),
+            "notes" TEXT,
+            "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "commercial_equipment_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "commercial_equipment_agreement_id_fkey" FOREIGN KEY ("agreement_id") REFERENCES "business_commercial_agreements"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "commercial_equipment_business_id_fkey" FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "commercial_equipment_agreement_id_idx" ON "commercial_equipment"("agreement_id");
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "commercial_equipment_business_id_idx" ON "commercial_equipment"("business_id");
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "commercial_equipment_serial_number_idx" ON "commercial_equipment"("serial_number");
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(244001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠️ 244a - Advertencia sincronizando esquema de acuerdos comerciales: ${err.message}`);
     }
   }
 

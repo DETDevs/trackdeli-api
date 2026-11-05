@@ -3,7 +3,10 @@ import {
   CanActivate,
   ExecutionContext,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
+import { resolveBusinessCoverage } from '../../superadmin/utils/membership-billing.util';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { BusinessProductType, UserRole } from '@prisma/client';
 import { BusinessProductsService } from '../../business-products/business-products.service';
@@ -94,13 +97,29 @@ export class BackofficeGuard implements CanActivate {
         },
       });
 
+      const coverage = await resolveBusinessCoverage(this.prisma, businessId);
+
+      if (coverage.isCommercialBlocked) {
+        throw new HttpException(
+          {
+            statusCode: 402,
+            error: 'Payment Required',
+            code: 'COMMERCIAL_PAYMENT_OVERDUE',
+            message: 'Tenés una cuota vencida. Contactá a NEXOL para regularizar.',
+          },
+          HttpStatus.PAYMENT_REQUIRED,
+        );
+      }
+
       if (posSub?.trialEndsAt && new Date() >= posSub.trialEndsAt) {
-        throw new ForbiddenException({
-          statusCode: 403,
-          error: 'Forbidden',
-          code: 'TRIAL_EXPIRED',
-          message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
-        });
+        if (!coverage.isCovered) {
+          throw new ForbiddenException({
+            statusCode: 403,
+            error: 'Forbidden',
+            code: 'TRIAL_EXPIRED',
+            message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
+          });
+        }
       }
 
       const rawPlatform =

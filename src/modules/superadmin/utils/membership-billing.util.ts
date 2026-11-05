@@ -28,6 +28,11 @@ export interface BusinessBillingInfo {
   grace_ends_at_date: Date | null;
   is_active: boolean;
   is_in_grace: boolean;
+  monthly_amount?: number;
+  monthly_amount_nio?: number;
+  coverage_source?: CoverageSource;
+  commercial_overdue?: boolean;
+  is_commercial_blocked?: boolean;
 }
 
 /**
@@ -148,13 +153,41 @@ export function calculateDueDate(periodStartDate: Date, anchorDay: number): Date
 }
 
 /**
+ * Calcula cuándo termina el período de gracia dado un número arbitrario de días de gracia (default 3).
+ * A las 00:00 del día siguiente a los N días de gracia (ej. 3 días -> +4 días a las 00:00).
+ */
+export function calculateGraceEndsAtDays(dueDate: Date, graceDays = 3): Date {
+  return new Date(dueDate.getTime() + (graceDays + 1) * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Agrega N meses calendario a una fecha en America/Managua, ajustando fin de mes.
+ */
+export function addMonthsManagua(startDate: Date, months: number, preferredDay?: number): Date {
+  const parts = getManaguaDateParts(startDate);
+  let y = parts.year;
+  let m = parts.month + months;
+  while (m > 12) {
+    y++;
+    m -= 12;
+  }
+  while (m < 1) {
+    y--;
+    m += 12;
+  }
+  const day = preferredDay !== undefined ? preferredDay : parts.day;
+  const clamped = getClampedDayForMonth(y, m, day);
+  return createManaguaDate(y, m, clamped, 0, 0, 0, 0);
+}
+
+/**
  * Calcula cuándo termina el período de gracia de 3 días.
  * Regla 4: A partir del día siguiente al vencimiento corren 3 días de gracia (ej. 11, 12, 13 nov).
  * A las 00:00 del día siguiente a los 3 días de gracia (14 nov 00:00:00-06:00) pasa a Vencido/Suspendido.
  */
 export function calculateGraceEndsAt(dueDate: Date): Date {
   // Due date a las 00:00 + 4 días exactos (96 horas en UTC-6 sin DST)
-  return new Date(dueDate.getTime() + 4 * 24 * 60 * 60 * 1000);
+  return calculateGraceEndsAtDays(dueDate, 3);
 }
 
 /**
@@ -286,3 +319,239 @@ export function computeBusinessMembershipBilling(
     is_in_grace: status === 'EN_GRACIA',
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 244a — COBERTURA ÚNICA (Acuerdo comercial vs Membresía mensual)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CoverageSource = 'MAINTENANCE_FREE' | 'MEMBERSHIP' | null;
+
+export interface BusinessCoverageResolution {
+  source: CoverageSource;
+  coveredUntil: Date | null;
+  coveredUntilStr: string | null;
+  graceEndsAt: Date | null;
+  graceEndsAtStr: string | null;
+  isCovered: boolean;
+  isInGrace: boolean;
+  isCommercialBlocked: boolean;
+  commercialOverdue: boolean;
+  overdueAmount: number;
+  overdueInstallmentsCount: number;
+  daysUntilDue: number | null;
+  status: DerivedMembershipStatus;
+}
+
+/**
+ * Calcula la cobertura unificada de un negocio evaluando:
+ * 1. Bloqueo comercial por cuotas de crédito vencidas fuera de su período de gracia.
+ * 2. Mantenimiento gratis (12 meses o configurable) según el acuerdo comercial.
+ * 3. Membresía mensual regular pagada.
+ * Regla: Vale la cobertura que llegue más lejos.
+ * Si hay bloqueo comercial por cuota vencida, isCovered es false.
+ */
+export function computeBusinessCoverage(
+  business: {
+    id: string;
+    createdAt: Date;
+    billingAnchorDay?: number | null;
+  },
+  agreement: {
+    paymentType?: string | null;
+    status?: string | null;
+    graceDays?: number | null;
+    maintenanceFreeEndsAt?: Date | string | null;
+    installments?: Array<{
+      installmentNumber: number;
+      dueDate: Date | string;
+      amount: any;
+      paidAmount: any;
+      paidAt?: Date | string | null;
+    }> | null;
+  } | null | undefined,
+  memberships: Array<{
+    id: string;
+    startDate: Date | string;
+    endDate: Date | string;
+    status: string;
+    paidAt?: Date | string | null;
+    createdAt?: Date | string;
+    amount?: any;
+    currency?: string;
+  }> | null | undefined,
+  now: Date = new Date(),
+): BusinessCoverageResolution {
+  let isCommercialBlocked = false;
+  let commercialOverdue = false;
+  let overdueAmount = 0;
+  let overdueInstallmentsCount = 0;
+
+  // 1. Evaluación de crédito comercial
+  if (agreement && agreement.paymentType === 'CREDITO' && agreement.status !== 'CANCELADO') {
+    const graceDays = agreement.graceDays !== null && agreement.graceDays !== undefined ? agreement.graceDays : 3;
+    const installments = agreement.installments || [];
+
+    for (const inst of installments) {
+      const amt = Number(inst.amount || 0);
+      const paid = Number(inst.paidAmount || 0);
+
+      if (paid < amt) {
+        const dueDate = parseManaguaDate(inst.dueDate) || new Date(inst.dueDate);
+        const instGrace = calculateGraceEndsAtDays(dueDate, graceDays);
+
+        if (now >= dueDate) {
+          commercialOverdue = true;
+        }
+
+        if (now >= instGrace) {
+          isCommercialBlocked = true;
+          overdueAmount += (amt - paid);
+          overdueInstallmentsCount++;
+        }
+      }
+    }
+    overdueAmount = Math.round(overdueAmount * 100) / 100;
+  }
+
+  // 2. Mantenimiento gratis
+  let maintDue: Date | null = null;
+  let maintGrace: Date | null = null;
+  let maintDays: number | null = null;
+
+  if (agreement && agreement.maintenanceFreeEndsAt && agreement.status !== 'CANCELADO') {
+    maintDue = parseManaguaDate(agreement.maintenanceFreeEndsAt) || new Date(agreement.maintenanceFreeEndsAt);
+    maintGrace = calculateGraceEndsAt(maintDue);
+    maintDays = calculateDaysUntilDue(maintDue, now);
+  }
+
+  // 3. Membresía mensual
+  let memDue: Date | null = null;
+  let memGrace: Date | null = null;
+  let memDays: number | null = null;
+
+  const validMemberships = (memberships || [])
+    .filter((m) => m.status === 'ACTIVE' || m.status === 'EXPIRED')
+    .map((m) => ({
+      ...m,
+      startDate: parseManaguaDate(m.startDate) || new Date(m.startDate),
+      endDate: parseManaguaDate(m.endDate) || new Date(m.endDate),
+      paidAt: m.paidAt ? (parseManaguaDate(m.paidAt) || new Date(m.paidAt)) : null,
+      createdAt: m.createdAt ? (parseManaguaDate(m.createdAt) || new Date(m.createdAt)) : undefined,
+    }));
+
+  if (validMemberships.length > 0) {
+    const billing = computeBusinessMembershipBilling(business, validMemberships, now);
+    memDue = billing.due_date_date;
+    memGrace = billing.grace_ends_at_date;
+    memDays = billing.days_until_due;
+  }
+
+  // 4. Comparación: Vale la que llegue más lejos
+  let chosenSource: CoverageSource = null;
+  let chosenDue: Date | null = null;
+  let chosenGrace: Date | null = null;
+  let chosenDays: number | null = null;
+
+  if (maintGrace && memGrace) {
+    if (maintGrace.getTime() >= memGrace.getTime()) {
+      chosenSource = 'MAINTENANCE_FREE';
+      chosenDue = maintDue;
+      chosenGrace = maintGrace;
+      chosenDays = maintDays;
+    } else {
+      chosenSource = 'MEMBERSHIP';
+      chosenDue = memDue;
+      chosenGrace = memGrace;
+      chosenDays = memDays;
+    }
+  } else if (maintGrace) {
+    chosenSource = 'MAINTENANCE_FREE';
+    chosenDue = maintDue;
+    chosenGrace = maintGrace;
+    chosenDays = maintDays;
+  } else if (memGrace) {
+    chosenSource = 'MEMBERSHIP';
+    chosenDue = memDue;
+    chosenGrace = memGrace;
+    chosenDays = memDays;
+  }
+
+  // 5. Cobertura final
+  const isTimeCovered = chosenGrace !== null && now < chosenGrace;
+  const isCovered = isTimeCovered && !isCommercialBlocked;
+  const isInGrace = chosenDue !== null && chosenGrace !== null && now >= chosenDue && now < chosenGrace;
+  const status = chosenDays !== null ? calculateMembershipStatus(chosenDays) : 'NOT_CONTRACTED';
+
+  return {
+    source: chosenSource,
+    coveredUntil: chosenDue,
+    coveredUntilStr: chosenDue ? toManaguaDateString(chosenDue) : null,
+    graceEndsAt: chosenGrace,
+    graceEndsAtStr: chosenGrace ? chosenGrace.toISOString() : null,
+    isCovered,
+    isInGrace,
+    isCommercialBlocked,
+    commercialOverdue,
+    overdueAmount,
+    overdueInstallmentsCount,
+    daysUntilDue: chosenDays,
+    status,
+  };
+}
+
+/**
+ * Consulta la cobertura de un negocio en BD con una sola consulta liviana.
+ */
+export async function resolveBusinessCoverage(
+  prisma: any,
+  businessId: string,
+  now: Date = new Date(),
+): Promise<BusinessCoverageResolution> {
+  const business = await prisma.business.findUnique({
+    where: { id: businessId },
+    select: {
+      id: true,
+      createdAt: true,
+      billingAnchorDay: true,
+      commercialAgreement: {
+        include: {
+          installments: {
+            orderBy: { installmentNumber: 'asc' },
+          },
+        },
+      },
+      memberships: {
+        where: {
+          status: { in: ['ACTIVE', 'EXPIRED'] },
+        },
+        orderBy: [{ endDate: 'desc' }, { startDate: 'desc' }],
+      },
+    },
+  });
+
+  if (!business) {
+    return {
+      source: null,
+      coveredUntil: null,
+      coveredUntilStr: null,
+      graceEndsAt: null,
+      graceEndsAtStr: null,
+      isCovered: false,
+      isInGrace: false,
+      isCommercialBlocked: false,
+      commercialOverdue: false,
+      overdueAmount: 0,
+      overdueInstallmentsCount: 0,
+      daysUntilDue: null,
+      status: 'NOT_CONTRACTED',
+    };
+  }
+
+  return computeBusinessCoverage(
+    business,
+    business.commercialAgreement,
+    business.memberships,
+    now,
+  );
+}
+

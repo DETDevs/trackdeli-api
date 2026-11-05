@@ -12,7 +12,7 @@ import { User, AuthProvider, BusinessProductType, UserRole } from '@prisma/clien
 import { FirebaseService } from '../notifications/firebase.service';
 import { PosDevicesService } from '../pos/devices/pos-devices.service';
 import { getSalonLabels, resolveSalonProfile } from '../pos/salon/salon-profile.util';
-import { computeBusinessMembershipBilling } from '../superadmin/utils/membership-billing.util';
+import { computeBusinessMembershipBilling, computeBusinessCoverage, resolveBusinessCoverage } from '../superadmin/utils/membership-billing.util';
 
 @Injectable()
 export class AuthService {
@@ -172,6 +172,16 @@ export class AuthService {
     const salonProfile = resolveSalonProfile(b.salonProfile);
     const salonLabels = getSalonLabels(salonProfile);
     const billing = computeBusinessMembershipBilling(b, b.memberships);
+    const coverage = await resolveBusinessCoverage(this.prisma, b.id);
+    if (coverage.source === 'MAINTENANCE_FREE') {
+      billing.membership_status = coverage.status;
+      billing.due_date = coverage.coveredUntilStr;
+      billing.grace_ends_at = coverage.graceEndsAtStr;
+      billing.days_until_due = coverage.daysUntilDue;
+      billing.due_date_date = coverage.coveredUntil;
+      billing.is_active = coverage.isCovered;
+      billing.is_in_grace = coverage.isInGrace;
+    }
     return {
       businessData: {
         id: b.id,
@@ -248,13 +258,16 @@ export class AuthService {
         const now = new Date();
 
         if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {
-          this.logger.warn(`[login] Rechazado por prueba vencida: businessId=${activeBusinessId}, email=${dto.email}`);
-          throw new ForbiddenException({
-            statusCode: 403,
-            error: 'Forbidden',
-            code: 'TRIAL_EXPIRED',
-            message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
-          });
+          const coverage = await resolveBusinessCoverage(this.prisma, activeBusinessId, now);
+          if (!coverage.isCovered) {
+            this.logger.warn(`[login] Rechazado por prueba vencida: businessId=${activeBusinessId}, email=${dto.email}`);
+            throw new ForbiddenException({
+              statusCode: 403,
+              error: 'Forbidden',
+              code: 'TRIAL_EXPIRED',
+              message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
+            });
+          }
         }
 
         const headers = req?.headers || {};
@@ -391,12 +404,15 @@ export class AuthService {
       if (posSub && posSub.trialHours !== null && posSub.trialHours >= 1) {
         const now = new Date();
         if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {
-          throw new ForbiddenException({
-            statusCode: 403,
-            error: 'Forbidden',
-            code: 'TRIAL_EXPIRED',
-            message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
-          });
+          const coverage = await resolveBusinessCoverage(this.prisma, targetBusinessId, now);
+          if (!coverage.isCovered) {
+            throw new ForbiddenException({
+              statusCode: 403,
+              error: 'Forbidden',
+              code: 'TRIAL_EXPIRED',
+              message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
+            });
+          }
         }
         if (posSub.trialEndsAt) {
           maxExpiresAt = posSub.trialEndsAt;
@@ -715,13 +731,16 @@ export class AuthService {
           const now = new Date();
 
           if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {
-            this.logger.warn(`[refresh] Rechazado por prueba vencida: businessId=${activeBusinessId}, userId=${user.id}`);
-            throw new ForbiddenException({
-              statusCode: 403,
-              error: 'Forbidden',
-              code: 'TRIAL_EXPIRED',
-              message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
-            });
+            const coverage = await resolveBusinessCoverage(this.prisma, activeBusinessId, now);
+            if (!coverage.isCovered) {
+              this.logger.warn(`[refresh] Rechazado por prueba vencida: businessId=${activeBusinessId}, userId=${user.id}`);
+              throw new ForbiddenException({
+                statusCode: 403,
+                error: 'Forbidden',
+                code: 'TRIAL_EXPIRED',
+                message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
+              });
+            }
           }
 
           if (posSub.trialEndsAt) {

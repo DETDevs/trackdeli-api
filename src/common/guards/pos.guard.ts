@@ -3,7 +3,10 @@ import {
   CanActivate,
   ExecutionContext,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
+import { resolveBusinessCoverage } from '../../modules/superadmin/utils/membership-billing.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BusinessProductType, UserRole } from '@prisma/client';
 import { BusinessProductsService } from '../../modules/business-products/business-products.service';
@@ -44,6 +47,30 @@ export class PosGuard implements CanActivate {
       throw new ForbiddenException('Negocio inactivo');
     }
 
+    const coverage = await resolveBusinessCoverage(this.prisma, user.businessId);
+
+    if (coverage.isCommercialBlocked) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.PAYMENT_REQUIRED,
+          error: 'COMMERCIAL_PAYMENT_OVERDUE',
+          message: 'Tenés una cuota vencida. Contactá a NEXOL para regularizar.',
+        },
+        HttpStatus.PAYMENT_REQUIRED,
+      );
+    }
+
+    if (coverage.source && !coverage.isCovered) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.PAYMENT_REQUIRED,
+          error: 'MEMBERSHIP_EXPIRED',
+          message: 'Mantenimiento o membresía vencida. Contactá a NEXOL para regularizar.',
+        },
+        HttpStatus.PAYMENT_REQUIRED,
+      );
+    }
+
     const isPosActive = await this.businessProductsService.isActive(
       user.businessId,
       BusinessProductType.POS,
@@ -74,12 +101,14 @@ export class PosGuard implements CanActivate {
     });
 
     if (posSub?.trialEndsAt && new Date() >= posSub.trialEndsAt) {
-      throw new ForbiddenException({
-        statusCode: 403,
-        error: 'Forbidden',
-        code: 'TRIAL_EXPIRED',
-        message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
-      });
+      if (!coverage.isCovered) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'TRIAL_EXPIRED',
+          message: 'La prueba de este negocio terminó. Contactá a NEXOL para continuar.',
+        });
+      }
     }
 
     const rawPlatform =
