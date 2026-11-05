@@ -148,6 +148,46 @@ export class ReportsController {
     );
   }
 
+  @Get("profit/summary")
+  profitSummary(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getProfitSummary(resolveBusinessId(user, qBid), period, from, to);
+  }
+
+  @Get("profit/products")
+  profitProducts(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("businessId") qBid?: string,
+    @Query("page") page?: number,
+    @Query("pageSize") pageSize?: number,
+    @Query("sort") sort?: string,
+    @Query("dir") dir?: string,
+    @Query("search") search?: string,
+    @Query("categoryId") categoryId?: string,
+    @Query("filter") filter?: string,
+  ) {
+    return this.service.getProfitProducts(resolveBusinessId(user, qBid), {
+      period,
+      from,
+      to,
+      page: page ? Number(page) : 1,
+      pageSize: pageSize ? Number(pageSize) : 50,
+      sort,
+      dir,
+      search,
+      categoryId,
+      filter,
+    });
+  }
+
   @Get("profit")
   profit(
     @CurrentUser() user: JwtPayload,
