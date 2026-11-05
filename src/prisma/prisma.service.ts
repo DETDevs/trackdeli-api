@@ -2320,6 +2320,7 @@ WHERE a."customerId" = c."id"
       await this.ensureDeviceCashRegisterSchema();
       await this.ensureMultiBranchSchema();
       await this.ensureCommercialAgreementsSchema();
+      await this.ensureSaleItemCostSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4335,6 +4336,28 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠️ 244a - Advertencia sincronizando esquema de acuerdos comerciales: ${err.message}`);
+    }
+  }
+
+    /**
+   * 247c - Guardar costo histórico por línea de venta:
+   * - Columnas: pos_sale_items.unit_cost (NUMERIC), pos_sale_items.cost_source (VARCHAR(20))
+   * DDL idempotente con advisory lock 247002.
+   */
+  private async ensureSaleItemCostSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(247002)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_sale_items"
+            ADD COLUMN IF NOT EXISTS "unit_cost" NUMERIC,
+            ADD COLUMN IF NOT EXISTS "cost_source" VARCHAR(20);
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(247002)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠️ 247c - Advertencia sincronizando esquema de costo histórico en pos_sale_items: ${err.message}`);
     }
   }
 

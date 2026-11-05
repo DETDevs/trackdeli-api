@@ -394,11 +394,15 @@ export class SalesService {
 
       let hasNegativeStock = false;
       const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
+      const lineCostData: Array<{ unitCost: number | null; costSource: string }> = [];
+      const batchAllocationsByIndex = new Map<number, { allocations: any[]; stockBefore: number }>();
 
-      for (const item of dto.items) {
+      for (let itemIdx = 0; itemIdx < dto.items.length; itemIdx++) {
+        const item = dto.items[itemIdx];
         let priceTier = 'RETAIL';
         let effectiveUnitPrice = item.unitPrice;
         let product: any = null;
+        let requestedQty = round3(item.quantity);
 
         if (item.productId) {
           product = await tx.product.findFirst({
@@ -412,7 +416,7 @@ export class SalesService {
             },
           });
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
-          const requestedQty = validateProductQuantity(product.unit, item.quantity, product.name, Boolean(dto.isSplitSale));
+          requestedQty = validateProductQuantity(product.unit, item.quantity, product.name, Boolean(dto.isSplitSale));
 
           // 221a: Resolver precio unitario según regla de venta por mayor y canal de venta
           const resolved = resolveChannelUnitPrice(product, requestedQty, business, saleChannel);
@@ -524,6 +528,81 @@ export class SalesService {
           taxable = Boolean(item.taxable);
         }
 
+        // 247c: Determinar costo histórico y origen para la línea
+        let itemUnitCost: number | null = null;
+        let itemCostSource = 'NONE';
+
+        if (product) {
+          if (product.type === 'SERVICE') {
+            itemUnitCost = 0;
+            itemCostSource = 'LABOR';
+          } else {
+            const isTracked = this.batchesService.isTracked(business, product);
+            if (isTracked) {
+              const stockBefore = Number(product.stock);
+              const allocations = await this.batchesService.allocateFefo(tx, {
+                businessId,
+                productId: item.productId!,
+                qty: requestedQty,
+              });
+              batchAllocationsByIndex.set(itemIdx, { allocations, stockBefore });
+
+              let allocQtySum = 0;
+              let allocCostSum = 0;
+              let hasAnyCost = false;
+              for (const a of allocations) {
+                allocQtySum += a.quantity;
+                if (a.cost != null) {
+                  hasAnyCost = true;
+                  allocCostSum += (a.quantity * Number(a.cost));
+                } else if (product.cost != null) {
+                  hasAnyCost = true;
+                  allocCostSum += (a.quantity * Number(product.cost));
+                }
+              }
+
+              if (hasAnyCost && allocQtySum > 0) {
+                itemUnitCost = Math.round((allocCostSum / allocQtySum) * 10000) / 10000;
+                itemCostSource = 'BATCH';
+              } else if (product.cost != null) {
+                itemUnitCost = Number(product.cost);
+                itemCostSource = 'PRODUCT';
+              } else {
+                itemUnitCost = null;
+                itemCostSource = 'NONE';
+              }
+            } else if (product.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
+              let recipeCostSum = 0;
+              let hasCompCost = false;
+              for (const comp of product.recipeComponents) {
+                const compProd = comp.componentProduct;
+                if (compProd && compProd.cost != null) {
+                  hasCompCost = true;
+                  recipeCostSum += (Number(comp.quantity) * Number(compProd.cost));
+                }
+              }
+              if (hasCompCost) {
+                itemUnitCost = Math.round(recipeCostSum * 10000) / 10000;
+                itemCostSource = 'RECIPE';
+              } else if (product.cost != null) {
+                itemUnitCost = Number(product.cost);
+                itemCostSource = 'PRODUCT';
+              } else {
+                itemUnitCost = null;
+                itemCostSource = 'NONE';
+              }
+            } else if (product.cost != null) {
+              itemUnitCost = Number(product.cost);
+              itemCostSource = 'PRODUCT';
+            } else {
+              itemUnitCost = null;
+              itemCostSource = 'NONE';
+            }
+          }
+        }
+
+        lineCostData.push({ unitCost: itemUnitCost, costSource: itemCostSource });
+
         rawItemsForCalc.push({
           productId: item.productId || null,
           productName: item.productName || product?.name || 'Producto',
@@ -547,6 +626,7 @@ export class SalesService {
           const isDeliveryTaxable = business.deliveryTaxable !== null && business.deliveryTaxable !== undefined
             ? business.deliveryTaxable
             : Boolean(business.taxEnabled);
+          lineCostData.push({ unitCost: null, costSource: 'NONE' });
           rawItemsForCalc.push({
             productId: null,
             productName: 'Envío a domicilio',
@@ -651,6 +731,8 @@ export class SalesService {
         taxRate: l.taxRate,
         taxAmount: l.taxAmount,
         origin: (dto.items[idx] as any)?.origin || 'CASHIER',
+        unitCost: lineCostData[idx]?.unitCost ?? null,
+        costSource: lineCostData[idx]?.costSource ?? 'NONE',
       }));
 
       // 1. Detectar porción de crédito y prima
@@ -1488,7 +1570,8 @@ export class SalesService {
         (sale as any).creditAccount = createdCreditAccount;
       }
 
-      for (const item of dto.items) {
+      for (let itemIdx = 0; itemIdx < dto.items.length; itemIdx++) {
+        const item = dto.items[itemIdx];
         if (item.productId) {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
@@ -1575,11 +1658,9 @@ export class SalesService {
             const isTracked = this.batchesService.isTracked(business, product);
 
             if (isTracked) {
-              const allocations = await this.batchesService.allocateFefo(tx, {
-                businessId,
-                productId: item.productId,
-                qty,
-              });
+              const batchEntry = batchAllocationsByIndex.get(itemIdx);
+              const allocations = batchEntry?.allocations || [];
+              const effectiveStockBefore = batchEntry?.stockBefore ?? stockBefore;
 
               if (lineSaleItem && allocations.length > 0) {
                 await tx.saleItemBatch.createMany({
@@ -1599,7 +1680,7 @@ export class SalesService {
                     userId: cashierId,
                     type: 'VENTA',
                     quantity: -a.quantity,
-                    stockBefore,
+                    stockBefore: effectiveStockBefore,
                     stockAfter,
                     concept: `Venta ${invoiceNumber} (Lote: ${a.batchNumber})`,
                     reference: sale.id,

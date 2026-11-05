@@ -249,10 +249,12 @@ export class OfflineService {
           });
 
           const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
+          const lineCostData: Array<{ unitCost: number | null; costSource: string }> = [];
           const discrepancies: any[] = [];
           const pendingAllocations: Array<{ productId: string; allocations: any[] }> = [];
 
           for (const item of saleDto.items) {
+            let itemAllocRes: any = null;
             let product: any = null;
             if (item.productId) {
               product = await tx.product.findFirst({
@@ -400,6 +402,7 @@ export class OfflineService {
                   productId: product.id,
                   qty,
                 });
+                itemAllocRes = allocRes;
 
                 if (allocRes.allocations.length > 0) {
                   pendingAllocations.push({ productId: product.id, allocations: allocRes.allocations });
@@ -511,6 +514,69 @@ export class OfflineService {
             if (item.taxable !== undefined && item.taxable !== null) {
               taxable = Boolean(item.taxable);
             }
+
+            // 247c: Costo histórico y origen para la línea offline
+            let itemUnitCost: number | null = null;
+            let itemCostSource = 'NONE';
+
+            if (product) {
+              if (product.type === 'SERVICE') {
+                itemUnitCost = 0;
+                itemCostSource = 'LABOR';
+              } else if (itemAllocRes) {
+                let allocQtySum = 0;
+                let allocCostSum = 0;
+                let hasAnyCost = false;
+                for (const a of itemAllocRes.allocations || []) {
+                  allocQtySum += a.quantity;
+                  if (a.cost != null) {
+                    hasAnyCost = true;
+                    allocCostSum += (a.quantity * Number(a.cost));
+                  } else if (product.cost != null) {
+                    hasAnyCost = true;
+                    allocCostSum += (a.quantity * Number(product.cost));
+                  }
+                }
+                if (hasAnyCost && allocQtySum > 0) {
+                  itemUnitCost = Math.round((allocCostSum / allocQtySum) * 10000) / 10000;
+                  itemCostSource = 'BATCH';
+                } else if (product.cost != null) {
+                  itemUnitCost = Number(product.cost);
+                  itemCostSource = 'PRODUCT';
+                } else {
+                  itemUnitCost = null;
+                  itemCostSource = 'NONE';
+                }
+              } else if (product.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
+                let recipeCostSum = 0;
+                let hasCompCost = false;
+                for (const comp of product.recipeComponents) {
+                  const compProd = comp.componentProduct;
+                  if (compProd && compProd.cost != null) {
+                    hasCompCost = true;
+                    recipeCostSum += (Number(comp.quantity) * Number(compProd.cost));
+                  }
+                }
+                if (hasCompCost) {
+                  itemUnitCost = Math.round(recipeCostSum * 10000) / 10000;
+                  itemCostSource = 'RECIPE';
+                } else if (product.cost != null) {
+                  itemUnitCost = Number(product.cost);
+                  itemCostSource = 'PRODUCT';
+                } else {
+                  itemUnitCost = null;
+                  itemCostSource = 'NONE';
+                }
+              } else if (product.cost != null) {
+                itemUnitCost = Number(product.cost);
+                itemCostSource = 'PRODUCT';
+              } else {
+                itemUnitCost = null;
+                itemCostSource = 'NONE';
+              }
+            }
+
+            lineCostData.push({ unitCost: itemUnitCost, costSource: itemCostSource });
 
             rawItemsForCalc.push({
               productId: item.productId || null,
@@ -874,6 +940,8 @@ export class OfflineService {
                   taxRate: l.taxRate,
                   taxAmount: l.taxAmount,
                   origin: (saleDto.items[idx] as any)?.origin || 'CASHIER',
+                  unitCost: lineCostData[idx]?.unitCost ?? null,
+                  costSource: lineCostData[idx]?.costSource ?? 'NONE',
                 })),
               },
               payments: {

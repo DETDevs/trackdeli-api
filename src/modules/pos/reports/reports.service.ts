@@ -92,8 +92,13 @@ export class ReportsService {
             ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
             * (CASE WHEN s.subtotal > 0 THEN (s."discountAmount" / s.subtotal) ELSE 0 END)
           )::float AS line_discount,
-          pc.unit_cost,
-          COALESCE(pc.cost_source, 'UNKNOWN') AS cost_source,
+          COALESCE(i."unit_cost", pc.unit_cost)::float AS unit_cost,
+          CASE
+            WHEN i."cost_source" IS NOT NULL THEN
+              CASE WHEN i."cost_source" = 'NONE' THEN 'UNKNOWN' ELSE i."cost_source" END
+            ELSE COALESCE(pc.cost_source, 'UNKNOWN')
+          END AS cost_source,
+          (i."cost_source" IS NOT NULL) AS is_historical,
           false AS is_orphan,
           s.id AS sale_id,
           s."customerId" AS customer_id,
@@ -130,6 +135,7 @@ export class ReportsService {
           s."discountAmount"::float AS line_discount,
           NULL::float AS unit_cost,
           'UNKNOWN' AS cost_source,
+          false AS is_historical,
           true AS is_orphan,
           s.id AS sale_id,
           s."customerId" AS customer_id,
@@ -943,7 +949,7 @@ export class ReportsService {
     const startDate = range.current.from;
     const endDate = range.current.to;
 
-    const SOURCES = ['PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR', 'UNKNOWN'] as const;
+    const SOURCES = ['PRODUCT', 'PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR', 'BATCH', 'UNKNOWN'] as const;
     const r2 = (n: any) => Math.round((Number(n) || 0) * 100) / 100;
 
     const computeProfitMetrics = async (fromDt: Date, toDt: Date) => {
@@ -1028,7 +1034,7 @@ export class ReportsService {
         uncategorizedRevenue += r.orphanRevenue || 0;
       }
 
-      const covered = ['PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR'];
+      const covered = ['PRODUCT', 'PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR', 'BATCH'];
       const totalRevenue = r2(SOURCES.reduce((a, s) => a + bySource[s].revenue, 0));
       const coveredRevenue = r2(covered.reduce((a, s) => a + bySource[s].revenue, 0));
       const uncoveredRevenue = r2(bySource.UNKNOWN.revenue);
@@ -1206,7 +1212,10 @@ export class ReportsService {
           COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue ELSE 0 END), 0)::float AS covered_sales,
           COALESCE(SUM(CASE WHEN cost_source = 'UNKNOWN' THEN line_revenue ELSE 0 END), 0)::float AS uncovered_sales,
           COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN unit_cost * net_qty ELSE 0 END), 0)::float AS cost,
-          COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue - (unit_cost * net_qty) ELSE 0 END), 0)::float AS gross_profit
+          COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue - (unit_cost * net_qty) ELSE 0 END), 0)::float AS gross_profit,
+          COUNT(*)::int AS total_lines,
+          COALESCE(SUM(CASE WHEN is_historical THEN 1 ELSE 0 END), 0)::int AS historical_lines,
+          COALESCE(SUM(CASE WHEN is_historical THEN line_revenue ELSE 0 END), 0)::float AS historical_sales
         FROM item_sales
         WHERE net_qty > 0;
       `;
@@ -1222,6 +1231,28 @@ export class ReportsService {
         ? Math.round((grossProfit / coveredRevenue) * 10000) / 100
         : null;
 
+      const totalLines = Number(r.total_lines || 0);
+      const historicalLines = Number(r.historical_lines || 0);
+      const historicalSales = r2(r.historical_sales);
+
+      let costBasis: 'HISTORICAL' | 'CURRENT' | 'MIXED' = 'HISTORICAL';
+      let historicalSharePercent = 100;
+      let costBasisNote = 'Se calcula con el costo que tenía cada producto al venderse.';
+
+      if (totalLines === 0 || historicalLines === totalLines) {
+        costBasis = 'HISTORICAL';
+        historicalSharePercent = 100;
+        costBasisNote = 'Se calcula con el costo que tenía cada producto al venderse.';
+      } else if (historicalLines === 0) {
+        costBasis = 'CURRENT';
+        historicalSharePercent = 0;
+        costBasisNote = 'Se calcula con el costo actual de cada producto.';
+      } else {
+        costBasis = 'MIXED';
+        historicalSharePercent = sales > 0 ? Math.round((historicalSales / sales) * 10000) / 100 : 0;
+        costBasisNote = 'Parte de las ventas de este período es anterior al registro del costo y se calcula con el costo actual.';
+      }
+
       return {
         sales,
         cost,
@@ -1231,6 +1262,9 @@ export class ReportsService {
         receipts,
         uncoveredRevenue,
         coveredRevenue,
+        costBasis,
+        historicalSharePercent,
+        costBasisNote,
       };
     };
 
@@ -1319,6 +1353,7 @@ export class ReportsService {
       ? null
       : {
           sales: prevTotals.sales,
+          coveredSales: prevTotals.coveredRevenue,
           cost: prevTotals.cost,
           grossProfit: prevTotals.grossProfit,
           marginPercent: prevTotals.marginPercent,
@@ -1335,6 +1370,10 @@ export class ReportsService {
       netProfit = r2(currentTotals.grossProfit - expData.total);
     }
 
+    const netProfitNote = currentTotals.uncoveredRevenue > 0
+      ? 'La utilidad neta no incluye la ganancia de las ventas sin costo registrado.'
+      : null;
+
     const fromDay = formatDateInTimezone(startDate, 'America/Managua');
     const toDay = formatDateInTimezone(endDate, 'America/Managua');
     const isSingleDay = fromDay === toDay;
@@ -1342,16 +1381,23 @@ export class ReportsService {
     // Build byDay
     const dayMap = new Map<string, any>();
     for (const r of daysRaw) dayMap.set(r.date, r);
-    const byDay: Array<{ date: string; sales: number; cost: number; profit: number; marginPercent: number | null }> = [];
+    const byDay: Array<{
+      date: string;
+      sales: number;
+      coveredSales: number;
+      cost: number;
+      profit: number;
+      marginPercent: number | null;
+    }> = [];
     let curDay = fromDay;
     while (curDay <= toDay) {
       const r = dayMap.get(curDay);
       const s = r ? r2(r.sales) : 0;
+      const cov = r ? r2(r.covered_sales) : 0;
       const c = r ? r2(r.cost) : 0;
       const p = r ? r2(r.profit) : 0;
-      const cov = r ? r.covered_sales : 0;
       const m = cov > 0 ? Math.round((p / cov) * 10000) / 100 : null;
-      byDay.push({ date: curDay, sales: s, cost: c, profit: p, marginPercent: m });
+      byDay.push({ date: curDay, sales: s, coveredSales: cov, cost: c, profit: p, marginPercent: m });
       // Next day
       const [y, mth, d] = curDay.split('-').map(Number);
       const nextDt = new Date(Date.UTC(y, mth - 1, d + 1));
@@ -1359,7 +1405,15 @@ export class ReportsService {
     }
 
     // Build byHour (if single day)
-    let byHour: Array<{ hour: number; date: string; sales: number; cost: number; profit: number; marginPercent: number | null }> | undefined;
+    let byHour: Array<{
+      hour: number;
+      date: string;
+      sales: number;
+      coveredSales: number;
+      cost: number;
+      profit: number;
+      marginPercent: number | null;
+    }> | undefined;
     if (isSingleDay) {
       const hourMap = new Map<number, any>();
       for (const r of hoursRaw) hourMap.set(Number(r.hour), r);
@@ -1367,14 +1421,15 @@ export class ReportsService {
       for (let h = 0; h < 24; h++) {
         const r = hourMap.get(h);
         const s = r ? r2(r.sales) : 0;
+        const cov = r ? r2(r.covered_sales) : 0;
         const c = r ? r2(r.cost) : 0;
         const p = r ? r2(r.profit) : 0;
-        const cov = r ? r.covered_sales : 0;
         const m = cov > 0 ? Math.round((p / cov) * 10000) / 100 : null;
         byHour.push({
           hour: h,
           date: `${String(h).padStart(2, '0')}:00`,
           sales: s,
+          coveredSales: cov,
           cost: c,
           profit: p,
           marginPercent: m,
@@ -1394,21 +1449,37 @@ export class ReportsService {
     }
 
     // byCategory
+    const sumPositiveCategoryProfits = categoriesRaw
+      .map((r) => r2(r.profit))
+      .filter((p) => p > 0)
+      .reduce((sum, p) => sum + p, 0);
+
     const byCategory = categoriesRaw.map((r) => {
       const s = r2(r.sales);
+      const cov = r2(r.covered_sales);
       const c = r2(r.cost);
       const p = r2(r.profit);
-      const cov = r.covered_sales;
       const m = cov > 0 ? Math.round((p / cov) * 10000) / 100 : null;
-      const share = currentTotals.grossProfit > 0 ? Math.round((p / currentTotals.grossProfit) * 10000) / 100 : 0;
+
+      const salesSharePercent = currentTotals.sales > 0
+        ? Math.round((s / currentTotals.sales) * 10000) / 100
+        : 0;
+
+      let sharePercent: number | null = null;
+      if (currentTotals.grossProfit > 0 && p > 0 && sumPositiveCategoryProfits > 0) {
+        sharePercent = Math.round((p / sumPositiveCategoryProfits) * 10000) / 100;
+      }
+
       return {
         categoryId: r.categoryId || null,
         name: r.name,
         sales: s,
+        coveredSales: cov,
         cost: c,
         profit: p,
         marginPercent: m,
-        sharePercent: share,
+        salesSharePercent,
+        sharePercent,
       };
     });
 
@@ -1433,7 +1504,11 @@ export class ReportsService {
     // alerts
     const lossItems = productsRaw.filter((p) => p.cost_source !== 'UNKNOWN' && p.profit < -0.001);
     const lowMarginItems = productsRaw.filter(
-      (p) => p.cost_source !== 'UNKNOWN' && p.sales > 0 && p.profit / p.sales < 0.10,
+      (p) =>
+        p.cost_source !== 'UNKNOWN' &&
+        p.profit >= -0.001 &&
+        p.sales > 0 &&
+        p.profit / p.sales < 0.10,
     );
     const missingCostItems = productsRaw.filter((p) => p.cost_source === 'UNKNOWN');
     missingCostItems.sort((a, b) => b.sales - a.sales);
@@ -1461,6 +1536,7 @@ export class ReportsService {
       previousPeriod: { from: range.previous.fromIso, to: range.previous.toIso },
       totals: {
         sales: currentTotals.sales,
+        coveredSales: currentTotals.coveredRevenue,
         cost: currentTotals.cost,
         grossProfit: currentTotals.grossProfit,
         marginPercent: currentTotals.marginPercent,
@@ -1469,10 +1545,12 @@ export class ReportsService {
         uncoveredRevenue: currentTotals.uncoveredRevenue,
       },
       previous,
-      costBasis: 'CURRENT',
-      costBasisNote: 'Se calcula con el costo actual de cada producto.',
+      costBasis: currentTotals.costBasis,
+      historicalSharePercent: currentTotals.historicalSharePercent,
+      costBasisNote: currentTotals.costBasisNote,
       expenses,
       netProfit,
+      netProfitNote,
       byDay,
       ...(isSingleDay && byHour ? { byHour } : {}),
       byCategory,
@@ -1503,16 +1581,6 @@ export class ReportsService {
     const endDate = range.current.to;
     const r2 = (n: any) => Math.round((Number(n) || 0) * 100) / 100;
 
-    const totalsRows: any[] = await this.prisma.$queryRaw`
-      WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-      ${this.getProfitItemsSql(businessId, startDate, endDate)}
-      SELECT
-        COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue - (unit_cost * net_qty) ELSE 0 END), 0)::float AS gross_profit
-      FROM item_sales
-      WHERE net_qty > 0;
-    `;
-    const totalGrossProfit = r2(totalsRows[0]?.gross_profit || 0);
-
     const rawProducts: any[] = await this.prisma.$queryRaw`
       WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
       ${this.getProfitItemsSql(businessId, startDate, endDate)}
@@ -1539,13 +1607,11 @@ export class ReportsService {
       let cost: number | null = null;
       let profit: number | null = null;
       let marginPercent: number | null = null;
-      let sharePercent: number | null = null;
 
       if (hasCost) {
         cost = r2(p.cost);
         profit = r2(p.profit);
         marginPercent = sales > 0 ? Math.round((profit / sales) * 10000) / 100 : 0;
-        sharePercent = totalGrossProfit > 0 ? Math.round((profit / totalGrossProfit) * 10000) / 100 : 0;
       }
 
       return {
@@ -1559,7 +1625,6 @@ export class ReportsService {
         cost,
         profit,
         marginPercent,
-        sharePercent,
         hasCost,
       };
     });
@@ -1582,7 +1647,15 @@ export class ReportsService {
     if (filter === 'loss') {
       items = items.filter((i) => i.hasCost && i.profit !== null && i.profit < -0.001);
     } else if (filter === 'lowmargin') {
-      items = items.filter((i) => i.hasCost && i.marginPercent !== null && i.marginPercent < 10);
+      items = items.filter(
+        (i) =>
+          i.hasCost &&
+          i.profit !== null &&
+          i.profit >= -0.001 &&
+          i.marginPercent !== null &&
+          i.marginPercent >= 0 &&
+          i.marginPercent < 10,
+      );
     } else if (filter === 'nocost') {
       items = items.filter((i) => !i.hasCost);
     }
@@ -1594,17 +1667,41 @@ export class ReportsService {
     const totalCost = itemsWithCost.length > 0 ? r2(itemsWithCost.reduce((sum, i) => sum + (i.cost || 0), 0)) : null;
     const totalProfit = itemsWithCost.length > 0 ? r2(itemsWithCost.reduce((sum, i) => sum + (i.profit || 0), 0)) : null;
     const coveredSales = itemsWithCost.reduce((sum, i) => sum + i.sales, 0);
-    const totalMarginPercent = coveredSales > 0 && totalProfit !== null
-      ? Math.round((totalProfit / coveredSales) * 10000) / 100
+    const totalCoveredSales = r2(coveredSales);
+    const totalMarginPercent = totalCoveredSales > 0 && totalProfit !== null
+      ? Math.round((totalProfit / totalCoveredSales) * 10000) / 100
       : null;
 
     const totals = {
       sales: totalSales,
+      coveredSales: totalCoveredSales,
       cost: totalCost,
       profit: totalProfit,
       marginPercent: totalMarginPercent,
       unitsSold: totalUnits,
     };
+
+    // Calculate salesSharePercent and sharePercent for each item
+    const sumPositiveProfits = items
+      .filter((i) => i.hasCost && i.profit !== null && i.profit > 0)
+      .reduce((sum, i) => sum + (i.profit || 0), 0);
+
+    const itemsWithShares = items.map((i) => {
+      const salesSharePercent = totalSales > 0
+        ? Math.round((i.sales / totalSales) * 10000) / 100
+        : 0;
+
+      let sharePercent: number | null = null;
+      if (totalProfit !== null && totalProfit > 0 && i.hasCost && i.profit !== null && i.profit > 0 && sumPositiveProfits > 0) {
+        sharePercent = Math.round((i.profit / sumPositiveProfits) * 10000) / 100;
+      }
+
+      return {
+        ...i,
+        salesSharePercent,
+        sharePercent,
+      };
+    });
 
     // Sort items
     const sortCol = (dto.sort || 'profit').toLowerCase().trim();
@@ -1613,7 +1710,7 @@ export class ReportsService {
     const dir = (dto.dir || defaultDir).toLowerCase().trim();
     const mult = dir === 'asc' ? 1 : -1;
 
-    items.sort((a, b) => {
+    itemsWithShares.sort((a, b) => {
       let valA: any;
       let valB: any;
       switch (sortCol) {
@@ -1622,6 +1719,14 @@ export class ReportsService {
         case 'sales':
           valA = a.sales;
           valB = b.sales;
+          break;
+        case 'salesshare':
+          valA = a.salesSharePercent;
+          valB = b.salesSharePercent;
+          break;
+        case 'share':
+          valA = a.sharePercent;
+          valB = b.sharePercent;
           break;
         case 'cost':
           valA = a.cost;
@@ -1649,20 +1754,22 @@ export class ReportsService {
 
     const page = Math.max(1, Number(dto.page) || 1);
     const pageSize = Math.min(5000, Math.max(1, Number(dto.pageSize) || 50));
-    const total = items.length;
-    const pagedItems = items.slice((page - 1) * pageSize, page * pageSize);
+    const total = itemsWithShares.length;
+    const pagedItems = itemsWithShares.slice((page - 1) * pageSize, page * pageSize);
 
     return {
       items: pagedItems.map((i) => ({
         productId: i.productId,
         name: i.name,
         category: i.category,
+        categoryId: i.categoryId,
         unit: i.unit,
         unitsSold: i.unitsSold,
         sales: i.sales,
         cost: i.cost,
         profit: i.profit,
         marginPercent: i.marginPercent,
+        salesSharePercent: i.salesSharePercent,
         sharePercent: i.sharePercent,
         hasCost: i.hasCost,
       })),

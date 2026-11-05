@@ -1223,6 +1223,10 @@ model SaleItem {
   taxAmount           Float    @default(0)
   origin              String   @default("SELLER") @db.VarChar(20)
 
+  // 247c: Costo histórico al momento de la venta
+  unitCost            Float?   @map("unit_cost")
+  costSource          String?  @map("cost_source") @db.VarChar(20)
+
   returnItems      SaleReturnItem[]
   batchAllocations SaleItemBatch[]
 
