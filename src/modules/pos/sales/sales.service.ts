@@ -33,7 +33,7 @@ export class SalesService {
     private readonly auditService: AuditService,
     private readonly approvalsService: ApprovalsService,
     private readonly batchesService: BatchesService,
-  ) {}
+  ) { }
 
   private formatSale(sale: any, userRole?: string) {
     if (!sale) return null;
@@ -87,42 +87,42 @@ export class SalesService {
       })),
       creditAccount: sale.creditAccount
         ? {
-            ...sale.creditAccount,
-            originalAmount: Number(sale.creditAccount.originalAmount),
-            balance: Number(sale.creditAccount.balance),
-            principalAmount: sale.creditAccount.principalAmount != null ? Number(sale.creditAccount.principalAmount) : null,
-            downPaymentAmount: sale.creditAccount.downPaymentAmount != null ? Number(sale.creditAccount.downPaymentAmount) : 0,
+          ...sale.creditAccount,
+          originalAmount: Number(sale.creditAccount.originalAmount),
+          balance: Number(sale.creditAccount.balance),
+          principalAmount: sale.creditAccount.principalAmount != null ? Number(sale.creditAccount.principalAmount) : null,
+          downPaymentAmount: sale.creditAccount.downPaymentAmount != null ? Number(sale.creditAccount.downPaymentAmount) : 0,
+          interestAmount: sale.creditAccount.interestAmount != null ? Number(sale.creditAccount.interestAmount) : 0,
+          interestRate: sale.creditAccount.interestRate != null ? Number(sale.creditAccount.interestRate) : null,
+          installments: (sale.creditAccount.installments && sale.creditAccount.installments.length > 0)
+            ? sale.creditAccount.installments.map((inst: any) => ({
+              ...inst,
+              amount: Number(inst.amount),
+              paidAmount: Number(inst.paidAmount),
+            }))
+            : [
+              {
+                id: `virtual-${sale.creditAccount.id}`,
+                creditAccountId: sale.creditAccount.id,
+                installmentNumber: 1,
+                dueDate: sale.creditAccount.dueDate,
+                amount: Number(sale.creditAccount.originalAmount),
+                paidAmount: Math.max(0, Math.round((Number(sale.creditAccount.originalAmount) - Number(sale.creditAccount.balance)) * 100) / 100),
+                status: sale.creditAccount.status,
+                paidAt: sale.creditAccount.status === 'PAID' ? sale.creditAccount.updatedAt : null,
+              },
+            ],
+          desglose: {
+            totalProductos: sale.total != null ? Number(sale.total) : (sale.creditAccount.principalAmount != null ? Number(sale.creditAccount.principalAmount) + Number(sale.creditAccount.downPaymentAmount || 0) : Number(sale.creditAccount.originalAmount)),
+            prima: sale.creditAccount.downPaymentAmount != null ? Number(sale.creditAccount.downPaymentAmount) : 0,
+            fiado: sale.creditAccount.principalAmount != null ? Number(sale.creditAccount.principalAmount) : Number(sale.creditAccount.originalAmount),
+            interestType: sale.creditAccount.interestType || null,
+            interestRate: sale.creditAccount.interestRate != null ? Number(sale.creditAccount.interestRate) : 0,
             interestAmount: sale.creditAccount.interestAmount != null ? Number(sale.creditAccount.interestAmount) : 0,
-            interestRate: sale.creditAccount.interestRate != null ? Number(sale.creditAccount.interestRate) : null,
-            installments: (sale.creditAccount.installments && sale.creditAccount.installments.length > 0)
-              ? sale.creditAccount.installments.map((inst: any) => ({
-                  ...inst,
-                  amount: Number(inst.amount),
-                  paidAmount: Number(inst.paidAmount),
-                }))
-              : [
-                  {
-                    id: `virtual-${sale.creditAccount.id}`,
-                    creditAccountId: sale.creditAccount.id,
-                    installmentNumber: 1,
-                    dueDate: sale.creditAccount.dueDate,
-                    amount: Number(sale.creditAccount.originalAmount),
-                    paidAmount: Math.max(0, Math.round((Number(sale.creditAccount.originalAmount) - Number(sale.creditAccount.balance)) * 100) / 100),
-                    status: sale.creditAccount.status,
-                    paidAt: sale.creditAccount.status === 'PAID' ? sale.creditAccount.updatedAt : null,
-                  },
-                ],
-            desglose: {
-              totalProductos: sale.total != null ? Number(sale.total) : (sale.creditAccount.principalAmount != null ? Number(sale.creditAccount.principalAmount) + Number(sale.creditAccount.downPaymentAmount || 0) : Number(sale.creditAccount.originalAmount)),
-              prima: sale.creditAccount.downPaymentAmount != null ? Number(sale.creditAccount.downPaymentAmount) : 0,
-              fiado: sale.creditAccount.principalAmount != null ? Number(sale.creditAccount.principalAmount) : Number(sale.creditAccount.originalAmount),
-              interestType: sale.creditAccount.interestType || null,
-              interestRate: sale.creditAccount.interestRate != null ? Number(sale.creditAccount.interestRate) : 0,
-              interestAmount: sale.creditAccount.interestAmount != null ? Number(sale.creditAccount.interestAmount) : 0,
-              totalAPagar: Number(sale.creditAccount.originalAmount),
-              balance: Number(sale.creditAccount.balance),
-            },
-          }
+            totalAPagar: Number(sale.creditAccount.originalAmount),
+            balance: Number(sale.creditAccount.balance),
+          },
+        }
         : null,
     };
   }
@@ -137,7 +137,7 @@ export class SalesService {
   ) {
     const runInTx = async (tx: Prisma.TransactionClient) => {
       const policies = await this.policiesService.get(businessId, tx);
-      const requireOpenShift = (policies as any).requireOpenShiftToSell !== false;
+      const requireOpenShift = policies.requireOpenShiftToSell !== false;
       let cashRegisterId: string | null = null;
       let soldWithoutOpenShift = false;
       const cleanDeviceId = clientInfo?.deviceId?.trim() || null;
@@ -1107,11 +1107,11 @@ export class SalesService {
             } else {
               overrideApprovedById = dto.approvalToken
                 ? await this.approvalsService.consumeToken(
-                    businessId,
-                    PosAction.CREDIT_LIMIT_OVERRIDE,
-                    dto.approvalToken,
-                    tx,
-                  )
+                  businessId,
+                  PosAction.CREDIT_LIMIT_OVERRIDE,
+                  dto.approvalToken,
+                  tx,
+                )
                 : cashierId;
             }
           } else {
@@ -1906,6 +1906,7 @@ export class SalesService {
     }
 
     const policies = await this.policiesService.get(businessId);
+    const requireOpenShift = policies.requireOpenShiftToSell !== false;
     if (policies.voidsCompletedEnabled === false) {
       throw new ForbiddenException({
         statusCode: 403,
@@ -1931,11 +1932,11 @@ export class SalesService {
         } else {
           approvedById = dto.approvalToken
             ? await this.approvalsService.consumeToken(
-                businessId,
-                PosAction.ANULAR_VENTA_COBRADA,
-                dto.approvalToken,
-                tx,
-              )
+              businessId,
+              PosAction.ANULAR_VENTA_COBRADA,
+              dto.approvalToken,
+              tx,
+            )
             : userId;
         }
       } else {
@@ -2107,7 +2108,7 @@ export class SalesService {
             const isUsd = (p.currency || '').toUpperCase() === 'USD';
             if (isUsd) {
               const rate = new Prisma.Decimal(p.exchangeRate != null ? p.exchangeRate.toString() : 1);
-              const baseTendered = p.amountBase != null 
+              const baseTendered = p.amountBase != null
                 ? new Prisma.Decimal(p.amountBase.toString())
                 : tendered.times(rate).toDecimalPlaces(2);
               netCashPaidDec = netCashPaidDec.plus(baseTendered.minus(change));
@@ -2124,30 +2125,32 @@ export class SalesService {
       if (netCashPaidDec.greaterThan(0)) {
         const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById, deviceId);
         if (!openShift) {
-          throw new UnprocessableEntityException({
-            statusCode: 422,
-            error: 'Unprocessable Entity',
-            code: 'NO_OPEN_SHIFT',
-            message: {
+          if (requireOpenShift) {
+            throw new UnprocessableEntityException({
+              statusCode: 422,
+              error: 'Unprocessable Entity',
               code: 'NO_OPEN_SHIFT',
-              message: 'No hay turno abierto del cajero ni del aprobador para registrar la salida de efectivo de la anulación.',
+              message: {
+                code: 'NO_OPEN_SHIFT',
+                message: 'No hay turno abierto del cajero ni del aprobador para registrar la salida de efectivo de la anulación.',
+              },
+            });
+          }
+        } else {
+          cashRefundMovement = await tx.cashMovement.create({
+            data: {
+              businessId,
+              cashRegisterId: openShift.id,
+              userId,
+              type: 'SALIDA',
+              amount: netCashPaidDec,
+              concept: `Anulación venta ${sale.invoiceNumber}`,
+              currency: 'NIO',
+              exchangeRate: new Prisma.Decimal(1),
+              amountBase: netCashPaidDec,
             },
           });
         }
-
-        cashRefundMovement = await tx.cashMovement.create({
-          data: {
-            businessId,
-            cashRegisterId: openShift.id,
-            userId,
-            type: 'SALIDA',
-            amount: netCashPaidDec,
-            concept: `Anulación venta ${sale.invoiceNumber}`,
-            currency: 'NIO',
-            exchangeRate: new Prisma.Decimal(1),
-            amountBase: netCashPaidDec,
-          },
-        });
       }
 
       // 4. Credit account reversal
@@ -2165,30 +2168,32 @@ export class SalesService {
         if (totalAbonosPaidDec.greaterThan(0)) {
           const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById, deviceId);
           if (!openShift) {
-            throw new UnprocessableEntityException({
-              statusCode: 422,
-              error: 'Unprocessable Entity',
-              code: 'NO_OPEN_SHIFT',
-              message: {
+            if (requireOpenShift) {
+              throw new UnprocessableEntityException({
+                statusCode: 422,
+                error: 'Unprocessable Entity',
                 code: 'NO_OPEN_SHIFT',
-                message: 'No hay turno abierto del cajero ni del aprobador para registrar el reembolso en efectivo de los abonos ya pagados del crédito.',
+                message: {
+                  code: 'NO_OPEN_SHIFT',
+                  message: 'No hay turno abierto del cajero ni del aprobador para registrar el reembolso en efectivo de los abonos ya pagados del crédito.',
+                },
+              });
+            }
+          } else {
+            creditRefundMovement = await tx.cashMovement.create({
+              data: {
+                businessId,
+                cashRegisterId: openShift.id,
+                userId,
+                type: 'SALIDA',
+                amount: totalAbonosPaidDec,
+                concept: `Reembolso abonos cliente por anulación crédito venta ${sale.invoiceNumber}`,
+                currency: 'NIO',
+                exchangeRate: new Prisma.Decimal(1),
+                amountBase: totalAbonosPaidDec,
               },
             });
           }
-
-          creditRefundMovement = await tx.cashMovement.create({
-            data: {
-              businessId,
-              cashRegisterId: openShift.id,
-              userId,
-              type: 'SALIDA',
-              amount: totalAbonosPaidDec,
-              concept: `Reembolso abonos cliente por anulación crédito venta ${sale.invoiceNumber}`,
-              currency: 'NIO',
-              exchangeRate: new Prisma.Decimal(1),
-              amountBase: totalAbonosPaidDec,
-            },
-          });
         }
 
         await tx.creditAccount.update({
@@ -2307,6 +2312,7 @@ export class SalesService {
     }
 
     const policies = await this.policiesService.get(businessId);
+    const requireOpenShift = policies.requireOpenShiftToSell !== false;
     if (policies.returnsEnabled === false) {
       throw new ForbiddenException({
         statusCode: 403,
@@ -2426,11 +2432,11 @@ export class SalesService {
         } else {
           approvedById = dto.approvalToken
             ? await this.approvalsService.consumeToken(
-                businessId,
-                PosAction.DEVOLUCION,
-                dto.approvalToken,
-                tx,
-              )
+              businessId,
+              PosAction.DEVOLUCION,
+              dto.approvalToken,
+              tx,
+            )
             : userId;
         }
       } else {
@@ -2614,30 +2620,33 @@ export class SalesService {
       if (refundMethod === PosPaymentMethod.EFECTIVO && totalReturnRefundDec.greaterThan(0)) {
         const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById, deviceId);
         if (!openShift) {
-          throw new UnprocessableEntityException({
-            statusCode: 422,
-            error: 'Unprocessable Entity',
-            code: 'NO_OPEN_SHIFT',
-            message: {
+          if (requireOpenShift) {
+            throw new UnprocessableEntityException({
+              statusCode: 422,
+              error: 'Unprocessable Entity',
               code: 'NO_OPEN_SHIFT',
-              message: 'No hay turno abierto del cajero ni del aprobador para registrar la salida de efectivo de la devolución.',
+              message: {
+                code: 'NO_OPEN_SHIFT',
+                message: 'No hay turno abierto del cajero ni del aprobador para registrar la salida de efectivo de la devolución.',
+              },
+            });
+          }
+        } else {
+          openShiftId = openShift.id;
+          returnCashMovement = await tx.cashMovement.create({
+            data: {
+              businessId,
+              cashRegisterId: openShift.id,
+              userId,
+              type: 'SALIDA',
+              amount: totalReturnRefundDec,
+              concept: `Reembolso devolución venta ${sale.invoiceNumber}`,
+              currency: 'NIO',
+              exchangeRate: new Prisma.Decimal(1),
+              amountBase: totalReturnRefundDec,
             },
           });
         }
-        openShiftId = openShift.id;
-        returnCashMovement = await tx.cashMovement.create({
-          data: {
-            businessId,
-            cashRegisterId: openShift.id,
-            userId,
-            type: 'SALIDA',
-            amount: totalReturnRefundDec,
-            concept: `Reembolso devolución venta ${sale.invoiceNumber}`,
-            currency: 'NIO',
-            exchangeRate: new Prisma.Decimal(1),
-            amountBase: totalReturnRefundDec,
-          },
-        });
       }
 
       // Handle Credit Account if refundMethod === CREDITO
@@ -2650,31 +2659,34 @@ export class SalesService {
 
           const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById, deviceId);
           if (!openShift) {
-            throw new UnprocessableEntityException({
-              statusCode: 422,
-              error: 'Unprocessable Entity',
-              code: 'NO_OPEN_SHIFT',
-              message: {
+            if (requireOpenShift) {
+              throw new UnprocessableEntityException({
+                statusCode: 422,
+                error: 'Unprocessable Entity',
                 code: 'NO_OPEN_SHIFT',
-                message: 'No hay turno abierto del cajero ni del aprobador para registrar el reembolso en efectivo del excedente sobre el crédito.',
+                message: {
+                  code: 'NO_OPEN_SHIFT',
+                  message: 'No hay turno abierto del cajero ni del aprobador para registrar el reembolso en efectivo del excedente sobre el crédito.',
+                },
+              });
+            }
+          } else {
+            if (!openShiftId) openShiftId = openShift.id;
+
+            excessCashMovement = await tx.cashMovement.create({
+              data: {
+                businessId,
+                cashRegisterId: openShift.id,
+                userId,
+                type: 'SALIDA',
+                amount: excessRefundDec,
+                concept: `Reembolso excedente crédito en efectivo venta ${sale.invoiceNumber}`,
+                currency: 'NIO',
+                exchangeRate: new Prisma.Decimal(1),
+                amountBase: excessRefundDec,
               },
             });
           }
-          if (!openShiftId) openShiftId = openShift.id;
-
-          excessCashMovement = await tx.cashMovement.create({
-            data: {
-              businessId,
-              cashRegisterId: openShift.id,
-              userId,
-              type: 'SALIDA',
-              amount: excessRefundDec,
-              concept: `Reembolso excedente crédito en efectivo venta ${sale.invoiceNumber}`,
-              currency: 'NIO',
-              exchangeRate: new Prisma.Decimal(1),
-              amountBase: excessRefundDec,
-            },
-          });
 
           await tx.creditAccount.update({
             where: { id: sale.creditAccount.id },
