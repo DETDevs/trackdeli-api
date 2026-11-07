@@ -759,6 +759,7 @@ model PosPolicies {
   creditInterestRate         Decimal  @default(0) @db.Decimal(5, 2)
   creditMaxInstallments      Int      @default(12)
   creditAllowedFrequencies   String   @default("SEMANAL,QUINCENAL,MENSUAL")
+  requireOpenShiftToSell     Boolean  @default(true)
 
   @@map("pos_policies")
 }

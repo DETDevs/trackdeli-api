@@ -37,4 +37,5 @@ export class UpdatePosPoliciesDto {
   @IsOptional() @IsNumber() @Min(0) creditInterestRate?: number;
   @IsOptional() @IsNumber() @Min(1) @Max(60) creditMaxInstallments?: number;
   @IsOptional() @IsString() creditAllowedFrequencies?: string;
+  @IsOptional() @IsBoolean() requireOpenShiftToSell?: boolean;
 }

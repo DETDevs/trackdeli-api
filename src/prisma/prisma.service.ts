@@ -2321,6 +2321,7 @@ WHERE a."customerId" = c."id"
       await this.ensureMultiBranchSchema();
       await this.ensureCommercialAgreementsSchema();
       await this.ensureSaleItemCostSchema();
+      await this.ensurePosPoliciesRequireShiftSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4358,6 +4359,26 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠️ 247c - Advertencia sincronizando esquema de costo histórico en pos_sale_items: ${err.message}`);
+    }
+  }
+
+  /**
+   * 251a - Caja opcional: requireOpenShiftToSell en pos_policies (booleano, default true)
+   * DDL idempotente con advisory lock 251001.
+   */
+  private async ensurePosPoliciesRequireShiftSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(251001)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_policies"
+            ADD COLUMN IF NOT EXISTS "requireOpenShiftToSell" BOOLEAN NOT NULL DEFAULT true;
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(251001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠️ 251a - Advertencia sincronizando requireOpenShiftToSell en pos_policies: ${err.message}`);
     }
   }
 

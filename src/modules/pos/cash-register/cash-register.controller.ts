@@ -139,7 +139,7 @@ export class CashRegisterController {
   }
 
   @Post("movements")
-  @UseGuards(NoWebPlatformGuard)
+  @UseGuards(WebBillingGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.MOVIMIENTO_CAJA)
   addMovementCurrent(
@@ -147,12 +147,13 @@ export class CashRegisterController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
     @Headers("x-device-id") hDeviceId?: string,
+    @Headers("x-client-platform") hPlatform?: string,
   ) {
-    return this.service.addMovement(null, dto, resolveBusinessId(user, qBid), user.sub, user.role, hDeviceId);
+    return this.service.addMovement(null, dto, resolveBusinessId(user, qBid), user.sub, user.role, hDeviceId, hPlatform);
   }
 
   @Post(":id/movements")
-  @UseGuards(NoWebPlatformGuard)
+  @UseGuards(WebBillingGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.MOVIMIENTO_CAJA)
   addMovementPlural(
@@ -160,8 +161,10 @@ export class CashRegisterController {
     @Body() dto: CashMovementDto,
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
+    @Headers("x-device-id") hDeviceId?: string,
+    @Headers("x-client-platform") hPlatform?: string,
   ) {
-    return this.service.addMovement(id, dto, resolveBusinessId(user, qBid), user.sub, user.role);
+    return this.service.addMovement(id, dto, resolveBusinessId(user, qBid), user.sub, user.role, hDeviceId, hPlatform);
   }
 
   @Get(":id/summary")

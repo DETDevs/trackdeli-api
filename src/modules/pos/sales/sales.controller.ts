@@ -4,7 +4,7 @@ import {
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
 import { WebBillingGuard } from "../../../common/guards/web-billing.guard";
-import { NoWebPlatformGuard } from "../../../common/guards/no-web-platform.guard";
+
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
 import { JwtPayload } from "../../../common/types/jwt-payload.interface";
@@ -95,7 +95,7 @@ export class SalesController {
 
   @Post(":id/void")
   @RequirePosAction(PosAction.ANULAR_VENTA_COBRADA)
-  @UseGuards(NoWebPlatformGuard)
+  @UseGuards(WebBillingGuard)
   @UseInterceptors(IdempotencyInterceptor)
   void(
     @Param("id") id: string,
@@ -110,7 +110,7 @@ export class SalesController {
 
   @Post(":id/cancel")
   @RequirePosAction(PosAction.ANULAR_VENTA_COBRADA)
-  @UseGuards(NoWebPlatformGuard)
+  @UseGuards(WebBillingGuard)
   @UseInterceptors(IdempotencyInterceptor)
   cancel(
     @Param("id") id: string,
@@ -128,7 +128,7 @@ export class SalesController {
 
   @Post(":id/returns")
   @RequirePosAction(PosAction.DEVOLUCION)
-  @UseGuards(NoWebPlatformGuard)
+  @UseGuards(WebBillingGuard)
   @UseInterceptors(IdempotencyInterceptor)
   createReturn(
     @Param("id") id: string,

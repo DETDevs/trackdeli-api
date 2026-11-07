@@ -1076,7 +1076,7 @@ export class CashRegisterService {
     return this.obfuscateRegister(formatted, businessId, userRole, cashierId, cleanDeviceId);
   }
 
-  async addMovement(registerId: string | null | undefined, dto: CashMovementDto, businessId: string, userId: string, userRole: string, deviceId?: string) {
+  async addMovement(registerId: string | null | undefined, dto: CashMovementDto, businessId: string, userId: string, userRole: string, deviceId?: string, clientPlatform?: string) {
     let register;
     const isTargetingOther = registerId && registerId !== 'movements' && registerId !== 'movement' && registerId !== 'current';
     
@@ -1104,6 +1104,16 @@ export class CashRegisterService {
     }
 
     if (!register) throw new NotFoundException("No hay una caja abierta para registrar movimientos");
+
+    const isWeb = clientPlatform?.toLowerCase().startsWith('web');
+    if (isWeb && isTargetingOther && register.cashierId !== userId) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'NOT_AVAILABLE_ON_WEB',
+        message: 'Esta acción no está disponible desde la web',
+      });
+    }
 
     let movementType: MovementType = MovementType.ENTRADA;
     if (dto.type === 'OUT' || dto.type === 'SALIDA') {

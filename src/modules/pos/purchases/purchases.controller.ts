@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PosGuard } from '../../../common/guards/pos.guard';
-import { NoWebPlatformGuard } from '../../../common/guards/no-web-platform.guard';
+import { WebBillingGuard } from '../../../common/guards/web-billing.guard';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
@@ -52,7 +52,7 @@ export class PurchasesController {
   }
 
   @Post()
-  @UseGuards(NoWebPlatformGuard)
+  @UseGuards(WebBillingGuard)
   @UseInterceptors(IdempotencyInterceptor)
   create(
     @Body() dto: CreatePurchaseDto,
@@ -72,7 +72,7 @@ export class PurchasesController {
   }
 
   @Post(':id/void')
-  @UseGuards(NoWebPlatformGuard)
+  @UseGuards(WebBillingGuard)
   @UseInterceptors(IdempotencyInterceptor)
   void(
     @Param('id') id: string,
@@ -84,7 +84,7 @@ export class PurchasesController {
   }
 
   @Post(':id/apply-price-updates')
-  @UseGuards(NoWebPlatformGuard)
+  @UseGuards(WebBillingGuard)
   applyPriceUpdates(
     @Param('id') id: string,
     @Body() dto: ApplyPurchasePriceUpdatesDto,

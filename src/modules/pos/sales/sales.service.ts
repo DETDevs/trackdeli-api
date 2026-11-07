@@ -136,7 +136,10 @@ export class SalesService {
     externalTx?: Prisma.TransactionClient,
   ) {
     const runInTx = async (tx: Prisma.TransactionClient) => {
-      let cashRegisterId: string;
+      const policies = await this.policiesService.get(businessId, tx);
+      const requireOpenShift = (policies as any).requireOpenShiftToSell !== false;
+      let cashRegisterId: string | null = null;
+      let soldWithoutOpenShift = false;
       const cleanDeviceId = clientInfo?.deviceId?.trim() || null;
 
       if (dto.cashRegisterId) {
@@ -144,7 +147,7 @@ export class SalesService {
           where: { id: dto.cashRegisterId, businessId, status: "OPEN" },
           select: { id: true, deviceId: true },
         });
-        if (!explicitRegister) {
+        if (!explicitRegister && requireOpenShift) {
           throw new ConflictException({
             statusCode: 409,
             code: 'NO_OPEN_SHIFT',
@@ -152,7 +155,7 @@ export class SalesService {
             error: 'Conflict',
           });
         }
-        if (cleanDeviceId && explicitRegister.deviceId && explicitRegister.deviceId !== cleanDeviceId) {
+        if (cleanDeviceId && explicitRegister?.deviceId && explicitRegister.deviceId !== cleanDeviceId) {
           throw new ConflictException({
             statusCode: 409,
             code: 'NO_OPEN_SHIFT',
@@ -160,7 +163,8 @@ export class SalesService {
             error: 'Conflict',
           });
         }
-        cashRegisterId = explicitRegister.id;
+        cashRegisterId = explicitRegister?.id || null;
+        soldWithoutOpenShift = !explicitRegister;
       } else {
         let activeRegister = null;
         if (cleanDeviceId) {
@@ -194,7 +198,7 @@ export class SalesService {
           });
         }
 
-        if (!activeRegister) {
+        if (!activeRegister && requireOpenShift) {
           throw new ConflictException({
             statusCode: 409,
             code: 'NO_OPEN_SHIFT',
@@ -202,7 +206,8 @@ export class SalesService {
             error: 'Conflict',
           });
         }
-        cashRegisterId = activeRegister.id;
+        cashRegisterId = activeRegister?.id || null;
+        soldWithoutOpenShift = !activeRegister;
       }
 
       const business = await tx.business.findUnique({
@@ -247,7 +252,7 @@ export class SalesService {
         data: { invoiceCounter: { increment: 1 } },
       });
 
-      const policies = await this.policiesService.get(businessId, tx);
+      // policies ya fue resuelto arriba al inicio de runInTx
 
       // 221a: Validación y resolución del canal de venta
       const rawChannel = (dto.channel || 'MOSTRADOR').toUpperCase().trim();
@@ -1455,6 +1460,7 @@ export class SalesService {
         data: {
           businessId,
           cashRegisterId,
+          soldWithoutOpenShift,
           cashierId,
           invoiceNumber,
           channel: saleChannel,
