@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -162,7 +163,16 @@ export class SuperAdminController {
   @Post('memberships/:id/proof')
   @UseInterceptors(
     FileInterceptor('file', {
-      limits: { fileSize: 5 * 1024 * 1024 },
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+      fileFilter: (req, file, cb) => {
+        if (!file.mimetype.match(/\/(jpg|jpeg|png|webp|pdf)$/)) {
+          return cb(
+            new BadRequestException('Solo se permiten imágenes (JPG, PNG, WebP) o PDF'),
+            false,
+          );
+        }
+        cb(null, true);
+      },
     }),
   )
   async uploadPaymentProof(

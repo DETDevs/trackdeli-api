@@ -2566,7 +2566,7 @@ export class SuperAdminService {
       throw new BadRequestException('Archivo de comprobante no proporcionado');
     }
 
-    const proofUrl = await this.uploadService.uploadPhoto(file, `memberships/${id}`);
+    const proofUrl = await this.uploadService.uploadDocument(file, `memberships/${id}`);
 
     const updated = await this.prisma.membership.update({
       where: { id },
