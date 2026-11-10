@@ -2927,7 +2927,7 @@ export class SuperAdminService {
       },
       include: {
         business: {
-          select: { id: true, name: true, logoUrl: true },
+          select: { id: true, name: true, logoUrl: true, billingAnchorDay: true },
         },
         paymentProducts: {
           include: {
@@ -2938,6 +2938,18 @@ export class SuperAdminService {
         },
       },
     });
+
+    if (dto.startDate) {
+      const parsedStart = new Date(dto.startDate);
+      const anchorDay = parsedStart.getUTCDate();
+      await this.prisma.business.update({
+        where: { id: membership.businessId },
+        data: { billingAnchorDay: anchorDay },
+      }).catch((e) => this.logger.warn(`[updateMembership] No se pudo actualizar billingAnchorDay: ${e.message}`));
+      if (updated.business) {
+        updated.business.billingAnchorDay = anchorDay;
+      }
+    }
 
     this.logger.log(`[updateMembership] OK membresía actualizada id=${id}`);
     return this.formatMembershipWithProducts(updated);

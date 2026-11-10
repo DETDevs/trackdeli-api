@@ -4393,12 +4393,12 @@ WHERE a."customerId" = c."id"
       await this.$executeRawUnsafe(`SELECT pg_advisory_lock(252002)`);
       try {
         await this.$executeRawUnsafe(`
-          DO $
+          DO $$
           BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'MembershipType') THEN
               CREATE TYPE "MembershipType" AS ENUM ('PAID', 'TRIAL');
             END IF;
-          END $;
+          END $$;
         `);
         await this.$executeRawUnsafe(`
           ALTER TABLE "memberships"
