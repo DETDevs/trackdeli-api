@@ -33,7 +33,11 @@ export class IdempotencyInterceptor implements NestInterceptor {
     // Calculamos hash del body para evitar reutilización fraudulenta con cuerpos distintos
     const bodyString = JSON.stringify(request.body || {});
     const requestHash = crypto.createHash('sha256').update(bodyString).digest('hex');
-    const businessId = request.query.businessId || request.user?.businessId || request.user?.id;
+    const businessId =
+      request.body?.businessId ||
+      request.query?.businessId ||
+      request.user?.businessId ||
+      request.user?.id;
 
     if (!businessId) {
       // Sin businessId no podemos particionar la idempotencia

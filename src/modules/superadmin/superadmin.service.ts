@@ -12,6 +12,7 @@ import { CreateBusinessSuperAdminDto } from './dto/create-business-superadmin.dt
 import { OrdersMetricsQueryDto } from './dto/orders-metrics-query.dto';
 import { CreateMembershipDto } from './dto/create-membership.dto';
 import { UpdateMembershipDto } from './dto/update-membership.dto';
+import { VoidMembershipDto } from './dto/void-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
 import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
 import { DeleteBusinessDto } from './dto/delete-business.dto';
@@ -109,6 +110,9 @@ export class SuperAdminService {
             },
           },
           memberships: {
+            where: {
+              status: { not: MembershipStatus.CANCELLED },
+            },
             orderBy: [{ endDate: 'desc' }, { startDate: 'desc' }],
           },
           commercialAgreement: {
@@ -2365,7 +2369,10 @@ export class SuperAdminService {
     let anchorDay = business.billingAnchorDay;
     if (!anchorDay) {
       const oldest = await this.prisma.membership.findFirst({
-        where: { businessId: dto.businessId },
+        where: {
+          businessId: dto.businessId,
+          status: { not: MembershipStatus.CANCELLED },
+        },
         orderBy: { startDate: 'asc' },
       });
       const anchorSource = oldest
@@ -2376,7 +2383,10 @@ export class SuperAdminService {
 
     // Regla 2: Un pago tardío NO mueve el ancla. Si paga el 12 de noviembre, el nuevo período sigue siendo 10 nov -> 10 dic.
     const latest = await this.prisma.membership.findFirst({
-      where: { businessId: dto.businessId },
+      where: {
+        businessId: dto.businessId,
+        status: { not: MembershipStatus.CANCELLED },
+      },
       orderBy: { endDate: 'desc' },
     });
 
@@ -2717,6 +2727,97 @@ export class SuperAdminService {
 
     this.logger.log(`[updateMembership] OK membresía actualizada id=${id}`);
     return this.formatMembershipWithProducts(updated);
+  }
+
+  async voidMembership(id: string, dto: VoidMembershipDto, currentUserId: string) {
+    this.logger.log(`[voidMembership] Anulando membresía id=${id}, userId=${currentUserId}, motivo=${dto.reason}`);
+
+    const membership = await this.prisma.membership.findUnique({
+      where: { id },
+      include: {
+        business: {
+          select: { id: true, name: true, logoUrl: true, billingAnchorDay: true },
+        },
+        paymentProducts: {
+          include: {
+            businessProductSubscription: {
+              select: { id: true, productType: true, status: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('Membresía no encontrada');
+    }
+
+    if (membership.status === MembershipStatus.CANCELLED) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'MEMBERSHIP_ALREADY_VOIDED',
+        message: 'Esta membresía ya se encuentra anulada',
+      });
+    }
+
+    // Verificar si era la única membresía activa del negocio
+    const otherActiveMemberships = await this.prisma.membership.count({
+      where: {
+        businessId: membership.businessId,
+        id: { not: id },
+        status: MembershipStatus.ACTIVE,
+      },
+    });
+    const isOnlyActive = otherActiveMemberships === 0;
+
+    const voidNote = `[ANULADA el ${new Date().toISOString()} por ${currentUserId}]: ${dto.reason.trim()}`;
+    const newNotes = membership.notes ? `${membership.notes}\n${voidNote}` : voidNote;
+
+    const updated = await this.prisma.membership.update({
+      where: { id },
+      data: {
+        status: MembershipStatus.CANCELLED,
+        notes: newNotes,
+      },
+      include: {
+        business: {
+          select: { id: true, name: true, logoUrl: true, billingAnchorDay: true },
+        },
+        paymentProducts: {
+          include: {
+            businessProductSubscription: {
+              select: { id: true, productType: true, status: true },
+            },
+          },
+        },
+      },
+    });
+
+    await this.prisma.businessProductAuditLog.create({
+      data: {
+        businessId: membership.businessId,
+        productType: BusinessProductType.POS,
+        action: BusinessProductAction.DEACTIVATED,
+        performedBy: currentUserId,
+        reason: `Anulación de membresía: ${dto.reason.trim()}`,
+        metadata: {
+          membershipId: membership.id,
+          voidedAt: new Date().toISOString(),
+          voidReason: dto.reason.trim(),
+          isOnlyActive,
+        },
+      },
+    });
+
+    this.logger.log(`[voidMembership] OK membresía anulada id=${id}, isOnlyActive=${isOnlyActive}`);
+
+    return {
+      membership: this.formatMembershipWithProducts(updated),
+      warning: isOnlyActive
+        ? 'Esta era la única membresía activa del negocio. El negocio pasa a su estado real según vigencia.'
+        : null,
+    };
   }
 
   async getBusinessMemberships(businessId: string) {

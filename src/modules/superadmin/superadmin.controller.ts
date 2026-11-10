@@ -24,7 +24,9 @@ import { CreateBusinessSuperAdminDto } from './dto/create-business-superadmin.dt
 import { OrdersMetricsQueryDto } from './dto/orders-metrics-query.dto';
 import { CreateMembershipDto } from './dto/create-membership.dto';
 import { UpdateMembershipDto } from './dto/update-membership.dto';
+import { VoidMembershipDto } from './dto/void-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
+import { IdempotencyInterceptor } from '../pos/idempotency/idempotency.interceptor';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { DeleteBusinessDto } from './dto/delete-business.dto';
@@ -153,11 +155,21 @@ export class SuperAdminController {
   }
 
   @Post('memberships')
+  @UseInterceptors(IdempotencyInterceptor)
   async createMembership(
     @Body() dto: CreateMembershipDto,
     @CurrentUser() user: JwtPayload,
   ) {
     return this.superAdminService.createMembership(dto, user.sub);
+  }
+
+  @Post('memberships/:id/void')
+  async voidMembership(
+    @Param('id') id: string,
+    @Body() dto: VoidMembershipDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.voidMembership(id, dto, user.sub);
   }
 
   @Post('memberships/:id/proof')

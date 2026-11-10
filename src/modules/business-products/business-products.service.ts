@@ -235,7 +235,10 @@ export class BusinessProductsService {
       coveredProductTypes.has(BusinessProductType.CITAS);
 
     const allMemberships = await this.prisma.membership.findMany({
-      where: { businessId },
+      where: {
+        businessId,
+        status: { not: MembershipStatus.CANCELLED },
+      },
       include: { paymentProducts: true },
       orderBy: { endDate: 'desc' },
     });

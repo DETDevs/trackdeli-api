@@ -250,7 +250,11 @@ export function computeBusinessMembershipBilling(
   }>,
   now: Date = new Date(),
 ): BusinessBillingInfo {
-  if (!memberships || memberships.length === 0) {
+  const validMemberships = (memberships || []).filter(
+    (m) => m.status !== 'CANCELLED',
+  );
+
+  if (!validMemberships || validMemberships.length === 0) {
     return {
       billing_anchor_day: business.billingAnchorDay ?? null,
       current_period_start: null,
@@ -267,7 +271,7 @@ export function computeBusinessMembershipBilling(
   }
 
   // Ordenar por endDate desc, startDate desc
-  const sorted = [...memberships].sort(
+  const sorted = [...validMemberships].sort(
     (a, b) =>
       b.endDate.getTime() - a.endDate.getTime() ||
       b.startDate.getTime() - a.startDate.getTime(),
@@ -275,7 +279,7 @@ export function computeBusinessMembershipBilling(
   const latest = sorted[0];
 
   // La membresía más antigua para derivar ancla si no está guardado
-  const oldest = [...memberships].sort(
+  const oldest = [...validMemberships].sort(
     (a, b) => a.startDate.getTime() - b.startDate.getTime(),
   )[0];
 
