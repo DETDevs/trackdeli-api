@@ -10,13 +10,26 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { MembershipStatus, PaymentMethod } from '@prisma/client';
+import { MembershipStatus, MembershipType, PaymentMethod } from '@prisma/client';
 import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
 
 export class CreateMembershipDto {
   @IsString()
   @IsNotEmpty()
   businessId: string;
+
+  @IsEnum(MembershipType)
+  @IsOptional()
+  type?: MembershipType;
+
+  @IsEnum(['CONTINUE', 'TODAY', 'CUSTOM'])
+  @IsOptional()
+  startMode?: 'CONTINUE' | 'TODAY' | 'CUSTOM';
+
+  @IsNumber()
+  @Min(1)
+  @IsOptional()
+  trialDays?: number;
 
   @IsDateString()
   @IsOptional()

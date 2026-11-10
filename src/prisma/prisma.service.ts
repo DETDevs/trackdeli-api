@@ -2322,6 +2322,7 @@ WHERE a."customerId" = c."id"
       await this.ensureCommercialAgreementsSchema();
       await this.ensureSaleItemCostSchema();
       await this.ensurePosPoliciesRequireShiftSchema();
+      await this.ensureMembershipTypeSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4379,6 +4380,35 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠️ 251a - Advertencia sincronizando requireOpenShiftToSell en pos_policies: ${err.message}`);
+    }
+  }
+
+
+  /**
+   * 252b - Membresías: enum MembershipType (PAID, TRIAL) y columna type en memberships
+   * DDL idempotente con advisory lock 252002.
+   */
+  private async ensureMembershipTypeSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(252002)`);
+      try {
+        await this.$executeRawUnsafe(`
+          DO $
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'MembershipType') THEN
+              CREATE TYPE "MembershipType" AS ENUM ('PAID', 'TRIAL');
+            END IF;
+          END $;
+        `);
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "memberships"
+            ADD COLUMN IF NOT EXISTS "type" "MembershipType" NOT NULL DEFAULT 'PAID';
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(252002)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠️ 252b - Advertencia sincronizando type en memberships: ${err.message}`);
     }
   }
 

@@ -23,6 +23,7 @@ import { UserRole } from '@prisma/client';
 import { CreateBusinessSuperAdminDto } from './dto/create-business-superadmin.dto';
 import { OrdersMetricsQueryDto } from './dto/orders-metrics-query.dto';
 import { CreateMembershipDto } from './dto/create-membership.dto';
+import { PreviewMembershipDto } from './dto/preview-membership.dto';
 import { UpdateMembershipDto } from './dto/update-membership.dto';
 import { VoidMembershipDto } from './dto/void-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
@@ -72,6 +73,14 @@ export class SuperAdminController {
   @Get('businesses')
   async getBusinesses(@Query() query: BusinessesQueryDto) {
     return this.superAdminService.getBusinesses(query);
+  }
+
+  @Get('businesses/:id/memberships/preview')
+  async previewMembershipPeriod(
+    @Param('id') id: string,
+    @Query() query: PreviewMembershipDto,
+  ) {
+    return this.superAdminService.previewMembershipPeriod(id, query);
   }
 
   @Get('businesses/:id/memberships')

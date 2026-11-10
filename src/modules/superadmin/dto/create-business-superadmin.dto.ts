@@ -1,7 +1,30 @@
-import { IsBoolean, IsEmail, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
+import { IsBoolean, IsDateString, IsEmail, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { BusinessType, PosVertical } from '@prisma/client';
+import { BusinessType, PosVertical, PaymentMethod } from '@prisma/client';
 import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
+
+export class FirstPaymentDto {
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  amount?: number;
+
+  @IsOptional()
+  @IsEnum(PaymentMethod)
+  paymentMethod?: PaymentMethod;
+
+  @IsOptional()
+  @IsDateString()
+  paidAt?: string;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+  @IsOptional()
+  @IsString()
+  paymentProofUrl?: string;
+}
 
 export class EncargadoDto {
   @SanitizeText()
@@ -180,4 +203,19 @@ export class CreateBusinessSuperAdminDto {
   @ValidateNested()
   @Type(() => EncargadoDto)
   encargado?: EncargadoDto;
+
+  @IsOptional()
+  @IsIn(['TRIAL', 'PAID'])
+  startType?: 'TRIAL' | 'PAID';
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  trialDays?: number;
+
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => FirstPaymentDto)
+  firstPayment?: FirstPaymentDto;
 }

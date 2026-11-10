@@ -116,6 +116,11 @@ enum MembershipStatus {
   PENDING
 }
 
+enum MembershipType {
+  PAID
+  TRIAL
+}
+
 // ─── POS ENUMS ───
 
 enum PosPaymentMethod {
@@ -454,6 +459,7 @@ model Membership {
   notes           String?
 
   status          MembershipStatus @default(ACTIVE)
+  type            MembershipType   @default(PAID)
 
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt

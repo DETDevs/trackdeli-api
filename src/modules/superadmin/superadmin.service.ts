@@ -19,7 +19,7 @@ import { DeleteBusinessDto } from './dto/delete-business.dto';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateBusinessOrganizationDto } from './dto/update-business-organization.dto';
 import { GrantBranchAccessDto } from './dto/grant-branch-access.dto';
-import { BusinessType, MembershipStatus, OrderStatus, Prisma, UserRole, BusinessProductType, BusinessProductStatus, BusinessProductAction, PosVertical, PaymentMethod, PosDeviceStatus } from '@prisma/client';
+import { BusinessType, MembershipStatus, MembershipType, OrderStatus, Prisma, UserRole, BusinessProductType, BusinessProductStatus, BusinessProductAction, PosVertical, PaymentMethod, PosDeviceStatus } from '@prisma/client';
 import { AuditService } from '../pos/audit/audit.service';
 import { UpdateDeviceDto } from '../pos/devices/dto/update-device.dto';
 import { UpdatePosSubscriptionDto } from '../pos/devices/dto/update-pos-subscription.dto';
@@ -221,14 +221,24 @@ export class SuperAdminService {
         (s: any) => s.productType === 'POS',
       );
 
-      const isTrial = Boolean(
-        !(agreement && coverage.isCovered) &&
+      const hasActivePaidMembership = b.memberships.some(
+        (m) => (m as any).type !== 'TRIAL' && m.status === MembershipStatus.ACTIVE && Number(m.amount) > 0,
+      );
+      const hasActiveTrialMembership = b.memberships.some(
+        (m) => (m as any).type === 'TRIAL' && m.status === MembershipStatus.ACTIVE && new Date(m.endDate) > now,
+      );
+      const isPosInTrial = Boolean(
         posSub &&
           (
             (posSub.trialHours !== null && posSub.trialStartedAt === null) ||
             (posSub.trialEndsAt !== null && new Date(posSub.trialEndsAt) > now)
-          ) &&
-          (b.memberships.length === 0 || !b.memberships.some((m) => m.paidAt && m.status === MembershipStatus.ACTIVE)),
+          ),
+      );
+
+      const isTrial = Boolean(
+        !(agreement && coverage.isCovered) &&
+        !hasActivePaidMembership &&
+        (hasActiveTrialMembership || isPosInTrial),
       );
 
       let monthlyAmount = 0;
@@ -239,7 +249,7 @@ export class SuperAdminService {
         monthlyAmountNio = 0;
       } else {
         const activeMem = b.memberships.find(
-          (m) => m.status === MembershipStatus.ACTIVE && Number(m.amount) > 0,
+          (m) => (m as any).type !== 'TRIAL' && m.status === MembershipStatus.ACTIVE && Number(m.amount) > 0,
         );
         if (activeMem) {
           const isNio = (activeMem.currency || '').toUpperCase() === 'NIO';
@@ -533,10 +543,11 @@ export class SuperAdminService {
         amount: b.monthly_amount,
       }));
 
-    // recent_payments: últimos 10 pagos registrados
+    // recent_payments: últimos 10 pagos registrados (excluye TRIAL y CANCELLED)
     const recentMemberships = await this.prisma.membership.findMany({
       where: {
         status: { not: MembershipStatus.CANCELLED },
+        type: { not: MembershipType.TRIAL },
       },
       orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }],
       take: 10,
@@ -1461,7 +1472,7 @@ export class SuperAdminService {
         }
       }
 
-      // 2. Registro automático de Membresía si hay al menos un producto de membresía
+      // 2. Registro de Membresía inicial (PAID vs TRIAL)
       let membership = null;
       if (membershipPaymentProducts.length > 0) {
         const totalAmount = membershipPaymentProducts.reduce(
@@ -1470,51 +1481,103 @@ export class SuperAdminService {
         );
 
         const nowParts = getManaguaDateParts(now);
-        const anchorDay = business.billingAnchorDay ?? nowParts.day;
         const startDate = createManaguaDate(nowParts.year, nowParts.month, nowParts.day, 0, 0, 0, 0);
-        const endDate = calculateDueDate(startDate, anchorDay);
+        const isPaidInitial = (dto as any).startType === 'PAID' || Boolean((dto as any).firstPayment);
 
-        membership = await tx.membership.create({
-          data: {
-            businessId: business.id,
-            startDate,
-            endDate,
-            amount: totalAmount,
-            currency: 'USD',
-            paymentMethod: PaymentMethod.OTRO,
-            paidAt: now,
-            notes: 'Alta inicial del negocio y activación de productos',
-            status: MembershipStatus.ACTIVE,
-            createdBy,
-            paymentProducts: {
-              create: membershipPaymentProducts.map((item) => ({
-                businessProductSubscriptionId: item.businessProductSubscriptionId,
-                amountAttributed:
-                  item.amountAttributed !== null
-                    ? new Prisma.Decimal(item.amountAttributed)
-                    : null,
-              })),
+        if (isPaidInitial) {
+          const anchorDay = business.billingAnchorDay ?? nowParts.day;
+          const endDate = calculateDueDate(startDate, anchorDay);
+          const firstPay = (dto as any).firstPayment;
+          const paidAmount = firstPay?.amount !== undefined ? Number(firstPay.amount) : totalAmount;
+          const paymentMethod = firstPay?.paymentMethod || PaymentMethod.OTRO;
+          const paidAt = parseManaguaDate(firstPay?.paidAt) || now;
+
+          membership = await tx.membership.create({
+            data: {
+              businessId: business.id,
+              type: MembershipType.PAID,
+              startDate,
+              endDate,
+              amount: new Prisma.Decimal(paidAmount),
+              currency: 'USD',
+              paymentMethod,
+              paymentProofUrl: firstPay?.paymentProofUrl || null,
+              paidAt,
+              notes: firstPay?.notes || 'Alta inicial del negocio: primer pago registrado',
+              status: MembershipStatus.ACTIVE,
+              createdBy,
+              paymentProducts: {
+                create: membershipPaymentProducts.map((item) => ({
+                  businessProductSubscriptionId: item.businessProductSubscriptionId,
+                  amountAttributed:
+                    item.amountAttributed !== null
+                      ? new Prisma.Decimal(item.amountAttributed)
+                      : null,
+                })),
+              },
             },
-          },
-          include: {
-            paymentProducts: {
-              include: {
-                businessProductSubscription: {
-                  select: { id: true, productType: true, status: true },
+            include: {
+              paymentProducts: {
+                include: {
+                  businessProductSubscription: {
+                    select: { id: true, productType: true, status: true },
+                  },
                 },
               },
             },
-          },
-        });
+          });
 
-        await tx.business.update({
-          where: { id: business.id },
-          data: { billingAnchorDay: anchorDay },
-        });
+          await tx.business.update({
+            where: { id: business.id },
+            data: { billingAnchorDay: anchorDay },
+          });
 
-        this.logger.log(
-          `[createBusiness] Membresía inicial creada id=${membership.id}, monto=$${totalAmount}, productos=${membershipPaymentProducts.length}`,
-        );
+          this.logger.log(
+            `[createBusiness] Membresía PAID inicial creada id=${membership.id}, monto=${paidAmount}, anchorDay=${anchorDay}`,
+          );
+        } else {
+          // Prueba gratis inicial (TRIAL): monto 0, sin cobro, sin ancla de facturación
+          const trialDays = (dto as any).trialDays || ((dto as any).trialHours ? Math.ceil((dto as any).trialHours / 24) : 15);
+          const rawEndDate = new Date(startDate.getTime() + trialDays * 24 * 60 * 60 * 1000);
+          const endParts = getManaguaDateParts(rawEndDate);
+          const resolvedEndDate = createManaguaDate(endParts.year, endParts.month, endParts.day, 0, 0, 0, 0);
+
+          membership = await tx.membership.create({
+            data: {
+              businessId: business.id,
+              type: MembershipType.TRIAL,
+              startDate,
+              endDate: resolvedEndDate,
+              amount: new Prisma.Decimal(0),
+              currency: 'USD',
+              paymentMethod: PaymentMethod.OTRO,
+              paymentProofUrl: null,
+              paidAt: null,
+              notes: `Alta inicial del negocio: prueba gratis de ${trialDays} días`,
+              status: MembershipStatus.ACTIVE,
+              createdBy,
+              paymentProducts: {
+                create: membershipPaymentProducts.map((item) => ({
+                  businessProductSubscriptionId: item.businessProductSubscriptionId,
+                  amountAttributed: null,
+                })),
+              },
+            },
+            include: {
+              paymentProducts: {
+                include: {
+                  businessProductSubscription: {
+                    select: { id: true, productType: true, status: true },
+                  },
+                },
+              },
+            },
+          });
+
+          this.logger.log(
+            `[createBusiness] Membresía TRIAL inicial creada id=${membership.id}, días=${trialDays}, sin fijar ancla de facturación`,
+          );
+        }
       }
 
       return { business, encargado, membership };
@@ -2328,22 +2391,28 @@ export class SuperAdminService {
       };
     });
 
-    const anchor =
-      anchorDay ??
-      membership.business?.billingAnchorDay ??
-      (membership.paidAt
-        ? getManaguaDateParts(new Date(membership.paidAt)).day
-        : membership.startDate
-        ? getManaguaDateParts(new Date(membership.startDate)).day
-        : 1);
+    const isTrial = membership.type === 'TRIAL';
+    const anchor = isTrial
+      ? null
+      : (anchorDay ??
+        membership.business?.billingAnchorDay ??
+        (membership.paidAt
+          ? getManaguaDateParts(new Date(membership.paidAt)).day
+          : membership.startDate
+          ? getManaguaDateParts(new Date(membership.startDate)).day
+          : 1));
+
     const startDate = membership.startDate
       ? new Date(membership.startDate)
       : new Date();
-    const dueDate = calculateDueDate(startDate, anchor);
+    const dueDate = isTrial || !anchor
+      ? (membership.endDate ? new Date(membership.endDate) : startDate)
+      : calculateDueDate(startDate, anchor);
     const graceEndsAt = calculateGraceEndsAt(dueDate);
 
     return {
       ...membership,
+      type: membership.type || 'PAID',
       isUnitemized: products.length === 0,
       products,
       billing_anchor_day: anchor,
@@ -2353,36 +2422,187 @@ export class SuperAdminService {
     };
   }
 
-  async createMembership(dto: CreateMembershipDto, createdBy: string) {
-    this.logger.log(
-      `[createMembership] Registrando membresía para negocio=${dto.businessId}, monto=${dto.amount} ${dto.currency || 'USD'}`,
+  calculateMembershipPeriodDetails(
+    business: {
+      id: string;
+      billingAnchorDay?: number | null;
+      commercialAgreement?: { maintenanceFreeEndsAt?: Date | null } | null;
+    },
+    validMemberships: Array<{
+      id: string;
+      startDate: Date;
+      endDate: Date;
+      status: string;
+      type?: string;
+      paidAt?: Date | null;
+    }>,
+    options: {
+      type?: 'PAID' | 'TRIAL';
+      startMode?: 'CONTINUE' | 'TODAY' | 'CUSTOM';
+      startDate?: string;
+      trialDays?: number;
+    },
+  ) {
+    const type: 'PAID' | 'TRIAL' = options.type === 'TRIAL' ? 'TRIAL' : 'PAID';
+    const paidMemberships = (validMemberships || []).filter(
+      (m) => (m as any).type !== 'TRIAL',
     );
+    const hasActivePaid = paidMemberships.length > 0;
+    const latestPaid = paidMemberships[0]; // ordenado por endDate desc
+
+    // Modo sugerido: si hay un pago registrado previo, CONTINUE; de lo contrario TODAY
+    const suggestedMode: 'CONTINUE' | 'TODAY' = hasActivePaid ? 'CONTINUE' : 'TODAY';
+    const startMode: 'CONTINUE' | 'TODAY' | 'CUSTOM' = options.startMode || suggestedMode;
+
+    const now = new Date();
+    const nowParts = getManaguaDateParts(now);
+    const todayStart = createManaguaDate(nowParts.year, nowParts.month, nowParts.day, 0, 0, 0, 0);
+
+    const currentAnchor =
+      business.billingAnchorDay ??
+      (latestPaid
+        ? getManaguaDateParts(latestPaid.paidAt ?? latestPaid.startDate).day
+        : null);
+
+    let startDateDate: Date;
+    let endDateDate: Date;
+    let anchorDay: number | null = currentAnchor;
+    let willChangeAnchor = false;
+    const warnings: string[] = [];
+
+    if (type === 'TRIAL') {
+      const days = Number(options.trialDays) > 0 ? Math.floor(Number(options.trialDays)) : 15;
+      if (startMode === 'CUSTOM' && options.startDate) {
+        startDateDate = parseManaguaDate(options.startDate) || todayStart;
+      } else if (startMode === 'CONTINUE' && validMemberships.length > 0) {
+        const lParts = getManaguaDateParts(validMemberships[0].endDate);
+        startDateDate = createManaguaDate(lParts.year, lParts.month, lParts.day, 0, 0, 0, 0);
+      } else {
+        startDateDate = todayStart;
+      }
+      const rawEnd = new Date(startDateDate.getTime() + days * 24 * 60 * 60 * 1000);
+      const eParts = getManaguaDateParts(rawEnd);
+      endDateDate = createManaguaDate(eParts.year, eParts.month, eParts.day, 0, 0, 0, 0);
+
+      anchorDay = currentAnchor ?? null;
+      willChangeAnchor = false;
+
+      const diffDays = Math.round((startDateDate.getTime() - todayStart.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffDays > 30) {
+        const latestEndStr = validMemberships[0] ? toManaguaDateString(validMemberships[0].endDate) : toManaguaDateString(startDateDate);
+        warnings.push(`El periodo empieza en más de 30 días: ya hay coberturas hasta ${latestEndStr}`);
+      }
+    } else {
+      // PAID
+      if (startMode === 'CONTINUE') {
+        if (latestPaid) {
+          const lParts = getManaguaDateParts(latestPaid.endDate);
+          startDateDate = createManaguaDate(lParts.year, lParts.month, lParts.day, 0, 0, 0, 0);
+          anchorDay = currentAnchor ?? lParts.day;
+          endDateDate = calculateDueDate(startDateDate, anchorDay);
+        } else if (business.commercialAgreement?.maintenanceFreeEndsAt) {
+          const mParts = getManaguaDateParts(new Date(business.commercialAgreement.maintenanceFreeEndsAt));
+          startDateDate = createManaguaDate(mParts.year, mParts.month, mParts.day, 0, 0, 0, 0);
+          anchorDay = currentAnchor ?? mParts.day;
+          endDateDate = calculateDueDate(startDateDate, anchorDay);
+        } else {
+          startDateDate = todayStart;
+          anchorDay = currentAnchor ?? nowParts.day;
+          endDateDate = calculateDueDate(startDateDate, anchorDay);
+        }
+      } else if (startMode === 'TODAY') {
+        startDateDate = todayStart;
+        anchorDay = nowParts.day;
+        endDateDate = calculateDueDate(startDateDate, anchorDay);
+      } else {
+        // CUSTOM
+        startDateDate = parseManaguaDate(options.startDate) || todayStart;
+        const customParts = getManaguaDateParts(startDateDate);
+        anchorDay = customParts.day;
+        endDateDate = calculateDueDate(startDateDate, anchorDay);
+      }
+
+      if (currentAnchor !== null && currentAnchor !== undefined && anchorDay !== currentAnchor) {
+        willChangeAnchor = true;
+        warnings.push(`Vas a cambiar el día de cobro del ${currentAnchor} al ${anchorDay}`);
+      }
+
+      const diffDays = Math.round((startDateDate.getTime() - todayStart.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffDays > 30) {
+        const latestEndStr = latestPaid ? toManaguaDateString(latestPaid.endDate) : toManaguaDateString(startDateDate);
+        warnings.push(`El periodo empieza en más de 30 días: ya hay pagos cubriendo hasta ${latestEndStr}`);
+      }
+    }
+
+    return {
+      startDate: toManaguaDateString(startDateDate),
+      endDate: toManaguaDateString(endDateDate),
+      startDateDate,
+      endDateDate,
+      anchorDay,
+      currentAnchorDay: currentAnchor,
+      willChangeAnchor,
+      startMode,
+      type,
+      warnings,
+      suggestedMode,
+      hasActivePaid,
+    };
+  }
+
+  async previewMembershipPeriod(businessId: string, query: any) {
+    this.logger.log(`[previewMembershipPeriod] businessId=${businessId}, query=${JSON.stringify(query)}`);
 
     const business = await this.prisma.business.findUnique({
-      where: { id: dto.businessId },
+      where: { id: businessId },
+      include: {
+        commercialAgreement: {
+          select: { maintenanceFreeEndsAt: true },
+        },
+      },
     });
 
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
     }
 
-    let anchorDay = business.billingAnchorDay;
-    if (!anchorDay) {
-      const oldest = await this.prisma.membership.findFirst({
-        where: {
-          businessId: dto.businessId,
-          status: { not: MembershipStatus.CANCELLED },
+    const memberships = await this.prisma.membership.findMany({
+      where: {
+        businessId,
+        status: { not: MembershipStatus.CANCELLED },
+      },
+      orderBy: { endDate: 'desc' },
+    });
+
+    return this.calculateMembershipPeriodDetails(business, memberships, {
+      type: query.type,
+      startMode: query.startMode,
+      startDate: query.startDate,
+      trialDays: query.trialDays,
+    });
+  }
+
+  async createMembership(dto: CreateMembershipDto, createdBy: string) {
+    this.logger.log(
+      `[createMembership] Registrando membresía para negocio=${dto.businessId}, tipo=${dto.type || 'PAID'}, monto=${dto.amount} ${dto.currency || 'USD'}`,
+    );
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: dto.businessId },
+      include: {
+        commercialAgreement: {
+          select: { maintenanceFreeEndsAt: true },
         },
-        orderBy: { startDate: 'asc' },
-      });
-      const anchorSource = oldest
-        ? (oldest.paidAt ?? oldest.startDate)
-        : (parseManaguaDate(dto.paidAt) || parseManaguaDate(dto.startDate) || new Date());
-      anchorDay = getManaguaDateParts(anchorSource).day;
+      },
+    });
+
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
     }
 
-    // Regla 2: Un pago tardío NO mueve el ancla. Si paga el 12 de noviembre, el nuevo período sigue siendo 10 nov -> 10 dic.
-    const latest = await this.prisma.membership.findFirst({
+    const isTrial = (dto.type || 'PAID') === 'TRIAL';
+
+    const validMemberships = await this.prisma.membership.findMany({
       where: {
         businessId: dto.businessId,
         status: { not: MembershipStatus.CANCELLED },
@@ -2390,34 +2610,16 @@ export class SuperAdminService {
       orderBy: { endDate: 'desc' },
     });
 
-    let newStartDate: Date;
-    let newEndDate: Date;
+    const periodDetails = this.calculateMembershipPeriodDetails(business, validMemberships, {
+      type: isTrial ? 'TRIAL' : 'PAID',
+      startMode: dto.startMode,
+      startDate: dto.startDate,
+      trialDays: dto.trialDays,
+    });
 
-    if (latest) {
-      const prevDue = calculateDueDate(latest.startDate, anchorDay);
-      newStartDate = prevDue;
-      newEndDate = calculateDueDate(newStartDate, anchorDay);
-    } else {
-      const agreement = await this.prisma.businessCommercialAgreement.findUnique({
-        where: { businessId: dto.businessId },
-        select: { maintenanceFreeEndsAt: true },
-      });
-
-      if (agreement?.maintenanceFreeEndsAt) {
-        // 244a: El primer pago de membresía del mes 13 debe cubrir desde maintenanceFreeEndsAt
-        const mParts = getManaguaDateParts(new Date(agreement.maintenanceFreeEndsAt));
-        newStartDate = createManaguaDate(mParts.year, mParts.month, mParts.day, 0, 0, 0, 0);
-        newEndDate = calculateDueDate(newStartDate, anchorDay);
-      } else {
-        const paidDate =
-          parseManaguaDate(dto.paidAt) ||
-          parseManaguaDate(dto.startDate) ||
-          new Date();
-        const pParts = getManaguaDateParts(paidDate);
-        newStartDate = createManaguaDate(pParts.year, pParts.month, pParts.day, 0, 0, 0, 0);
-        newEndDate = calculateDueDate(newStartDate, anchorDay);
-      }
-    }
+    const newStartDate = periodDetails.startDateDate;
+    const newEndDate = periodDetails.endDateDate;
+    const anchorDay = periodDetails.anchorDay;
 
     // Normalizar lista de productos
     const productItems: Array<{ businessProductSubscriptionId: string; amountAttributed?: number }> = [];
@@ -2461,16 +2663,17 @@ export class SuperAdminService {
       const membership = await tx.membership.create({
         data: {
           businessId: dto.businessId,
+          type: isTrial ? MembershipType.TRIAL : MembershipType.PAID,
           startDate: newStartDate,
           endDate: newEndDate,
-          amount: dto.amount,
-          currency: dto.currency || 'USD',
-          paymentMethod: dto.paymentMethod || 'TRANSFERENCIA',
-          paidAt: parseManaguaDate(dto.paidAt) || new Date(),
+          amount: isTrial ? new Prisma.Decimal(0) : dto.amount,
+          currency: isTrial ? 'USD' : (dto.currency || 'USD'),
+          paymentMethod: isTrial ? PaymentMethod.OTRO : (dto.paymentMethod || PaymentMethod.TRANSFERENCIA),
+          paidAt: isTrial ? null : (parseManaguaDate(dto.paidAt) || new Date()),
           notes: dto.notes,
           status: dto.status || MembershipStatus.ACTIVE,
           createdBy,
-          paymentProducts: productItems.length > 0
+          paymentProducts: !isTrial && productItems.length > 0
             ? {
                 create: productItems.map((item) => ({
                   businessProductSubscriptionId: item.businessProductSubscriptionId,
@@ -2496,7 +2699,7 @@ export class SuperAdminService {
         },
       });
 
-      if (!business.billingAnchorDay) {
+      if (!isTrial && anchorDay) {
         await tx.business.update({
           where: { id: dto.businessId },
           data: { billingAnchorDay: anchorDay },
@@ -2505,13 +2708,22 @@ export class SuperAdminService {
 
       // Si la membresía está ACTIVE y no ha vencido su período de gracia, activar productos
       const now = new Date();
-      const dueDate = calculateDueDate(membership.startDate, anchorDay);
+      const dueDate = isTrial || !anchorDay ? newEndDate : calculateDueDate(membership.startDate, anchorDay);
       const graceEndsAt = calculateGraceEndsAt(dueDate);
 
       if (membership.status === MembershipStatus.ACTIVE && now < graceEndsAt) {
-        for (const item of productItems) {
+        const subsToActivate = productItems.length > 0
+          ? productItems.map((p) => p.businessProductSubscriptionId)
+          : (isTrial
+              ? (await tx.businessProductSubscription.findMany({
+                  where: { businessId: dto.businessId },
+                  select: { id: true },
+                })).map((s) => s.id)
+              : []);
+
+        for (const subId of subsToActivate) {
           const sub = await tx.businessProductSubscription.findUnique({
-            where: { id: item.businessProductSubscriptionId },
+            where: { id: subId },
           });
 
           if (sub) {
@@ -2533,10 +2745,12 @@ export class SuperAdminService {
                 productType: sub.productType,
                 action: BusinessProductAction.ACTIVATED,
                 performedBy: createdBy,
-                reason: 'Activación automática por registro de pago de membresía',
+                reason: isTrial
+                  ? 'Activación por prueba gratis de membresía'
+                  : 'Activación automática por registro de pago de membresía',
                 metadata: {
                   membershipId: membership.id,
-                  amountAttributed: item.amountAttributed,
+                  amountAttributed: productItems.find((p) => p.businessProductSubscriptionId === subId)?.amountAttributed,
                 },
               },
             });
@@ -2557,8 +2771,8 @@ export class SuperAdminService {
       return membership;
     });
 
-    this.logger.log(`[createMembership] OK membresía creada id=${result.id} (productos: ${productItems.length})`);
-    return this.formatMembershipWithProducts(result, anchorDay);
+    this.logger.log(`[createMembership] OK membresía creada id=${result.id} (tipo=${result.type}, productos: ${productItems.length})`);
+    return this.formatMembershipWithProducts(result, isTrial ? undefined : (anchorDay ?? undefined));
   }
 
   async uploadPaymentProof(id: string, file: Express.Multer.File) {

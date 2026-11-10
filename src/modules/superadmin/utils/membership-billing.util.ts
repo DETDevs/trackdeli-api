@@ -278,10 +278,44 @@ export function computeBusinessMembershipBilling(
   );
   const latest = sorted[0];
 
+  const hasPaid = validMemberships.some((m) => (m as any).type !== 'TRIAL');
+
+  if (!hasPaid) {
+    const periodStart = latest.startDate;
+    const startParts = getManaguaDateParts(periodStart);
+    const currentPeriodStartDate = createManaguaDate(
+      startParts.year,
+      startParts.month,
+      startParts.day,
+      0,
+      0,
+      0,
+      0,
+    );
+    const dueDate = latest.endDate;
+    const graceEndsAt = calculateGraceEndsAt(dueDate);
+    const daysUntilDue = calculateDaysUntilDue(dueDate, now);
+    const status = calculateMembershipStatus(daysUntilDue);
+
+    return {
+      billing_anchor_day: null,
+      current_period_start: toManaguaDateString(currentPeriodStartDate),
+      due_date: toManaguaDateString(dueDate),
+      grace_ends_at: graceEndsAt.toISOString(),
+      membership_status: status,
+      days_until_due: daysUntilDue,
+      current_period_start_date: currentPeriodStartDate,
+      due_date_date: dueDate,
+      grace_ends_at_date: graceEndsAt,
+      is_active: isOperationallyActive(status),
+      is_in_grace: status === 'EN_GRACIA',
+    };
+  }
+
   // La membresía más antigua para derivar ancla si no está guardado
-  const oldest = [...validMemberships].sort(
-    (a, b) => a.startDate.getTime() - b.startDate.getTime(),
-  )[0];
+  const oldest = [...validMemberships]
+    .filter((m) => (m as any).type !== 'TRIAL')
+    .sort((a, b) => a.startDate.getTime() - b.startDate.getTime())[0] || latest;
 
   // Regla 4: El ancla es el día del pago registrado (paidAt) en America/Managua.
   // Si no hay paidAt, se recurre a startDate o a createdAt del negocio.
