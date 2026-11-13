@@ -103,6 +103,7 @@ export class ReportsService {
           s.id AS sale_id,
           s."customerId" AS customer_id,
           COALESCE(cust.name, s."customerName", 'Cliente Mostrador') AS customer_name,
+          COALESCE(s."channel", 'MOSTRADOR') AS channel,
           ((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua') AS created_at_local,
           TO_CHAR((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua', 'YYYY-MM-DD') AS sale_date_local,
           EXTRACT(HOUR FROM (s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua')::int AS sale_hour_local,
@@ -140,6 +141,7 @@ export class ReportsService {
           s.id AS sale_id,
           s."customerId" AS customer_id,
           COALESCE(cust.name, s."customerName", 'Cliente Mostrador') AS customer_name,
+          COALESCE(s."channel", 'MOSTRADOR') AS channel,
           ((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua') AS created_at_local,
           TO_CHAR((s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua', 'YYYY-MM-DD') AS sale_date_local,
           EXTRACT(HOUR FROM (s."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Managua')::int AS sale_hour_local,
@@ -155,6 +157,189 @@ export class ReportsService {
           AND NOT EXISTS (SELECT 1 FROM pos_sale_items i WHERE i."saleId" = s.id)
       )
     `;
+  }
+
+  private calculatePedidosYaOrderFees(sale: {
+    status?: string | null;
+    total?: any;
+    pedidosYaCommissionPct?: any;
+    pedidosYaTaxPct?: any;
+    returns?: Array<{ refundAmount?: any }> | null;
+  }): {
+    effectiveTotal: number;
+    refundSum: number;
+    commPct: number;
+    taxPct: number;
+    commission: number;
+    tax: number;
+    total: number;
+  } {
+    const commPct =
+      sale.pedidosYaCommissionPct != null ? Number(sale.pedidosYaCommissionPct) : 27;
+    const taxPct = sale.pedidosYaTaxPct != null ? Number(sale.pedidosYaTaxPct) : 7;
+    const refundSum = (sale.returns || []).reduce(
+      (sum, r) => sum + Number(r.refundAmount || 0),
+      0,
+    );
+    if (sale.status === 'RETURNED') {
+      return { effectiveTotal: 0, refundSum, commPct, taxPct, commission: 0, tax: 0, total: 0 };
+    }
+    const effectiveTotal = Math.max(0, Number(sale.total || 0) - refundSum);
+    const commission = Math.round(effectiveTotal * (commPct / 100) * 100) / 100;
+    const tax = Math.round(effectiveTotal * (taxPct / 100) * 100) / 100;
+    return {
+      effectiveTotal,
+      refundSum,
+      commPct,
+      taxPct,
+      commission,
+      tax,
+      total: Math.round((commission + tax) * 100) / 100,
+    };
+  }
+
+  private async aggregatePedidosYaFees(businessId: string, fromDt: Date, toDt: Date) {
+    const sales = await this.prisma.sale.findMany({
+      where: {
+        businessId,
+        channel: 'PEDIDOSYA',
+        status: { in: ['COMPLETED', 'PARTIALLY_RETURNED'] },
+        createdAt: { gte: fromDt, lte: toDt },
+      },
+      select: {
+        createdAt: true,
+        status: true,
+        total: true,
+        pedidosYaCommissionPct: true,
+        pedidosYaTaxPct: true,
+        returns: { select: { refundAmount: true } },
+      },
+    });
+
+    let commission = new Prisma.Decimal(0);
+    let tax = new Prisma.Decimal(0);
+    const byDay = new Map<string, Prisma.Decimal>();
+    const byHour = new Map<number, Prisma.Decimal>();
+
+    for (const s of sales) {
+      const fees = this.calculatePedidosYaOrderFees(s);
+      const c = new Prisma.Decimal(fees.commission);
+      const t = new Prisma.Decimal(fees.tax);
+      const tot = c.plus(t);
+      commission = commission.plus(c);
+      tax = tax.plus(t);
+
+      const dayKey = formatDateInTimezone(s.createdAt, 'America/Managua');
+      byDay.set(dayKey, (byDay.get(dayKey) || new Prisma.Decimal(0)).plus(tot));
+      const hourKey = getHourInTimezone(s.createdAt, 'America/Managua');
+      byHour.set(hourKey, (byHour.get(hourKey) || new Prisma.Decimal(0)).plus(tot));
+    }
+
+    return {
+      hasOrders: sales.length > 0,
+      commission,
+      tax,
+      total: commission.plus(tax),
+      byDay,
+      byHour,
+    };
+  }
+
+  private async computeDeliveryRevenueDetails(
+    businessId: string,
+    fromDt: Date,
+    toDt: Date,
+    isDeliveryTaxable: boolean,
+  ) {
+    const sales = await this.prisma.sale.findMany({
+      where: {
+        businessId,
+        channel: 'DOMICILIO',
+        status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
+        createdAt: { gte: fromDt, lte: toDt },
+        deliveryFee: { gt: 0 },
+      },
+      select: {
+        id: true,
+        status: true,
+        deliveryFee: true,
+        subtotal: true,
+        discountAmount: true,
+        total: true,
+        taxModel: true,
+        taxIncluded: true,
+        taxRate: true,
+        createdAt: true,
+        returns: { select: { refundAmount: true } },
+        items: {
+          where: {
+            productId: null,
+            OR: [
+              { productName: { contains: 'envío', mode: 'insensitive' } },
+              { productName: { contains: 'envio', mode: 'insensitive' } },
+              { productName: { contains: 'domicilio', mode: 'insensitive' } },
+            ],
+          },
+          select: { id: true },
+        },
+      },
+    });
+
+    let total = new Prisma.Decimal(0);
+    const byDay = new Map<string, Prisma.Decimal>();
+    const byHour = new Map<number, Prisma.Decimal>();
+
+    for (const s of sales) {
+      if (s.status === 'RETURNED') continue;
+      let baseFee = new Prisma.Decimal(s.deliveryFee || 0);
+      if (baseFee.lte(0)) continue;
+
+      const hasDeliveryItem = (s.items || []).length > 0;
+      if (
+        hasDeliveryItem &&
+        s.taxModel === 'LEGACY' &&
+        s.taxIncluded &&
+        Number(s.taxRate) > 0 &&
+        isDeliveryTaxable
+      ) {
+        const rateDiv = new Prisma.Decimal(1).plus(new Prisma.Decimal(s.taxRate).div(100));
+        baseFee = baseFee.div(rateDiv);
+      }
+
+      if (hasDeliveryItem && Number(s.subtotal || 0) > 0 && Number(s.discountAmount || 0) > 0) {
+        const sub = new Prisma.Decimal(s.subtotal);
+        const disc = new Prisma.Decimal(s.discountAmount);
+        const factor = Prisma.Decimal.max(0, new Prisma.Decimal(1).minus(disc.div(sub)));
+        baseFee = baseFee.mul(factor);
+      }
+
+      if (s.status === 'PARTIALLY_RETURNED' && Number(s.total || 0) > 0) {
+        const refundSum = (s.returns || []).reduce(
+          (acc, r) => acc.plus(new Prisma.Decimal(r.refundAmount || 0)),
+          new Prisma.Decimal(0),
+        );
+        const tot = new Prisma.Decimal(s.total);
+        const factor = Prisma.Decimal.min(
+          1,
+          Prisma.Decimal.max(0, tot.minus(refundSum).div(tot)),
+        );
+        baseFee = baseFee.mul(factor);
+      }
+
+      const saleDeliv = baseFee.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+      total = total.plus(saleDeliv);
+
+      const dayKey = formatDateInTimezone(s.createdAt, 'America/Managua');
+      byDay.set(dayKey, (byDay.get(dayKey) || new Prisma.Decimal(0)).plus(saleDeliv));
+      const hourKey = getHourInTimezone(s.createdAt, 'America/Managua');
+      byHour.set(hourKey, (byHour.get(hourKey) || new Prisma.Decimal(0)).plus(saleDeliv));
+    }
+
+    return {
+      total: total.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+      byDay,
+      byHour,
+    };
   }
 
   constructor(
@@ -1007,14 +1192,9 @@ export class ReportsService {
       let pedidosYaCommission = 0;
       let pedidosYaTax = 0;
       for (const s of pedidosYaSales) {
-        const refundSum = (s.returns || []).reduce((sum: number, r: any) => sum + Number(r.refundAmount || 0), 0);
-        const effectiveTotal = Math.max(0, Number(s.total || 0) - refundSum);
-        const commPct = s.pedidosYaCommissionPct != null ? Number(s.pedidosYaCommissionPct) : 27;
-        const taxPct = s.pedidosYaTaxPct != null ? Number(s.pedidosYaTaxPct) : 7;
-        const effectiveComm = Math.round(effectiveTotal * (commPct / 100) * 100) / 100;
-        const effectiveTax = Math.round(effectiveTotal * (taxPct / 100) * 100) / 100;
-        pedidosYaCommission += effectiveComm;
-        pedidosYaTax += effectiveTax;
+        const fees = this.calculatePedidosYaOrderFees(s);
+        pedidosYaCommission += fees.commission;
+        pedidosYaTax += fees.tax;
       }
       pedidosYaCommission = r2(pedidosYaCommission);
       pedidosYaTax = r2(pedidosYaTax);
@@ -1200,40 +1380,181 @@ export class ReportsService {
     const startDate = range.current.from;
     const endDate = range.current.to;
     const r2 = (n: any) => Math.round((Number(n) || 0) * 100) / 100;
+    const d = (n: any) => new Prisma.Decimal(n || 0);
+    const d2 = (x: Prisma.Decimal) =>
+      x.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber();
 
-    const computeTotals = async (fromDt: Date, toDt: Date) => {
-      const rows: any[] = await this.prisma.$queryRaw`
-        WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-        ${this.getProfitItemsSql(businessId, fromDt, toDt)}
-        SELECT
-          COUNT(DISTINCT sale_id)::int AS receipts,
-          COALESCE(SUM(line_revenue), 0)::float AS sales,
-          COALESCE(SUM(line_discount), 0)::float AS discounts,
-          COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue ELSE 0 END), 0)::float AS covered_sales,
-          COALESCE(SUM(CASE WHEN cost_source = 'UNKNOWN' THEN line_revenue ELSE 0 END), 0)::float AS uncovered_sales,
-          COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN unit_cost * net_qty ELSE 0 END), 0)::float AS cost,
-          COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue - (unit_cost * net_qty) ELSE 0 END), 0)::float AS gross_profit,
-          COUNT(*)::int AS total_lines,
-          COALESCE(SUM(CASE WHEN is_historical THEN 1 ELSE 0 END), 0)::int AS historical_lines,
-          COALESCE(SUM(CASE WHEN is_historical THEN line_revenue ELSE 0 END), 0)::float AS historical_sales
-        FROM item_sales
-        WHERE net_qty > 0;
-      `;
-      const r = rows[0] || {};
-      const receipts = Number(r.receipts || 0);
-      const sales = r2(r.sales);
-      const discounts = r2(r.discounts);
-      const coveredRevenue = r2(r.covered_sales);
-      const uncoveredRevenue = r2(r.uncovered_sales);
-      const cost = r2(r.cost);
-      const grossProfit = r2(r.gross_profit);
-      const marginPercent = coveredRevenue > 0
-        ? Math.round((grossProfit / coveredRevenue) * 10000) / 100
-        : null;
+    const bizConfig = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { pedidosYaChannelEnabled: true, deliveryTaxable: true, taxEnabled: true },
+    });
+    const pedidosYaEnabled = Boolean(bizConfig?.pedidosYaChannelEnabled);
+    const isDeliveryTaxable = bizConfig?.deliveryTaxable ?? Boolean(bizConfig?.taxEnabled);
 
-      const totalLines = Number(r.total_lines || 0);
-      const historicalLines = Number(r.historical_lines || 0);
-      const historicalSales = r2(r.historical_sales);
+    const computePeriod = async (fromDt: Date, toDt: Date) => {
+      const [channelRows, pyFees, deliv] = await Promise.all([
+        this.prisma.$queryRaw<any[]>`
+          WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
+          ${this.getProfitItemsSql(businessId, fromDt, toDt)}
+          SELECT
+            (channel = 'PEDIDOSYA') AS is_pedidosya,
+            COUNT(DISTINCT sale_id)::int AS receipts,
+            COALESCE(SUM(line_revenue), 0)::float AS sales,
+            COALESCE(SUM(line_discount), 0)::float AS discounts,
+            COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue ELSE 0 END), 0)::float AS covered_sales,
+            COALESCE(SUM(CASE WHEN cost_source = 'UNKNOWN' THEN line_revenue ELSE 0 END), 0)::float AS uncovered_sales,
+            COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN unit_cost * net_qty ELSE 0 END), 0)::float AS cost,
+            COUNT(*)::int AS total_lines,
+            COALESCE(SUM(CASE WHEN is_historical THEN 1 ELSE 0 END), 0)::int AS historical_lines,
+            COALESCE(SUM(CASE WHEN is_historical THEN line_revenue ELSE 0 END), 0)::float AS historical_sales
+          FROM item_sales
+          WHERE net_qty > 0
+          GROUP BY (channel = 'PEDIDOSYA');
+        `,
+        this.aggregatePedidosYaFees(businessId, fromDt, toDt),
+        this.computeDeliveryRevenueDetails(businessId, fromDt, toDt, isDeliveryTaxable),
+      ]);
+
+      const ownRaw = channelRows.find((row) => !row.is_pedidosya);
+      const pyRaw = channelRows.find((row) => Boolean(row.is_pedidosya));
+
+      let receipts = 0;
+      let totalLines = 0;
+      let historicalLines = 0;
+      let discounts = new Prisma.Decimal(0);
+      let uncoveredSum = new Prisma.Decimal(0);
+      let historicalSalesSum = new Prisma.Decimal(0);
+      for (const row of channelRows) {
+        receipts += Number(row.receipts || 0);
+        totalLines += Number(row.total_lines || 0);
+        historicalLines += Number(row.historical_lines || 0);
+        discounts = discounts.plus(d(row.discounts));
+        uncoveredSum = uncoveredSum.plus(d(row.uncovered_sales));
+        historicalSalesSum = historicalSalesSum.plus(d(row.historical_sales));
+      }
+
+      const ownSalesDec = d(ownRaw?.sales);
+      const ownCoveredDec = d(ownRaw?.covered_sales);
+      const ownCostDec = d(ownRaw?.cost);
+      const ownSalesNum = d2(ownSalesDec);
+      const ownCoveredNum = d2(ownCoveredDec);
+      const ownCostNum = d2(ownCostDec);
+      const ownUncoveredNum = Math.max(0, r2(ownSalesNum - ownCoveredNum));
+      const ownZeroCoverage = ownSalesNum > 0 && ownCoveredNum === 0;
+      const ownProductProfit = ownZeroCoverage
+        ? null
+        : ownSalesNum === 0 && ownCoveredNum === 0
+          ? 0
+          : d2(ownCoveredDec.minus(ownCostDec));
+      const ownMarginPercent =
+        ownProductProfit !== null && ownCoveredDec.gt(0)
+          ? d2(d(ownProductProfit).div(ownCoveredDec).mul(100))
+          : null;
+
+      const ownCol = {
+        sales: ownSalesNum,
+        coveredSales: ownCoveredNum,
+        uncoveredSales: ownUncoveredNum,
+        cost: ownCostNum,
+        channelFees: null as null | { commission: number; tax: number; total: number },
+        netSales: ownSalesNum,
+        productProfit: ownProductProfit,
+        marginPercent: ownMarginPercent,
+      };
+
+      const pySalesDec = d(pyRaw?.sales);
+      const pyCoveredDec = d(pyRaw?.covered_sales);
+      const pyCostDec = d(pyRaw?.cost);
+      const pySalesNum = d2(pySalesDec);
+      const pyCoveredNum = d2(pyCoveredDec);
+      const pyCostNum = d2(pyCostDec);
+      const pyCommNum = d2(pyFees.commission);
+      const pyTaxNum = d2(pyFees.tax);
+      const pyFeesTotalDec = d(pyCommNum).plus(d(pyTaxNum));
+      const pyFeesTotalNum = d2(pyFeesTotalDec);
+
+      const includePedidosYa =
+        pedidosYaEnabled || pySalesNum > 0 || pyFees.hasOrders || pyFeesTotalNum > 0;
+
+      let pyCol: typeof ownCol | null = null;
+      let pyCoveredNetDec = new Prisma.Decimal(0);
+
+      if (includePedidosYa) {
+        const pyUncoveredNum = Math.max(0, r2(pySalesNum - pyCoveredNum));
+        const pyNetSalesNum = d2(pySalesDec.minus(pyFeesTotalDec));
+        const pyFeesCoveredDec = pySalesDec.gt(0)
+          ? pyFeesTotalDec.mul(pyCoveredDec).div(pySalesDec)
+          : new Prisma.Decimal(0);
+        pyCoveredNetDec = pyCoveredDec.minus(pyFeesCoveredDec);
+        const pyZeroCoverage = pySalesNum > 0 && pyCoveredNum === 0;
+        const pyProductProfit = pyZeroCoverage
+          ? null
+          : pySalesNum === 0 && pyCoveredNum === 0
+            ? 0
+            : d2(pyCoveredNetDec.minus(pyCostDec));
+        const pyMarginPercent =
+          pyProductProfit !== null && pyCoveredNetDec.gt(0)
+            ? d2(d(pyProductProfit).div(pyCoveredNetDec).mul(100))
+            : null;
+
+        pyCol = {
+          sales: pySalesNum,
+          coveredSales: pyCoveredNum,
+          uncoveredSales: pyUncoveredNum,
+          cost: pyCostNum,
+          channelFees: {
+            commission: pyCommNum,
+            tax: pyTaxNum,
+            total: pyFeesTotalNum,
+          },
+          netSales: pyNetSalesNum,
+          productProfit: pyProductProfit,
+          marginPercent: pyMarginPercent,
+        };
+      }
+
+      const totalSalesNum = pyCol ? r2(ownCol.sales + pyCol.sales) : ownCol.sales;
+      const totalCoveredNum = pyCol
+        ? r2(ownCol.coveredSales + pyCol.coveredSales)
+        : ownCol.coveredSales;
+      const totalUncoveredNum = pyCol
+        ? r2(ownCol.uncoveredSales + pyCol.uncoveredSales)
+        : ownCol.uncoveredSales;
+      const totalCostNum = pyCol ? r2(ownCol.cost + pyCol.cost) : ownCol.cost;
+      const totalNetSalesNum = pyCol ? r2(ownCol.netSales + pyCol.netSales) : ownCol.netSales;
+      const totalZeroCoverage = totalSalesNum > 0 && totalCoveredNum === 0;
+      const totalProductProfit = totalZeroCoverage
+        ? null
+        : pyCol
+          ? r2((ownCol.productProfit ?? 0) + (pyCol.productProfit ?? 0))
+          : ownCol.productProfit;
+      const totalCoveredNetDec = pyCol
+        ? (ownCol.productProfit !== null ? ownCoveredDec : new Prisma.Decimal(0)).plus(
+            pyCol.productProfit !== null ? pyCoveredNetDec : new Prisma.Decimal(0),
+          )
+        : ownCoveredDec;
+      const totalMarginPercent =
+        totalProductProfit !== null && totalCoveredNetDec.gt(0)
+          ? d2(d(totalProductProfit).div(totalCoveredNetDec).mul(100))
+          : null;
+
+      const totalCol = {
+        sales: totalSalesNum,
+        coveredSales: totalCoveredNum,
+        uncoveredSales: totalUncoveredNum,
+        cost: totalCostNum,
+        channelFees: pyCol ? pyCol.channelFees : null,
+        netSales: totalNetSalesNum,
+        productProfit: totalProductProfit,
+        marginPercent: totalMarginPercent,
+      };
+
+      const deliveryRevenue = d2(deliv.total);
+      const totalProfit =
+        totalCol.productProfit === null ? null : r2(totalCol.productProfit + deliveryRevenue);
+
+      const sales = totalCol.sales;
+      const historicalSales = d2(historicalSalesSum);
 
       let costBasis: 'HISTORICAL' | 'CURRENT' | 'MIXED' = 'HISTORICAL';
       let historicalSharePercent = 100;
@@ -1249,56 +1570,80 @@ export class ReportsService {
         costBasisNote = 'Se calcula con el costo actual de cada producto.';
       } else {
         costBasis = 'MIXED';
-        historicalSharePercent = sales > 0 ? Math.round((historicalSales / sales) * 10000) / 100 : 0;
-        costBasisNote = 'Parte de las ventas de este período es anterior al registro del costo y se calcula con el costo actual.';
+        historicalSharePercent =
+          sales > 0 ? Math.round((historicalSales / sales) * 10000) / 100 : 0;
+        costBasisNote =
+          'Parte de las ventas de este período es anterior al registro del costo y se calcula con el costo actual.';
       }
 
       return {
-        sales,
-        cost,
-        grossProfit,
-        marginPercent,
-        discounts,
-        receipts,
-        uncoveredRevenue,
-        coveredRevenue,
+        totals: {
+          sales: totalCol.sales,
+          coveredSales: totalCol.coveredSales,
+          cost: totalCol.cost,
+          grossProfit: totalCol.productProfit,
+          marginPercent: totalCol.marginPercent,
+          discounts: d2(discounts),
+          receipts,
+          uncoveredRevenue: d2(uncoveredSum),
+          deliveryRevenue,
+          totalProfit,
+        },
+        channelSummary: {
+          own: ownCol,
+          pedidosYa: pyCol,
+          total: totalCol,
+          deliveryRevenue,
+          totalProfit,
+        },
+        pyFees,
+        deliv,
         costBasis,
         historicalSharePercent,
         costBasisNote,
       };
     };
 
-    const [currentTotals, prevTotals, daysRaw, hoursRaw, categoriesRaw, customersRaw, productsRaw, hasCartera] = await Promise.all([
-      computeTotals(startDate, endDate),
-      computeTotals(range.previous.from, range.previous.to),
-      // byDay
+    const [
+      currentPeriod,
+      prevPeriod,
+      daysRaw,
+      hoursRaw,
+      categoriesRaw,
+      customersRaw,
+      productsRaw,
+      hasCartera,
+    ] = await Promise.all([
+      computePeriod(startDate, endDate),
+      computePeriod(range.previous.from, range.previous.to),
+      // byDay (split OWN vs PEDIDOSYA)
       this.prisma.$queryRaw<any[]>`
         WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
         ${this.getProfitItemsSql(businessId, startDate, endDate)}
         SELECT
           sale_date_local::text AS date,
+          (channel = 'PEDIDOSYA') AS is_pedidosya,
           COALESCE(SUM(line_revenue), 0)::float AS sales,
           COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN unit_cost * net_qty ELSE 0 END), 0)::float AS cost,
-          COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue - (unit_cost * net_qty) ELSE 0 END), 0)::float AS profit,
           COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue ELSE 0 END), 0)::float AS covered_sales
         FROM item_sales
         WHERE net_qty > 0
-        GROUP BY sale_date_local
+        GROUP BY sale_date_local, (channel = 'PEDIDOSYA')
         ORDER BY sale_date_local ASC;
       `,
-      // byHour
+      // byHour (split OWN vs PEDIDOSYA)
       this.prisma.$queryRaw<any[]>`
         WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
         ${this.getProfitItemsSql(businessId, startDate, endDate)}
         SELECT
           sale_hour_local AS hour,
+          (channel = 'PEDIDOSYA') AS is_pedidosya,
           COALESCE(SUM(line_revenue), 0)::float AS sales,
           COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN unit_cost * net_qty ELSE 0 END), 0)::float AS cost,
-          COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue - (unit_cost * net_qty) ELSE 0 END), 0)::float AS profit,
           COALESCE(SUM(CASE WHEN cost_source != 'UNKNOWN' THEN line_revenue ELSE 0 END), 0)::float AS covered_sales
         FROM item_sales
         WHERE net_qty > 0
-        GROUP BY sale_hour_local
+        GROUP BY sale_hour_local, (channel = 'PEDIDOSYA')
         ORDER BY sale_hour_local ASC;
       `,
       // byCategory
@@ -1349,38 +1694,94 @@ export class ReportsService {
       this.businessProductsService.isActive(businessId, BusinessProductType.CARTERA_COBRO),
     ]);
 
-    const previous = prevTotals.receipts === 0 && prevTotals.sales === 0
-      ? null
-      : {
-          sales: prevTotals.sales,
-          coveredSales: prevTotals.coveredRevenue,
-          cost: prevTotals.cost,
-          grossProfit: prevTotals.grossProfit,
-          marginPercent: prevTotals.marginPercent,
-          discounts: prevTotals.discounts,
-          receipts: prevTotals.receipts,
-          uncoveredRevenue: prevTotals.uncoveredRevenue,
-        };
+    const currentTotals = currentPeriod.totals;
+    const prevTotals = prevPeriod.totals;
+
+    const previous =
+      prevTotals.receipts === 0 && prevTotals.sales === 0 && prevTotals.deliveryRevenue === 0
+        ? null
+        : prevTotals;
 
     let expenses: any = null;
     let netProfit: number | null = null;
     if (hasCartera) {
       const expData = await this.computeExpensesAgg(businessId, startDate, endDate);
       expenses = expData;
-      netProfit = r2(currentTotals.grossProfit - expData.total);
+      netProfit =
+        currentTotals.totalProfit !== null
+          ? r2(currentTotals.totalProfit - expData.total)
+          : null;
     }
 
-    const netProfitNote = currentTotals.uncoveredRevenue > 0
-      ? 'La utilidad neta no incluye la ganancia de las ventas sin costo registrado.'
-      : null;
+    const netProfitNote =
+      currentTotals.uncoveredRevenue > 0
+        ? 'La utilidad neta no incluye la ganancia de las ventas sin costo registrado.'
+        : null;
 
     const fromDay = formatDateInTimezone(startDate, 'America/Managua');
     const toDay = formatDateInTimezone(endDate, 'America/Managua');
     const isSingleDay = fromDay === toDay;
 
+    const computeBucketMetrics = (
+      ownRow: any,
+      pyRow: any,
+      pyFeesBucket: Prisma.Decimal,
+      delivBucket: Prisma.Decimal,
+    ) => {
+      const ownS = d(ownRow?.sales);
+      const ownCov = d(ownRow?.covered_sales);
+      const ownC = d(ownRow?.cost);
+      const pyS = d(pyRow?.sales);
+      const pyCov = d(pyRow?.covered_sales);
+      const pyC = d(pyRow?.cost);
+
+      const s = d2(ownS.plus(pyS));
+      const cov = d2(ownCov.plus(pyCov));
+      const c = d2(ownC.plus(pyC));
+
+      const pyFeesCovered = pyS.gt(0)
+        ? pyFeesBucket.mul(pyCov).div(pyS)
+        : new Prisma.Decimal(0);
+      const prodProfitDec = ownCov.minus(ownC).plus(pyCov.minus(pyC).minus(pyFeesCovered));
+      const p = d2(prodProfitDec.plus(delivBucket));
+      const covNet = ownCov.plus(pyCov).minus(pyFeesCovered);
+      const m =
+        cov > 0 && covNet.gt(0)
+          ? d2(d(d2(prodProfitDec)).div(covNet).mul(100))
+          : null;
+
+      return { sales: s, coveredSales: cov, cost: c, profit: p, marginPercent: m };
+    };
+
+    const reconcileBucketProfits = <T extends { sales: number; coveredSales: number; profit: number }>(
+      buckets: T[],
+    ) => {
+      if (currentTotals.totalProfit === null || buckets.length === 0) return;
+      const sumBuckets = buckets.reduce((acc, b) => acc.plus(b.profit), new Prisma.Decimal(0));
+      const diff = d(currentTotals.totalProfit)
+        .minus(sumBuckets)
+        .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+      if (diff.isZero()) return;
+      let targetIdx = 0;
+      for (let i = 1; i < buckets.length; i++) {
+        if (
+          buckets[i].coveredSales > buckets[targetIdx].coveredSales ||
+          (buckets[i].coveredSales === buckets[targetIdx].coveredSales &&
+            buckets[i].sales > buckets[targetIdx].sales)
+        ) {
+          targetIdx = i;
+        }
+      }
+      buckets[targetIdx].profit = d2(d(buckets[targetIdx].profit).plus(diff));
+    };
+
     // Build byDay
-    const dayMap = new Map<string, any>();
-    for (const r of daysRaw) dayMap.set(r.date, r);
+    const dayOwnMap = new Map<string, any>();
+    const dayPyMap = new Map<string, any>();
+    for (const r of daysRaw) {
+      if (r.is_pedidosya) dayPyMap.set(r.date, r);
+      else dayOwnMap.set(r.date, r);
+    }
     const byDay: Array<{
       date: string;
       sales: number;
@@ -1391,18 +1792,18 @@ export class ReportsService {
     }> = [];
     let curDay = fromDay;
     while (curDay <= toDay) {
-      const r = dayMap.get(curDay);
-      const s = r ? r2(r.sales) : 0;
-      const cov = r ? r2(r.covered_sales) : 0;
-      const c = r ? r2(r.cost) : 0;
-      const p = r ? r2(r.profit) : 0;
-      const m = cov > 0 ? Math.round((p / cov) * 10000) / 100 : null;
-      byDay.push({ date: curDay, sales: s, coveredSales: cov, cost: c, profit: p, marginPercent: m });
-      // Next day
-      const [y, mth, d] = curDay.split('-').map(Number);
-      const nextDt = new Date(Date.UTC(y, mth - 1, d + 1));
+      const m = computeBucketMetrics(
+        dayOwnMap.get(curDay),
+        dayPyMap.get(curDay),
+        currentPeriod.pyFees.byDay.get(curDay) || new Prisma.Decimal(0),
+        currentPeriod.deliv.byDay.get(curDay) || new Prisma.Decimal(0),
+      );
+      byDay.push({ date: curDay, ...m });
+      const [y, mth, dayNum] = curDay.split('-').map(Number);
+      const nextDt = new Date(Date.UTC(y, mth - 1, dayNum + 1));
       curDay = nextDt.toISOString().slice(0, 10);
     }
+    reconcileBucketProfits(byDay);
 
     // Build byHour (if single day)
     let byHour: Array<{
@@ -1415,26 +1816,28 @@ export class ReportsService {
       marginPercent: number | null;
     }> | undefined;
     if (isSingleDay) {
-      const hourMap = new Map<number, any>();
-      for (const r of hoursRaw) hourMap.set(Number(r.hour), r);
+      const hourOwnMap = new Map<number, any>();
+      const hourPyMap = new Map<number, any>();
+      for (const r of hoursRaw) {
+        const h = Number(r.hour);
+        if (r.is_pedidosya) hourPyMap.set(h, r);
+        else hourOwnMap.set(h, r);
+      }
       byHour = [];
       for (let h = 0; h < 24; h++) {
-        const r = hourMap.get(h);
-        const s = r ? r2(r.sales) : 0;
-        const cov = r ? r2(r.covered_sales) : 0;
-        const c = r ? r2(r.cost) : 0;
-        const p = r ? r2(r.profit) : 0;
-        const m = cov > 0 ? Math.round((p / cov) * 10000) / 100 : null;
+        const m = computeBucketMetrics(
+          hourOwnMap.get(h),
+          hourPyMap.get(h),
+          currentPeriod.pyFees.byHour.get(h) || new Prisma.Decimal(0),
+          currentPeriod.deliv.byHour.get(h) || new Prisma.Decimal(0),
+        );
         byHour.push({
           hour: h,
           date: `${String(h).padStart(2, '0')}:00`,
-          sales: s,
-          coveredSales: cov,
-          cost: c,
-          profit: p,
-          marginPercent: m,
+          ...m,
         });
       }
+      reconcileBucketProfits(byHour);
     }
 
     // bestDay
@@ -1534,20 +1937,12 @@ export class ReportsService {
     return {
       period: { from: range.current.fromIso, to: range.current.toIso },
       previousPeriod: { from: range.previous.fromIso, to: range.previous.toIso },
-      totals: {
-        sales: currentTotals.sales,
-        coveredSales: currentTotals.coveredRevenue,
-        cost: currentTotals.cost,
-        grossProfit: currentTotals.grossProfit,
-        marginPercent: currentTotals.marginPercent,
-        discounts: currentTotals.discounts,
-        receipts: currentTotals.receipts,
-        uncoveredRevenue: currentTotals.uncoveredRevenue,
-      },
+      totals: currentTotals,
+      channelSummary: currentPeriod.channelSummary,
       previous,
-      costBasis: currentTotals.costBasis,
-      historicalSharePercent: currentTotals.historicalSharePercent,
-      costBasisNote: currentTotals.costBasisNote,
+      costBasis: currentPeriod.costBasis,
+      historicalSharePercent: currentPeriod.historicalSharePercent,
+      costBasisNote: currentPeriod.costBasisNote,
       expenses,
       netProfit,
       netProfitNote,
@@ -3164,12 +3559,10 @@ export class ReportsService {
     const productMap = new Map<string, { productId: string | null; productName: string; quantity: number; gross: number }>();
 
     for (const s of sales) {
-      const refundSum = (s.returns || []).reduce((sum: number, r: any) => sum + Number(r.refundAmount || 0), 0);
-      const tot = Math.max(0, Number(s.total || 0) - refundSum);
-      const commPct = s.pedidosYaCommissionPct != null ? Number(s.pedidosYaCommissionPct) : 27;
-      const taxPct = s.pedidosYaTaxPct != null ? Number(s.pedidosYaTaxPct) : 7;
-      const comm = Math.round(tot * (commPct / 100) * 100) / 100;
-      const tx = Math.round(tot * (taxPct / 100) * 100) / 100;
+      const fees = this.calculatePedidosYaOrderFees(s);
+      const tot = fees.effectiveTotal;
+      const comm = fees.commission;
+      const tx = fees.tax;
       const pMode = s.pedidosYaPaymentMode === 'EFECTIVO' ? 'EFECTIVO' : 'APP';
       const sStatus = s.pedidosYaSettlementStatus === 'LIQUIDADO' ? 'LIQUIDADO' : 'PENDIENTE';
 
@@ -3256,12 +3649,13 @@ export class ReportsService {
       bySettlementStatus,
       topProducts,
       orders: sales.map((s) => {
-        const refundSum = (s.returns || []).reduce((sum: number, r: any) => sum + Number(r.refundAmount || 0), 0);
-        const tot = Math.max(0, Number(s.total || 0) - refundSum);
-        const commPct = s.pedidosYaCommissionPct != null ? Number(s.pedidosYaCommissionPct) : 27;
-        const taxPct = s.pedidosYaTaxPct != null ? Number(s.pedidosYaTaxPct) : 7;
-        const comm = Math.round(tot * (commPct / 100) * 100) / 100;
-        const tx = Math.round(tot * (taxPct / 100) * 100) / 100;
+        const fees = this.calculatePedidosYaOrderFees(s);
+        const tot = fees.effectiveTotal;
+        const refundSum = fees.refundSum;
+        const commPct = fees.commPct;
+        const taxPct = fees.taxPct;
+        const comm = fees.commission;
+        const tx = fees.tax;
         const pMode = s.pedidosYaPaymentMode === 'EFECTIVO' ? 'EFECTIVO' : 'APP';
         const orderNet = pMode === 'APP' ? Math.round((tot - comm - tx) * 100) / 100 : Math.round((-comm - tx) * 100) / 100;
 
