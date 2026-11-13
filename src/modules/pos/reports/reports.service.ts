@@ -286,6 +286,7 @@ export class ReportsService {
     });
 
     let total = new Prisma.Decimal(0);
+    let offlineTotal = new Prisma.Decimal(0);
     const byDay = new Map<string, Prisma.Decimal>();
     const byHour = new Map<number, Prisma.Decimal>();
 
@@ -328,6 +329,9 @@ export class ReportsService {
 
       const saleDeliv = baseFee.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
       total = total.plus(saleDeliv);
+      if (!hasDeliveryItem) {
+        offlineTotal = offlineTotal.plus(saleDeliv);
+      }
 
       const dayKey = formatDateInTimezone(s.createdAt, 'America/Managua');
       byDay.set(dayKey, (byDay.get(dayKey) || new Prisma.Decimal(0)).plus(saleDeliv));
@@ -337,6 +341,7 @@ export class ReportsService {
 
     return {
       total: total.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+      offlineTotal: offlineTotal.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
       byDay,
       byHour,
     };
@@ -2180,61 +2185,115 @@ export class ReportsService {
     const startDate = range.current.from;
     const endDate = range.current.to;
 
-    const SOURCES = ['PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR', 'UNKNOWN'] as const;
     const r2 = (n: any) => Math.round((Number(n) || 0) * 100) / 100;
+    const d2 = (x: Prisma.Decimal) =>
+      x.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber();
+
+    const bizConfig = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { pedidosYaChannelEnabled: true, deliveryTaxable: true, taxEnabled: true },
+    });
+    const pedidosYaEnabled = Boolean(bizConfig?.pedidosYaChannelEnabled);
+    const isDeliveryTaxable = bizConfig?.deliveryTaxable ?? Boolean(bizConfig?.taxEnabled);
 
     const computeSalesAgg = async (fromDt: Date, toDt: Date) => {
-      const rows: any[] = await this.prisma.$queryRaw`
-        SELECT
-          COALESCE(SUM(s.subtotal), 0)::float AS "grossSales",
-          COALESCE(SUM(s."discountAmount"), 0)::float AS "discounts",
-          COALESCE(SUM(refunds.net_refund), 0)::float AS "returns",
-          COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS "netSales",
-          COALESCE(SUM(
-            CASE
-              WHEN s."taxModel" = 'PER_LINE' THEN (
-                SELECT COALESCE(SUM(si."subtotal" - si."manualDiscountShare"), 0)
-                FROM pos_sale_items si
-                WHERE si."saleId" = s.id AND si.taxable = true
+      const [rows, deliv] = await Promise.all([
+        this.prisma.$queryRaw<any[]>`
+          SELECT
+            COALESCE(SUM(GREATEST(0, s.subtotal - COALESCE(deliv_items.deliv_subtotal, 0))), 0)::float AS "prodGrossSales",
+            COALESCE(SUM(GREATEST(0, s."discountAmount" - (
+              CASE
+                WHEN COALESCE(deliv_items.deliv_discount, 0) > 0 THEN COALESCE(deliv_items.deliv_discount, 0)
+                WHEN s.subtotal > 0 THEN s."discountAmount" * (COALESCE(deliv_items.deliv_subtotal, 0) / s.subtotal)
+                ELSE 0
+              END
+            ))), 0)::float AS "prodDiscounts",
+            COALESCE(SUM(refunds.net_refund), 0)::float AS "returns",
+            COALESCE(SUM(GREATEST(0,
+              GREATEST(0, s.subtotal - COALESCE(deliv_items.deliv_subtotal, 0))
+              - GREATEST(0, s."discountAmount" - (
+                  CASE
+                    WHEN COALESCE(deliv_items.deliv_discount, 0) > 0 THEN COALESCE(deliv_items.deliv_discount, 0)
+                    WHEN s.subtotal > 0 THEN s."discountAmount" * (COALESCE(deliv_items.deliv_subtotal, 0) / s.subtotal)
+                    ELSE 0
+                  END
+                ))
+              - COALESCE(refunds.net_refund, 0)
+            )), 0)::float AS "prodNetSales",
+            COALESCE(SUM(
+              CASE
+                WHEN s."taxModel" = 'PER_LINE' THEN (
+                  SELECT COALESCE(SUM(si."subtotal" - si."manualDiscountShare"), 0)
+                  FROM pos_sale_items si
+                  WHERE si."saleId" = s.id AND si.taxable = true
+                )
+                WHEN s."taxModel" = 'LEGACY' AND s."taxAmount" > 0 THEN GREATEST(0, s.subtotal - s."discountAmount")
+                ELSE 0
+              END
+            ), 0)::float AS "taxableSales",
+            COALESCE(SUM(
+              CASE
+                WHEN s."taxModel" = 'PER_LINE' THEN (
+                  SELECT COALESCE(SUM(si."subtotal" - si."manualDiscountShare"), 0)
+                  FROM pos_sale_items si
+                  WHERE si."saleId" = s.id AND (si.taxable = false OR si.taxable IS NULL)
+                )
+                WHEN s."taxModel" = 'LEGACY' AND (s."taxAmount" = 0 OR s."taxAmount" IS NULL) THEN GREATEST(0, s.subtotal - s."discountAmount")
+                ELSE 0
+              END
+            ), 0)::float AS "exemptSales",
+            COALESCE(SUM(GREATEST(0, s."taxAmount" - COALESCE(refunds.tax_refund, 0))), 0)::float AS "taxAmount"
+          FROM pos_sales s
+          LEFT JOIN (
+            SELECT "saleId",
+              SUM("refundAmount" - COALESCE("taxRefunded", 0)) AS net_refund,
+              SUM(COALESCE("taxRefunded", 0)) AS tax_refund
+            FROM pos_sale_returns
+            WHERE "businessId" = ${businessId}
+            GROUP BY "saleId"
+          ) refunds ON refunds."saleId" = s.id
+          LEFT JOIN (
+            SELECT
+              si."saleId",
+              COALESCE(SUM(si.subtotal), 0) AS deliv_subtotal,
+              COALESCE(SUM(si."manualDiscountShare"), 0) AS deliv_discount
+            FROM pos_sale_items si
+            JOIN pos_sales ps ON ps.id = si."saleId"
+            WHERE ps."businessId" = ${businessId}
+              AND si."productId" IS NULL
+              AND (
+                LOWER(si."productName") LIKE '%envío%'
+                OR LOWER(si."productName") LIKE '%envio%'
+                OR LOWER(si."productName") LIKE '%domicilio%'
               )
-              WHEN s."taxModel" = 'LEGACY' AND s."taxAmount" > 0 THEN GREATEST(0, s.subtotal - s."discountAmount")
-              ELSE 0
-            END
-          ), 0)::float AS "taxableSales",
-          COALESCE(SUM(
-            CASE
-              WHEN s."taxModel" = 'PER_LINE' THEN (
-                SELECT COALESCE(SUM(si."subtotal" - si."manualDiscountShare"), 0)
-                FROM pos_sale_items si
-                WHERE si."saleId" = s.id AND (si.taxable = false OR si.taxable IS NULL)
-              )
-              WHEN s."taxModel" = 'LEGACY' AND (s."taxAmount" = 0 OR s."taxAmount" IS NULL) THEN GREATEST(0, s.subtotal - s."discountAmount")
-              ELSE 0
-            END
-          ), 0)::float AS "exemptSales",
-          COALESCE(SUM(GREATEST(0, s."taxAmount" - COALESCE(refunds.tax_refund, 0))), 0)::float AS "taxAmount"
-        FROM pos_sales s
-        LEFT JOIN (
-          SELECT "saleId",
-            SUM("refundAmount" - COALESCE("taxRefunded", 0)) AS net_refund,
-            SUM(COALESCE("taxRefunded", 0)) AS tax_refund
-          FROM pos_sale_returns
-          WHERE "businessId" = ${businessId}
-          GROUP BY "saleId"
-        ) refunds ON refunds."saleId" = s.id
-        WHERE s."businessId" = ${businessId}
-          AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-          AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt};
-      `;
+            GROUP BY si."saleId"
+          ) deliv_items ON deliv_items."saleId" = s.id
+          WHERE s."businessId" = ${businessId}
+            AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+            AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt};
+        `,
+        this.computeDeliveryRevenueDetails(businessId, fromDt, toDt, isDeliveryTaxable),
+      ]);
       const row = rows[0] || {};
-      const grossSales = r2(row.grossSales || 0);
-      const discounts = r2(row.discounts || 0);
+      const deliveryRevenue = d2(deliv.total);
+      const offlineDeliveryRevenue = d2(deliv.offlineTotal);
+      const grossSales = r2((row.prodGrossSales || 0) + deliveryRevenue);
+      const discounts = r2(row.prodDiscounts || 0);
       const returns = r2(row.returns || 0);
-      const netSales = r2(row.netSales || 0);
+      const netSales = r2((row.prodNetSales || 0) + deliveryRevenue);
       const taxableSales = r2(row.taxableSales || 0);
-      const exemptSales = r2(row.exemptSales || 0);
+      const exemptSales = r2((row.exemptSales || 0) + offlineDeliveryRevenue);
       const taxAmount = r2(row.taxAmount || 0);
-      return { grossSales, discounts, returns, netSales, taxableSales, exemptSales, taxAmount };
+      return {
+        grossSales,
+        discounts,
+        returns,
+        netSales,
+        deliveryRevenue,
+        taxableSales,
+        exemptSales,
+        taxAmount,
+      };
     };
 
     const computeProfitMetrics = async (fromDt: Date, toDt: Date) => {
@@ -2244,29 +2303,32 @@ export class ReportsService {
         SELECT
           cost_source AS source,
           COALESCE(SUM(line_revenue), 0)::float AS revenue,
-          COALESCE(SUM(unit_cost * net_qty), 0)::float AS cost,
-          COUNT(*) FILTER (WHERE NOT is_orphan)::int AS lines,
-          COALESCE(SUM(line_revenue) FILTER (WHERE is_orphan), 0)::float AS "orphanRevenue"
+          COALESCE(SUM(unit_cost * net_qty), 0)::float AS cost
         FROM item_sales
         WHERE net_qty > 0
         GROUP BY cost_source;
       `;
 
-      const bySource: Record<string, { revenue: number; cost: number; lines: number }> = {};
-      for (const s of SOURCES) bySource[s] = { revenue: 0, cost: 0, lines: 0 };
+      let totalRevenueAcc = 0;
+      let coveredRevenueAcc = 0;
+      let totalCostAcc = 0;
       for (const r of rows) {
-        if (!bySource[r.source]) continue;
-        bySource[r.source] = { revenue: r2(r.revenue), cost: r2(r.cost), lines: r.lines };
+        const rev = Number(r.revenue || 0);
+        const cst = Number(r.cost || 0);
+        totalRevenueAcc += rev;
+        if (r.source && r.source !== 'UNKNOWN') {
+          coveredRevenueAcc += rev;
+          totalCostAcc += cst;
+        }
       }
 
-      const covered = ['PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR'];
-      const totalRevenue = r2(SOURCES.reduce((a, s) => a + bySource[s].revenue, 0));
-      const coveredRevenue = r2(covered.reduce((a, s) => a + bySource[s].revenue, 0));
+      const totalRevenue = r2(totalRevenueAcc);
+      const coveredRevenue = r2(coveredRevenueAcc);
       const coveragePercent = totalRevenue > 0
         ? Math.round((coveredRevenue / totalRevenue) * 10000) / 100
         : 100;
 
-      const totalCost = r2(covered.reduce((a, s) => a + bySource[s].cost, 0));
+      const totalCost = r2(totalCostAcc);
       return {
         totalRevenue,
         coveredRevenue,
@@ -2288,11 +2350,12 @@ export class ReportsService {
       return r2(rows[0]?.interestIncome || 0);
     };
 
-    const [currentSales, currentMetrics, currentExpenses, currentInterestIncome] = await Promise.all([
+    const [currentSales, currentMetrics, currentExpenses, currentInterestIncome, currentPyFees] = await Promise.all([
       computeSalesAgg(startDate, endDate),
       computeProfitMetrics(startDate, endDate),
       computeExpensesAgg(startDate, endDate),
       computeInterestIncome(startDate, endDate),
+      this.aggregatePedidosYaFees(businessId, startDate, endDate),
     ]);
 
     const missing: any[] = await this.prisma.$queryRaw`
@@ -2308,8 +2371,16 @@ export class ReportsService {
       GROUP BY product_id, product_name;
     `;
 
+    const currComm = d2(currentPyFees.commission);
+    const currTax = d2(currentPyFees.tax);
+    const currFeesTotal = d2(currentPyFees.commission.plus(currentPyFees.tax));
+    const includePedidosYa = pedidosYaEnabled || currentPyFees.hasOrders || currFeesTotal > 0;
+    const channelFees = includePedidosYa
+      ? { commission: currComm, tax: currTax, total: currFeesTotal }
+      : null;
+
     const costOfGoodsSold = currentMetrics.totalCost;
-    const grossProfit = r2(currentSales.netSales - costOfGoodsSold);
+    const grossProfit = r2(currentSales.netSales - costOfGoodsSold - currFeesTotal);
     const grossMarginPercent = currentSales.netSales > 0
       ? Math.round((grossProfit / currentSales.netSales) * 10000) / 100
       : 0;
@@ -2322,11 +2393,13 @@ export class ReportsService {
     const interestIncome = currentInterestIncome;
     const netProfit = r2(operatingProfit + interestIncome);
 
-    // 183d: Ventas con costo cubierto vs ventas sin costo
-    const coveredRevenue = missing.length === 0
-      ? currentSales.netSales
-      : Math.min(currentSales.netSales, Math.max(0, r2(currentMetrics.coveredRevenue)));
-    const uncoveredRevenue = Math.max(0, r2(currentSales.netSales - coveredRevenue));
+    // 183d / 264d: Ventas con costo cubierto vs ventas sin costo (el envío nunca entra en uncoveredRevenue)
+    const productNetSales = Math.max(0, r2(currentSales.netSales - currentSales.deliveryRevenue));
+    const coveredProductRevenue = missing.length === 0
+      ? productNetSales
+      : Math.min(productNetSales, Math.max(0, r2(currentMetrics.coveredRevenue)));
+    const uncoveredRevenue = Math.max(0, r2(productNetSales - coveredProductRevenue));
+    const coveredRevenue = Math.max(0, r2(currentSales.netSales - uncoveredRevenue));
 
     const coveragePercent = currentSales.netSales > 0
       ? Math.round((coveredRevenue / currentSales.netSales) * 10000) / 100
@@ -2334,14 +2407,16 @@ export class ReportsService {
 
     const isPartial = coveragePercent < 100 || missing.length > 0;
 
-    const [prevSales, prevMetrics, prevExpenses, prevInterestIncome] = await Promise.all([
+    const [prevSales, prevMetrics, prevExpenses, prevInterestIncome, prevPyFees] = await Promise.all([
       computeSalesAgg(range.previous.from, range.previous.to),
       computeProfitMetrics(range.previous.from, range.previous.to),
       computeExpensesAgg(range.previous.from, range.previous.to),
       computeInterestIncome(range.previous.from, range.previous.to),
+      this.aggregatePedidosYaFees(businessId, range.previous.from, range.previous.to),
     ]);
 
-    const prevGrossProfit = r2(prevSales.netSales - prevMetrics.totalCost);
+    const prevFeesTotal = d2(prevPyFees.commission.plus(prevPyFees.tax));
+    const prevGrossProfit = r2(prevSales.netSales - prevMetrics.totalCost - prevFeesTotal);
     const prevOperatingProfit = r2(prevGrossProfit - prevExpenses.total);
     const prevNetProfit = r2(prevOperatingProfit + prevInterestIncome);
 
@@ -2359,6 +2434,7 @@ export class ReportsService {
       taxableSales: currentSales.taxableSales,
       exemptSales: currentSales.exemptSales,
       taxAmount: currentSales.taxAmount,
+      channelFees,
       coveredRevenue,
       uncoveredRevenue,
       costOfGoodsSold,
