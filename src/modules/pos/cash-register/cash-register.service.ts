@@ -22,6 +22,95 @@ export class CashRegisterService {
     private readonly exchangeRateService: ExchangeRateService,
   ) {}
 
+  /**
+   * 263a - Suma propinas del turno sin mezclar con ventas ni IVA.
+   * Las propinas en efectivo entran a expectedCash/expectedCashUsd (NIO/USD);
+   * tipsSummary contabiliza únicamente propinas ACTIVE.
+   */
+  private computeTipsBreakdown(tips: any[] = []) {
+    let cashNioDec = new Prisma.Decimal(0);
+    let cashUsdDec = new Prisma.Decimal(0);
+    let activeCashNioDec = new Prisma.Decimal(0);
+    let activeCashUsdDec = new Prisma.Decimal(0);
+    let activeCardDec = new Prisma.Decimal(0);
+    let activeTransferDec = new Prisma.Decimal(0);
+    let activeTotalBaseDec = new Prisma.Decimal(0);
+
+    const byBankMap = new Map<
+      string,
+      { bankId: string | null; bankName: string; card: Prisma.Decimal; transfer: Prisma.Decimal; totalBase: Prisma.Decimal }
+    >();
+
+    for (const t of tips || []) {
+      const amt = new Prisma.Decimal(t.amount != null ? t.amount.toString() : 0);
+      const amtBase = new Prisma.Decimal(t.amountBase != null ? t.amountBase.toString() : amt);
+      const curr = (t.currency || 'NIO').toUpperCase();
+      const method = (t.paymentMethod || '').toUpperCase();
+
+      if (method === 'EFECTIVO') {
+        if (curr === 'USD') {
+          cashUsdDec = cashUsdDec.plus(amt);
+        } else {
+          cashNioDec = cashNioDec.plus(amt);
+        }
+      }
+
+      if (t.status === 'ACTIVE') {
+        activeTotalBaseDec = activeTotalBaseDec.plus(amtBase);
+        if (method === 'EFECTIVO') {
+          if (curr === 'USD') {
+            activeCashUsdDec = activeCashUsdDec.plus(amt);
+          } else {
+            activeCashNioDec = activeCashNioDec.plus(amt);
+          }
+        } else if (method === 'TARJETA') {
+          activeCardDec = activeCardDec.plus(amtBase);
+        } else if (method === 'TRANSFERENCIA') {
+          activeTransferDec = activeTransferDec.plus(amtBase);
+        }
+
+        if (method === 'TARJETA' || method === 'TRANSFERENCIA') {
+          const bKey = t.bankId || 'SIN_BANCO';
+          let entry = byBankMap.get(bKey);
+          if (!entry) {
+            entry = {
+              bankId: t.bankId || null,
+              bankName: t.bankName || 'Sin banco',
+              card: new Prisma.Decimal(0),
+              transfer: new Prisma.Decimal(0),
+              totalBase: new Prisma.Decimal(0),
+            };
+            byBankMap.set(bKey, entry);
+          }
+          if (method === 'TARJETA') entry.card = entry.card.plus(amtBase);
+          if (method === 'TRANSFERENCIA') entry.transfer = entry.transfer.plus(amtBase);
+          entry.totalBase = entry.totalBase.plus(amtBase);
+        }
+      }
+    }
+
+    const tipsSummary = {
+      cashNio: Number(activeCashNioDec.toDecimalPlaces(2)),
+      cashUsd: Number(activeCashUsdDec.toDecimalPlaces(2)),
+      card: Number(activeCardDec.toDecimalPlaces(2)),
+      transfer: Number(activeTransferDec.toDecimalPlaces(2)),
+      totalBase: Number(activeTotalBaseDec.toDecimalPlaces(2)),
+      byBank: Array.from(byBankMap.values()).map((b) => ({
+        bankId: b.bankId,
+        bankName: b.bankName,
+        card: Number(b.card.toDecimalPlaces(2)),
+        transfer: Number(b.transfer.toDecimalPlaces(2)),
+        totalBase: Number(b.totalBase.toDecimalPlaces(2)),
+      })),
+    };
+
+    return {
+      allCashNioDec: cashNioDec,
+      allCashUsdDec: cashUsdDec,
+      tipsSummary,
+    };
+  }
+
   private formatRegister(register: any) {
     if (!register) return null;
     const movements = (register.movements || []).map((m: any) => ({
@@ -96,7 +185,8 @@ export class CashRegisterService {
 
     const decInitialAmount = new Prisma.Decimal(register.openingCash ?? register.initialAmount ?? 0);
 
-    const liveExpectedCash = decInitialAmount.plus(decCalculatedCashNio).plus(decMovementsInNio).minus(decMovementsOutNio);
+    const tipsCalc = this.computeTipsBreakdown(register.tips || []);
+    const liveExpectedCash = decInitialAmount.plus(decCalculatedCashNio).plus(tipsCalc.allCashNioDec).plus(decMovementsInNio).minus(decMovementsOutNio);
     const expectedCashDec = register.expectedCash != null ? new Prisma.Decimal(register.expectedCash.toString()) : liveExpectedCash;
 
     const actualAmountDec = register.closingCash != null 
@@ -107,7 +197,7 @@ export class CashRegisterService {
       ? new Prisma.Decimal(register.difference.toString()) 
       : (actualAmountDec != null ? actualAmountDec.minus(expectedCashDec) : null);
 
-    const liveExpectedCashUsd = decCalculatedCashUsd.plus(decMovementsInUsd).minus(decMovementsOutUsd);
+    const liveExpectedCashUsd = decCalculatedCashUsd.plus(tipsCalc.allCashUsdDec).plus(decMovementsInUsd).minus(decMovementsOutUsd);
     const expectedCashUsdDec = register.expectedCashUsd != null ? new Prisma.Decimal(register.expectedCashUsd.toString()) : liveExpectedCashUsd;
     const closingCashUsdDec = register.closingCashUsd != null ? new Prisma.Decimal(register.closingCashUsd.toString()) : null;
     const differenceUsdDec = register.differenceUsd != null 
@@ -207,6 +297,9 @@ export class CashRegisterService {
       denominations,
       countMode,
       closingBreakdown: register.closingBreakdown || null,
+      tipsSummary: (register.tips && register.tips.length > 0)
+        ? tipsCalc.tipsSummary
+        : (closingBreakdown.tipsSummary || tipsCalc.tipsSummary),
       recountAttempts: register.recountAttempts ?? 0,
       discrepancyReason: register.discrepancyReason ?? null,
       discrepancyNote: register.discrepancyNote ?? null,
@@ -334,6 +427,7 @@ export class CashRegisterService {
         movementsInUsd: null,
         movementsOutUsd: null,
         salesByChannel: null,
+        tipsSummary: null,
       };
     };
 
@@ -352,6 +446,7 @@ export class CashRegisterService {
           movementsOut: null,
           movementsInUsd: null,
           movementsOutUsd: null,
+          tipsSummary: null,
         },
       };
     }
@@ -370,6 +465,7 @@ export class CashRegisterService {
           cashier: { select: { id: true, name: true } },
           discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
           movements: true,
+        tips: true,
           sales: {
             orderBy: { createdAt: "desc" },
             include: { payments: true, returns: { include: { items: true } } },
@@ -403,6 +499,7 @@ export class CashRegisterService {
               cashier: { select: { id: true, name: true } },
               discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
               movements: true,
+        tips: true,
               sales: {
                 orderBy: { createdAt: "desc" },
                 include: { payments: true, returns: { include: { items: true } } },
@@ -420,6 +517,7 @@ export class CashRegisterService {
           cashier: { select: { id: true, name: true } },
           discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
           movements: true,
+        tips: true,
           sales: {
             orderBy: { createdAt: "desc" },
             include: { payments: true, returns: { include: { items: true } } },
@@ -441,6 +539,7 @@ export class CashRegisterService {
         cashier: { select: { id: true, name: true } },
         discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
         movements: true,
+        tips: true,
         sales: {
           orderBy: { createdAt: "desc" },
           include: { payments: true, returns: { include: { items: true } } },
@@ -494,6 +593,7 @@ export class CashRegisterService {
           cashier: { select: { id: true, name: true } },
           discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
           movements: true,
+        tips: true,
           sales: { include: { payments: true, returns: { include: { items: true } } } },
         },
         orderBy: { openedAt: "desc" },
@@ -510,6 +610,7 @@ export class CashRegisterService {
             cashier: { select: { id: true, name: true } },
             discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
             movements: true,
+        tips: true,
             sales: { include: { payments: true, returns: { include: { items: true } } } },
           },
         });
@@ -541,6 +642,7 @@ export class CashRegisterService {
         cashier: { select: { id: true, name: true } },
         discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
         movements: true,
+        tips: true,
         sales: { include: { payments: true, returns: { include: { items: true } } } },
       },
     });
@@ -566,6 +668,7 @@ export class CashRegisterService {
           discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
           sales: { include: { payments: true, returns: { include: { items: true } } } },
           movements: true,
+        tips: true,
         },
       });
     } else {
@@ -577,6 +680,7 @@ export class CashRegisterService {
             discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
             sales: { include: { payments: true, returns: { include: { items: true } } } },
             movements: true,
+        tips: true,
           },
           orderBy: { openedAt: "desc" },
         });
@@ -590,6 +694,7 @@ export class CashRegisterService {
               discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
               sales: { include: { payments: true, returns: { include: { items: true } } } },
               movements: true,
+        tips: true,
             },
             orderBy: { openedAt: "desc" },
           });
@@ -602,6 +707,7 @@ export class CashRegisterService {
             discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
             sales: { include: { payments: true, returns: { include: { items: true } } } },
             movements: true,
+        tips: true,
           },
           orderBy: { openedAt: "desc" },
         });
@@ -722,11 +828,12 @@ export class CashRegisterService {
       }
     }
 
+    const closeTipsCalc = this.computeTipsBreakdown((register as any).tips || []);
     const openingCashDec = new Prisma.Decimal(register.openingCash != null ? register.openingCash.toString() : 0);
-    const expectedCashDec = openingCashDec.plus(totalCashDec).plus(movementsInNioDec).minus(movementsOutNioDec);
+    const expectedCashDec = openingCashDec.plus(totalCashDec).plus(closeTipsCalc.allCashNioDec).plus(movementsInNioDec).minus(movementsOutNioDec);
     const differenceDec = closingCashDec.minus(expectedCashDec);
 
-    const expectedCashUsdDec = totalCashUsdDec.plus(movementsInUsdDec).minus(movementsOutUsdDec);
+    const expectedCashUsdDec = totalCashUsdDec.plus(closeTipsCalc.allCashUsdDec).plus(movementsInUsdDec).minus(movementsOutUsdDec);
     const differenceUsdDec = closingCashUsdDec != null ? closingCashUsdDec.minus(expectedCashUsdDec) : null;
 
     const discrepancyPolicy = (policies as any).cashCloseDiscrepancyPolicy || 'AUTORIZACION';
@@ -964,6 +1071,7 @@ export class CashRegisterService {
       byMethodAndBank,
       denominations,
       countMode,
+      tipsSummary: closeTipsCalc.tipsSummary,
     };
 
     const updateResult = await this.prisma.cashRegister.updateMany({
@@ -1007,6 +1115,7 @@ export class CashRegisterService {
         cashier: { select: { id: true, name: true } },
         discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
         movements: true,
+        tips: true,
       },
     });
 
@@ -1191,6 +1300,7 @@ export class CashRegisterService {
         discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
         sales: { include: { payments: true, returns: { include: { items: true } } } },
         movements: true,
+        tips: true,
       },
     });
     if (!register) throw new NotFoundException("Caja no encontrada");
@@ -1247,8 +1357,9 @@ export class CashRegisterService {
     }
 
     const openingCashDec = new Prisma.Decimal(register.openingCash != null ? register.openingCash.toString() : 0);
-    const currentCashDec = openingCashDec.plus(totalCashDec).plus(movementsInNioDec).minus(movementsOutNioDec);
-    const currentCashUsdDec = totalCashUsdDec.plus(movementsInUsdDec).minus(movementsOutUsdDec);
+    const summaryTipsCalc = this.computeTipsBreakdown((register as any).tips || []);
+    const currentCashDec = openingCashDec.plus(totalCashDec).plus(summaryTipsCalc.allCashNioDec).plus(movementsInNioDec).minus(movementsOutNioDec);
+    const currentCashUsdDec = totalCashUsdDec.plus(summaryTipsCalc.allCashUsdDec).plus(movementsInUsdDec).minus(movementsOutUsdDec);
 
     const formatted = this.formatRegister(register);
 
@@ -1282,6 +1393,7 @@ export class CashRegisterService {
         currentCashUsd: Number(currentCashUsdDec.toDecimalPlaces(2)),
         salesCount: register.sales.length,
         byMethodAndBank,
+        tipsSummary: summaryTipsCalc.tipsSummary,
       },
     };
 

@@ -19,7 +19,7 @@ import { resolveLineUnitPrice, resolveChannelUnitPrice } from './utils/pricing.u
 
 import { BatchesService } from '../batches/batches.service';
 import { buildBusinessDateRange } from '../../../common/utils/date.util';
-import { calculateSaleTotals, RawSaleItemCalculationInput } from './utils/sale-calculation.util';
+import { calculateSaleTotals, calculateTipFromTotal, RawSaleItemCalculationInput } from './utils/sale-calculation.util';
 
 @Injectable()
 export class SalesService {
@@ -45,6 +45,25 @@ export class SalesService {
       taxAmount: sale.taxAmount != null ? Number(new Prisma.Decimal(sale.taxAmount.toString()).toDecimalPlaces(2)) : 0,
       amountPaid: sale.amountPaid != null ? Number(new Prisma.Decimal(sale.amountPaid.toString()).toDecimalPlaces(2)) : 0,
       change: sale.change != null ? Number(new Prisma.Decimal(sale.change.toString()).toDecimalPlaces(2)) : 0,
+      tip: sale.tip
+        ? {
+            id: sale.tip.id,
+            saleId: sale.tip.saleId,
+            cashRegisterId: sale.tip.cashRegisterId || null,
+            waiterId: sale.tip.waiterId || null,
+            waiterName: sale.tip.waiterName || null,
+            amount: Number(new Prisma.Decimal(sale.tip.amount.toString()).toDecimalPlaces(2)),
+            currency: sale.tip.currency,
+            exchangeRate: sale.tip.exchangeRate != null ? Number(sale.tip.exchangeRate.toString()) : null,
+            amountBase: Number(new Prisma.Decimal(sale.tip.amountBase.toString()).toDecimalPlaces(2)),
+            paymentMethod: sale.tip.paymentMethod,
+            bankId: sale.tip.bankId || null,
+            bankName: sale.tip.bankName || null,
+            reference: sale.tip.reference || null,
+            status: sale.tip.status,
+            createdAt: sale.tip.createdAt,
+          }
+        : null,
       items: (sale.items || []).map((i: any) => {
         const itemCopy = {
           ...i,
@@ -256,6 +275,22 @@ export class SalesService {
 
       // 221a: Validación y resolución del canal de venta
       const rawChannel = (dto.channel || 'MOSTRADOR').toUpperCase().trim();
+      if (dto.tip && ['PEDIDOSYA', 'DOMICILIO', 'WHATSAPP'].includes(rawChannel)) {
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          error: 'Unprocessable Entity',
+          code: 'TIP_NOT_ALLOWED_FOR_CHANNEL',
+          message: 'No se permite propina en ventas de PedidosYa, Domicilio o WhatsApp',
+        });
+      }
+      if (dto.tip && !policies.tipEnabled) {
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          error: 'Unprocessable Entity',
+          code: 'TIP_DISABLED',
+          message: 'La propina opcional no está habilitada en las políticas de este negocio',
+        });
+      }
       if (!['MOSTRADOR', 'DOMICILIO', 'PEDIDOSYA'].includes(rawChannel)) {
         throw new BadRequestException({
           statusCode: 400,
@@ -1456,6 +1491,109 @@ export class SalesService {
         pedidosYaSettlementStatus = 'PENDIENTE';
       }
 
+      // 263a: Resolver mesero y propina opcional (sin alterar subtotal/taxAmount/total/payments[])
+      let resolvedWaiterId: string | null = null;
+      let resolvedWaiterName: string | null = dto.waiterName ? dto.waiterName.trim().substring(0, 100) : null;
+      const candidateWaiterId = dto.tip?.waiterId || dto.waiterId || null;
+      if (candidateWaiterId) {
+        const waiter = await tx.waiter.findFirst({
+          where: { id: candidateWaiterId, businessId },
+          select: { id: true, name: true },
+        });
+        if (!waiter) {
+          throw new BadRequestException('Mesero inválido o no pertenece a este negocio');
+        }
+        resolvedWaiterId = waiter.id;
+        if (!resolvedWaiterName) {
+          resolvedWaiterName = waiter.name;
+        }
+      }
+
+      let tipCreateData: any = undefined;
+      if (dto.tip) {
+        const tipMode = (dto.tip.mode || '').toUpperCase().trim();
+        if (!['PERCENT', 'CUSTOM'].includes(tipMode)) {
+          throw new BadRequestException('Modo de propina inválido (use PERCENT o CUSTOM)');
+        }
+        const tipMethod = (dto.tip.paymentMethod || '').toUpperCase().trim();
+        if (!['EFECTIVO', 'TARJETA', 'TRANSFERENCIA'].includes(tipMethod)) {
+          throw new BadRequestException('Método de pago de propina inválido (use EFECTIVO, TARJETA o TRANSFERENCIA)');
+        }
+        const tipCurrency = (dto.tip.currency || 'NIO').toUpperCase().trim();
+        if (!['NIO', 'USD'].includes(tipCurrency)) {
+          throw new BadRequestException('Moneda de propina inválida (use NIO o USD)');
+        }
+        if (tipCurrency === 'USD' && tipMethod !== 'EFECTIVO') {
+          throw new BadRequestException('La propina con tarjeta o transferencia solo se admite en moneda base (NIO)');
+        }
+
+        let tipAmountDec: Prisma.Decimal;
+        let tipExchangeRateDec: Prisma.Decimal | null = null;
+        let tipAmountBaseDec: Prisma.Decimal;
+
+        if (tipMode === 'PERCENT') {
+          if (tipCurrency !== 'NIO') {
+            throw new BadRequestException('La propina porcentual siempre se calcula en moneda base (NIO)');
+          }
+          const tipPercent = dto.tip.percent !== undefined ? Number(dto.tip.percent) : Number((policies as any).tipDefaultPercent ?? 10);
+          if (!Number.isFinite(tipPercent) || tipPercent <= 0 || tipPercent > 100) {
+            throw new BadRequestException('Porcentaje de propina inválido');
+          }
+          const calcAmount = calculateTipFromTotal(total, tipPercent);
+          if (calcAmount <= 0) {
+            throw new BadRequestException('El monto de la propina debe ser mayor a cero');
+          }
+          tipAmountDec = new Prisma.Decimal(calcAmount.toString()).toDecimalPlaces(2);
+          tipAmountBaseDec = tipAmountDec;
+        } else {
+          const rawTipAmt = Number(dto.tip.amount);
+          if (!Number.isFinite(rawTipAmt) || rawTipAmt <= 0) {
+            throw new BadRequestException('El monto de la propina debe ser mayor a cero');
+          }
+          tipAmountDec = new Prisma.Decimal(rawTipAmt.toString()).toDecimalPlaces(2);
+          if (tipAmountDec.lte(0)) {
+            throw new BadRequestException('El monto de la propina debe ser mayor a cero');
+          }
+          if (tipCurrency === 'USD') {
+            const rateObj = await this.exchangeRateService.getCurrentRate(businessId, tx);
+            tipExchangeRateDec = new Prisma.Decimal(rateObj.rate.toString());
+            tipAmountBaseDec = tipAmountDec.mul(tipExchangeRateDec).toDecimalPlaces(2);
+          } else {
+            tipAmountBaseDec = tipAmountDec;
+          }
+        }
+
+        let tipBankId: string | null = null;
+        let tipBankName: string | null = null;
+        if (dto.tip.bankId) {
+          const tipBank = await tx.posBank.findFirst({
+            where: { id: dto.tip.bankId, businessId },
+            select: { id: true, name: true },
+          });
+          if (!tipBank) {
+            throw new BadRequestException('Banco de propina inválido o no pertenece a este negocio');
+          }
+          tipBankId = tipBank.id;
+          tipBankName = tipBank.name;
+        }
+
+        tipCreateData = {
+          businessId,
+          cashRegisterId,
+          waiterId: resolvedWaiterId,
+          waiterName: resolvedWaiterName,
+          amount: tipAmountDec,
+          currency: tipCurrency,
+          exchangeRate: tipExchangeRateDec,
+          amountBase: tipAmountBaseDec,
+          paymentMethod: tipMethod,
+          bankId: tipBankId,
+          bankName: tipBankName,
+          reference: dto.tip.reference ? dto.tip.reference.toString().substring(0, 100).trim() : null,
+          status: 'ACTIVE',
+        };
+      }
+
       const sale = await tx.sale.create({
         data: {
           businessId,
@@ -1485,7 +1623,9 @@ export class SalesService {
           customerRuc: dto.customerRuc || null,
           tableNumber: dto.tableNumber || null,
           zoneName: dto.zoneName || null,
-          waiterName: dto.waiterName || null,
+          waiterId: resolvedWaiterId,
+          waiterName: resolvedWaiterName,
+          ...(tipCreateData ? { tip: { create: tipCreateData } } : {}),
           vehicleInfo: dto.vehicleInfo || null,
           workshopVehicleId: dto.workshopVehicleId || null,
           sellerId,
@@ -1512,7 +1652,7 @@ export class SalesService {
           status: "COMPLETED",
           occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
         },
-        include: { items: true, payments: true, cashier: { select: { name: true } }, customer: true },
+        include: { items: true, payments: true, tip: true, cashier: { select: { name: true } }, customer: true },
       });
 
       if (hasNegativeStock) {
@@ -1787,6 +1927,7 @@ export class SalesService {
         seller: { select: { id: true, name: true, email: true } },
         cashRegister: { select: { id: true, openedAt: true } },
         payments: true,
+        tip: true,
         creditAccount: {
           include: {
             installments: { orderBy: { installmentNumber: 'asc' } },
@@ -1840,6 +1981,7 @@ export class SalesService {
         cashier: { select: { id: true, name: true } },
         cashRegister: { select: { id: true, openedAt: true } },
         payments: true,
+        tip: true,
         creditAccount: {
           include: {
             installments: { orderBy: { installmentNumber: 'asc' } },
@@ -1977,6 +2119,7 @@ export class SalesService {
           payments: true,
           returns: true,
           creditAccount: true,
+          tip: true,
         },
       });
 
@@ -2121,8 +2264,30 @@ export class SalesService {
         netCashPaidDec = new Prisma.Decimal(sale.total != null ? sale.total.toString() : 0);
       }
 
+      // 3.5 Anulación de propina (263a): siempre VOIDED; si fue EFECTIVO se incluye en SALIDA (NIO o USD)
+      let tipUsdCashToRefundDec = new Prisma.Decimal(0);
+      let tipUsdRateDec = new Prisma.Decimal(1);
+      let tipUsdAmountBaseDec = new Prisma.Decimal(0);
+      if ((sale as any).tip && (sale as any).tip.status === 'ACTIVE') {
+        const saleTip = (sale as any).tip;
+        await tx.saleTip.update({
+          where: { id: saleTip.id },
+          data: { status: 'VOIDED' },
+        });
+        if (saleTip.paymentMethod === 'EFECTIVO') {
+          const tipAmtDec = new Prisma.Decimal(saleTip.amount.toString()).toDecimalPlaces(2);
+          if ((saleTip.currency || 'NIO').toUpperCase() === 'USD') {
+            tipUsdCashToRefundDec = tipAmtDec;
+            tipUsdRateDec = new Prisma.Decimal(saleTip.exchangeRate != null ? saleTip.exchangeRate.toString() : 1);
+            tipUsdAmountBaseDec = new Prisma.Decimal(saleTip.amountBase != null ? saleTip.amountBase.toString() : 0);
+          } else {
+            netCashPaidDec = netCashPaidDec.plus(tipAmtDec);
+          }
+        }
+      }
+
       let cashRefundMovement: any = null;
-      if (netCashPaidDec.greaterThan(0)) {
+      if (netCashPaidDec.greaterThan(0) || tipUsdCashToRefundDec.greaterThan(0)) {
         const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById, deviceId);
         if (!openShift) {
           if (requireOpenShift) {
@@ -2137,19 +2302,39 @@ export class SalesService {
             });
           }
         } else {
-          cashRefundMovement = await tx.cashMovement.create({
-            data: {
-              businessId,
-              cashRegisterId: openShift.id,
-              userId,
-              type: 'SALIDA',
-              amount: netCashPaidDec,
-              concept: `Anulación venta ${sale.invoiceNumber}`,
-              currency: 'NIO',
-              exchangeRate: new Prisma.Decimal(1),
-              amountBase: netCashPaidDec,
-            },
-          });
+          if (netCashPaidDec.greaterThan(0)) {
+            cashRefundMovement = await tx.cashMovement.create({
+              data: {
+                businessId,
+                cashRegisterId: openShift.id,
+                userId,
+                type: 'SALIDA',
+                amount: netCashPaidDec,
+                concept: `Anulación venta ${sale.invoiceNumber}`,
+                currency: 'NIO',
+                exchangeRate: new Prisma.Decimal(1),
+                amountBase: netCashPaidDec,
+              },
+            });
+          }
+          if (tipUsdCashToRefundDec.greaterThan(0)) {
+            const usdMovement = await tx.cashMovement.create({
+              data: {
+                businessId,
+                cashRegisterId: openShift.id,
+                userId,
+                type: 'SALIDA',
+                amount: tipUsdCashToRefundDec,
+                concept: `Anulación propina venta ${sale.invoiceNumber}`,
+                currency: 'USD',
+                exchangeRate: tipUsdRateDec,
+                amountBase: tipUsdAmountBaseDec,
+              },
+            });
+            if (!cashRefundMovement) {
+              cashRefundMovement = usdMovement;
+            }
+          }
         }
       }
 
@@ -2237,6 +2422,7 @@ export class SalesService {
             },
           },
           payments: true,
+          tip: true,
           returns: { include: { items: true } },
           cashier: { select: { id: true, name: true } },
           cashRegister: { select: { id: true, openedAt: true } },
@@ -2359,6 +2545,7 @@ export class SalesService {
             },
           },
           payments: true,
+          tip: true,
           returns: { include: { items: true } },
           creditAccount: true,
         },

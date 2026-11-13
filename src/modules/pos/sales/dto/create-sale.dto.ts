@@ -1,5 +1,5 @@
 import {
-  IsArray, IsBoolean, IsEnum, IsNumber, IsOptional, IsString, Min, ValidateNested,
+  IsArray, IsBoolean, IsEnum, IsIn, IsNumber, IsOptional, IsString, Min, ValidateNested,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { PosPaymentMethod } from "@prisma/client";
@@ -130,6 +130,49 @@ export class CreditPlanDto {
   @IsOptional()
   @IsString()
   approvalToken?: string;
+}
+
+export class TipInputDto {
+  @IsString()
+  @IsIn(["PERCENT", "CUSTOM"])
+  mode: "PERCENT" | "CUSTOM";
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  percent?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  amount?: number;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(["NIO", "USD"])
+  currency?: "NIO" | "USD";
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  exchangeRate?: number;
+
+  @IsString()
+  @IsIn(["EFECTIVO", "TARJETA", "TRANSFERENCIA"])
+  paymentMethod: "EFECTIVO" | "TARJETA" | "TRANSFERENCIA";
+
+  @IsOptional()
+  @IsString()
+  bankId?: string;
+
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  reference?: string;
+
+  @IsOptional()
+  @IsString()
+  waiterId?: string;
 }
 
 export class CreateSaleDto {
@@ -326,4 +369,13 @@ export class CreateSaleDto {
   @IsOptional()
   @IsString()
   pedidosYaPaymentMode?: string;
+
+  @IsOptional()
+  @IsString()
+  waiterId?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TipInputDto)
+  tip?: TipInputDto;
 }

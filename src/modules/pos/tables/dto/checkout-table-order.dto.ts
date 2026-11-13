@@ -2,7 +2,7 @@ import { IsArray, IsEnum, IsNumber, IsOptional, IsString, MaxLength, Min, Valida
 import { Type } from 'class-transformer';
 import { PosPaymentMethod } from '@prisma/client';
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
-import { PaymentDto } from '../../sales/dto/create-sale.dto';
+import { PaymentDto, TipInputDto } from '../../sales/dto/create-sale.dto';
 
 export class CheckoutTableOrderDto {
   @IsOptional()
@@ -75,4 +75,9 @@ export class CheckoutTableOrderDto {
   @ValidateNested({ each: true })
   @Type(() => PaymentDto)
   payments?: PaymentDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TipInputDto)
+  tip?: TipInputDto;
 }

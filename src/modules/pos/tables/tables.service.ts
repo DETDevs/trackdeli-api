@@ -7,6 +7,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { PosPaymentMethod, TableOrderStatus, TableShape, UserRole } from '@prisma/client';
@@ -31,6 +32,8 @@ import { AddSubAccountDto } from './dto/add-sub-account.dto';
 import { MergeSubAccountsDto } from './dto/merge-sub-accounts.dto';
 import { UndoSplitDto } from './dto/undo-split.dto';
 import { SetOrderDiscountDto } from './dto/set-order-discount.dto';
+import { SetOrderTipDto } from './dto/set-order-tip.dto';
+import { PoliciesService } from '../policies/policies.service';
 import { getSalonLabels } from '../salon/salon-profile.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
 import { WorkshopService } from '../workshop/workshop.service';
@@ -93,6 +96,7 @@ export class TablesService {
     private readonly salesService: SalesService,
     private readonly auditService: AuditService,
     private readonly workshopService: WorkshopService,
+    private readonly policiesService: PoliciesService,
   ) {}
 
   async findAllTables(businessId: string, zoneId?: string) {
@@ -737,7 +741,8 @@ export class TablesService {
       throw new NotFoundException('No hay un pedido abierto para esta mesa');
     }
 
-    return this.formatOrderResponse(order, business?.taxRate || 0, business);
+    const policies = await this.policiesService.get(businessId);
+    return this.formatOrderResponse(order, business?.taxRate || 0, business, policies);
   }
 
   async addOrderItems(businessId: string, tableId: string, dto: AddOrderItemsDto, user?: JwtPayload) {
@@ -1036,6 +1041,16 @@ export class TablesService {
         const taxRate = business?.taxRate || 0;
 
         const isSplit = Boolean(order.splitMode) || (order.subAccounts && order.subAccounts.length > 0);
+        let orderWaiterId: string | undefined = order.assignedWaiterId || undefined;
+        if (!orderWaiterId && order.openedByWaiterId) {
+          const openerWaiter = await tx.waiter.findFirst({
+            where: { id: order.openedByWaiterId, businessId },
+            select: { id: true },
+          });
+          if (openerWaiter) {
+            orderWaiterId = openerWaiter.id;
+          }
+        }
 
         // If order is split, subAccountId is required
         if (isSplit && !dto.subAccountId) {
@@ -1160,7 +1175,9 @@ export class TablesService {
               customerRuc: dto.customerRuc,
               tableNumber: order.table?.number || undefined,
               zoneName: order.table?.zone?.name || undefined,
+              waiterId: orderWaiterId,
               waiterName: order.assignedWaiter?.name || order.openedByWaiterName || undefined,
+              tip: dto.tip,
               vehicleInfo: order.vehicleInfo || undefined,
               workshopVehicleId: order.workshopVehicleId || undefined,
               cashRegisterId: dto.cashRegisterId,
@@ -1207,7 +1224,9 @@ export class TablesService {
               customerRuc: dto.customerRuc,
               tableNumber: order.table?.number || undefined,
               zoneName: order.table?.zone?.name || undefined,
+              waiterId: orderWaiterId,
               waiterName: order.assignedWaiter?.name || order.openedByWaiterName || undefined,
+              tip: dto.tip,
               vehicleInfo: order.vehicleInfo || undefined,
               workshopVehicleId: order.workshopVehicleId || undefined,
               cashRegisterId: dto.cashRegisterId,
@@ -1312,7 +1331,9 @@ export class TablesService {
           customerRuc: dto.customerRuc,
           tableNumber: order.table?.number || undefined,
           zoneName: order.table?.zone?.name || undefined,
+          waiterId: orderWaiterId,
           waiterName: order.assignedWaiter?.name || order.openedByWaiterName || undefined,
+          tip: dto.tip,
           vehicleInfo: order.vehicleInfo || undefined,
           workshopVehicleId: order.workshopVehicleId || undefined,
           cashRegisterId: dto.cashRegisterId,
@@ -1653,6 +1674,7 @@ export class TablesService {
     order: any,
     taxRate: number = 0,
     business?: { taxRate?: number | null; taxEnabled?: boolean | null; taxIncluded?: boolean | null } | null,
+    policies?: { tipEnabled?: boolean | null; tipDefaultPercent?: any } | null,
   ) {
     let subtotal = 0;
     let itemsCount = 0;
@@ -1730,6 +1752,10 @@ export class TablesService {
               status: sa.status,
               saleId: sa.saleId || null,
               fixedAmount: fixed,
+              tipMode: sa.tipMode || null,
+              tipPercent: sa.tipPercent != null ? Number(sa.tipPercent) : null,
+              tipAmount: sa.tipAmount != null ? Number(sa.tipAmount) : null,
+              tipCurrency: sa.tipCurrency || null,
               itemsCount: splitResult.items.length,
               subtotal: splitResult.targetSubtotal,
               discount: splitResult.saDiscount,
@@ -1746,6 +1772,10 @@ export class TablesService {
               status: sa.status,
               saleId: sa.saleId || null,
               fixedAmount: fixed,
+              tipMode: sa.tipMode || null,
+              tipPercent: sa.tipPercent != null ? Number(sa.tipPercent) : null,
+              tipAmount: sa.tipAmount != null ? Number(sa.tipAmount) : null,
+              tipCurrency: sa.tipCurrency || null,
               itemsCount: 0,
               subtotal: fixed,
               discount: 0,
@@ -1815,6 +1845,10 @@ export class TablesService {
             status: sa.status,
             saleId: sa.saleId || null,
             fixedAmount: sa.fixedAmount ? Number(sa.fixedAmount) : null,
+            tipMode: sa.tipMode || null,
+            tipPercent: sa.tipPercent != null ? Number(sa.tipPercent) : null,
+            tipAmount: sa.tipAmount != null ? Number(sa.tipAmount) : null,
+            tipCurrency: sa.tipCurrency || null,
             itemsCount: saCount,
             subtotal: saSub,
             discount: saDisc,
@@ -1876,6 +1910,16 @@ export class TablesService {
       total: orderTotal,
       splitVersion: order.splitVersion !== undefined ? order.splitVersion : 0,
       splitMode: order.splitMode || null,
+      tipMode: order.tipMode || null,
+      tipPercent: order.tipPercent != null ? Number(order.tipPercent) : null,
+      tipAmount: order.tipAmount != null ? Number(order.tipAmount) : null,
+      tipCurrency: order.tipCurrency || null,
+      ...(policies ? {
+        tipPolicy: {
+          tipEnabled: Boolean(policies.tipEnabled),
+          tipDefaultPercent: Number(policies.tipDefaultPercent ?? 10),
+        },
+      } : {}),
       subAccounts: formattedSubAccounts,
       items: formattedItems,
     };
@@ -3080,6 +3124,100 @@ export class TablesService {
   /**
    * 171a - Establece el descuento a nivel de orden.
    */
+  /**
+   * 263a - Guarda la intención de propina en la orden activa o en una subcuenta específica.
+   */
+  async setOrderTip(
+    businessId: string,
+    tableId: string,
+    dto: SetOrderTipDto,
+  ) {
+    const policies = await this.policiesService.get(businessId);
+    const mode = (dto.mode || '').toUpperCase().trim();
+    if (!['NONE', 'PERCENT', 'CUSTOM'].includes(mode)) {
+      throw new BadRequestException('Modo de propina inválido (use NONE, PERCENT o CUSTOM)');
+    }
+    if (mode !== 'NONE' && !policies.tipEnabled) {
+      throw new UnprocessableEntityException({
+        statusCode: 422,
+        error: 'Unprocessable Entity',
+        code: 'TIP_DISABLED',
+        message: 'La propina opcional no está habilitada en las políticas de este negocio',
+      });
+    }
+
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      include: { subAccounts: true },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    let tipData: {
+      tipMode: string;
+      tipPercent: number | null;
+      tipAmount: number | null;
+      tipCurrency: string | null;
+    };
+
+    if (mode === 'NONE') {
+      tipData = {
+        tipMode: 'NONE',
+        tipPercent: null,
+        tipAmount: null,
+        tipCurrency: null,
+      };
+    } else if (mode === 'PERCENT') {
+      const percent = dto.percent !== undefined ? Number(dto.percent) : Number((policies as any).tipDefaultPercent ?? 10);
+      if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+        throw new BadRequestException('Porcentaje de propina inválido');
+      }
+      tipData = {
+        tipMode: 'PERCENT',
+        tipPercent: percent,
+        tipAmount: null,
+        tipCurrency: 'NIO',
+      };
+    } else {
+      const amount = Number(dto.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new BadRequestException('El monto de la propina debe ser mayor a cero');
+      }
+      const currency = (dto.currency || 'NIO').toUpperCase().trim();
+      if (!['NIO', 'USD'].includes(currency)) {
+        throw new BadRequestException('Moneda de propina inválida (use NIO o USD)');
+      }
+      tipData = {
+        tipMode: 'CUSTOM',
+        tipPercent: null,
+        tipAmount: Math.round(amount * 100) / 100,
+        tipCurrency: currency,
+      };
+    }
+
+    if (dto.subAccountId) {
+      const subAccount = (order.subAccounts || []).find((sa) => sa.id === dto.subAccountId);
+      if (!subAccount) {
+        throw new NotFoundException('Subcuenta no encontrada en este pedido');
+      }
+      if (subAccount.status === 'PAID') {
+        throw new BadRequestException('No se puede modificar la propina de una subcuenta ya cobrada');
+      }
+      await this.prisma.orderSubAccount.update({
+        where: { id: subAccount.id },
+        data: tipData,
+      });
+    } else {
+      await this.prisma.tableOrder.update({
+        where: { id: order.id },
+        data: tipData,
+      });
+    }
+
+    return this.getActiveTableOrder(businessId, tableId);
+  }
+
   async setOrderDiscount(
     businessId: string,
     tableId: string,

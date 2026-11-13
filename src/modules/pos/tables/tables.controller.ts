@@ -41,6 +41,7 @@ import { AddSubAccountDto } from './dto/add-sub-account.dto';
 import { MergeSubAccountsDto } from './dto/merge-sub-accounts.dto';
 import { UndoSplitDto } from './dto/undo-split.dto';
 import { SetOrderDiscountDto } from './dto/set-order-discount.dto';
+import { SetOrderTipDto } from './dto/set-order-tip.dto';
 
 @SkipMembershipCheck()
 @SkipWebAdminAccess()
@@ -357,6 +358,18 @@ export class TablesController {
     @Query('businessId') qBid?: string,
   ) {
     return this.service.setOrderDiscount(resolveBusinessId(user, qBid), tableId, dto, user);
+  }
+
+  @Patch(':id/order/tip')
+  @Roles(UserRole.WAITER, UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @HttpCode(HttpStatus.OK)
+  setTip(
+    @Param('id') tableId: string,
+    @Body() dto: SetOrderTipDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.setOrderTip(resolveBusinessId(user, qBid), tableId, dto);
   }
 }
 

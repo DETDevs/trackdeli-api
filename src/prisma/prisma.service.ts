@@ -2323,6 +2323,7 @@ WHERE a."customerId" = c."id"
       await this.ensureSaleItemCostSchema();
       await this.ensurePosPoliciesRequireShiftSchema();
       await this.ensureMembershipTypeSchema();
+      await this.ensureTipsSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4409,6 +4410,111 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠️ 252b - Advertencia sincronizando type en memberships: ${err.message}`);
+    }
+  }
+
+  /**
+   * 263a - Propina opcional en políticas, ventas, órdenes de mesa, subcuentas y tabla pos_sale_tips
+   * DDL idempotente con advisory lock 263001.
+   */
+  private async ensureTipsSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(263001)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_policies"
+            ADD COLUMN IF NOT EXISTS "tipEnabled" BOOLEAN NOT NULL DEFAULT false,
+            ADD COLUMN IF NOT EXISTS "tipDefaultPercent" DECIMAL(5,2) NOT NULL DEFAULT 10;
+        `);
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_sales"
+            ADD COLUMN IF NOT EXISTS "waiterId" TEXT;
+        `);
+        await this.$executeRawUnsafe(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_sales_waiterId_fkey') THEN
+              ALTER TABLE "pos_sales"
+                ADD CONSTRAINT "pos_sales_waiterId_fkey"
+                FOREIGN KEY ("waiterId") REFERENCES "pos_waiters"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_sales_waiterId_idx" ON "pos_sales"("waiterId");
+        `);
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_table_orders"
+            ADD COLUMN IF NOT EXISTS "tipMode" VARCHAR(20),
+            ADD COLUMN IF NOT EXISTS "tipPercent" DECIMAL(5,2),
+            ADD COLUMN IF NOT EXISTS "tipAmount" DECIMAL(12,2),
+            ADD COLUMN IF NOT EXISTS "tipCurrency" VARCHAR(10);
+        `);
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "order_sub_accounts"
+            ADD COLUMN IF NOT EXISTS "tipMode" VARCHAR(20),
+            ADD COLUMN IF NOT EXISTS "tipPercent" DECIMAL(5,2),
+            ADD COLUMN IF NOT EXISTS "tipAmount" DECIMAL(12,2),
+            ADD COLUMN IF NOT EXISTS "tipCurrency" VARCHAR(10);
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_sale_tips" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "saleId" TEXT NOT NULL,
+            "cashRegisterId" TEXT,
+            "waiterId" TEXT,
+            "waiterName" VARCHAR(100),
+            "amount" DECIMAL(12,2) NOT NULL,
+            "currency" VARCHAR(10) NOT NULL DEFAULT 'NIO',
+            "exchangeRate" DECIMAL(10,4),
+            "amountBase" DECIMAL(12,2) NOT NULL,
+            "paymentMethod" VARCHAR(20) NOT NULL,
+            "bankId" TEXT,
+            "bankName" VARCHAR(100),
+            "reference" VARCHAR(100),
+            "status" VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_sale_tips_pkey" PRIMARY KEY ("id")
+          );
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE UNIQUE INDEX IF NOT EXISTS "pos_sale_tips_saleId_key" ON "pos_sale_tips"("saleId");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_sale_tips_businessId_createdAt_idx" ON "pos_sale_tips"("businessId", "createdAt");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_sale_tips_businessId_waiterId_idx" ON "pos_sale_tips"("businessId", "waiterId");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_sale_tips_cashRegisterId_idx" ON "pos_sale_tips"("cashRegisterId");
+        `);
+        await this.$executeRawUnsafe(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_sale_tips_businessId_fkey') THEN
+              ALTER TABLE "pos_sale_tips" ADD CONSTRAINT "pos_sale_tips_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_sale_tips_saleId_fkey') THEN
+              ALTER TABLE "pos_sale_tips" ADD CONSTRAINT "pos_sale_tips_saleId_fkey" FOREIGN KEY ("saleId") REFERENCES "pos_sales"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_sale_tips_cashRegisterId_fkey') THEN
+              ALTER TABLE "pos_sale_tips" ADD CONSTRAINT "pos_sale_tips_cashRegisterId_fkey" FOREIGN KEY ("cashRegisterId") REFERENCES "pos_cash_registers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_sale_tips_waiterId_fkey') THEN
+              ALTER TABLE "pos_sale_tips" ADD CONSTRAINT "pos_sale_tips_waiterId_fkey" FOREIGN KEY ("waiterId") REFERENCES "pos_waiters"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_sale_tips_bankId_fkey') THEN
+              ALTER TABLE "pos_sale_tips" ADD CONSTRAINT "pos_sale_tips_bankId_fkey" FOREIGN KEY ("bankId") REFERENCES "pos_banks"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(263001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠️ 263a - Advertencia sincronizando esquema de propinas: ${err.message}`);
     }
   }
 

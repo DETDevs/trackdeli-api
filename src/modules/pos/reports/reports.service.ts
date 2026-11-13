@@ -3286,6 +3286,125 @@ export class ReportsService {
     };
   }
 
+  /**
+   * 263a - Reporte consolidado de propinas ACTIVE (sin mezclar con ventas ni IVA).
+   */
+  async getTipsReport(
+    businessId: string,
+    filters: {
+      period?: string;
+      from?: string;
+      to?: string;
+      waiterId?: string;
+      paymentMethod?: string;
+      cashRegisterId?: string;
+    } = {},
+  ) {
+    const range = this.resolveDateRange(filters.period, filters.from, filters.to);
+    const where: Prisma.SaleTipWhereInput = {
+      businessId,
+      status: 'ACTIVE',
+      createdAt: {
+        gte: range.current.from,
+        lte: range.current.to,
+      },
+    };
+
+    if (filters.waiterId) {
+      where.waiterId = filters.waiterId;
+    }
+    if (filters.paymentMethod) {
+      const pm = filters.paymentMethod.toUpperCase().trim();
+      if (!['EFECTIVO', 'TARJETA', 'TRANSFERENCIA'].includes(pm)) {
+        throw new BadRequestException('Método de pago inválido para filtro de propinas');
+      }
+      where.paymentMethod = pm;
+    }
+    if (filters.cashRegisterId) {
+      where.cashRegisterId = filters.cashRegisterId;
+    }
+
+    const tips = await this.prisma.saleTip.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
+
+    let baseTotalDec = new Prisma.Decimal(0);
+    const byMethodMap = new Map<string, { paymentMethod: string; count: number; baseTotal: Prisma.Decimal }>();
+    const byCurrencyMap = new Map<string, { currency: string; count: number; amount: Prisma.Decimal; baseTotal: Prisma.Decimal }>();
+    const byWaiterMap = new Map<string, { waiterId: string | null; waiterName: string; count: number; baseTotal: Prisma.Decimal }>();
+
+    for (const t of tips) {
+      const amtDec = new Prisma.Decimal(t.amount.toString());
+      const baseDec = new Prisma.Decimal(t.amountBase.toString());
+      const method = (t.paymentMethod || '').toUpperCase();
+      const currency = (t.currency || 'NIO').toUpperCase();
+
+      baseTotalDec = baseTotalDec.plus(baseDec);
+
+      let mEntry = byMethodMap.get(method);
+      if (!mEntry) {
+        mEntry = { paymentMethod: method, count: 0, baseTotal: new Prisma.Decimal(0) };
+        byMethodMap.set(method, mEntry);
+      }
+      mEntry.count += 1;
+      mEntry.baseTotal = mEntry.baseTotal.plus(baseDec);
+
+      let cEntry = byCurrencyMap.get(currency);
+      if (!cEntry) {
+        cEntry = { currency, count: 0, amount: new Prisma.Decimal(0), baseTotal: new Prisma.Decimal(0) };
+        byCurrencyMap.set(currency, cEntry);
+      }
+      cEntry.count += 1;
+      cEntry.amount = cEntry.amount.plus(amtDec);
+      cEntry.baseTotal = cEntry.baseTotal.plus(baseDec);
+
+      const wKey = t.waiterId || (t.waiterName ? `name:${t.waiterName}` : 'SIN_MESERO');
+      let wEntry = byWaiterMap.get(wKey);
+      if (!wEntry) {
+        wEntry = {
+          waiterId: t.waiterId || null,
+          waiterName: t.waiterName || 'Sin mesero',
+          count: 0,
+          baseTotal: new Prisma.Decimal(0),
+        };
+        byWaiterMap.set(wKey, wEntry);
+      }
+      wEntry.count += 1;
+      wEntry.baseTotal = wEntry.baseTotal.plus(baseDec);
+    }
+
+    return {
+      period: {
+        from: range.current.fromIso,
+        to: range.current.toIso,
+      },
+      totals: {
+        count: tips.length,
+        baseTotal: Number(baseTotalDec.toDecimalPlaces(2)),
+        byMethod: Array.from(byMethodMap.values()).map((m) => ({
+          paymentMethod: m.paymentMethod,
+          count: m.count,
+          baseTotal: Number(m.baseTotal.toDecimalPlaces(2)),
+        })),
+        byCurrency: Array.from(byCurrencyMap.values()).map((c) => ({
+          currency: c.currency,
+          count: c.count,
+          amount: Number(c.amount.toDecimalPlaces(2)),
+          baseTotal: Number(c.baseTotal.toDecimalPlaces(2)),
+        })),
+      },
+      byWaiter: Array.from(byWaiterMap.values())
+        .map((w) => ({
+          waiterId: w.waiterId,
+          waiterName: w.waiterName,
+          count: w.count,
+          baseTotal: Number(w.baseTotal.toDecimalPlaces(2)),
+        }))
+        .sort((a, b) => b.baseTotal - a.baseTotal),
+    };
+  }
+
   async exportPedidosYaReportCsv(
     businessId: string,
     period?: string,

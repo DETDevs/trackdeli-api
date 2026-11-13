@@ -5,9 +5,10 @@ import { PrismaModule } from '../../../prisma/prisma.module';
 import { SalesModule } from '../sales/sales.module';
 import { AuditModule } from '../audit/audit.module';
 import { WorkshopModule } from '../workshop/workshop.module';
+import { PoliciesModule } from '../policies/policies.module';
 
 @Module({
-  imports: [PrismaModule, SalesModule, AuditModule, WorkshopModule],
+  imports: [PrismaModule, SalesModule, AuditModule, WorkshopModule, PoliciesModule],
   controllers: [TablesController],
   providers: [TablesService],
   exports: [TablesService],

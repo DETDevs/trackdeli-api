@@ -277,3 +277,13 @@ export function calculateSaleTotals(
     lines,
   };
 }
+
+/**
+ * Calcula el monto de propina porcentual en centavos a partir del total de la venta.
+ */
+export function calculateTipFromTotal(total: number, percent: number): number {
+  const totalCents = Math.round(Number(total || 0) * 100);
+  const percentBps = Math.round(Number(percent || 0) * 100);
+  if (totalCents <= 0 || percentBps <= 0) return 0;
+  return Math.round((totalCents * percentBps) / 10000) / 100;
+}

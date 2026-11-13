@@ -38,4 +38,7 @@ export class UpdatePosPoliciesDto {
   @IsOptional() @IsNumber() @Min(1) @Max(60) creditMaxInstallments?: number;
   @IsOptional() @IsString() creditAllowedFrequencies?: string;
   @IsOptional() @IsBoolean() requireOpenShiftToSell?: boolean;
+
+  @IsOptional() @IsBoolean() tipEnabled?: boolean;
+  @IsOptional() @IsNumber() @Min(1) @Max(30) tipDefaultPercent?: number;
 }

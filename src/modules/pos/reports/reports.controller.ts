@@ -399,6 +399,27 @@ export class ReportsController {
     return this.service.getDomicilioReport(businessId, period, from, to, driverId);
   }
 
+  @Get("tips")
+  tips(
+    @CurrentUser() user: JwtPayload,
+    @Query("period") period?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("waiterId") waiterId?: string,
+    @Query("paymentMethod") paymentMethod?: string,
+    @Query("cashRegisterId") cashRegisterId?: string,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.getTipsReport(resolveBusinessId(user, qBid), {
+      period,
+      from,
+      to,
+      waiterId,
+      paymentMethod,
+      cashRegisterId,
+    });
+  }
+
   @Get("pedidosya")
   async pedidosYa(
     @CurrentUser() user: JwtPayload,
