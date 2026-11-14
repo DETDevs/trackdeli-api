@@ -14,6 +14,7 @@ export class CustomerResponseDto {
   lastLatitude: number | null;
   lastLongitude: number | null;
   lastAddressText: string | null;
+  deliveryReference?: string | null;
   lastConfirmedAt: Date | null;
   isLocationRecent?: boolean;
   createdAt?: Date;
@@ -32,6 +33,7 @@ export class CustomerSearchResultDto {
   lastLatitude: number | null;
   lastLongitude: number | null;
   lastAddressText: string | null;
+  deliveryReference?: string | null;
   lastConfirmedAt: Date | null;
   isLocationRecent: boolean;
 }

@@ -63,6 +63,12 @@ export class UpdateCustomerDto {
   address?: string;
 
   @IsOptional()
+  @SanitizeText()
+  @IsString({ message: 'El punto de referencia debe ser una cadena de texto' })
+  @MaxLength(300, { message: 'El punto de referencia no puede superar 300 caracteres' })
+  deliveryReference?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber({}, { message: 'La latitud debe ser un número' })
   latitude?: number | null;

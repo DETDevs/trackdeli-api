@@ -369,7 +369,10 @@ export class SalesService {
 
         deliveryAddress = resolvedAddr;
         deliveryPhone = resolvedPhone;
-        deliveryReference = dto.deliveryReference?.trim() || null;
+        deliveryReference =
+          dto.deliveryReference !== undefined
+            ? dto.deliveryReference?.trim() || null
+            : domCustomer?.deliveryReference?.trim() || null;
         customerName = resolvedName;
         customerPhone = resolvedPhone;
         customerId = domCustomer?.id || customerId;

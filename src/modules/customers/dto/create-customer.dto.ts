@@ -59,6 +59,12 @@ export class CreateCustomerDto {
   address?: string;
 
   @IsOptional()
+  @SanitizeText()
+  @IsString({ message: 'El punto de referencia debe ser una cadena de texto' })
+  @MaxLength(300, { message: 'El punto de referencia no puede superar 300 caracteres' })
+  deliveryReference?: string;
+
+  @IsOptional()
   @IsString({ message: 'El correo debe ser una cadena de texto' })
   @MaxLength(255, { message: 'El correo no puede superar 255 caracteres' })
   @ValidateIf((_o, v) => typeof v === 'string' && v.trim() !== '')

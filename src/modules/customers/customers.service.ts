@@ -120,6 +120,7 @@ export class CustomersService {
       lastLatitude: c.lastLatitude,
       lastLongitude: c.lastLongitude,
       lastAddressText: c.lastAddressText,
+      deliveryReference: c.deliveryReference ?? null,
       lastConfirmedAt: c.lastConfirmedAt,
       isLocationRecent: this.isRecent(
         c.lastConfirmedAt,
@@ -175,6 +176,7 @@ export class CustomersService {
       lastLatitude: customer.lastLatitude,
       lastLongitude: customer.lastLongitude,
       lastAddressText: customer.lastAddressText,
+      deliveryReference: customer.deliveryReference ?? null,
       lastConfirmedAt: customer.lastConfirmedAt,
       isLocationRecent: this.isRecent(
         customer.lastConfirmedAt,
@@ -438,6 +440,7 @@ export class CustomersService {
             : null,
         externalCode: isVendedor ? null : (dto.externalCode?.trim() || null),
         lastAddressText: dto.address?.trim() || null,
+        deliveryReference: this.cleanText(dto.deliveryReference),
         isBlocked: !isCajero && !isVendedor && dto.isBlocked === true,
       },
       include: {
@@ -463,6 +466,7 @@ export class CustomersService {
       lastLatitude: customer.lastLatitude,
       lastLongitude: customer.lastLongitude,
       lastAddressText: customer.lastAddressText,
+      deliveryReference: customer.deliveryReference ?? null,
       lastConfirmedAt: customer.lastConfirmedAt,
       isLocationRecent: false,
       createdAt: customer.createdAt,
@@ -888,6 +892,7 @@ export class CustomersService {
       lastLatitude: updated.lastLatitude,
       lastLongitude: updated.lastLongitude,
       lastAddressText: updated.lastAddressText,
+      deliveryReference: updated.deliveryReference ?? null,
       lastConfirmedAt: updated.lastConfirmedAt,
       isLocationRecent: true,
       createdAt: updated.createdAt,
@@ -1136,6 +1141,7 @@ export class CustomersService {
         isActive: c.isActive,
         consecutiveNoShows: c.consecutiveNoShows,
         lastAddressText: c.lastAddressText ?? null,
+        deliveryReference: c.deliveryReference ?? null,
         currentBalance: roundedBalance,
         balance: roundedBalance,
         createdAt: c.createdAt,
@@ -1398,6 +1404,7 @@ export class CustomersService {
         lastLatitude: customer.lastLatitude,
         lastLongitude: customer.lastLongitude,
         lastAddressText: customer.lastAddressText,
+        deliveryReference: customer.deliveryReference ?? null,
         lastConfirmedAt: customer.lastConfirmedAt,
         createdAt: customer.createdAt,
         updatedAt: customer.updatedAt,
@@ -1597,6 +1604,9 @@ export class CustomersService {
         ...(dto.externalCode !== undefined && { externalCode: dto.externalCode?.trim() || null }),
         ...(dto.address !== undefined && {
           lastAddressText: dto.address?.trim() || null,
+        }),
+        ...(dto.deliveryReference !== undefined && {
+          deliveryReference: this.cleanText(dto.deliveryReference),
         }),
         ...(dto.latitude !== undefined && {
           lastLatitude: dto.latitude != null ? Number(dto.latitude) : null,
@@ -1845,6 +1855,7 @@ export class CustomersService {
         id: customer.id,
         name: customer.name,
         externalCode: customer.externalCode ?? null,
+        deliveryReference: customer.deliveryReference ?? null,
         currentBalance: balance,
         availableCredit,
         creditLimit: hasCartera && customer.creditLimit !== null && customer.creditLimit !== undefined ? Number(customer.creditLimit) : null,
@@ -1866,6 +1877,7 @@ export class CustomersService {
       phone: customer.phone,
       email: customer.email ?? null,
       address: customer.lastAddressText ?? null,
+      deliveryReference: customer.deliveryReference ?? null,
       ruc: customer.ruc ?? null,
       externalCode: customer.externalCode ?? null,
       creditLimit: hasCartera && customer.creditLimit !== null && customer.creditLimit !== undefined ? Number(customer.creditLimit) : null,

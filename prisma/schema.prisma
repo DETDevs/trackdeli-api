@@ -840,7 +840,8 @@ model Customer {
   notes           String?
   lastLatitude    Float?
   lastLongitude   Float?
-  lastAddressText String?                   @db.VarChar(300)
+  lastAddressText   String?                 @db.VarChar(300)
+  deliveryReference String?                 @db.VarChar(300)
   lastConfirmedAt DateTime?
   createdAt       DateTime                  @default(now())
   updatedAt       DateTime                  @updatedAt

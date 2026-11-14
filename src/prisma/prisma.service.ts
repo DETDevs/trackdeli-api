@@ -2324,6 +2324,7 @@ WHERE a."customerId" = c."id"
       await this.ensurePosPoliciesRequireShiftSchema();
       await this.ensureMembershipTypeSchema();
       await this.ensureTipsSchema();
+      await this.ensureCustomerDeliveryReferenceSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4515,6 +4516,28 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠️ 263a - Advertencia sincronizando esquema de propinas: ${err.message}`);
+    }
+  }
+
+  /**
+   * 265a - Punto de referencia de entrega propio en customers ("deliveryReference")
+   * DDL idempotente con advisory lock 265001.
+   */
+  private async ensureCustomerDeliveryReferenceSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(265001)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "customers"
+            ADD COLUMN IF NOT EXISTS "deliveryReference" VARCHAR(300);
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(265001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[PrismaService] ⚠️ 265a - Advertencia sincronizando deliveryReference en customers: ${err.message}`,
+      );
     }
   }
 
