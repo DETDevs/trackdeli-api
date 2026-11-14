@@ -2325,6 +2325,8 @@ WHERE a."customerId" = c."id"
       await this.ensureMembershipTypeSchema();
       await this.ensureTipsSchema();
       await this.ensureCustomerDeliveryReferenceSchema();
+      await this.ensureQuotesSchema();
+      await this.ensureQuoteReceiptLinksSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4537,6 +4539,224 @@ WHERE a."customerId" = c."id"
     } catch (err: any) {
       this.logger.warn(
         `[PrismaService] ⚠️ 265a - Advertencia sincronizando deliveryReference en customers: ${err.message}`,
+      );
+    }
+  }
+
+  /**
+   * 266a - Proformas (cotizaciones) en el POS:
+   * - pos_quote_counters
+   * - pos_quotes
+   * - pos_quote_items
+   * - pos_sales."quoteId"
+   * DDL idempotente con advisory lock 266001.
+   */
+  private async ensureQuotesSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(266001)`);
+      try {
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_quote_counters" (
+            "businessId" TEXT NOT NULL,
+            "lastNumber" INTEGER NOT NULL DEFAULT 0,
+            CONSTRAINT "pos_quote_counters_pkey" PRIMARY KEY ("businessId"),
+            CONSTRAINT "pos_quote_counters_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_quotes" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "number" INTEGER NOT NULL,
+            "quoteNumber" VARCHAR(20) NOT NULL,
+            "status" VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+            "createdById" TEXT NOT NULL,
+            "createdByName" VARCHAR(100) NOT NULL,
+            "customerId" TEXT,
+            "customerName" VARCHAR(120),
+            "customerPhone" VARCHAR(30),
+            "customerRuc" VARCHAR(30),
+            "customerAddress" VARCHAR(300),
+            "vehicleInfo" VARCHAR(120),
+            "validityDays" INTEGER NOT NULL DEFAULT 15,
+            "expiresAt" TIMESTAMP(3) NOT NULL,
+            "notes" TEXT,
+            "conditions" TEXT,
+            "subtotal" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "discountAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "listPriceTotal" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "listDiscountTotal" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "taxModel" VARCHAR(20) NOT NULL DEFAULT 'PER_LINE',
+            "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "taxEnabled" BOOLEAN NOT NULL DEFAULT false,
+            "taxIncluded" BOOLEAN NOT NULL DEFAULT false,
+            "taxAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "total" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "currency" VARCHAR(10) NOT NULL DEFAULT 'NIO',
+            "sentAt" TIMESTAMP(3),
+            "acceptedAt" TIMESTAMP(3),
+            "convertedAt" TIMESTAMP(3),
+            "convertedById" TEXT,
+            "convertedSaleId" TEXT,
+            "cancelledAt" TIMESTAMP(3),
+            "cancelledById" TEXT,
+            "cancelReason" VARCHAR(500),
+            "expiredAt" TIMESTAMP(3),
+            "clientRequestId" VARCHAR(100),
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_quotes_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_quotes_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_quotes_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+            CONSTRAINT "pos_quotes_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+            CONSTRAINT "pos_quotes_convertedById_fkey" FOREIGN KEY ("convertedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE,
+            CONSTRAINT "pos_quotes_cancelledById_fkey" FOREIGN KEY ("cancelledById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE
+          );
+        `);
+
+        await this.$executeRawUnsafe(
+          `CREATE UNIQUE INDEX IF NOT EXISTS "pos_quotes_businessId_quoteNumber_key" ON "pos_quotes"("businessId", "quoteNumber");`,
+        );
+        await this.$executeRawUnsafe(
+          `CREATE UNIQUE INDEX IF NOT EXISTS "pos_quotes_businessId_clientRequestId_key" ON "pos_quotes"("businessId", "clientRequestId");`,
+        );
+        await this.$executeRawUnsafe(
+          `CREATE UNIQUE INDEX IF NOT EXISTS "pos_quotes_convertedSaleId_key" ON "pos_quotes"("convertedSaleId");`,
+        );
+        await this.$executeRawUnsafe(
+          `CREATE INDEX IF NOT EXISTS "pos_quotes_businessId_status_expiresAt_idx" ON "pos_quotes"("businessId", "status", "expiresAt");`,
+        );
+        await this.$executeRawUnsafe(
+          `CREATE INDEX IF NOT EXISTS "pos_quotes_businessId_createdById_idx" ON "pos_quotes"("businessId", "createdById");`,
+        );
+        await this.$executeRawUnsafe(
+          `CREATE INDEX IF NOT EXISTS "pos_quotes_businessId_customerId_idx" ON "pos_quotes"("businessId", "customerId");`,
+        );
+
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_quote_items" (
+            "id" TEXT NOT NULL,
+            "quoteId" TEXT NOT NULL,
+            "sortOrder" INTEGER NOT NULL DEFAULT 0,
+            "productId" TEXT,
+            "productName" VARCHAR(200) NOT NULL,
+            "barcode" VARCHAR(50),
+            "unit" VARCHAR(10) NOT NULL DEFAULT 'UND',
+            "itemType" VARCHAR(20) NOT NULL DEFAULT 'PRODUCT',
+            "quantity" DECIMAL(12,3) NOT NULL,
+            "unitPrice" DOUBLE PRECISION NOT NULL,
+            "priceTier" VARCHAR(20) NOT NULL DEFAULT 'RETAIL',
+            "priceOverride" BOOLEAN NOT NULL DEFAULT false,
+            "discount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "subtotal" DOUBLE PRECISION NOT NULL,
+            "listPrice" DOUBLE PRECISION,
+            "listPriceDiscount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "manualDiscountShare" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "taxable" BOOLEAN NOT NULL DEFAULT false,
+            "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "taxAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "total" DOUBLE PRECISION NOT NULL DEFAULT 0,
+            "notes" VARCHAR(500),
+            CONSTRAINT "pos_quote_items_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_quote_items_quoteId_fkey" FOREIGN KEY ("quoteId") REFERENCES "pos_quotes"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "pos_quote_items_productId_fkey" FOREIGN KEY ("productId") REFERENCES "pos_products"("id") ON DELETE SET NULL ON UPDATE CASCADE
+          );
+        `);
+
+        await this.$executeRawUnsafe(
+          `CREATE INDEX IF NOT EXISTS "pos_quote_items_quoteId_sortOrder_idx" ON "pos_quote_items"("quoteId", "sortOrder");`,
+        );
+        await this.$executeRawUnsafe(
+          `CREATE INDEX IF NOT EXISTS "pos_quote_items_productId_idx" ON "pos_quote_items"("productId");`,
+        );
+
+        await this.$executeRawUnsafe(
+          `ALTER TABLE "pos_sales" ADD COLUMN IF NOT EXISTS "quoteId" TEXT;`,
+        );
+        await this.$executeRawUnsafe(
+          `CREATE UNIQUE INDEX IF NOT EXISTS "pos_sales_quoteId_key" ON "pos_sales"("quoteId");`,
+        );
+        await this.$executeRawUnsafe(`
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_sales_quoteId_fkey') THEN
+              ALTER TABLE "pos_sales"
+                ADD CONSTRAINT "pos_sales_quoteId_fkey"
+                FOREIGN KEY ("quoteId") REFERENCES "pos_quotes"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;
+        `);
+
+        this.logger.log('[PrismaService] ✓ 266a - Esquema de proformas POS sincronizado');
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(266001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[PrismaService] ⚠ 266a - Advertencia sincronizando esquema de proformas POS: ${err.message}`,
+      );
+    }
+  }
+
+  private async ensureQuoteReceiptLinksSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(266002)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_receipt_links"
+            ALTER COLUMN "saleId" DROP NOT NULL;
+        `);
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_receipt_links"
+            ADD COLUMN IF NOT EXISTS "quoteId" TEXT;
+        `);
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_receipt_links"
+            ADD COLUMN IF NOT EXISTS "documentKind" VARCHAR(10) NOT NULL DEFAULT 'SALE';
+        `);
+        await this.$executeRawUnsafe(`
+          UPDATE "pos_receipt_links"
+            SET "documentKind" = 'SALE'
+            WHERE "saleId" IS NOT NULL AND ("documentKind" IS NULL OR "documentKind" = '');
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE UNIQUE INDEX IF NOT EXISTS "pos_receipt_links_quoteId_key"
+            ON "pos_receipt_links"("quoteId");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_receipt_links_documentKind_idx"
+            ON "pos_receipt_links"("documentKind");
+        `);
+        await this.$executeRawUnsafe(`
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_receipt_links_quoteId_fkey') THEN
+              ALTER TABLE "pos_receipt_links"
+                ADD CONSTRAINT "pos_receipt_links_quoteId_fkey"
+                FOREIGN KEY ("quoteId") REFERENCES "pos_quotes"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+            END IF;
+          END $$;
+        `);
+        await this.$executeRawUnsafe(`
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_receipt_links_document_target_check') THEN
+              ALTER TABLE "pos_receipt_links"
+                ADD CONSTRAINT "pos_receipt_links_document_target_check"
+                CHECK (
+                  ("documentKind" = 'SALE' AND "saleId" IS NOT NULL AND "quoteId" IS NULL)
+                  OR
+                  ("documentKind" = 'QUOTE' AND "quoteId" IS NOT NULL AND "saleId" IS NULL)
+                );
+            END IF;
+          END $$;
+        `);
+
+        this.logger.log('[PrismaService] ✓ 266b - Esquema de enlaces públicos para proformas sincronizado');
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(266002)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[PrismaService] ⚠ 266b - Advertencia sincronizando enlaces públicos para proformas: ${err.message}`,
       );
     }
   }

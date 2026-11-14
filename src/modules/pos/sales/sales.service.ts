@@ -229,6 +229,76 @@ export class SalesService {
         soldWithoutOpenShift = !activeRegister;
       }
 
+      // 266a: Validación y bloqueo de proforma si la venta proviene de conversión
+      let lockedQuote: any = null;
+      let isQuoteExpired = false;
+      let quotedItems: Array<{ productId: string | null; unitPrice: number }> = [];
+
+      if (dto.quoteId) {
+        const quoteRows: any[] = await tx.$queryRaw`
+          SELECT * FROM "pos_quotes"
+          WHERE "id" = ${dto.quoteId} AND "businessId" = ${businessId}
+          FOR UPDATE;
+        `;
+        lockedQuote = quoteRows[0] || null;
+        if (!lockedQuote) {
+          throw new NotFoundException({
+            statusCode: 404,
+            error: 'Not Found',
+            code: 'QUOTE_NOT_FOUND',
+            message: 'Proforma no encontrada',
+          });
+        }
+        if (lockedQuote.status === 'CONVERTED') {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            code: 'QUOTE_ALREADY_CONVERTED',
+            message: 'Esta proforma ya fue convertida en una venta',
+          });
+        }
+        if (lockedQuote.status === 'CANCELLED') {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            code: 'QUOTE_CANCELLED',
+            message: 'No se puede convertir una proforma cancelada',
+          });
+        }
+        if (lockedQuote.status === 'DRAFT') {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            code: 'QUOTE_NOT_SENT',
+            message: 'La proforma debe emitirse antes de convertirse en venta',
+          });
+        }
+
+        const now = new Date();
+        isQuoteExpired =
+          lockedQuote.status === 'EXPIRED' ||
+          new Date(lockedQuote.expiresAt).getTime() < now.getTime();
+
+        if (isQuoteExpired) {
+          const isPrivileged =
+            userRole === UserRole.ENCARGADO || userRole === UserRole.SUPERADMIN;
+          if (!isPrivileged) {
+            throw new ForbiddenException({
+              statusCode: 403,
+              error: 'Forbidden',
+              code: 'QUOTE_EXPIRED',
+              message:
+                'La proforma está vencida. Solo un encargado puede convertir una proforma vencida.',
+            });
+          }
+        } else {
+          quotedItems = await tx.posQuoteItem.findMany({
+            where: { quoteId: lockedQuote.id, productId: { not: null } },
+            select: { productId: true, unitPrice: true },
+          });
+        }
+      }
+
       const business = await tx.business.findUnique({
         where: { id: businessId },
         select: {
@@ -315,9 +385,19 @@ export class SalesService {
       const saleChannel = rawChannel;
 
       // 221a: Datos de entrega para A Domicilio y datos cliente
-      let customerId: string | null = dto.customerId || null;
-      let customerName: string | null = dto.customerName || null;
-      let customerPhone: string | null = dto.customerPhone || null;
+      const hasSaleCustomerInput = Boolean(
+        dto.customerId || dto.customerName || dto.customerPhone,
+      );
+      let customerId: string | null =
+        dto.customerId || (!hasSaleCustomerInput ? lockedQuote?.customerId || null : null);
+      let customerName: string | null =
+        dto.customerName || (!hasSaleCustomerInput ? lockedQuote?.customerName || null : null);
+      let customerPhone: string | null =
+        dto.customerPhone || (!hasSaleCustomerInput ? lockedQuote?.customerPhone || null : null);
+      const effectiveCustomerRuc: string | null =
+        dto.customerRuc || (!hasSaleCustomerInput ? lockedQuote?.customerRuc || null : null);
+      const effectiveVehicleInfo: string | null =
+        dto.vehicleInfo || lockedQuote?.vehicleInfo || null;
       let deliveryAddress: string | null = null;
       let deliveryPhone: string | null = null;
       let deliveryReference: string | null = null;
@@ -327,15 +407,15 @@ export class SalesService {
 
       if (saleChannel === 'DOMICILIO') {
         let domCustomer: any = null;
-        if (dto.customerId) {
+        if (customerId) {
           domCustomer = await tx.customer.findFirst({
-            where: { id: dto.customerId, businessId },
+            where: { id: customerId, businessId },
           });
           if (!domCustomer) {
             throw new BadRequestException('Cliente no encontrado o no pertenece a este negocio');
           }
-        } else if (dto.customerPhone || dto.deliveryPhone) {
-          const cleanP = (dto.deliveryPhone || dto.customerPhone || '').trim();
+        } else if (customerPhone || dto.deliveryPhone) {
+          const cleanP = (dto.deliveryPhone || customerPhone || '').trim();
           if (cleanP) {
             domCustomer = await tx.customer.findUnique({
               where: { businessId_phone: { businessId, phone: cleanP } },
@@ -359,7 +439,12 @@ export class SalesService {
           });
         }
 
-        const resolvedAddr = (dto.deliveryAddress || domCustomer?.lastAddressText || '').trim();
+        const resolvedAddr = (
+          dto.deliveryAddress ||
+          (!hasSaleCustomerInput ? lockedQuote?.customerAddress : null) ||
+          domCustomer?.lastAddressText ||
+          ''
+        ).trim();
         if (!resolvedAddr) {
           throw new BadRequestException({
             statusCode: 400,
@@ -469,7 +554,14 @@ export class SalesService {
           if (item.unitPrice !== undefined && item.unitPrice !== null) {
             const diff = Math.abs(item.unitPrice - expectedPrice);
             const isPresaleSellerLine = Boolean(dto.presaleTicketId && (item as any).origin === 'SELLER');
-            if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale && !isPresaleSellerLine) {
+            const isQuotedPriceMatch =
+              Boolean(lockedQuote && !isQuoteExpired) &&
+              quotedItems.some(
+                (qi) =>
+                  qi.productId === item.productId &&
+                  Math.abs(Number(qi.unitPrice) - Number(item.unitPrice)) <= 0.01,
+              );
+            if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale && !isPresaleSellerLine && !isQuotedPriceMatch) {
               throw new BadRequestException({
                 statusCode: 400,
                 error: 'Bad Request',
@@ -837,9 +929,9 @@ export class SalesService {
 
         let customer: any = null;
 
-        if (dto.customerId) {
+        if (customerId) {
           customer = await tx.customer.findFirst({
-            where: { id: dto.customerId, businessId },
+            where: { id: customerId, businessId },
           });
           if (!customer) {
             throw new BadRequestException("Cliente no encontrado o no pertenece a este negocio");
@@ -860,7 +952,7 @@ export class SalesService {
                 businessId,
                 phone: cleanPhone,
                 name: (customerName || dto.customerName || 'Cliente Crédito').trim(),
-                ruc: dto.customerRuc?.trim() || null,
+                ruc: effectiveCustomerRuc?.trim() || null,
               },
             });
           } else if (customerName && customerName.trim() !== customer.name) {
@@ -1169,9 +1261,9 @@ export class SalesService {
             tx,
           );
         }
-      } else if (dto.customerId) {
+      } else if (customerId) {
         const customer = await tx.customer.findFirst({
-          where: { id: dto.customerId, businessId },
+          where: { id: customerId, businessId },
         });
         if (!customer) {
           throw new BadRequestException("Cliente no encontrado o no pertenece a este negocio");
@@ -1190,7 +1282,7 @@ export class SalesService {
               businessId,
               phone: cleanPhone,
               name: (customerName || dto.customerName)!.trim(),
-              ruc: dto.customerRuc?.trim() || null,
+              ruc: effectiveCustomerRuc?.trim() || null,
             },
           });
         }
@@ -1623,17 +1715,18 @@ export class SalesService {
           customerId,
           customerName,
           customerPhone,
-          customerRuc: dto.customerRuc || null,
+          customerRuc: effectiveCustomerRuc || null,
           tableNumber: dto.tableNumber || null,
           zoneName: dto.zoneName || null,
           waiterId: resolvedWaiterId,
           waiterName: resolvedWaiterName,
           ...(tipCreateData ? { tip: { create: tipCreateData } } : {}),
-          vehicleInfo: dto.vehicleInfo || null,
+          vehicleInfo: effectiveVehicleInfo || null,
           workshopVehicleId: dto.workshopVehicleId || null,
           sellerId,
           sellerName,
           presaleTicketId: dto.presaleTicketId || null,
+          quoteId: lockedQuote?.id || null,
           items: { create: processedItems },
           payments: { create: processedPayments },
           subtotal,
@@ -1859,6 +1952,19 @@ export class SalesService {
             }
           }
         }
+      }
+
+      if (lockedQuote) {
+        await tx.posQuote.update({
+          where: { id: lockedQuote.id },
+          data: {
+            status: 'CONVERTED',
+            convertedAt: new Date(),
+            convertedById: cashierId,
+            convertedSaleId: sale.id,
+            ...(isQuoteExpired && !lockedQuote.expiredAt ? { expiredAt: new Date() } : {}),
+          },
+        });
       }
 
       this.logger.log(`[create] Venta: ${invoiceNumber} total=${total.toFixed(2)} metodo=${mainMethod} negocio=${businessId}`);

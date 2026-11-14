@@ -14,16 +14,50 @@ import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { UploadService } from '../../upload/upload.service';
 import { generateShortCode } from '../../../common/utils/short-code.util';
+import {
+  DEFAULT_BUSINESS_TIMEZONE,
+  formatDateInTimezone,
+} from '../../../common/utils/date.util';
+import { QUOTE_ERROR_CODES, QUOTE_STATUS } from '../quotes/pos-quotes.constants';
+
+const MAX_RECEIPT_PDF_BYTES = 500 * 1024;
+const RECEIPT_LINK_VALIDITY_MS = 90 * 24 * 60 * 60 * 1000;
+
+export type ReceiptLinkDocumentKind = 'SALE' | 'QUOTE';
+export type QuotePublicDisplayStatus =
+  | 'VALID'
+  | 'EXPIRED'
+  | 'CONVERTED'
+  | 'UNAVAILABLE';
 
 export interface PublicReceiptDto {
-  status: 'ACTIVE' | 'EXPIRED' | 'REVOKED';
+  documentKind: ReceiptLinkDocumentKind;
+  status: 'ACTIVE' | 'EXPIRED' | 'REVOKED' | 'UNAVAILABLE';
+  available?: boolean;
+  code?: string;
+  message?: string;
   businessName: string;
   folio: string;
-  saleDate: Date;
-  total: number;
-  currency: string;
-  expiresAt: Date;
+  quoteNumber?: string;
+  saleDate?: Date;
+  issuedAt?: Date;
+  validUntil?: Date | null;
+  validUntilLabel?: string | null;
+  total?: number;
+  currency?: string;
+  expiresAt?: Date;
+  quoteStatus?: string;
+  displayStatus?: QuotePublicDisplayStatus;
+  displayStatusLabel?: string;
   pdfUrl?: string;
+}
+
+function formatDateDdMmYyyy(date?: Date | string | null): string | null {
+  if (!date) return null;
+  const ymd = formatDateInTimezone(date, DEFAULT_BUSINESS_TIMEZONE);
+  if (!ymd) return null;
+  const [y, m, d] = ymd.split('-');
+  return `${d}/${m}/${y}`;
 }
 
 @Injectable()
@@ -70,11 +104,103 @@ export class ReceiptLinksService {
     if (!receiptPublicUrl || !receiptPublicUrl.trim()) {
       this.logger.error(
         '[ReceiptLinksService] Variable RECEIPT_PUBLIC_URL no está configurada en el servidor. ' +
-        'No se puede generar el enlace público para comprobantes.',
+          'No se puede generar el enlace público para comprobantes.',
       );
-      throw new BadRequestException('Enlace no configurado: RECEIPT_PUBLIC_URL no está definida en el servidor');
+      throw new BadRequestException(
+        'Enlace no configurado: RECEIPT_PUBLIC_URL no está definida en el servidor',
+      );
     }
     return receiptPublicUrl.trim().replace(/\/+$/, '');
+  }
+
+  private validatePdfUpload(file?: Express.Multer.File): Express.Multer.File {
+    if (!file || !file.buffer) {
+      throw new BadRequestException('Archivo PDF no proporcionado');
+    }
+
+    if (
+      file.size > MAX_RECEIPT_PDF_BYTES ||
+      file.buffer.length > MAX_RECEIPT_PDF_BYTES
+    ) {
+      throw new BadRequestException(
+        'El archivo excede el tamaño máximo permitido de 500 KB',
+      );
+    }
+
+    const magic = file.buffer.subarray(0, 4).toString('ascii');
+    if (magic !== '%PDF') {
+      throw new BadRequestException('El archivo no es un documento PDF válido');
+    }
+
+    return file;
+  }
+
+  private deletePreviousR2ObjectQuietly(
+    previousKey: string | null | undefined,
+    newKey: string,
+    contextLabel: string,
+  ): void {
+    if (previousKey && previousKey !== newKey) {
+      this.uploadService.deleteReceiptPdf(previousKey).catch((err) => {
+        this.logger.warn(
+          `Advertencia al limpiar PDF anterior de ${contextLabel}: ${err.message}`,
+        );
+      });
+    }
+  }
+
+  private async syncAndResolveQuoteStatus(
+    quote: { id: string; status: string; expiresAt: Date },
+    now: Date,
+  ): Promise<string> {
+    if (
+      (quote.status === QUOTE_STATUS.SENT ||
+        quote.status === QUOTE_STATUS.ACCEPTED) &&
+      quote.expiresAt <= now
+    ) {
+      await this.prisma.posQuote.updateMany({
+        where: {
+          id: quote.id,
+          status: { in: [QUOTE_STATUS.SENT, QUOTE_STATUS.ACCEPTED] },
+          expiresAt: { lte: now },
+        },
+        data: {
+          status: QUOTE_STATUS.EXPIRED,
+          expiredAt: now,
+        },
+      });
+      return QUOTE_STATUS.EXPIRED;
+    }
+
+    return quote.status;
+  }
+
+  private mapQuoteDisplayStatus(quoteStatus: string): {
+    displayStatus: QuotePublicDisplayStatus;
+    displayStatusLabel: string;
+  } {
+    if (quoteStatus === QUOTE_STATUS.CONVERTED) {
+      return {
+        displayStatus: 'CONVERTED',
+        displayStatusLabel: 'Convertida en venta',
+      };
+    }
+    if (quoteStatus === QUOTE_STATUS.EXPIRED) {
+      return {
+        displayStatus: 'EXPIRED',
+        displayStatusLabel: 'Vencida',
+      };
+    }
+    if (quoteStatus === QUOTE_STATUS.CANCELLED) {
+      return {
+        displayStatus: 'UNAVAILABLE',
+        displayStatusLabel: 'No disponible',
+      };
+    }
+    return {
+      displayStatus: 'VALID',
+      displayStatusLabel: 'Vigente',
+    };
   }
 
   /**
@@ -86,26 +212,12 @@ export class ReceiptLinksService {
     userId: string,
     file?: Express.Multer.File,
   ) {
-    if (!file || !file.buffer) {
-      throw new BadRequestException('Archivo PDF no proporcionado');
-    }
+    const validFile = this.validatePdfUpload(file);
 
-    // 1. Validar tamaño (máximo 500 KB = 512,000 bytes)
-    const MAX_SIZE_BYTES = 500 * 1024;
-    if (file.size > MAX_SIZE_BYTES || file.buffer.length > MAX_SIZE_BYTES) {
-      throw new BadRequestException('El archivo excede el tamaño máximo permitido de 500 KB');
-    }
-
-    // 2. Validar bytes mágicos: debe iniciar con %PDF
-    const magic = file.buffer.subarray(0, 4).toString('ascii');
-    if (magic !== '%PDF') {
-      throw new BadRequestException('El archivo no es un documento PDF válido');
-    }
-
-    // 3. Validar configuración obligatoria de RECEIPT_PUBLIC_URL antes de cualquier operación
+    // Validar configuración obligatoria de RECEIPT_PUBLIC_URL antes de cualquier operación
     const publicWebBaseUrl = this.getReceiptPublicBaseUrl();
 
-    // 4. Buscar venta y validar pertenencia y estado
+    // Buscar venta y validar pertenencia y estado
     const sale = await this.prisma.sale.findUnique({
       where: { id: saleId },
       include: {
@@ -125,17 +237,22 @@ export class ReceiptLinksService {
     }
 
     if (sale.status === SaleStatus.CANCELLED) {
-      throw new BadRequestException('No se puede generar comprobante para una venta anulada');
+      throw new BadRequestException(
+        'No se puede generar comprobante para una venta anulada',
+      );
     }
 
     const now = new Date();
 
-    // 5. Si la venta ya tiene un enlace vigente, reutilizarlo (no subir otro a R2)
+    // Si la venta ya tiene un enlace vigente, reutilizarlo (no subir otro a R2)
     const existingLink = sale.receiptLink;
-    const isVigente = existingLink && !existingLink.revokedAt && existingLink.expiresAt > now;
+    const isVigente =
+      existingLink && !existingLink.revokedAt && existingLink.expiresAt > now;
 
     if (isVigente) {
-      this.logger.log(`[uploadReceiptPdf] Reutilizando enlace vigente para venta ${sale.id} (token=${existingLink.token})`);
+      this.logger.log(
+        `[uploadReceiptPdf] Reutilizando enlace vigente para venta ${sale.id} (token=${existingLink.token})`,
+      );
       return {
         token: existingLink.token,
         url: `${publicWebBaseUrl}/comprobante/${existingLink.token}`,
@@ -143,20 +260,18 @@ export class ReceiptLinksService {
       };
     }
 
-    // 6. Si no tiene o está vencido/revocado, generar nuevo token (16 caracteres CSPRNG) y subir a R2
+    // Generar nuevo token (16 caracteres CSPRNG) y subir a R2
     const token = generateShortCode(16);
     const objectKey = `receipts/${sale.businessId}/${sale.id}-${uuidv4()}.pdf`;
 
-    await this.uploadService.uploadReceiptPdf(objectKey, file.buffer);
+    await this.uploadService.uploadReceiptPdf(objectKey, validFile.buffer);
+    this.deletePreviousR2ObjectQuietly(
+      existingLink?.objectKey,
+      objectKey,
+      `venta ${sale.id}`,
+    );
 
-    // Si había un PDF previo en R2 para esta venta, borrarlo de forma asíncrona
-    if (existingLink && existingLink.objectKey && existingLink.objectKey !== objectKey) {
-      this.uploadService.deleteReceiptPdf(existingLink.objectKey).catch((err) => {
-        this.logger.warn(`Advertencia al limpiar PDF anterior de venta ${sale.id}: ${err.message}`);
-      });
-    }
-
-    const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000); // 90 días
+    const expiresAt = new Date(now.getTime() + RECEIPT_LINK_VALIDITY_MS);
     const businessName = sale.business?.name || 'Comercio';
     const folio = sale.invoiceNumber || sale.id.slice(0, 8);
     const saleDate = sale.invoiceDate || sale.createdAt;
@@ -167,10 +282,12 @@ export class ReceiptLinksService {
       where: { saleId: sale.id },
       create: {
         businessId: sale.businessId,
+        documentKind: 'SALE',
         saleId: sale.id,
+        quoteId: null,
         token,
         objectKey,
-        fileSize: file.size,
+        fileSize: validFile.size,
         businessName,
         folio,
         saleDate,
@@ -183,9 +300,12 @@ export class ReceiptLinksService {
         createdById: userId,
       },
       update: {
+        documentKind: 'SALE',
+        saleId: sale.id,
+        quoteId: null,
         token,
         objectKey,
-        fileSize: file.size,
+        fileSize: validFile.size,
         businessName,
         folio,
         saleDate,
@@ -196,11 +316,13 @@ export class ReceiptLinksService {
         viewCount: 0,
         lastViewedAt: null,
         createdById: userId,
-        createdAt: new Date(),
+        createdAt: now,
       },
     });
 
-    this.logger.log(`[uploadReceiptPdf] Comprobante digital creado para venta ${sale.id}: token=${saved.token}, folio=${folio}`);
+    this.logger.log(
+      `[uploadReceiptPdf] Comprobante digital creado para venta ${sale.id}: token=${saved.token}, folio=${folio}`,
+    );
 
     return {
       token: saved.token,
@@ -210,20 +332,173 @@ export class ReceiptLinksService {
   }
 
   /**
+   * 266b: Sube la proforma en PDF a R2 y genera o reutiliza un enlace público /proforma/:token (90 días).
+   * Solo se comparte una proforma emitida (SENT, ACCEPTED, EXPIRED o CONVERTED).
+   */
+  async uploadQuoteReceiptPdf(
+    quoteId: string,
+    businessId: string,
+    userId: string,
+    userRole: string,
+    file?: Express.Multer.File,
+  ) {
+    const validFile = this.validatePdfUpload(file);
+    const publicWebBaseUrl = this.getReceiptPublicBaseUrl();
+
+    const quote = await this.prisma.posQuote.findUnique({
+      where: { id: quoteId },
+      include: {
+        business: {
+          select: { id: true, name: true, currency: true },
+        },
+        receiptLink: true,
+      },
+    });
+
+    if (!quote) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        code: QUOTE_ERROR_CODES.QUOTE_NOT_FOUND,
+        message: 'Proforma no encontrada',
+      });
+    }
+
+    if (quote.businessId !== businessId) {
+      throw new ForbiddenException('No tienes permiso para acceder a esta proforma');
+    }
+
+    if (userRole === UserRole.VENDEDOR && quote.createdById !== userId) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: QUOTE_ERROR_CODES.QUOTE_FORBIDDEN,
+        message: 'Solo puedes compartir tus propias proformas',
+      });
+    }
+
+    const now = new Date();
+    const effectiveStatus = await this.syncAndResolveQuoteStatus(quote, now);
+
+    if (
+      effectiveStatus === QUOTE_STATUS.DRAFT ||
+      effectiveStatus === QUOTE_STATUS.CANCELLED
+    ) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'QUOTE_NOT_SHAREABLE',
+        message:
+          effectiveStatus === QUOTE_STATUS.CANCELLED
+            ? 'No se puede compartir una proforma cancelada'
+            : 'La proforma debe emitirse antes de compartirse',
+      });
+    }
+
+    const existingLink = quote.receiptLink;
+    const isVigente =
+      existingLink && !existingLink.revokedAt && existingLink.expiresAt > now;
+
+    if (isVigente) {
+      this.logger.log(
+        `[uploadQuoteReceiptPdf] Reutilizando enlace vigente para proforma ${quote.id} (token=${existingLink.token})`,
+      );
+      return {
+        token: existingLink.token,
+        url: `${publicWebBaseUrl}/proforma/${existingLink.token}`,
+        expiresAt: existingLink.expiresAt,
+        documentKind: 'QUOTE' as const,
+        quoteNumber: quote.quoteNumber,
+      };
+    }
+
+    const token = generateShortCode(16);
+    const objectKey = `quotes/${quote.businessId}/${quote.id}-${uuidv4()}.pdf`;
+
+    await this.uploadService.uploadReceiptPdf(objectKey, validFile.buffer);
+    this.deletePreviousR2ObjectQuietly(
+      existingLink?.objectKey,
+      objectKey,
+      `proforma ${quote.id}`,
+    );
+
+    const expiresAt = new Date(now.getTime() + RECEIPT_LINK_VALIDITY_MS);
+    const businessName = quote.business?.name || 'Comercio';
+    const folio = quote.quoteNumber;
+    const issuedAt = quote.sentAt || quote.createdAt;
+    const total = Number(quote.total);
+    const currency = quote.currency || quote.business?.currency || 'NIO';
+
+    const saved = await this.prisma.posReceiptLink.upsert({
+      where: { quoteId: quote.id },
+      create: {
+        businessId: quote.businessId,
+        documentKind: 'QUOTE',
+        saleId: null,
+        quoteId: quote.id,
+        token,
+        objectKey,
+        fileSize: validFile.size,
+        businessName,
+        folio,
+        saleDate: issuedAt,
+        total,
+        currency,
+        expiresAt,
+        revokedAt: null,
+        viewCount: 0,
+        lastViewedAt: null,
+        createdById: userId,
+      },
+      update: {
+        documentKind: 'QUOTE',
+        saleId: null,
+        quoteId: quote.id,
+        token,
+        objectKey,
+        fileSize: validFile.size,
+        businessName,
+        folio,
+        saleDate: issuedAt,
+        total,
+        currency,
+        expiresAt,
+        revokedAt: null,
+        viewCount: 0,
+        lastViewedAt: null,
+        createdById: userId,
+        createdAt: now,
+      },
+    });
+
+    this.logger.log(
+      `[uploadQuoteReceiptPdf] Enlace público creado para proforma ${quote.id}: token=${saved.token}, folio=${folio}`,
+    );
+
+    return {
+      token: saved.token,
+      url: `${publicWebBaseUrl}/proforma/${saved.token}`,
+      expiresAt: saved.expiresAt,
+      documentKind: 'QUOTE' as const,
+      quoteNumber: quote.quoteNumber,
+    };
+  }
+
+  /**
    * Obtiene la información en formato JSON para el frontend web (GET /api/v1/public/receipts/:token).
    */
   async getPublicReceiptData(token: string, req?: any): Promise<PublicReceiptDto> {
     const link = await this.prisma.posReceiptLink.findUnique({
       where: { token },
-      select: {
-        token: true,
-        businessName: true,
-        folio: true,
-        saleDate: true,
-        total: true,
-        currency: true,
-        expiresAt: true,
-        revokedAt: true,
+      include: {
+        quote: {
+          select: {
+            id: true,
+            quoteNumber: true,
+            status: true,
+            expiresAt: true,
+          },
+        },
       },
     });
 
@@ -232,6 +507,80 @@ export class ReceiptLinksService {
     }
 
     const now = new Date();
+
+    if (link.documentKind === 'QUOTE') {
+      const effectiveQuoteStatus = link.quote
+        ? await this.syncAndResolveQuoteStatus(link.quote, now)
+        : QUOTE_STATUS.CANCELLED;
+
+      if (!link.quote || effectiveQuoteStatus === QUOTE_STATUS.CANCELLED) {
+        return {
+          documentKind: 'QUOTE',
+          status: 'UNAVAILABLE',
+          available: false,
+          code: QUOTE_ERROR_CODES.QUOTE_CANCELLED,
+          message: 'Esta proforma fue cancelada y ya no está disponible.',
+          businessName: link.businessName,
+          folio: link.folio,
+          quoteNumber: link.quote?.quoteNumber || link.folio,
+          quoteStatus: QUOTE_STATUS.CANCELLED,
+          displayStatus: 'UNAVAILABLE',
+          displayStatusLabel: 'No disponible',
+        };
+      }
+
+      const displayMeta = this.mapQuoteDisplayStatus(effectiveQuoteStatus);
+      const validUntil = link.quote.expiresAt;
+      const validUntilLabel = formatDateDdMmYyyy(validUntil);
+
+      if (link.revokedAt !== null || link.expiresAt <= now) {
+        const linkStatus = link.revokedAt !== null ? 'REVOKED' : 'EXPIRED';
+        return {
+          documentKind: 'QUOTE',
+          status: linkStatus,
+          available: false,
+          code: linkStatus === 'REVOKED' ? 'LINK_REVOKED' : 'LINK_EXPIRED',
+          message:
+            'Este enlace de proforma ya no está disponible. Pídele al negocio que te lo envíe de nuevo.',
+          businessName: link.businessName,
+          folio: link.folio,
+          quoteNumber: link.quote.quoteNumber,
+          saleDate: link.saleDate,
+          issuedAt: link.saleDate,
+          validUntil,
+          validUntilLabel,
+          total: link.total,
+          currency: link.currency,
+          expiresAt: link.expiresAt,
+          quoteStatus: effectiveQuoteStatus,
+          displayStatus: displayMeta.displayStatus,
+          displayStatusLabel: displayMeta.displayStatusLabel,
+        };
+      }
+
+      const apiBase = this.getApiBaseUrl(req);
+      return {
+        documentKind: 'QUOTE',
+        status: 'ACTIVE',
+        available: true,
+        businessName: link.businessName,
+        folio: link.folio,
+        quoteNumber: link.quote.quoteNumber,
+        saleDate: link.saleDate,
+        issuedAt: link.saleDate,
+        validUntil,
+        validUntilLabel,
+        total: link.total,
+        currency: link.currency,
+        expiresAt: link.expiresAt,
+        quoteStatus: effectiveQuoteStatus,
+        displayStatus: displayMeta.displayStatus,
+        displayStatusLabel: displayMeta.displayStatusLabel,
+        pdfUrl: `${apiBase}/api/v1/public/receipts/${link.token}/pdf`,
+      };
+    }
+
+    // Regresión 100% compatible para ventas (documentKind === 'SALE')
     let status: 'ACTIVE' | 'EXPIRED' | 'REVOKED';
 
     if (link.revokedAt !== null) {
@@ -243,6 +592,7 @@ export class ReceiptLinksService {
     }
 
     const baseResponse: PublicReceiptDto = {
+      documentKind: 'SALE',
       status,
       businessName: link.businessName,
       folio: link.folio,
@@ -266,6 +616,15 @@ export class ReceiptLinksService {
   async streamReceiptPdf(token: string, res: any) {
     const link = await this.prisma.posReceiptLink.findUnique({
       where: { token },
+      include: {
+        quote: {
+          select: {
+            id: true,
+            status: true,
+            expiresAt: true,
+          },
+        },
+      },
     });
 
     if (!link) {
@@ -278,6 +637,24 @@ export class ReceiptLinksService {
         'Este comprobante ya no está disponible. Pídele al negocio que te lo envíe de nuevo.',
         HttpStatus.GONE, // 410
       );
+    }
+
+    if (link.documentKind === 'QUOTE') {
+      const effectiveQuoteStatus = link.quote
+        ? await this.syncAndResolveQuoteStatus(link.quote, now)
+        : QUOTE_STATUS.CANCELLED;
+
+      if (!link.quote || effectiveQuoteStatus === QUOTE_STATUS.CANCELLED) {
+        throw new HttpException(
+          {
+            statusCode: 410,
+            error: 'Gone',
+            code: QUOTE_ERROR_CODES.QUOTE_CANCELLED,
+            message: 'Esta proforma fue cancelada y ya no está disponible.',
+          },
+          HttpStatus.GONE,
+        );
+      }
     }
 
     if (!link.objectKey) {
@@ -294,14 +671,22 @@ export class ReceiptLinksService {
         },
       })
       .catch((err) => {
-        this.logger.warn(`Error al actualizar métricas de visualización: ${err.message}`);
+        this.logger.warn(
+          `Error al actualizar métricas de visualización: ${err.message}`,
+        );
       });
 
-    const { stream, contentLength } = await this.uploadService.getReceiptPdfStream(link.objectKey);
+    const { stream, contentLength } =
+      await this.uploadService.getReceiptPdfStream(link.objectKey);
 
-    const safeFolio = (link.folio || 'venta').replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const safeFolio = (link.folio || 'documento').replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const filePrefix =
+      link.documentKind === 'QUOTE' ? 'Proforma' : 'Comprobante';
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="Comprobante-${safeFolio}.pdf"`);
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${filePrefix}-${safeFolio}.pdf"`,
+    );
     res.setHeader('X-Robots-Tag', 'noindex');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -345,7 +730,6 @@ export class ReceiptLinksService {
       };
     }
 
-    // Eliminar archivo de R2
     if (link.objectKey) {
       try {
         await this.uploadService.deleteReceiptPdf(link.objectKey);
@@ -359,11 +743,13 @@ export class ReceiptLinksService {
       where: { id: link.id },
       data: {
         revokedAt: now,
-        objectKey: '', // Registro queda con objectKey vacío
+        objectKey: '',
       },
     });
 
-    this.logger.log(`[revokeReceiptLink] Comprobante revocado para venta ${saleId}`);
+    this.logger.log(
+      `[revokeReceiptLink] Comprobante revocado para venta ${saleId}`,
+    );
 
     return {
       success: true,
@@ -373,11 +759,13 @@ export class ReceiptLinksService {
   }
 
   /**
-   * Cron diario de limpieza que borra de R2 los comprobantes vencidos (>90 días) y vacía objectKey.
+   * Cron diario de limpieza que borra de R2 los comprobantes y proformas vencidos (>90 días) y vacía objectKey.
    */
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async cleanupExpiredReceipts(): Promise<{ cleanedCount: number }> {
-    this.logger.log('[ReceiptLinksService] Iniciando limpieza diaria de comprobantes vencidos en R2...');
+    this.logger.log(
+      '[ReceiptLinksService] Iniciando limpieza diaria de comprobantes y proformas vencidos en R2...',
+    );
     try {
       const now = new Date();
       const expiredLinks = await this.prisma.posReceiptLink.findMany({
@@ -385,7 +773,7 @@ export class ReceiptLinksService {
           expiresAt: { lte: now },
           objectKey: { not: '' },
         },
-        select: { id: true, objectKey: true },
+        select: { id: true, objectKey: true, documentKind: true },
         take: 500,
       });
 
@@ -395,7 +783,9 @@ export class ReceiptLinksService {
           try {
             await this.uploadService.deleteReceiptPdf(link.objectKey);
           } catch (e: any) {
-            this.logger.warn(`Error eliminando de R2 en limpieza: ${e.message}`);
+            this.logger.warn(
+              `Error eliminando de R2 en limpieza: ${e.message}`,
+            );
           }
         }
         await this.prisma.posReceiptLink.update({
@@ -405,10 +795,15 @@ export class ReceiptLinksService {
         cleanedCount++;
       }
 
-      this.logger.log(`[ReceiptLinksService] Limpieza completada: ${cleanedCount} objeto(s) eliminados de R2.`);
+      this.logger.log(
+        `[ReceiptLinksService] Limpieza completada: ${cleanedCount} objeto(s) eliminados de R2.`,
+      );
       return { cleanedCount };
     } catch (err: any) {
-      this.logger.error(`[ReceiptLinksService] Error en limpieza de comprobantes: ${err.message}`, err.stack);
+      this.logger.error(
+        `[ReceiptLinksService] Error en limpieza de comprobantes: ${err.message}`,
+        err.stack,
+      );
       return { cleanedCount: 0 };
     }
   }

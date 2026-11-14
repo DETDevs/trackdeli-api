@@ -326,6 +326,10 @@ export class CreateSaleDto {
   @IsString()
   presaleTicketId?: string;
 
+  @IsOptional()
+  @IsString()
+  quoteId?: string;
+
   // Canales de venta (221a)
   @IsOptional()
   @IsString()

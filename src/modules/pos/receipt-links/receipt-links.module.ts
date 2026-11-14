@@ -3,12 +3,13 @@ import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../../../prisma/prisma.module';
 import { UploadModule } from '../../upload/upload.module';
 import { PublicReceiptsController } from './public-receipts.controller';
+import { QuoteReceiptLinksController } from './quote-receipt-links.controller';
 import { ReceiptLinksController } from './receipt-links.controller';
 import { ReceiptLinksService } from './receipt-links.service';
 
 @Module({
   imports: [PrismaModule, UploadModule, ConfigModule],
-  controllers: [ReceiptLinksController, PublicReceiptsController],
+  controllers: [ReceiptLinksController, QuoteReceiptLinksController, PublicReceiptsController],
   providers: [ReceiptLinksService],
   exports: [ReceiptLinksService],
 })

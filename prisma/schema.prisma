@@ -424,6 +424,10 @@ model Business {
   // 263a - Propinas opcionales
   saleTips                     SaleTip[]
 
+  // 266a - Proformas (cotizaciones)
+  posQuoteCounters             PosQuoteCounter[]
+  posQuotes                    PosQuote[]
+
   @@map("businesses")
 }
 
@@ -552,6 +556,11 @@ model User {
 
   // 240a - Acceso a múltiples sucursales
   businessAccesses             UserBusinessAccess[]
+
+  // 266a - Proformas (cotizaciones)
+  createdQuotes                PosQuote[]          @relation("CreatedPosQuotes")
+  convertedQuotes              PosQuote[]          @relation("ConvertedPosQuotes")
+  cancelledQuotes              PosQuote[]          @relation("CancelledPosQuotes")
 
   @@map("users")
 }
@@ -862,6 +871,7 @@ model Customer {
   workshopVehicles WorkshopVehicle[]
   tableOrders      TableOrder[]
   presaleTickets   PresaleTicket[]
+  quotes           PosQuote[]
 
   @@unique([businessId, phone])
   @@index([businessId, phone])
@@ -1075,6 +1085,7 @@ model Product {
   usedInRecipes          ProductComponent[]    @relation("ComponentProductUsages")
   batches                ProductBatch[]
   presaleTicketItems     PresaleTicketItem[]
+  quoteItems             PosQuoteItem[]
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -1205,6 +1216,10 @@ model Sale {
   waiterId                     String?
   waiter                       Waiter?                 @relation(fields: [waiterId], references: [id], onDelete: SetNull)
   tip                          SaleTip?
+
+  // 266a - Proforma convertida
+  quoteId                      String?                 @unique
+  quote                        PosQuote?               @relation("QuoteConvertedSale", fields: [quoteId], references: [id], onDelete: SetNull)
 
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
@@ -2341,6 +2356,7 @@ model AppointmentHold {
 
   @@index([businessId, specialistId, startAt])
   @@index([expiresAt])
+
   @@map("appointment_holds")
 }
 
@@ -2663,8 +2679,12 @@ model PosReceiptLink {
   id           String    @id @default(uuid())
   businessId   String
   business     Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  saleId       String    @unique
-  sale         Sale      @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  documentKind String    @default("SALE") @db.VarChar(10)
+  saleId       String?   @unique
+  sale         Sale?     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  quoteId      String?   @unique
+  quote        PosQuote? @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
   token        String    @unique @db.VarChar(32)
   objectKey    String    @default("") @db.VarChar(500)
   fileSize     Int
@@ -2683,6 +2703,8 @@ model PosReceiptLink {
 
   @@index([businessId])
   @@index([expiresAt])
+
+  @@index([documentKind])
   @@map("pos_receipt_links")
 }
 
@@ -2983,3 +3005,112 @@ model CommercialEquipment {
   @@map("commercial_equipment")
 }
 
+
+// 266a - Proformas (cotizaciones) en el POS
+model PosQuoteCounter {
+  businessId String   @id
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  lastNumber Int      @default(0)
+
+  @@map("pos_quote_counters")
+}
+
+model PosQuote {
+  id                String         @id @default(uuid())
+  businessId        String
+  business          Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  number            Int
+  quoteNumber       String         @db.VarChar(20)
+  status            String         @default("DRAFT") @db.VarChar(20)
+
+  createdById       String
+  createdBy         User           @relation("CreatedPosQuotes", fields: [createdById], references: [id], onDelete: Restrict)
+  createdByName     String         @db.VarChar(100)
+
+  customerId        String?
+  customer          Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerName      String?        @db.VarChar(120)
+  customerPhone     String?        @db.VarChar(30)
+  customerRuc       String?        @db.VarChar(30)
+  customerAddress   String?        @db.VarChar(300)
+  vehicleInfo       String?        @db.VarChar(120)
+
+  validityDays      Int            @default(15)
+  expiresAt         DateTime
+  notes             String?        @db.Text
+  conditions        String?        @db.Text
+
+  subtotal          Float          @default(0)
+  discountAmount    Float          @default(0)
+  listPriceTotal    Float          @default(0)
+  listDiscountTotal Float          @default(0)
+  taxModel          String         @default("PER_LINE") @db.VarChar(20)
+  taxRate           Float          @default(0)
+  taxEnabled        Boolean        @default(false)
+  taxIncluded       Boolean        @default(false)
+  taxAmount         Float          @default(0)
+  total             Float          @default(0)
+  currency          String         @default("NIO") @db.VarChar(10)
+
+  sentAt            DateTime?
+  acceptedAt        DateTime?
+  convertedAt       DateTime?
+  convertedById     String?
+  convertedBy       User?          @relation("ConvertedPosQuotes", fields: [convertedById], references: [id], onDelete: SetNull)
+  convertedSaleId   String?        @unique
+  convertedSale     Sale?          @relation("QuoteConvertedSale")
+
+  cancelledAt       DateTime?
+  cancelledById     String?
+  cancelledBy       User?          @relation("CancelledPosQuotes", fields: [cancelledById], references: [id], onDelete: SetNull)
+  cancelReason      String?        @db.VarChar(500)
+  expiredAt         DateTime?
+
+  clientRequestId   String?        @db.VarChar(100)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  items             PosQuoteItem[]
+  receiptLink       PosReceiptLink?
+
+  @@unique([businessId, quoteNumber])
+  @@unique([businessId, clientRequestId])
+  @@index([businessId, status, expiresAt])
+  @@index([businessId, createdById])
+  @@index([businessId, customerId])
+  @@map("pos_quotes")
+}
+
+model PosQuoteItem {
+  id                  String   @id @default(uuid())
+  quoteId             String
+  quote               PosQuote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  sortOrder           Int      @default(0)
+
+  productId           String?
+  product             Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productName         String   @db.VarChar(200)
+  barcode             String?  @db.VarChar(50)
+  unit                String   @default("UND") @db.VarChar(10)
+  itemType            String   @default("PRODUCT") @db.VarChar(20)
+
+  quantity            Decimal  @db.Decimal(12, 3)
+  unitPrice           Float
+  priceTier           String   @default("RETAIL") @db.VarChar(20)
+  priceOverride       Boolean  @default(false)
+  discount            Float    @default(0)
+  subtotal            Float
+
+  listPrice           Float?
+  listPriceDiscount   Float    @default(0)
+  manualDiscountShare Float    @default(0)
+  taxable             Boolean  @default(false)
+  taxRate             Float    @default(0)
+  taxAmount           Float    @default(0)
+  total               Float    @default(0)
+  notes               String?  @db.VarChar(500)
+
+  @@index([quoteId, sortOrder])
+  @@index([productId])
+  @@map("pos_quote_items")
+}
