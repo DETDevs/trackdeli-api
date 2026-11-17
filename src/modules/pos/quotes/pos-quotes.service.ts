@@ -96,6 +96,14 @@ export class PosQuotesService {
 
   private formatQuote(quote: any, issuer?: any) {
     if (!quote) return null;
+    const resolvedCreatedByName =
+      (quote.createdBy?.name && quote.createdBy.name.trim()) ||
+      (quote.createdByName && !quote.createdByName.includes('@') ? quote.createdByName.trim() : null) ||
+      quote.createdBy?.name ||
+      quote.createdByName ||
+      quote.createdBy?.email ||
+      'Usuario';
+
     const formatted: any = {
       id: quote.id,
       businessId: quote.businessId,
@@ -103,7 +111,14 @@ export class PosQuotesService {
       quoteNumber: quote.quoteNumber,
       status: quote.status,
       createdById: quote.createdById,
-      createdByName: quote.createdByName,
+      createdByName: resolvedCreatedByName,
+      createdBy: quote.createdBy
+        ? {
+            id: quote.createdBy.id,
+            name: quote.createdBy.name,
+            email: quote.createdBy.email,
+          }
+        : undefined,
       customerId: quote.customerId || null,
       customerName: quote.customerName || null,
       customerPhone: quote.customerPhone || null,
@@ -576,6 +591,7 @@ export class PosQuotesService {
         },
         include: {
           items: { orderBy: { sortOrder: 'asc' } },
+          createdBy: { select: { id: true, name: true, email: true } },
         },
       });
       if (existing) {
@@ -587,10 +603,20 @@ export class PosQuotesService {
     const validityDays = dto.validityDays ?? DEFAULT_QUOTE_VALIDITY_DAYS;
     const expiresAt = calculateExpiresAt(validityDays, now);
     const initialStatus = dto.status === QUOTE_STATUS.SENT ? QUOTE_STATUS.SENT : QUOTE_STATUS.DRAFT;
-    const createdByName = (user.name || user.email || 'Usuario').trim().substring(0, 100);
 
     try {
       return await this.prisma.$transaction(async (tx) => {
+        const creatorUser = await tx.user.findUnique({
+          where: { id: user.sub },
+          select: { id: true, name: true, email: true },
+        });
+        const createdByName = (
+          creatorUser?.name ||
+          (user as any).name ||
+          user.email ||
+          'Usuario'
+        ).trim().substring(0, 100);
+
         const business = await this.getBusinessContext(tx, businessId);
         const policies = await this.policiesService.get(businessId, tx);
 
@@ -654,6 +680,7 @@ export class PosQuotesService {
           },
           include: {
             items: { orderBy: { sortOrder: 'asc' } },
+            createdBy: { select: { id: true, name: true, email: true } },
           },
         });
 
@@ -671,7 +698,10 @@ export class PosQuotesService {
               clientRequestId: dto.clientRequestId,
             },
           },
-          include: { items: { orderBy: { sortOrder: 'asc' } } },
+          include: {
+            items: { orderBy: { sortOrder: 'asc' } },
+            createdBy: { select: { id: true, name: true, email: true } },
+          },
         });
         if (existing) {
           return this.formatQuote(existing);
@@ -728,6 +758,7 @@ export class PosQuotesService {
         where,
         include: {
           _count: { select: { items: true } },
+          createdBy: { select: { id: true, name: true, email: true } },
         },
         orderBy: [{ createdAt: 'desc' }, { number: 'desc' }],
         take: limit,
@@ -758,6 +789,7 @@ export class PosQuotesService {
         where: { id, businessId },
         include: {
           items: { orderBy: { sortOrder: 'asc' } },
+          createdBy: { select: { id: true, name: true, email: true } },
         },
       }),
       this.prisma.business.findUnique({
@@ -969,6 +1001,7 @@ export class PosQuotesService {
         },
         include: {
           items: { orderBy: { sortOrder: 'asc' } },
+          createdBy: { select: { id: true, name: true, email: true } },
         },
       });
 
@@ -1047,7 +1080,10 @@ export class PosQuotesService {
         const updated = await tx.posQuote.update({
           where: { id },
           data: { status: QUOTE_STATUS.SENT, sentAt: now },
-          include: { items: { orderBy: { sortOrder: 'asc' } } },
+          include: {
+            items: { orderBy: { sortOrder: 'asc' } },
+            createdBy: { select: { id: true, name: true, email: true } },
+          },
         });
         return this.formatQuote(updated);
       }
@@ -1071,7 +1107,10 @@ export class PosQuotesService {
         const updated = await tx.posQuote.update({
           where: { id },
           data: { status: QUOTE_STATUS.ACCEPTED, acceptedAt: now },
-          include: { items: { orderBy: { sortOrder: 'asc' } } },
+          include: {
+            items: { orderBy: { sortOrder: 'asc' } },
+            createdBy: { select: { id: true, name: true, email: true } },
+          },
         });
         return this.formatQuote(updated);
       }
@@ -1113,7 +1152,10 @@ export class PosQuotesService {
             cancelledById: user.sub,
             cancelReason: reason.substring(0, 500),
           },
-          include: { items: { orderBy: { sortOrder: 'asc' } } },
+          include: {
+            items: { orderBy: { sortOrder: 'asc' } },
+            createdBy: { select: { id: true, name: true, email: true } },
+          },
         });
         return this.formatQuote(updated);
       }
@@ -1163,7 +1205,10 @@ export class PosQuotesService {
             clientRequestId: dto.clientRequestId,
           },
         },
-        include: { items: { orderBy: { sortOrder: 'asc' } } },
+        include: {
+          items: { orderBy: { sortOrder: 'asc' } },
+          createdBy: { select: { id: true, name: true, email: true } },
+        },
       });
       if (existingDup) {
         return this.formatQuote(existingDup);
@@ -1174,7 +1219,6 @@ export class PosQuotesService {
     const validityDays =
       dto.validityDays ?? original.validityDays ?? DEFAULT_QUOTE_VALIDITY_DAYS;
     const expiresAt = calculateExpiresAt(validityDays, now);
-    const createdByName = (user.name || user.email || 'Usuario').trim().substring(0, 100);
 
     // En catálogo omitimos unitPrice para que tome precios vigentes; líneas libres conservan precio
     const itemsForDuplicate: CreateQuoteItemDto[] = original.items.map((it) => ({
@@ -1189,6 +1233,17 @@ export class PosQuotesService {
     }));
 
     return this.prisma.$transaction(async (tx) => {
+      const creatorUser = await tx.user.findUnique({
+        where: { id: user.sub },
+        select: { id: true, name: true, email: true },
+      });
+      const createdByName = (
+        creatorUser?.name ||
+        (user as any).name ||
+        user.email ||
+        'Usuario'
+      ).trim().substring(0, 100);
+
       const business = await this.getBusinessContext(tx, businessId);
       const policies = await this.policiesService.get(businessId, tx);
 
@@ -1241,6 +1296,7 @@ export class PosQuotesService {
         },
         include: {
           items: { orderBy: { sortOrder: 'asc' } },
+          createdBy: { select: { id: true, name: true, email: true } },
         },
       });
 
@@ -1263,6 +1319,7 @@ export class PosQuotesService {
         where: { id, businessId },
         include: {
           items: { orderBy: { sortOrder: 'asc' } },
+          createdBy: { select: { id: true, name: true, email: true } },
         },
       }),
       this.prisma.business.findUnique({

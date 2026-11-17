@@ -314,6 +314,7 @@ export class AuthService {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
+      name: user.name,
       role: user.role,
       businessId: activeBusinessId || undefined,
       phone: user.phone,
@@ -440,6 +441,7 @@ export class AuthService {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
+      name: user.name,
       role: user.role,
       businessId: targetBusinessId,
       phone: user.phone,
@@ -527,6 +529,7 @@ export class AuthService {
       const payload: JwtPayload = {
         sub: user.id,
         email: user.email,
+        name: user.name,
         role: user.role,
         businessId: user.businessId,
         phone: user.phone,
@@ -637,6 +640,7 @@ export class AuthService {
       const payload: JwtPayload = {
         sub: user.id,
         email: user.email,
+        name: user.name,
         role: user.role,
         businessId: user.businessId,
         phone: user.phone,
@@ -763,6 +767,7 @@ export class AuthService {
       const payload: JwtPayload = {
         sub: user.id,
         email: user.email,
+        name: user.name,
         role: user.role,
         businessId: activeBusinessId || undefined,
         phone: user.phone,
