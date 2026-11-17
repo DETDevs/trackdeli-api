@@ -77,7 +77,11 @@ export class ReportsService {
     `;
   }
 
-  private getProfitItemsSql(businessId: string, fromDt: Date, toDt: Date) {
+  private getProfitItemsSql(businessId: string, fromDt: Date, toDt: Date, staffId?: string) {
+    const staffFilterSql = staffId
+      ? Prisma.sql`AND COALESCE(s."sellerId", s."cashierId") = ${staffId}`
+      : Prisma.empty;
+
     return Prisma.sql`
       item_sales AS (
         SELECT
@@ -120,6 +124,7 @@ export class ReportsService {
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
           AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt}
+          ${staffFilterSql}
           AND NOT (i."productId" IS NULL AND (LOWER(i."productName") LIKE '%envío%' OR LOWER(i."productName") LIKE '%envio%' OR LOWER(i."productName") LIKE '%domicilio%'))
 
         UNION ALL
@@ -154,6 +159,7 @@ export class ReportsService {
         WHERE s."businessId" = ${businessId}
           AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
           AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt}
+          ${staffFilterSql}
           AND NOT EXISTS (SELECT 1 FROM pos_sale_items i WHERE i."saleId" = s.id)
       )
     `;
@@ -198,13 +204,21 @@ export class ReportsService {
     };
   }
 
-  private async aggregatePedidosYaFees(businessId: string, fromDt: Date, toDt: Date) {
+  private async aggregatePedidosYaFees(
+    businessId: string,
+    fromDt: Date,
+    toDt: Date,
+    staffId?: string,
+  ) {
     const sales = await this.prisma.sale.findMany({
       where: {
         businessId,
         channel: 'PEDIDOSYA',
         status: { in: ['COMPLETED', 'PARTIALLY_RETURNED'] },
         createdAt: { gte: fromDt, lte: toDt },
+        ...(staffId
+          ? { AND: [{ OR: [{ sellerId: staffId }, { sellerId: null, cashierId: staffId }] }] }
+          : {}),
       },
       select: {
         createdAt: true,
@@ -250,6 +264,7 @@ export class ReportsService {
     fromDt: Date,
     toDt: Date,
     isDeliveryTaxable: boolean,
+    staffId?: string,
   ) {
     const sales = await this.prisma.sale.findMany({
       where: {
@@ -258,6 +273,9 @@ export class ReportsService {
         status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
         createdAt: { gte: fromDt, lte: toDt },
         deliveryFee: { gt: 0 },
+        ...(staffId
+          ? { AND: [{ OR: [{ sellerId: staffId }, { sellerId: null, cashierId: staffId }] }] }
+          : {}),
       },
       select: {
         id: true,
@@ -1134,10 +1152,13 @@ export class ReportsService {
     };
   }
 
-  async getProfit(businessId: string, period?: string, from?: string, to?: string) {
+  async getProfit(businessId: string, period?: string, from?: string, to?: string, staffId?: string) {
     const range = this.resolveDateRange(period, from, to);
     const startDate = range.current.from;
     const endDate = range.current.to;
+    const staffFilterSql = staffId
+      ? Prisma.sql`AND COALESCE(s."sellerId", s."cashierId") = ${staffId}`
+      : Prisma.empty;
 
     const SOURCES = ['PRODUCT', 'PRODUCT_COST', 'RECIPE', 'PURCHASE', 'LABOR', 'BATCH', 'UNKNOWN'] as const;
     const r2 = (n: any) => Math.round((Number(n) || 0) * 100) / 100;
@@ -1146,7 +1167,7 @@ export class ReportsService {
       const [rows, deliveryRow, pedidosYaSales] = await Promise.all([
         this.prisma.$queryRaw<any[]>`
           WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-          ${this.getProfitItemsSql(businessId, fromDt, toDt)}
+          ${this.getProfitItemsSql(businessId, fromDt, toDt, staffId)}
           SELECT
             cost_source AS source,
             COALESCE(SUM(line_revenue), 0)::float AS revenue,
@@ -1168,6 +1189,7 @@ export class ReportsService {
           WHERE s."businessId" = ${businessId}
             AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
             AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt}
+            ${staffFilterSql}
             AND i."productId" IS NULL
             AND (LOWER(i."productName") LIKE '%envío%' OR LOWER(i."productName") LIKE '%envio%' OR LOWER(i."productName") LIKE '%domicilio%');
         `,
@@ -1177,6 +1199,9 @@ export class ReportsService {
             channel: 'PEDIDOSYA',
             status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
             createdAt: { gte: fromDt, lte: toDt },
+            ...(staffId
+              ? { AND: [{ OR: [{ sellerId: staffId }, { sellerId: null, cashierId: staffId }] }] }
+              : {}),
           },
           select: {
             id: true,
@@ -1258,7 +1283,7 @@ export class ReportsService {
 
     const missing: any[] = await this.prisma.$queryRaw`
       WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-      ${this.getProfitItemsSql(businessId, startDate, endDate)}
+      ${this.getProfitItemsSql(businessId, startDate, endDate, staffId)}
       SELECT
         product_id AS id,
         product_name AS name,
@@ -1380,7 +1405,13 @@ export class ReportsService {
     };
   }
 
-  async getProfitSummary(businessId: string, period?: string, from?: string, to?: string) {
+  async getProfitSummary(
+    businessId: string,
+    period?: string,
+    from?: string,
+    to?: string,
+    staffId?: string,
+  ) {
     const range = this.resolveDateRange(period, from, to);
     const startDate = range.current.from;
     const endDate = range.current.to;
@@ -1400,7 +1431,7 @@ export class ReportsService {
       const [channelRows, pyFees, deliv] = await Promise.all([
         this.prisma.$queryRaw<any[]>`
           WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-          ${this.getProfitItemsSql(businessId, fromDt, toDt)}
+          ${this.getProfitItemsSql(businessId, fromDt, toDt, staffId)}
           SELECT
             (channel = 'PEDIDOSYA') AS is_pedidosya,
             COUNT(DISTINCT sale_id)::int AS receipts,
@@ -1416,8 +1447,8 @@ export class ReportsService {
           WHERE net_qty > 0
           GROUP BY (channel = 'PEDIDOSYA');
         `,
-        this.aggregatePedidosYaFees(businessId, fromDt, toDt),
-        this.computeDeliveryRevenueDetails(businessId, fromDt, toDt, isDeliveryTaxable),
+        this.aggregatePedidosYaFees(businessId, fromDt, toDt, staffId),
+        this.computeDeliveryRevenueDetails(businessId, fromDt, toDt, isDeliveryTaxable, staffId),
       ]);
 
       const ownRaw = channelRows.find((row) => !row.is_pedidosya);
@@ -1624,7 +1655,7 @@ export class ReportsService {
       // byDay (split OWN vs PEDIDOSYA)
       this.prisma.$queryRaw<any[]>`
         WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-        ${this.getProfitItemsSql(businessId, startDate, endDate)}
+        ${this.getProfitItemsSql(businessId, startDate, endDate, staffId)}
         SELECT
           sale_date_local::text AS date,
           (channel = 'PEDIDOSYA') AS is_pedidosya,
@@ -1639,7 +1670,7 @@ export class ReportsService {
       // byHour (split OWN vs PEDIDOSYA)
       this.prisma.$queryRaw<any[]>`
         WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-        ${this.getProfitItemsSql(businessId, startDate, endDate)}
+        ${this.getProfitItemsSql(businessId, startDate, endDate, staffId)}
         SELECT
           sale_hour_local AS hour,
           (channel = 'PEDIDOSYA') AS is_pedidosya,
@@ -1654,7 +1685,7 @@ export class ReportsService {
       // byCategory
       this.prisma.$queryRaw<any[]>`
         WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-        ${this.getProfitItemsSql(businessId, startDate, endDate)}
+        ${this.getProfitItemsSql(businessId, startDate, endDate, staffId)}
         SELECT
           category_id AS "categoryId",
           COALESCE(category_name, 'Sin categoría') AS name,
@@ -1670,7 +1701,7 @@ export class ReportsService {
       // byCustomer
       this.prisma.$queryRaw<any[]>`
         WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-        ${this.getProfitItemsSql(businessId, startDate, endDate)}
+        ${this.getProfitItemsSql(businessId, startDate, endDate, staffId)}
         SELECT
           customer_id AS "customerId",
           customer_name AS name,
@@ -1684,7 +1715,7 @@ export class ReportsService {
       // products for alerts
       this.prisma.$queryRaw<any[]>`
         WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-        ${this.getProfitItemsSql(businessId, startDate, endDate)}
+        ${this.getProfitItemsSql(businessId, startDate, endDate, staffId)}
         SELECT
           product_id AS "productId",
           (ARRAY_AGG(product_name ORDER BY sale_created_at DESC))[1] AS name,
@@ -1709,13 +1740,15 @@ export class ReportsService {
 
     let expenses: any = null;
     let netProfit: number | null = null;
-    if (hasCartera) {
+    if (hasCartera && !staffId) {
       const expData = await this.computeExpensesAgg(businessId, startDate, endDate);
       expenses = expData;
       netProfit =
         currentTotals.totalProfit !== null
           ? r2(currentTotals.totalProfit - expData.total)
           : null;
+    } else if (staffId) {
+      netProfit = currentTotals.totalProfit;
     }
 
     const netProfitNote =
@@ -1942,6 +1975,7 @@ export class ReportsService {
     return {
       period: { from: range.current.fromIso, to: range.current.toIso },
       previousPeriod: { from: range.previous.fromIso, to: range.previous.toIso },
+      staffId: staffId || null,
       totals: currentTotals,
       channelSummary: currentPeriod.channelSummary,
       previous,
@@ -1967,6 +2001,7 @@ export class ReportsService {
       period?: string;
       from?: string;
       to?: string;
+      staffId?: string;
       page?: number;
       pageSize?: number;
       sort?: string;
@@ -1983,7 +2018,7 @@ export class ReportsService {
 
     const rawProducts: any[] = await this.prisma.$queryRaw`
       WITH RECURSIVE ${this.getCostResolutionSql(businessId)},
-      ${this.getProfitItemsSql(businessId, startDate, endDate)}
+      ${this.getProfitItemsSql(businessId, startDate, endDate, dto.staffId)}
       SELECT
         product_id AS "productId",
         (ARRAY_AGG(product_name ORDER BY sale_created_at DESC))[1] AS name,
@@ -3132,7 +3167,7 @@ export class ReportsService {
           }
         }
 
-        // Devoluciones descontadas
+        // Devoluciones descontadas (incluye devoluciones posteriores asociadas a las ventas del período)
         const saleIds = sales.map((s) => s.id);
         let returnsAmount = 0;
         if (saleIds.length > 0) {
@@ -3140,7 +3175,6 @@ export class ReportsService {
             where: {
               businessId,
               saleId: { in: saleIds },
-              createdAt: { gte: fromDate, lte: toDate },
             },
             select: { refundAmount: true },
           });

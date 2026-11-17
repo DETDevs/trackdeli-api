@@ -5,6 +5,7 @@ import { JwtPayload } from '../../../common/types/jwt-payload.interface';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { RolesGuard } from '../../../common/guards/roles.guard';
+import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 import { resolveBusinessId } from '../pos.utils';
 import { SetUserPinDto } from './dto/set-user-pin.dto';
 
@@ -13,6 +14,14 @@ import { SetUserPinDto } from './dto/set-user-pin.dto';
 @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
 export class PosUsersController {
   constructor(private readonly posUsersService: PosUsersService) {}
+
+  @Get('staff-options')
+  @SkipMembershipCheck()
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN, UserRole.VENDEDOR)
+  async getStaffOptions(@CurrentUser() user: JwtPayload, @Query('businessId') qBid?: string) {
+    const businessId = resolveBusinessId(user, qBid);
+    return this.posUsersService.findStaffOptions(businessId);
+  }
 
   @Get()
   async getBusinessUsers(@CurrentUser() user: JwtPayload, @Query('businessId') qBid?: string) {

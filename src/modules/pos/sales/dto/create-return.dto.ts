@@ -40,4 +40,8 @@ export class CreateReturnDto {
   @IsOptional()
   @IsString()
   approvalToken?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  affectCashRegister?: boolean;
 }

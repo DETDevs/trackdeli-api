@@ -530,6 +530,22 @@ export class BackofficeService {
       where.cashierId = query.cashierId;
     }
 
+    if (query.sellerId) {
+      where.sellerId = query.sellerId;
+    }
+
+    if (query.staffId) {
+      const existingAnd = Array.isArray(where.AND)
+        ? where.AND
+        : where.AND
+          ? [where.AND]
+          : [];
+      where.AND = [
+        ...existingAnd,
+        { OR: [{ sellerId: query.staffId }, { sellerId: null, cashierId: query.staffId }] },
+      ];
+    }
+
     if (query.branchId) {
       where.OR = [
         { posTerminalId: query.branchId },
@@ -556,6 +572,7 @@ export class BackofficeService {
         orderBy: { createdAt: 'desc' },
         include: {
           cashier: { select: { id: true, name: true } },
+          seller: { select: { id: true, name: true } },
           customer: { select: { id: true, name: true, phone: true, ruc: true } },
           returns: { select: { refundAmount: true } },
           _count: { select: { items: true } },
@@ -582,11 +599,15 @@ export class BackofficeService {
         discountAmount: this.round2(sale.discountAmount),
         taxAmount: this.round2(sale.taxAmount),
         total: this.round2(sale.total),
+        refundTotal: this.round2(refundTotal),
         netTotal: this.round2(netTotal),
         amountPaid: this.round2(sale.amountPaid),
         change: Number(new Prisma.Decimal(sale.change.toString()).toDecimalPlaces(2)),
         itemsCount: sale._count.items,
         cashier: sale.cashier ? { id: sale.cashier.id, name: sale.cashier.name } : null,
+        sellerId: sale.sellerId || null,
+        sellerName: sale.sellerName || sale.seller?.name || null,
+        seller: sale.seller || (sale.sellerName ? { id: sale.sellerId, name: sale.sellerName } : null),
         customer: {
           id: sale.customerId,
           name: sale.customerName || sale.customer?.name || null,
@@ -622,6 +643,7 @@ export class BackofficeService {
       where: { id: saleId, businessId },
       include: {
         cashier: { select: { id: true, name: true, email: true } },
+        seller: { select: { id: true, name: true } },
         customer: { select: { id: true, name: true, phone: true, ruc: true, email: true } },
         cashRegister: { select: { id: true, openedAt: true, closedAt: true, status: true } },
         items: {
@@ -685,6 +707,9 @@ export class BackofficeService {
       change: Number(new Prisma.Decimal(sale.change.toString()).toDecimalPlaces(2)),
       notes: sale.notes || null,
       cashier: sale.cashier ? { id: sale.cashier.id, name: sale.cashier.name, email: sale.cashier.email } : null,
+      sellerId: sale.sellerId || null,
+      sellerName: sale.sellerName || sale.seller?.name || null,
+      seller: sale.seller || (sale.sellerName ? { id: sale.sellerId, name: sale.sellerName } : null),
       cashRegister: sale.cashRegister,
       customer: {
         id: sale.customerId,

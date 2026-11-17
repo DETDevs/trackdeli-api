@@ -155,8 +155,15 @@ export class ReportsController {
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("businessId") qBid?: string,
+    @Query("staffId") staffId?: string,
   ) {
-    return this.service.getProfitSummary(resolveBusinessId(user, qBid), period, from, to);
+    return this.service.getProfitSummary(
+      resolveBusinessId(user, qBid),
+      period,
+      from,
+      to,
+      staffId?.trim() || undefined,
+    );
   }
 
   @Get("profit/products")
@@ -166,6 +173,7 @@ export class ReportsController {
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("businessId") qBid?: string,
+    @Query("staffId") staffId?: string,
     @Query("page") page?: number,
     @Query("pageSize") pageSize?: number,
     @Query("sort") sort?: string,
@@ -178,6 +186,7 @@ export class ReportsController {
       period,
       from,
       to,
+      staffId: staffId?.trim() || undefined,
       page: page ? Number(page) : 1,
       pageSize: pageSize ? Number(pageSize) : 50,
       sort,
@@ -195,8 +204,15 @@ export class ReportsController {
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("businessId") qBid?: string,
+    @Query("staffId") staffId?: string,
   ) {
-    return this.service.getProfit(resolveBusinessId(user, qBid), period, from, to);
+    return this.service.getProfit(
+      resolveBusinessId(user, qBid),
+      period,
+      from,
+      to,
+      staffId?.trim() || undefined,
+    );
   }
 
   @UseGuards(CarteraCobroGuard)

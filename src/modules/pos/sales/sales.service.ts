@@ -37,10 +37,28 @@ export class SalesService {
 
   private formatSale(sale: any, userRole?: string) {
     if (!sale) return null;
+    const totalNum =
+      sale.total != null
+        ? Number(new Prisma.Decimal(sale.total.toString()).toDecimalPlaces(2))
+        : 0;
+    const formattedReturns = (sale.returns || []).map((r: any) => ({
+      ...r,
+      refundAmount: r.refundAmount != null ? Number(new Prisma.Decimal(r.refundAmount.toString()).toDecimalPlaces(2)) : 0,
+      taxRefunded: r.taxRefunded != null ? Number(new Prisma.Decimal(r.taxRefunded.toString()).toDecimalPlaces(2)) : 0,
+    }));
+    const refundTotal = Number(
+      formattedReturns.reduce((acc: number, r: any) => acc + Number(r.refundAmount || 0), 0).toFixed(2),
+    );
+    const netTotal = Math.max(0, Number((totalNum - refundTotal).toFixed(2)));
     return {
       ...sale,
+      sellerId: sale.sellerId || null,
+      sellerName: sale.sellerName || sale.seller?.name || null,
+      cashierName: sale.cashier?.name || null,
+      refundTotal,
+      netTotal,
       subtotal: sale.subtotal != null ? Number(new Prisma.Decimal(sale.subtotal.toString()).toDecimalPlaces(2)) : 0,
-      total: sale.total != null ? Number(new Prisma.Decimal(sale.total.toString()).toDecimalPlaces(2)) : 0,
+      total: totalNum,
       discountAmount: sale.discountAmount != null ? Number(new Prisma.Decimal(sale.discountAmount.toString()).toDecimalPlaces(2)) : 0,
       taxAmount: sale.taxAmount != null ? Number(new Prisma.Decimal(sale.taxAmount.toString()).toDecimalPlaces(2)) : 0,
       amountPaid: sale.amountPaid != null ? Number(new Prisma.Decimal(sale.amountPaid.toString()).toDecimalPlaces(2)) : 0,
@@ -89,11 +107,7 @@ export class SalesService {
         }
         return itemCopy;
       }),
-      returns: (sale.returns || []).map((r: any) => ({
-        ...r,
-        refundAmount: r.refundAmount != null ? Number(new Prisma.Decimal(r.refundAmount.toString()).toDecimalPlaces(2)) : 0,
-        taxRefunded: r.taxRefunded != null ? Number(new Prisma.Decimal(r.taxRefunded.toString()).toDecimalPlaces(2)) : 0,
-      })),
+      returns: formattedReturns,
       payments: (sale.payments || []).map((p: any) => ({
         ...p,
         bankId: p.bankId || null,
@@ -1547,7 +1561,14 @@ export class SalesService {
           where: {
             id: dto.sellerId,
             businessId,
-            role: UserRole.VENDEDOR,
+            role: {
+              in: [
+                UserRole.VENDEDOR,
+                UserRole.CAJERO,
+                UserRole.ENCARGADO,
+                UserRole.SUPERADMIN,
+              ],
+            },
             isActive: true,
           },
           select: { id: true, name: true },
@@ -1555,13 +1576,13 @@ export class SalesService {
         if (!sellerUser) {
           throw new BadRequestException({
             statusCode: 400,
-            message: 'El vendedor seleccionado no existe, no está activo o no tiene rol VENDEDOR en este negocio',
+            message: 'El vendedor o colaborador seleccionado no existe o no está activo en este negocio',
           });
         }
         sellerId = sellerUser.id;
         sellerName = sellerUser.name;
-      } else if (dto.sellerName) {
-        sellerName = dto.sellerName;
+      } else if (dto.sellerName?.trim()) {
+        sellerName = dto.sellerName.trim();
       }
 
       // 221a: Cálculos financieros de PedidosYa
@@ -1748,7 +1769,7 @@ export class SalesService {
           status: "COMPLETED",
           occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
         },
-        include: { items: true, payments: true, tip: true, cashier: { select: { name: true } }, customer: true },
+        include: { items: true, payments: true, tip: true, cashier: { select: { name: true } }, seller: { select: { id: true, name: true } }, customer: true },
       });
 
       if (hasNegativeStock) {
@@ -1997,6 +2018,7 @@ export class SalesService {
       bankId?: string;
       channel?: string;
       sellerId?: string;
+      staffId?: string;
       page?: number;
       limit?: number;
       pedidosYaPaymentMode?: string;
@@ -2019,6 +2041,12 @@ export class SalesService {
     }
     if (filters?.channel) where.channel = filters.channel.toUpperCase();
     if (filters?.sellerId) where.sellerId = filters.sellerId;
+    if (filters?.staffId) {
+      where.AND = [
+        ...(where.AND || []),
+        { OR: [{ sellerId: filters.staffId }, { sellerId: null, cashierId: filters.staffId }] },
+      ];
+    }
     if (filters?.pedidosYaPaymentMode) where.pedidosYaPaymentMode = filters.pedidosYaPaymentMode.toUpperCase();
     if (filters?.pedidosYaSettlementStatus) where.pedidosYaSettlementStatus = filters.pedidosYaSettlementStatus.toUpperCase();
     if (filters?.from || filters?.to) {
@@ -2088,6 +2116,7 @@ export class SalesService {
           },
         },
         cashier: { select: { id: true, name: true } },
+        seller: { select: { id: true, name: true, email: true } },
         cashRegister: { select: { id: true, openedAt: true } },
         payments: true,
         tip: true,
@@ -2912,8 +2941,13 @@ export class SalesService {
       let openShiftId: string | null = null;
       let returnCashMovement: any = null;
       let excessCashMovement: any = null;
+      const shouldAffectCashRegister = dto.affectCashRegister !== false;
 
-      if (refundMethod === PosPaymentMethod.EFECTIVO && totalReturnRefundDec.greaterThan(0)) {
+      if (
+        refundMethod === PosPaymentMethod.EFECTIVO &&
+        totalReturnRefundDec.greaterThan(0) &&
+        shouldAffectCashRegister
+      ) {
         const openShift = await this.findOpenShiftForRefund(tx, businessId, userId, approvedById, deviceId);
         if (!openShift) {
           if (requireOpenShift) {
@@ -3237,6 +3271,7 @@ export class SalesService {
             returnNumber,
             refundAmount: Number(totalReturnRefundDec),
             refundMethod,
+            affectCashRegister: shouldAffectCashRegister,
           },
           approvedById: approvedById || undefined,
         },

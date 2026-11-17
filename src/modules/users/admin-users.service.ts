@@ -49,13 +49,6 @@ export class AdminUsersService {
         if (!currentUser.businessId) {
           throw new ForbiddenException('El usuario encargado no tiene un negocio asignado');
         }
-        const business = await this.prisma.business.findUnique({
-          where: { id: currentUser.businessId },
-          select: { twoStepSaleEnabled: true },
-        });
-        if (!business?.twoStepSaleEnabled) {
-          throw new BadRequestException('El modo Venta en dos pasos no está habilitado para este negocio. No se pueden crear usuarios con rol VENDEDOR.');
-        }
         targetBusinessId = currentUser.businessId;
         targetRole = UserRole.VENDEDOR;
       } else if (dto.role === UserRole.CAJERO) {

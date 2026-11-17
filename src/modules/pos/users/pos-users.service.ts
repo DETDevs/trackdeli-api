@@ -189,15 +189,11 @@ export class PosUsersService {
     if (dto.role === UserRole.WAITER) {
       throw new UnprocessableEntityException('Los meseros se gestionan en su propia sección (pos_waiters). No se permite crear rol WAITER aquí.');
     }
-    if (dto.role === UserRole.VENDEDOR) {
-      const business = await this.prisma.business.findUnique({
-        where: { id: businessId },
-        select: { twoStepSaleEnabled: true },
-      });
-      if (!business?.twoStepSaleEnabled) {
-        throw new BadRequestException('El modo Venta en dos pasos no está habilitado para este negocio. No se pueden crear usuarios con rol VENDEDOR.');
-      }
-    } else if (dto.role !== UserRole.CAJERO && dto.role !== UserRole.REPARTIDOR) {
+    if (
+      dto.role !== UserRole.CAJERO &&
+      dto.role !== UserRole.VENDEDOR &&
+      dto.role !== UserRole.REPARTIDOR
+    ) {
       throw new UnprocessableEntityException('Rol inválido. Solo puede crear CAJERO, VENDEDOR o REPARTIDOR.');
     }
     
@@ -346,5 +342,32 @@ export class PosUsersService {
 
     this.logger.log(`[resetPassword] updaterId=${updaterId} reinició la contraseña de userId=${id}`);
     return { tempPassword };
+  }
+
+  /**
+   * Lista liviana del personal activo (vendedores, cajeros, encargados) disponible
+   * para atribuir ventas, rutas y filtrar historial/reportes en el POS.
+   */
+  async findStaffOptions(businessId: string) {
+    return this.prisma.user.findMany({
+      where: {
+        businessId,
+        isActive: true,
+        role: {
+          in: [
+            UserRole.VENDEDOR,
+            UserRole.CAJERO,
+            UserRole.ENCARGADO,
+            UserRole.SUPERADMIN,
+          ],
+        },
+      },
+      select: {
+        id: true,
+        name: true,
+        role: true,
+      },
+      orderBy: { name: 'asc' },
+    });
   }
 }
