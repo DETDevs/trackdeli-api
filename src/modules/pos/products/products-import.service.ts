@@ -36,7 +36,10 @@ export interface ImportResult {
   totalRows: number;
 }
 
+const TYPE_OPTIONS = ['PRODUCTO', 'SERVICIO'];
+
 const CORE_TARGETS: ImportTarget[] = [
+  { id: 'type', label: 'Tipo (PRODUCTO/SERVICIO)', kind: 'core', dataType: 'SELECT', options: TYPE_OPTIONS, required: false },
   { id: 'sku', label: 'SKU', kind: 'core', dataType: 'TEXT', required: false },
   { id: 'barcode', label: 'Código de Barras', kind: 'core', dataType: 'TEXT', required: false },
   { id: 'name', label: 'Nombre del Producto', kind: 'core', dataType: 'TEXT', required: true },
@@ -56,8 +59,50 @@ const CORE_TARGETS: ImportTarget[] = [
   { id: 'supplierId', label: 'Proveedor', kind: 'core', dataType: 'TEXT', required: false },
   { id: 'wholesalePrice', label: 'Precio por Mayor', kind: 'core', dataType: 'NUMBER', required: false },
   { id: 'wholesaleMinQty', label: 'Cantidad Mínima por Mayor', kind: 'core', dataType: 'NUMBER', required: false },
+  { id: 'sendToKitchen', label: 'Enviar a Cocina (SI/NO)', kind: 'core', dataType: 'BOOLEAN', required: false },
   { id: 'isActive', label: 'Activo', kind: 'core', dataType: 'BOOLEAN', required: false },
 ];
+
+/** Configuración del negocio que decide qué columnas ve (igual que el formulario de producto). */
+export interface TargetVisibilityConfig {
+  isPharmacy: boolean;
+  isRestaurant: boolean;
+  useListPrice: boolean;
+  wholesaleEnabled: boolean;
+}
+
+/**
+ * Filtra las columnas base según el negocio, replicando las reglas del formulario
+ * "Nuevo producto" (pos-desktop ProductModal.tsx):
+ * - Descripción e Impuesto Incluido no se editan por producto en el formulario → fuera.
+ * - Precio Etiqueta solo si el negocio usa precio etiqueta o es farmacia.
+ * - Unidad de Medida y Stock Máximo se ocultan en farmacia.
+ * - Precio/Cantidad por Mayor solo si la venta por mayor está habilitada.
+ * - Enviar a Cocina solo en restaurante.
+ */
+export function filterCoreTargets(cfg: TargetVisibilityConfig): ImportTarget[] {
+  return CORE_TARGETS.filter((t) => {
+    switch (t.id) {
+      case 'description':
+      case 'taxIncluded':
+        return false;
+      case 'listPrice':
+        return cfg.useListPrice || cfg.isPharmacy;
+      case 'unit':
+      case 'maxStock':
+        return !cfg.isPharmacy;
+      case 'wholesalePrice':
+      case 'wholesaleMinQty':
+        return cfg.wholesaleEnabled;
+      case 'sendToKitchen':
+        return cfg.isRestaurant;
+      default:
+        return true;
+    }
+  });
+}
+
+const PHARMACY_FIELD_KEYS = ['laboratorio', 'principio_activo', 'presentacion'];
 
 @Injectable()
 export class ProductsImportService {
@@ -67,7 +112,7 @@ export class ProductsImportService {
     private readonly prisma: PrismaService,
     private readonly productsService: ProductsService,
     private readonly batchesService: BatchesService,
-  ) {}
+  ) { }
 
   private normalizeStr(str: any): string {
     if (!str) return '';
@@ -79,11 +124,11 @@ export class ProductsImportService {
     if (!val) return NaN;
     let str = String(val).toUpperCase();
     str = str.replace(/C\$/g, '').replace(/\$/g, '').replace(/NIO/g, '').replace(/USD/g, '').trim();
-    
+
     // Contar comas y puntos
     const commas = (str.match(/,/g) || []).length;
     const periods = (str.match(/\./g) || []).length;
-    
+
     if (commas > 0 && periods === 0) {
       str = str.replace(/,/g, '.');
     } else if (commas > 0 && periods > 0) {
@@ -106,11 +151,11 @@ export class ProductsImportService {
     if (a === b) return true;
     if (a == null && b == null) return true; // loose equality checks null == undefined
     if (a == null || b == null) return false;
-    
+
     // Normalize dates to YYYY-MM-DD
     if (typeof a === 'string' && /^\d{4}-\d{2}-\d{2}/.test(a)) a = a.substring(0, 10);
     if (typeof b === 'string' && /^\d{4}-\d{2}-\d{2}/.test(b)) b = b.substring(0, 10);
-    
+
     // Normalize number vs string
     if (typeof a === 'number' && typeof b === 'string') return a === Number(b);
     if (typeof b === 'number' && typeof a === 'string') return b === Number(a);
@@ -127,7 +172,12 @@ export class ProductsImportService {
     return a === b;
   }
 
-  async getTargets(businessId: string): Promise<ImportTarget[]> {
+  /**
+   * Columnas del negocio. Por defecto devuelve solo las que el formulario de producto
+   * muestra para ese negocio (plantilla, exportación y mapeo). Con `includeHidden`
+   * devuelve todas las base, para que la importación siga aceptando archivos viejos.
+   */
+  async getTargets(businessId: string, opts?: { includeHidden?: boolean }): Promise<ImportTarget[]> {
     const [fields, business] = await Promise.all([
       this.prisma.productFieldDefinition.findMany({
         where: { businessId, isActive: true },
@@ -135,37 +185,58 @@ export class ProductsImportService {
       }),
       this.prisma.business.findUnique({
         where: { id: businessId },
-        select: { tracksBatches: true },
+        select: {
+          tracksBatches: true,
+          posVertical: true,
+          useListPrice: true,
+          wholesaleEnabled: true,
+          industry: { select: { code: true } },
+        },
       }),
     ]);
-    
-    const dynamicTargets: ImportTarget[] = fields.map((f) => ({
-      id: f.key,
-      label: f.label,
-      kind: 'dynamic',
-      dataType: f.dataType,
-      required: f.required,
-      options: f.options as string[],
-    }));
+
+    const dynamicTargets: ImportTarget[] = fields
+      .filter((f) => !f.key?.endsWith('_id'))
+      .map((f) => ({
+        id: f.key,
+        label: f.label,
+        kind: 'dynamic',
+        dataType: f.dataType,
+        required: f.required,
+        options: f.options as string[],
+      }));
 
     const batchTargets: ImportTarget[] = business?.tracksBatches
       ? [
-          { id: 'lotNumber', label: 'Lote', kind: 'core', dataType: 'TEXT', required: false },
-          { id: 'expiryDate', label: 'Fecha de Vencimiento', kind: 'core', dataType: 'DATE', required: false },
-        ]
+        { id: 'lotNumber', label: 'Lote', kind: 'core', dataType: 'TEXT', required: false },
+        { id: 'expiryDate', label: 'Fecha de Vencimiento', kind: 'core', dataType: 'DATE', required: false },
+      ]
       : [];
 
-    return [...CORE_TARGETS, ...batchTargets, ...dynamicTargets];
+    const isPharmacy =
+      (business as any)?.industry?.code?.toLowerCase() === 'farmacia' ||
+      fields.some((f) => PHARMACY_FIELD_KEYS.includes((f.key || '').toLowerCase()));
+
+    const coreTargets = opts?.includeHidden
+      ? CORE_TARGETS
+      : filterCoreTargets({
+        isPharmacy,
+        isRestaurant: (business as any)?.posVertical === 'RESTAURANTE',
+        useListPrice: Boolean((business as any)?.useListPrice),
+        wholesaleEnabled: Boolean((business as any)?.wholesaleEnabled),
+      });
+
+    return [...coreTargets, ...batchTargets, ...dynamicTargets];
   }
 
   async analyzeFile(businessId: string, fileBuffer: Buffer, mimetype: string, originalname: string): Promise<AnalyzeResult> {
     const isCsv = originalname.toLowerCase().endsWith('.csv') || mimetype.includes('csv');
     const isExcel = originalname.toLowerCase().endsWith('.xlsx') || mimetype.includes('spreadsheetml');
-    
+
     if (originalname.toLowerCase().endsWith('.xls') && !isExcel) {
       throw new BadRequestException('Formato antiguo .xls no soportado. Por favor, Guardar como .xlsx');
     }
-    
+
     if (!isCsv && !isExcel) {
       throw new BadRequestException('Solo se soportan archivos .xlsx o .csv');
     }
@@ -191,7 +262,7 @@ export class ProductsImportService {
         // exceljs row.values uses 1-based array, index 0 is empty
         rows = rows.map(r => {
           const arr = [...r];
-          arr.shift(); 
+          arr.shift();
           return arr;
         });
       } catch (e) {
@@ -208,7 +279,7 @@ export class ProductsImportService {
     for (let i = 0; i < Math.min(10, rows.length); i++) {
       const row = rows[i];
       if (this.isRowEmpty(row)) continue;
-      
+
       const textCount = row.filter(c => typeof c === 'string' && c.trim().length > 0).length;
       if (textCount >= 2) {
         headerRowIdx = i;
@@ -221,12 +292,15 @@ export class ProductsImportService {
       throw new BadRequestException('No se pudieron detectar encabezados en el archivo');
     }
 
-    const targets = await this.getTargets(businessId);
-    
+    // Al mapear un archivo se aceptan todas las columnas base (archivos propios o exportaciones viejas).
+    const targets = await this.getTargets(businessId, { includeHidden: true });
+
     const suggestedMapping: Record<string, { target: string | 'ignore' | 'append_description' }> = {};
     const usedTargets = new Set<string>();
 
     const aliases: Record<string, string[]> = {
+      type: ['tipo de producto', 'tipo de item', 'producto o servicio', 'producto/servicio'],
+      sendToKitchen: ['enviar a cocina'],
       name: ['nombre', 'producto', 'articulo', 'item', 'descripcion corta'],
       price: ['precio', 'p. venta', 'pvp', 'precio venta', 'price'],
       cost: ['costo', 'p. costo', 'precio costo'],
@@ -308,17 +382,17 @@ export class ProductsImportService {
   }
 
   async importFile(
-    businessId: string, 
-    userId: string, 
-    fileBuffer: Buffer, 
-    mimetype: string, 
+    businessId: string,
+    userId: string,
+    fileBuffer: Buffer,
+    mimetype: string,
     originalname: string,
     mapping: Record<string, { target: string | 'ignore' | 'append_description' }>,
     sheetName: string,
     headerRow: number,
     dryRun: boolean
   ): Promise<ImportResult> {
-    
+
     // ... Parsing similar to analyze
     const isCsv = originalname.toLowerCase().endsWith('.csv') || mimetype.includes('csv');
     let rows: any[][] = [];
@@ -346,9 +420,9 @@ export class ProductsImportService {
     }
 
     const headers = rows[headerRow - 1] || [];
-    
+
     const [targets, business] = await Promise.all([
-      this.getTargets(businessId),
+      this.getTargets(businessId, { includeHidden: true }),
       this.prisma.business.findUnique({
         where: { id: businessId },
         select: { id: true, wholesaleEnabled: true, tracksBatches: true, industry: { select: { code: true } } },
@@ -392,7 +466,7 @@ export class ProductsImportService {
 
     const categories = await this.prisma.category.findMany({ where: { businessId } });
     const categoryByName = new Map(categories.map(c => [this.normalizeStr(c.name), c]));
-    
+
     const suppliers = await this.prisma.supplier.findMany({ where: { businessId } });
     const supplierByName = new Map(suppliers.map(s => [this.normalizeStr(s.name), s]));
 
@@ -400,7 +474,7 @@ export class ProductsImportService {
 
     const toCreate: any[] = [];
     const toUpdate: any[] = [];
-    
+
     const processedSkus = new Set<string>();
     const processedNames = new Set<string>();
 
@@ -408,7 +482,7 @@ export class ProductsImportService {
       const row = dataRows[rIdx];
       if (this.isRowEmpty(row)) continue;
       const rowNum = headerRow + rIdx + 1;
-      
+
       const payload: any = { core: { taxIncluded: false, trackStock: true, isActive: true }, dynamic: {}, appendDesc: [] };
       let rowError = null;
 
@@ -419,9 +493,9 @@ export class ProductsImportService {
         const mapConf = mapping[colKey];
         if (!mapConf || mapConf.target === 'ignore') continue;
         const rawVal = row[cIdx];
-        let valStr = typeof rawVal === 'object' && rawVal instanceof Date 
-            ? rawVal.toISOString()
-            : rawVal !== undefined && rawVal !== null ? String(rawVal).trim() : '';
+        let valStr = typeof rawVal === 'object' && rawVal instanceof Date
+          ? rawVal.toISOString()
+          : rawVal !== undefined && rawVal !== null ? String(rawVal).trim() : '';
 
         if (valStr.startsWith("'") && valStr.length > 1 && /^[=+\-@]/.test(valStr.charAt(1))) {
           valStr = valStr.substring(1);
@@ -438,41 +512,49 @@ export class ProductsImportService {
         let parsedVal: any = valStr;
         if (valStr !== '') {
           if (tgt.id === 'stock' || tgt.id === 'minStock' || tgt.id === 'maxStock') {
-             parsedVal = this.parseTolerantNumber(valStr);
-             if (isNaN(parsedVal)) {
-               rowError = `Columna '${h}': debe ser un número.`;
-               break;
-             }
-             if (parsedVal < 0) {
-               rowError = `Columna '${h}': no puede ser negativo.`;
-               break;
-             }
-             parsedVal = Math.round(parsedVal * 1000) / 1000;
+            parsedVal = this.parseTolerantNumber(valStr);
+            if (isNaN(parsedVal)) {
+              rowError = `Columna '${h}': debe ser un número.`;
+              break;
+            }
+            if (parsedVal < 0) {
+              rowError = `Columna '${h}': no puede ser negativo.`;
+              break;
+            }
+            parsedVal = Math.round(parsedVal * 1000) / 1000;
           } else if (tgt.id === 'price' || tgt.id === 'cost' || tgt.id === 'listPrice') {
-             parsedVal = this.parseTolerantNumber(valStr);
-             if (isNaN(parsedVal) || parsedVal < 0) {
-               rowError = `Columna '${h}': debe ser un número mayor o igual a 0.`;
-               break;
-             }
+            parsedVal = this.parseTolerantNumber(valStr);
+            if (isNaN(parsedVal) || parsedVal < 0) {
+              rowError = `Columna '${h}': debe ser un número mayor o igual a 0.`;
+              break;
+            }
           } else if (tgt.id === 'markupPct') {
-             parsedVal = this.parseTolerantNumber(valStr);
-             if (isNaN(parsedVal) || parsedVal < 0 || parsedVal > 1000) {
-               rowError = `Columna '${h}': debe ser un número entre 0 y 1000.`;
-               break;
-             }
+            parsedVal = this.parseTolerantNumber(valStr);
+            if (isNaN(parsedVal) || parsedVal < 0 || parsedVal > 1000) {
+              rowError = `Columna '${h}': debe ser un número entre 0 y 1000.`;
+              break;
+            }
           } else if (tgt.id === 'wholesalePrice') {
-             parsedVal = this.parseTolerantNumber(valStr);
-             if (isNaN(parsedVal) || parsedVal <= 0) {
-               rowError = `Columna '${h}': debe ser un número mayor a 0.`;
-               break;
-             }
+            parsedVal = this.parseTolerantNumber(valStr);
+            if (isNaN(parsedVal) || parsedVal <= 0) {
+              rowError = `Columna '${h}': debe ser un número mayor a 0.`;
+              break;
+            }
           } else if (tgt.id === 'wholesaleMinQty') {
-             parsedVal = this.parseTolerantNumber(valStr);
-             if (isNaN(parsedVal) || parsedVal < 2) {
-               rowError = `Columna '${h}': debe ser un número mayor o igual a 2.`;
-               break;
-             }
-             parsedVal = Math.round(parsedVal * 1000) / 1000;
+            parsedVal = this.parseTolerantNumber(valStr);
+            if (isNaN(parsedVal) || parsedVal < 2) {
+              rowError = `Columna '${h}': debe ser un número mayor o igual a 2.`;
+              break;
+            }
+            parsedVal = Math.round(parsedVal * 1000) / 1000;
+          } else if (tgt.id === 'type') {
+            const low = this.normalizeStr(valStr);
+            if (['producto', 'product', 'prod'].includes(low)) parsedVal = 'PRODUCT';
+            else if (low.startsWith('servicio') || ['service', 'combo'].includes(low)) parsedVal = 'SERVICE';
+            else {
+              rowError = `Columna '${h}': usá PRODUCTO o SERVICIO.`;
+              break;
+            }
           } else if (tgt.dataType === 'NUMBER') {
             parsedVal = this.parseTolerantNumber(valStr);
             if (isNaN(parsedVal)) {
@@ -481,7 +563,7 @@ export class ProductsImportService {
             }
           } else if (tgt.dataType === 'BOOLEAN') {
             const low = this.normalizeStr(valStr);
-            parsedVal = ['si','sí','yes','true','1'].includes(low);
+            parsedVal = ['si', 'sí', 'yes', 'true', '1'].includes(low);
           } else if (tgt.dataType === 'DATE') {
             let d = new Date(valStr);
             if (isNaN(d.getTime())) {
@@ -496,12 +578,12 @@ export class ProductsImportService {
             }
             parsedVal = d.toISOString().split('T')[0];
           } else if (tgt.dataType === 'SELECT' && tgt.options) {
-             const canonic = tgt.options.find(o => this.normalizeStr(o) === this.normalizeStr(valStr));
-             if (!canonic) {
-               rowError = `Valor '${valStr}' no está en las opciones permitidas de '${h}'.`;
-               break;
-             }
-             parsedVal = canonic;
+            const canonic = tgt.options.find(o => this.normalizeStr(o) === this.normalizeStr(valStr));
+            if (!canonic) {
+              rowError = `Valor '${valStr}' no está en las opciones permitidas de '${h}'.`;
+              break;
+            }
+            parsedVal = canonic;
           } else if (tgt.dataType === 'LIST') {
             const field = activeFieldMap.get(tgt.id);
             if (field) {
@@ -565,7 +647,7 @@ export class ProductsImportService {
           else payload.dynamic[tgt.id] = parsedVal;
         }
       }
-      
+
       if (rowError) {
         result.errors.push({ row: rowNum, column: '', message: rowError });
         continue;
@@ -586,6 +668,14 @@ export class ProductsImportService {
 
       const skuKey = payload.core.sku ? this.normalizeStr(payload.core.sku) : '';
       const nameKey = this.normalizeStr(payload.core.name);
+
+      // Igual que el formulario: un SERVICIO no controla inventario.
+      if (payload.core.type === 'SERVICE') {
+        payload.core.trackStock = false;
+        delete payload.core.stock;
+        delete payload.core.minStock;
+        delete payload.core.maxStock;
+      }
 
       if ((skuKey && processedSkus.has(skuKey)) || processedNames.has(nameKey)) {
         result.errors.push({ row: rowNum, column: '', message: 'Fila duplicada en el archivo de importación.' });
@@ -654,7 +744,7 @@ export class ProductsImportService {
           payload.core.supplierId = sup.id;
         }
       }
-      
+
       if (payload.appendDesc.length > 0) {
         payload.core.description = [payload.core.description || existing?.description || '', ...payload.appendDesc].filter(Boolean).join(' \n');
       }
@@ -686,16 +776,16 @@ export class ProductsImportService {
       try {
         const existingAttrs = existing ? (typeof existing.attributes === 'object' ? existing.attributes : {}) : {};
         const mergedAttrs = this.productsService.validateAttributesSync(payload.dynamic, existingAttrs, activeFieldMap, inactiveFieldMap);
-        
+
         if (existing) {
           const coreUpdate = { ...payload.core };
           // Check stock diff
           let stockDiff = 0;
           const currentStockNum = existing.stock !== undefined && existing.stock !== null ? Number(existing.stock) : 0;
           if (coreUpdate.trackStock !== false && coreUpdate.stock !== undefined && currentStockNum !== coreUpdate.stock) {
-             stockDiff = Math.round((coreUpdate.stock - currentStockNum) * 1000) / 1000;
+            stockDiff = Math.round((coreUpdate.stock - currentStockNum) * 1000) / 1000;
           }
-          
+
           let isUnchanged = true;
           for (const k of Object.keys(coreUpdate)) {
             if (!this.isEqual(coreUpdate[k], (existing as any)[k])) {
@@ -899,16 +989,21 @@ export class ProductsImportService {
     if (businessId) {
       targets = await this.getTargets(businessId);
     } else if (industryId) {
-      const ind = await this.prisma.industry.findUnique({ where: { id: industryId }, include: { fieldTemplates: { orderBy: { order: 'asc' } } }});
+      const ind = await this.prisma.industry.findUnique({ where: { id: industryId }, include: { fieldTemplates: { orderBy: { order: 'asc' } } } });
       if (!ind) throw new BadRequestException('Industria no encontrada');
       const isTracksBatches = ind.tracksBatches || ind.code === 'farmacia';
       const batchTargets: ImportTarget[] = isTracksBatches
         ? [
-            { id: 'lotNumber', label: 'Lote', kind: 'core', dataType: 'TEXT', required: false },
-            { id: 'expiryDate', label: 'Fecha de Vencimiento', kind: 'core', dataType: 'DATE', required: false },
-          ]
+          { id: 'lotNumber', label: 'Lote', kind: 'core', dataType: 'TEXT', required: false },
+          { id: 'expiryDate', label: 'Fecha de Vencimiento', kind: 'core', dataType: 'DATE', required: false },
+        ]
         : [];
-      targets = [...CORE_TARGETS, ...batchTargets, ...ind.fieldTemplates.map(f => ({
+      targets = [...filterCoreTargets({
+        isPharmacy: ind.code === 'farmacia',
+        isRestaurant: ind.posVertical === 'RESTAURANTE',
+        useListPrice: false,
+        wholesaleEnabled: false,
+      }), ...batchTargets, ...ind.fieldTemplates.map(f => ({
         id: f.key, label: f.label, kind: 'dynamic' as const, dataType: f.dataType, required: f.required, options: f.options as string[]
       }))];
     } else {
@@ -917,11 +1012,14 @@ export class ProductsImportService {
 
     // Set columns
     ws.columns = targets.map(t => ({ header: t.label, key: t.id, width: 20 }));
-    
+
     // Add sample row
     const sampleRow: any = {};
     for (const t of targets) {
       if (t.id === 'name') sampleRow[t.id] = 'Producto de ejemplo';
+      else if (t.id === 'type') sampleRow[t.id] = 'PRODUCTO';
+      else if (t.id === 'unit') sampleRow[t.id] = 'UND';
+      else if (t.id === 'minStock') sampleRow[t.id] = 5;
       else if (t.id === 'sku') sampleRow[t.id] = "'10001"; // Prefix with quote to avoid number format
       else if (t.id === 'barcode') sampleRow[t.id] = "'123456789012";
       else if (t.id === 'price') sampleRow[t.id] = 100.50;
@@ -931,7 +1029,7 @@ export class ProductsImportService {
       else if (t.id === 'listPrice') sampleRow[t.id] = 120.00;
       else if (t.id === 'markupPct') sampleRow[t.id] = 25.00;
       else if (t.id === 'taxable') sampleRow[t.id] = 'NO';
-      else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive') sampleRow[t.id] = 'SI';
+      else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive' || t.id === 'sendToKitchen') sampleRow[t.id] = 'SI';
       else if (t.id === 'stock') sampleRow[t.id] = 10;
       else if (t.id === 'lotNumber') sampleRow[t.id] = 'LT-2026-001';
       else if (t.id === 'expiryDate') sampleRow[t.id] = '2026-12-31';
@@ -960,6 +1058,8 @@ export class ProductsImportService {
       else if (t.id === 'listPrice') desc = 'Precio de etiqueta o referencia (opcional).';
       else if (t.id === 'markupPct') desc = 'Margen de ganancia sobre costo en % (opcional, ej. 25).';
       else if (t.id === 'taxable') desc = 'Aplica 15% de IVA sobre precio de venta (SI o NO, defecto NO).';
+      else if (t.id === 'type') desc = 'PRODUCTO (controla inventario) o SERVICIO (no controla inventario). Defecto PRODUCTO.';
+      else if (t.id === 'sendToKitchen') desc = 'Si el producto se manda a cocina al pedirlo (SI o NO, defecto SI).';
       else if (t.id === 'lotNumber') desc = 'Número o código de lote (opcional). Si se omite y hay existencias, se asignará al lote INICIAL.';
       else if (t.id === 'expiryDate') desc = 'Fecha de vencimiento en formato AAAA-MM-DD o serial de Excel (opcional).';
       wsHelp.addRow({ col: t.label, req: t.required ? 'Sí' : 'No', type: typeStr, desc });
@@ -972,10 +1072,10 @@ export class ProductsImportService {
     const workbook = new exceljs.Workbook();
     const ws = workbook.addWorksheet('Productos');
     const targets = await this.getTargets(businessId);
-    
-    ws.columns = targets.map(t => ({ 
-      header: t.label, 
-      key: t.id, 
+
+    ws.columns = targets.map(t => ({
+      header: t.label,
+      key: t.id,
       width: 20,
       style: (t.id === 'sku' || t.id === 'barcode') ? { numFmt: '@' } : undefined
     }));
@@ -1006,23 +1106,28 @@ export class ProductsImportService {
 
       for (const t of targets) {
         if (t.kind === 'core') {
-           if (t.id === 'categoryId') row[t.id] = p.category?.name || '';
-           else if (t.id === 'supplierId') row[t.id] = p.supplier?.name || '';
-           else if (t.id === 'sku' || t.id === 'barcode') row[t.id] = p[t.id] || '';
-           else if (t.id === 'lotNumber') row[t.id] = (p as any).nextExpiryBatchCode || (p as any).batches?.[0]?.batchNumber || '';
-           else if (t.id === 'expiryDate') {
-             const exp = (p as any).nextExpiryDate || (p as any).batches?.[0]?.expiryDate;
-             row[t.id] = exp ? (exp instanceof Date ? exp.toISOString().split('T')[0] : String(exp).split('T')[0]) : '';
-           }
-           else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive' || t.id === 'taxable') {
-             row[t.id] = (p as any)[t.id] ? 'SI' : 'NO';
-           } else {
-             row[t.id] = (p as any)[t.id];
-           }
+          if (t.id === 'categoryId') row[t.id] = p.category?.name || '';
+          else if (t.id === 'supplierId') row[t.id] = p.supplier?.name || '';
+          else if (t.id === 'sku' || t.id === 'barcode') row[t.id] = p[t.id] || '';
+          else if (t.id === 'lotNumber') row[t.id] = (p as any).nextExpiryBatchCode || (p as any).batches?.[0]?.batchNumber || '';
+          else if (t.id === 'expiryDate') {
+            const exp = (p as any).nextExpiryDate || (p as any).batches?.[0]?.expiryDate;
+            row[t.id] = exp ? (exp instanceof Date ? exp.toISOString().split('T')[0] : String(exp).split('T')[0]) : '';
+          }
+          else if (t.id === 'type') row[t.id] = (p as any).type === 'SERVICE' ? 'SERVICIO' : 'PRODUCTO';
+          else if (t.id === 'trackStock' || t.id === 'taxIncluded' || t.id === 'isActive' || t.id === 'taxable' || t.id === 'sendToKitchen') {
+            row[t.id] = (p as any)[t.id] ? 'SI' : 'NO';
+          } else if (t.id === 'stock' || t.id === 'minStock' || t.id === 'maxStock' || t.id === 'wholesalePrice' || t.id === 'wholesaleMinQty') {
+            // Decimal de Prisma → número para que Excel no lo guarde como texto
+            const v = (p as any)[t.id];
+            row[t.id] = v === null || v === undefined ? '' : Number(v);
+          } else {
+            row[t.id] = (p as any)[t.id];
+          }
         } else {
-           const v = attrs[t.id];
-           if (t.dataType === 'BOOLEAN' && v !== undefined) row[t.id] = v ? 'SI' : 'NO';
-           else row[t.id] = v;
+          const v = attrs[t.id];
+          if (t.dataType === 'BOOLEAN' && v !== undefined) row[t.id] = v ? 'SI' : 'NO';
+          else row[t.id] = v;
         }
 
         if (typeof row[t.id] === 'string' && /^[=+\-@]/.test(row[t.id])) {

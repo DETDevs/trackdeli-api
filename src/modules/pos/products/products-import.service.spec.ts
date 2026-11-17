@@ -30,7 +30,7 @@ describe('ProductsImportService', () => {
       product: {
         findMany: jest.fn().mockImplementation(() => Promise.resolve([...dbProducts])),
         create: jest.fn().mockImplementation((args: any) => {
-          const p = { id: 'prod-' + Math.random(), ...args.data, stock: args.data.stock || 0 };
+          const p = { id: 'prod-' + Math.random(), type: 'PRODUCT', taxable: false, ...args.data, stock: args.data.stock || 0 };
           dbProducts.push(p);
           return Promise.resolve(p);
         }),
@@ -94,6 +94,62 @@ describe('ProductsImportService', () => {
     });
     it('should perform deep equal on objects', () => {
       expect((service as any).isEqual({ a: 1, b: '2026-10-01' }, { a: '1', b: '2026-10-01T05:00:00.000Z' })).toBe(true);
+    });
+  });
+
+  describe('Columnas por negocio (igual que el formulario de producto)', () => {
+    const labels = async () => (await service.getTargets('b-1')).map((t) => t.label);
+
+    it('negocio básico: sin descripción, impuesto incluido, etiqueta, mayoreo ni cocina; con Tipo', async () => {
+      const l = await labels();
+      expect(l).toContain('Tipo (PRODUCTO/SERVICIO)');
+      expect(l).toContain('Unidad de Medida');
+      expect(l).toContain('Stock Máximo');
+      expect(l).not.toContain('Descripción');
+      expect(l).not.toContain('Impuesto Incluido');
+      expect(l).not.toContain('Precio Etiqueta');
+      expect(l).not.toContain('Precio por Mayor');
+      expect(l).not.toContain('Cantidad Mínima por Mayor');
+      expect(l).not.toContain('Enviar a Cocina (SI/NO)');
+    });
+
+    it('mayoreo + precio etiqueta + restaurante activos', async () => {
+      prismaMock.business.findUnique.mockResolvedValue({
+        id: 'b1', tracksBatches: false, wholesaleEnabled: true, useListPrice: true, posVertical: 'RESTAURANTE',
+      });
+      const l = await labels();
+      expect(l).toContain('Precio Etiqueta');
+      expect(l).toContain('Precio por Mayor');
+      expect(l).toContain('Cantidad Mínima por Mayor');
+      expect(l).toContain('Enviar a Cocina (SI/NO)');
+    });
+
+    it('farmacia: precio etiqueta sí, unidad y stock máximo no', async () => {
+      prismaMock.business.findUnique.mockResolvedValue({ id: 'b1', tracksBatches: true, industry: { code: 'farmacia' } });
+      const l = await labels();
+      expect(l).toContain('Precio Etiqueta');
+      expect(l).toContain('Lote');
+      expect(l).not.toContain('Unidad de Medida');
+      expect(l).not.toContain('Stock Máximo');
+    });
+
+    it('la importación sigue aceptando columnas ocultas (archivos viejos)', async () => {
+      const all = (await service.getTargets('b-1', { includeHidden: true })).map((t) => t.id);
+      expect(all).toEqual(expect.arrayContaining(['description', 'wholesalePrice', 'listPrice']));
+    });
+
+    it('importa SERVICIO sin inventario', async () => {
+      const wb = new exceljs.Workbook();
+      const ws = wb.addWorksheet('Sheet1');
+      ws.addRow(['Nombre', 'Precio', 'Tipo (PRODUCTO/SERVICIO)', 'Stock']);
+      ws.addRow(['Cambio de aceite', '500', 'Servicio', '10']);
+      const buffer = await wb.xlsx.writeBuffer();
+      const mapping = { col_0: { target: 'name' }, col_1: { target: 'price' }, col_2: { target: 'type' }, col_3: { target: 'stock' } };
+      const r = await service.importFile('b-1', 'u-1', buffer as any, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'import.xlsx', mapping, 'Sheet1', 1, false);
+      expect(r.errors).toHaveLength(0);
+      expect(dbProducts[0].type).toBe('SERVICE');
+      expect(dbProducts[0].trackStock).toBe(false);
+      expect(dbProducts[0].stock).toBe(0);
     });
   });
 
