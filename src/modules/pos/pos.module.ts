@@ -37,6 +37,7 @@ import { PresaleTicketsModule } from './presale-tickets/presale-tickets.module';
 import { BanksModule } from './banks/banks.module';
 import { ChannelsModule } from './channels/channels.module';
 import { PosQuotesModule } from './quotes/pos-quotes.module';
+import { PosNotificationsCenterModule } from './notifications-center/pos-notifications-center.module';
 
 @Module({
   imports: [
@@ -74,6 +75,7 @@ import { PosQuotesModule } from './quotes/pos-quotes.module';
     BanksModule,
     ChannelsModule,
     PosQuotesModule,
+    PosNotificationsCenterModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],

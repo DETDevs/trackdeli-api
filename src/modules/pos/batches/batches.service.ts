@@ -60,6 +60,48 @@ export class BatchesService {
     return Boolean(business?.tracksBatches && product?.tracksBatches);
   }
 
+  private getManaguaTodayYmd(): string {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Managua' }).format(
+      new Date(),
+    );
+  }
+
+  private extractDateYmd(val: Date | string | null | undefined): string | null {
+    if (!val) return null;
+    if (val instanceof Date) {
+      return isNaN(val.getTime()) ? null : val.toISOString().slice(0, 10);
+    }
+    const str = String(val).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+      return str.slice(0, 10);
+    }
+    const parsed = new Date(str);
+    return isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+  }
+
+  private toManaguaYmd(val: Date | string | null | undefined): string | null {
+    if (!val) return null;
+    if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim())) {
+      return val.trim();
+    }
+    const d = val instanceof Date ? val : new Date(val);
+    if (isNaN(d.getTime())) return null;
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Managua' }).format(d);
+  }
+
+  private computeDaysToExpiry(
+    expiryDate: Date | string | null | undefined,
+    todayYmd: string,
+  ): number | null {
+    const expiryYmd = this.extractDateYmd(expiryDate);
+    if (!expiryYmd) return null;
+    const [ey, em, ed] = expiryYmd.split('-').map(Number);
+    const [ty, tm, td] = todayYmd.split('-').map(Number);
+    if ([ey, em, ed, ty, tm, td].some((n) => isNaN(n))) return null;
+    const diffMs = Date.UTC(ey, em - 1, ed) - Date.UTC(ty, tm - 1, td);
+    return Math.round(diffMs / 86400000);
+  }
+
   /**
    * Recibe mercancía en un lote (compras o entradas).
    * Si el lote ya existe para este producto:
@@ -940,6 +982,100 @@ export class BatchesService {
       totalReceived = round3(totalReceived + balanceDiff);
     }
 
+    const todayYmd = this.getManaguaTodayYmd();
+    const daysToExpiry = this.computeDaysToExpiry(batch.expiryDate, todayYmd);
+    const isExpired = daysToExpiry !== null && daysToExpiry < 0;
+    const batchStatus: 'SIN_FECHA' | 'VENCIDO' | 'CRITICO' | 'PROXIMO' | 'NORMAL' =
+      !batch.expiryDate
+        ? 'SIN_FECHA'
+        : daysToExpiry !== null && daysToExpiry < 0
+          ? 'VENCIDO'
+          : daysToExpiry !== null && daysToExpiry <= 30
+            ? 'CRITICO'
+            : daysToExpiry !== null && daysToExpiry <= 60
+              ? 'PROXIMO'
+              : 'NORMAL';
+
+    const unitCost = round2(Number(batch.cost ?? batch.product.cost ?? 0));
+    const unitPrice = round2(Number(batch.product.price ?? 0));
+    const soldRevenue = round2(
+      salesList
+        .filter((s) => !s.status || s.status === 'COMPLETED')
+        .reduce((acc, s) => acc + Number(s.quantity) * Number(s.unitPrice || 0), 0),
+    );
+    const pendingExpiredUnits = isExpired ? currentBalance : 0;
+    const pendingExpiredLossAmount = round2(pendingExpiredUnits * unitCost);
+    const writtenOffLossAmount = round2(totalExpired * unitCost);
+    const totalExpiredUnits = round3(totalExpired + pendingExpiredUnits);
+    const totalExpiredLossAmount = round2(writtenOffLossAmount + pendingExpiredLossAmount);
+
+    const allProductBatches = await this.prisma.productBatch.findMany({
+      where: {
+        businessId,
+        productId: batch.productId,
+        quantity: { gt: 0 },
+      },
+      select: {
+        id: true,
+        quantity: true,
+        cost: true,
+        expiryDate: true,
+      },
+    });
+
+    let prodTotalStock = 0;
+    let prodSellableStock = 0;
+    let prodExpiredStock = 0;
+    let prodTotalInvestedCost = 0;
+    let prodSellableInvestedCost = 0;
+    let prodExpiredInvestedCost = 0;
+
+    for (const pb of allProductBatches) {
+      const pbQty = round3(Number(pb.quantity));
+      const pbCost = round2(Number(pb.cost ?? batch.product.cost ?? 0));
+      const pbInv = round2(pbQty * pbCost);
+      const pbDays = this.computeDaysToExpiry(pb.expiryDate, todayYmd);
+      const pbExpired = pbDays !== null && pbDays < 0;
+
+      prodTotalStock = round3(prodTotalStock + pbQty);
+      prodTotalInvestedCost = round2(prodTotalInvestedCost + pbInv);
+
+      if (pbExpired) {
+        prodExpiredStock = round3(prodExpiredStock + pbQty);
+        prodExpiredInvestedCost = round2(prodExpiredInvestedCost + pbInv);
+      } else {
+        prodSellableStock = round3(prodSellableStock + pbQty);
+        prodSellableInvestedCost = round2(prodSellableInvestedCost + pbInv);
+      }
+    }
+
+    const financials = {
+      unitCost,
+      unitPrice,
+      initialInvestedCost: round2(totalReceived * unitCost),
+      currentInvestedCost: round2(currentBalance * unitCost),
+      currentSaleValue: round2(currentBalance * unitPrice),
+      soldRevenue,
+      writtenOffUnits: totalExpired,
+      writtenOffLossAmount,
+      pendingExpiredUnits,
+      pendingExpiredLossAmount,
+      totalExpiredUnits,
+      totalExpiredLossAmount,
+      potentialRevenueLost: round2(totalExpiredUnits * unitPrice),
+    };
+
+    const productInvestment = {
+      activeBatchCount: allProductBatches.length,
+      totalStock: prodTotalStock,
+      sellableStock: prodSellableStock,
+      expiredStock: prodExpiredStock,
+      totalInvestedCost: prodTotalInvestedCost,
+      sellableInvestedCost: prodSellableInvestedCost,
+      expiredInvestedCost: prodExpiredInvestedCost,
+      totalSaleValue: round2(prodTotalStock * unitPrice),
+    };
+
     return {
       batch: {
         id: batch.id,
@@ -947,6 +1083,10 @@ export class BatchesService {
         expiryDate: batch.expiryDate,
         currentQuantity: currentBalance,
         cost: batch.cost != null ? Number(batch.cost) : null,
+        effectiveCost: unitCost,
+        status: batchStatus,
+        isExpired,
+        daysToExpiry,
         createdAt: batch.createdAt,
         product: batch.product,
         purchase: batch.purchaseItem?.purchase
@@ -966,7 +1106,12 @@ export class BatchesService {
         totalExpired,
         totalAdjusted,
         currentBalance,
+        sellableBalance: isExpired ? 0 : currentBalance,
+        expiredInStock: pendingExpiredUnits,
+        totalExpiredWithPending: totalExpiredUnits,
       },
+      financials,
+      productInvestment,
       sales: salesList,
       movements: movements.map((m) => ({
         id: m.id,
@@ -1094,7 +1239,7 @@ export class BatchesService {
   }
 
   /**
-   * Mermas por vencimiento (ajustes EXPIRED) con pérdida calculada.
+   * Mermas por vencimiento (ajustes EXPIRED y lotes vencidos aún en stock) con pérdida calculada.
    */
   async getExpiredLoss(
     businessId: string,
@@ -1107,7 +1252,18 @@ export class BatchesService {
     if (!business?.tracksBatches) {
       return {
         data: [],
-        totals: { totalQuantityExpired: 0, totalLossAmount: 0 },
+        pendingBatches: [],
+        totals: {
+          totalQuantityExpired: 0,
+          totalLossAmount: 0,
+          writtenOffQuantity: 0,
+          writtenOffLossAmount: 0,
+          writtenOffCount: 0,
+          pendingQuantity: 0,
+          pendingLossAmount: 0,
+          pendingBatchesCount: 0,
+          totalPotentialRevenueLoss: 0,
+        },
       };
     }
 
@@ -1133,44 +1289,55 @@ export class BatchesService {
     const adjustments = await this.prisma.inventoryAdjustment.findMany({
       where,
       include: {
-        product: { select: { id: true, name: true, sku: true, barcode: true, cost: true } },
+        product: {
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            barcode: true,
+            cost: true,
+            price: true,
+            unit: true,
+            stock: true,
+          },
+        },
         user: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
 
-    if (adjustments.length === 0) {
-      return {
-        data: [],
-        totals: { totalQuantityExpired: 0, totalLossAmount: 0 },
-      };
-    }
-
     const adjIds = adjustments.map((a) => a.id);
-    const movements = await this.prisma.stockMovement.findMany({
-      where: {
-        businessId,
-        reference: { in: adjIds },
-      },
-      include: {
-        batch: { select: { id: true, batchNumber: true, expiryDate: true, cost: true } },
-      },
-    });
+    const movements =
+      adjIds.length > 0
+        ? await this.prisma.stockMovement.findMany({
+            where: {
+              businessId,
+              reference: { in: adjIds },
+            },
+            include: {
+              batch: { select: { id: true, batchNumber: true, expiryDate: true, cost: true } },
+            },
+          })
+        : [];
 
     const movementByRef = new Map(movements.map((m) => [m.reference, m]));
 
-    let totalQuantityExpired = 0;
-    let totalLossAmount = 0;
+    let writtenOffQuantity = 0;
+    let writtenOffLossAmount = 0;
+    let writtenOffRevenueLoss = 0;
 
-    const data = adjustments.map((adj) => {
+    const writeOffItems = adjustments.map((adj) => {
       const mov = movementByRef.get(adj.id);
       const batch = mov?.batch;
       const qty = round3(Math.abs(Number(adj.qtyDelta)));
-      const unitCost = Number(batch?.cost ?? adj.costAtTime ?? adj.product.cost ?? 0);
+      const unitCost = round2(Number(batch?.cost ?? adj.costAtTime ?? adj.product.cost ?? 0));
+      const unitPrice = round2(Number(adj.product.price ?? 0));
       const lossAmount = round2(qty * unitCost);
+      const potentialRevenueLoss = round2(qty * unitPrice);
 
-      totalQuantityExpired += qty;
-      totalLossAmount += lossAmount;
+      writtenOffQuantity += qty;
+      writtenOffLossAmount += lossAmount;
+      writtenOffRevenueLoss += potentialRevenueLoss;
 
       return {
         id: adj.id,
@@ -1178,23 +1345,112 @@ export class BatchesService {
         productId: adj.product.id,
         productName: adj.product.name,
         productSku: adj.product.sku || null,
+        productUnit: adj.product.unit || 'UND',
+        productStock: Number(adj.product.stock ?? 0),
         batchId: batch?.id || null,
         batchNumber: batch?.batchNumber || null,
         expiryDate: batch?.expiryDate || null,
         quantity: qty,
         unitCost,
+        unitPrice,
         lossAmount,
+        potentialRevenueLoss,
         reason: adj.reason,
         notes: adj.notes,
         userName: adj.user?.name || null,
+        source: 'WRITE_OFF' as const,
       };
     });
 
+    const todayYmd = this.getManaguaTodayYmd();
+    const toYmd = this.toManaguaYmd(query.to);
+
+    const candidateBatches = await this.prisma.productBatch.findMany({
+      where: {
+        businessId,
+        quantity: { gt: 0 },
+        expiryDate: { not: null },
+      },
+      include: {
+        product: {
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            barcode: true,
+            cost: true,
+            price: true,
+            unit: true,
+            stock: true,
+          },
+        },
+      },
+      orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    let pendingQuantity = 0;
+    let pendingLossAmount = 0;
+    let pendingRevenueLoss = 0;
+
+    const pendingBatches = candidateBatches
+      .filter((b) => {
+        const days = this.computeDaysToExpiry(b.expiryDate, todayYmd);
+        if (days === null || days >= 0) return false;
+        if (toYmd) {
+          const expYmd = this.extractDateYmd(b.expiryDate);
+          if (expYmd && expYmd > toYmd) return false;
+        }
+        return true;
+      })
+      .map((b) => {
+        const qty = round3(Number(b.quantity));
+        const unitCost = round2(Number(b.cost ?? b.product.cost ?? 0));
+        const unitPrice = round2(Number(b.product.price ?? 0));
+        const lossAmount = round2(qty * unitCost);
+        const potentialRevenueLoss = round2(qty * unitPrice);
+        const daysToExpiry = this.computeDaysToExpiry(b.expiryDate, todayYmd) ?? -1;
+
+        pendingQuantity += qty;
+        pendingLossAmount += lossAmount;
+        pendingRevenueLoss += potentialRevenueLoss;
+
+        return {
+          id: `pending-batch-${b.id}`,
+          date: b.expiryDate as Date,
+          productId: b.product.id,
+          productName: b.product.name,
+          productSku: b.product.sku || null,
+          productUnit: b.product.unit || 'UND',
+          productStock: Number(b.product.stock ?? qty),
+          batchId: b.id,
+          batchNumber: b.batchNumber,
+          expiryDate: b.expiryDate,
+          daysExpired: Math.abs(daysToExpiry),
+          quantity: qty,
+          unitCost,
+          unitPrice,
+          lossAmount,
+          potentialRevenueLoss,
+          reason: 'Lote vencido en inventario (pendiente de dar de baja)',
+          notes: undefined,
+          userName: null,
+          source: 'EXPIRED_IN_STOCK' as const,
+        };
+      });
+
     return {
-      data,
+      data: writeOffItems,
+      pendingBatches,
       totals: {
-        totalQuantityExpired: round3(totalQuantityExpired),
-        totalLossAmount: round2(totalLossAmount),
+        totalQuantityExpired: round3(writtenOffQuantity + pendingQuantity),
+        totalLossAmount: round2(writtenOffLossAmount + pendingLossAmount),
+        writtenOffQuantity: round3(writtenOffQuantity),
+        writtenOffLossAmount: round2(writtenOffLossAmount),
+        writtenOffCount: writeOffItems.length,
+        pendingQuantity: round3(pendingQuantity),
+        pendingLossAmount: round2(pendingLossAmount),
+        pendingBatchesCount: pendingBatches.length,
+        totalPotentialRevenueLoss: round2(writtenOffRevenueLoss + pendingRevenueLoss),
       },
     };
   }
