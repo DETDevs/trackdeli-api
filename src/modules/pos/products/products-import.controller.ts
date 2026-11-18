@@ -16,7 +16,8 @@ import { ProductsImportService } from './products-import.service';
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
 
 @SkipMembershipCheck()
-@UseGuards(JwtAuthGuard, PosGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PosGuard)
+@Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
 @Controller('pos/products')
 export class ProductsImportController {
   constructor(private readonly importService: ProductsImportService) {}
