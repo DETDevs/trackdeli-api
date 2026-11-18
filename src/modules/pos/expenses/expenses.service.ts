@@ -213,7 +213,7 @@ export class ExpensesService {
     };
   }
 
-  async create(businessId: string, userId: string, dto: CreateExpenseDto, deviceId?: string) {
+  async create(businessId: string, userId: string, dto: CreateExpenseDto, deviceId?: string, clientPlatform?: string) {
     if (dto.amount <= 0) {
       throw new BadRequestException({
         statusCode: 400,
@@ -260,16 +260,44 @@ export class ExpensesService {
         }
 
         const cleanDeviceId = deviceId?.trim() || null;
-        const shiftWhere: any = { businessId, status: 'OPEN' };
-        if (cleanDeviceId) {
-          shiftWhere.deviceId = cleanDeviceId;
+        const isWeb = Boolean(clientPlatform && clientPlatform.trim().toLowerCase().startsWith('web'));
+        let openShift: any = null;
+
+        if (isWeb) {
+          openShift = await tx.cashRegister.findFirst({
+            where: {
+              businessId,
+              cashierId: userId,
+              status: 'OPEN',
+              registerSource: 'WEB',
+            },
+            include: { cashier: { select: { name: true } } },
+            orderBy: { openedAt: 'desc' },
+          });
+          if (openShift && cleanDeviceId && openShift.deviceId !== cleanDeviceId) {
+            const cleanName = openShift.cashier?.name?.trim() || 'Cajero';
+            openShift = await tx.cashRegister.update({
+              where: { id: openShift.id },
+              data: {
+                deviceId: cleanDeviceId,
+                deviceName: `Caja web · ${cleanName}`,
+              },
+              include: { cashier: { select: { name: true } } },
+            });
+          }
         } else {
-          shiftWhere.cashierId = userId;
+          const shiftWhere: any = { businessId, status: 'OPEN' };
+          if (cleanDeviceId) {
+            shiftWhere.deviceId = cleanDeviceId;
+            shiftWhere.registerSource = { not: 'WEB' };
+          } else {
+            shiftWhere.cashierId = userId;
+          }
+          openShift = await tx.cashRegister.findFirst({
+            where: shiftWhere,
+            orderBy: { openedAt: 'desc' },
+          });
         }
-        const openShift = await tx.cashRegister.findFirst({
-          where: shiftWhere,
-          orderBy: { openedAt: 'desc' },
-        });
 
         if (!openShift) {
           throw new ConflictException({

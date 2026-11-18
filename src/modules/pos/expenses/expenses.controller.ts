@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -85,8 +86,10 @@ export class ExpensesController {
     @Body() dto: CreateExpenseDto,
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
+    @Headers('x-device-id') deviceId?: string,
+    @Headers('x-client-platform') clientPlatform?: string,
   ) {
-    return this.service.create(resolveBusinessId(user, qBid), user.sub, dto);
+    return this.service.create(resolveBusinessId(user, qBid), user.sub, dto, deviceId, clientPlatform);
   }
 
   @Post('expenses/:id/void')

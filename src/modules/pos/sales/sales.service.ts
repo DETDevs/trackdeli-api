@@ -165,7 +165,7 @@ export class SalesService {
     businessId: string,
     cashierId: string,
     userRole?: string,
-    clientInfo?: { channel?: string; deviceId?: string },
+    clientInfo?: { channel?: string; deviceId?: string; platform?: string },
     externalTx?: Prisma.TransactionClient,
   ) {
     const runInTx = async (tx: Prisma.TransactionClient) => {
@@ -174,11 +174,20 @@ export class SalesService {
       let cashRegisterId: string | null = null;
       let soldWithoutOpenShift = false;
       const cleanDeviceId = clientInfo?.deviceId?.trim() || null;
+      const isWeb =
+        clientInfo?.channel?.toUpperCase() === 'WEB' ||
+        Boolean(clientInfo?.platform && clientInfo.platform.trim().toLowerCase().startsWith('web'));
 
       if (dto.cashRegisterId) {
         const explicitRegister = await tx.cashRegister.findFirst({
           where: { id: dto.cashRegisterId, businessId, status: "OPEN" },
-          select: { id: true, deviceId: true },
+          select: {
+            id: true,
+            deviceId: true,
+            cashierId: true,
+            registerSource: true,
+            cashier: { select: { name: true } },
+          },
         });
         if (!explicitRegister && requireOpenShift) {
           throw new ConflictException({
@@ -188,7 +197,27 @@ export class SalesService {
             error: 'Conflict',
           });
         }
-        if (cleanDeviceId && explicitRegister?.deviceId && explicitRegister.deviceId !== cleanDeviceId) {
+        if (isWeb && explicitRegister) {
+          if (explicitRegister.cashierId === cashierId && explicitRegister.registerSource === 'WEB') {
+            if (cleanDeviceId && explicitRegister.deviceId !== cleanDeviceId) {
+              const cleanName = explicitRegister.cashier?.name?.trim() || 'Cajero';
+              await tx.cashRegister.update({
+                where: { id: explicitRegister.id },
+                data: {
+                  deviceId: cleanDeviceId,
+                  deviceName: `Caja web · ${cleanName}`,
+                },
+              });
+            }
+          } else if (cleanDeviceId && explicitRegister.deviceId && explicitRegister.deviceId !== cleanDeviceId) {
+            throw new ConflictException({
+              statusCode: 409,
+              code: 'NO_OPEN_SHIFT',
+              message: 'La caja especificada no pertenece a esta computadora.',
+              error: 'Conflict',
+            });
+          }
+        } else if (cleanDeviceId && explicitRegister?.deviceId && explicitRegister.deviceId !== cleanDeviceId) {
           throw new ConflictException({
             statusCode: 409,
             code: 'NO_OPEN_SHIFT',
@@ -199,18 +228,55 @@ export class SalesService {
         cashRegisterId = explicitRegister?.id || null;
         soldWithoutOpenShift = !explicitRegister;
       } else {
-        let activeRegister = null;
-        if (cleanDeviceId) {
+        let activeRegister: { id: string; deviceId?: string | null; cashier?: { name: string } | null } | null = null;
+        if (isWeb) {
           activeRegister = await tx.cashRegister.findFirst({
-            where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
+            where: {
+              businessId,
+              cashierId,
+              status: "OPEN",
+              registerSource: "WEB",
+            },
+            select: {
+              id: true,
+              deviceId: true,
+              cashier: { select: { name: true } },
+            },
+            orderBy: { openedAt: "desc" },
+          });
+
+          if (activeRegister && cleanDeviceId && activeRegister.deviceId !== cleanDeviceId) {
+            const cleanName = activeRegister.cashier?.name?.trim() || 'Cajero';
+            await tx.cashRegister.update({
+              where: { id: activeRegister.id },
+              data: {
+                deviceId: cleanDeviceId,
+                deviceName: `Caja web · ${cleanName}`,
+              },
+            });
+          }
+        } else if (cleanDeviceId) {
+          activeRegister = await tx.cashRegister.findFirst({
+            where: {
+              businessId,
+              deviceId: cleanDeviceId,
+              status: "OPEN",
+              registerSource: { not: "WEB" },
+            },
             select: { id: true },
             orderBy: { openedAt: "desc" },
           });
 
-          // Adopción de turno viejo sin deviceId para este usuario
+          // Adopción de turno viejo sin deviceId para este usuario (no web)
           if (!activeRegister && cashierId) {
             const legacyShift = await tx.cashRegister.findFirst({
-              where: { businessId, cashierId, deviceId: null, status: "OPEN" },
+              where: {
+                businessId,
+                cashierId,
+                deviceId: null,
+                status: "OPEN",
+                registerSource: { not: "WEB" },
+              },
               select: { id: true },
               orderBy: { openedAt: "desc" },
             });

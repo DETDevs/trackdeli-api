@@ -312,7 +312,28 @@ export class CashRegisterService {
       } : null,
       deviceId: register.deviceId ?? null,
       deviceName: register.deviceName ?? null,
+      registerSource: register.registerSource || 'DESKTOP',
     };
+  }
+
+  private isWebPlatform(clientPlatform?: string | null): boolean {
+    if (!clientPlatform) return false;
+    return clientPlatform.trim().toLowerCase().startsWith('web');
+  }
+
+  private resolveRegisterSource(clientPlatform?: string | null, deviceCategory?: string | null): 'WEB' | 'DESKTOP' | 'MOBILE' {
+    const plat = (clientPlatform || '').trim().toLowerCase();
+    if (plat.startsWith('web')) return 'WEB';
+    if (plat.startsWith('mobile')) return 'MOBILE';
+    const cat = (deviceCategory || '').trim().toUpperCase();
+    if (cat === 'WEB') return 'WEB';
+    if (cat === 'MOBILE') return 'MOBILE';
+    return 'DESKTOP';
+  }
+
+  private buildWebRegisterName(cashierName?: string | null): string {
+    const cleanName = (cashierName || '').trim() || 'Cajero';
+    return `Caja web · ${cleanName}`;
   }
 
   async obfuscateRegister(
@@ -404,6 +425,7 @@ export class CashRegisterService {
         discrepancyAuthorizer: reg.discrepancyAuthorizer ?? null,
         deviceId: reg.deviceId ?? null,
         deviceName: reg.deviceName ?? null,
+        registerSource: reg.registerSource || 'DESKTOP',
         byMethodAndBank: obfuscateByMethodAndBank(reg.byMethodAndBank),
 
         // 235a: Fondo inicial visible con su valor real para el cajero en sus turnos
@@ -454,31 +476,77 @@ export class CashRegisterService {
     return whitelistBlindRegister(registerData);
   }
 
-  async getCurrent(businessId: string, cashierId?: string, userRole?: string, deviceId?: string) {
+  async getCurrent(
+    businessId: string,
+    cashierId?: string,
+    userRole?: string,
+    deviceId?: string,
+    clientPlatform?: string,
+  ) {
     const cleanDeviceId = deviceId?.trim() || null;
+    const isWeb = this.isWebPlatform(clientPlatform);
     let register = null;
 
-    if (cleanDeviceId) {
-      register = await this.prisma.cashRegister.findFirst({
-        where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
-        include: {
-          cashier: { select: { id: true, name: true } },
-          discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
-          movements: true,
-        tips: true,
-          sales: {
-            orderBy: { createdAt: "desc" },
-            include: { payments: true, returns: { include: { items: true } } },
+    const fullInclude = {
+      cashier: { select: { id: true, name: true } },
+      discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
+      movements: true,
+      tips: true,
+      sales: {
+        orderBy: { createdAt: "desc" as const },
+        include: { payments: true, returns: { include: { items: true } } },
+      },
+      _count: { select: { sales: true } },
+    };
+
+    if (isWeb) {
+      if (cashierId) {
+        register = await this.prisma.cashRegister.findFirst({
+          where: {
+            businessId,
+            cashierId,
+            status: "OPEN",
+            registerSource: "WEB",
           },
-          _count: { select: { sales: true } },
+          include: fullInclude,
+          orderBy: { openedAt: "desc" },
+        });
+
+        // Si el usuario tiene turno web abierto y entra desde otro navegador (otro deviceId), re-asociar
+        if (register && cleanDeviceId && register.deviceId !== cleanDeviceId) {
+          const newDeviceName = this.buildWebRegisterName(register.cashier?.name);
+          register = await this.prisma.cashRegister.update({
+            where: { id: register.id },
+            data: {
+              deviceId: cleanDeviceId,
+              deviceName: newDeviceName,
+            },
+            include: fullInclude,
+          });
+        }
+      }
+    } else if (cleanDeviceId) {
+      register = await this.prisma.cashRegister.findFirst({
+        where: {
+          businessId,
+          deviceId: cleanDeviceId,
+          status: "OPEN",
+          registerSource: { not: "WEB" },
         },
+        include: fullInclude,
         orderBy: { openedAt: "desc" },
       });
 
-      // Adopción en getCurrent: si esa computadora no tiene turno pero el usuario tiene uno abierto con deviceId nulo
+      // Adopción en getCurrent: si esa computadora no tiene turno pero el usuario tiene uno abierto con deviceId nulo (no web)
       if (!register && cashierId) {
         const legacyShift = await this.prisma.cashRegister.findFirst({
-          where: { businessId, cashierId, deviceId: null, status: "OPEN" },
+          where: {
+            businessId,
+            cashierId,
+            deviceId: null,
+            status: "OPEN",
+            registerSource: { not: "WEB" },
+          },
           orderBy: { openedAt: "desc" },
         });
         if (legacyShift) {
@@ -486,44 +554,21 @@ export class CashRegisterService {
             where: { businessId, deviceId: cleanDeviceId },
             select: { name: true },
           });
-          await this.prisma.cashRegister.update({
+          register = await this.prisma.cashRegister.update({
             where: { id: legacyShift.id },
             data: {
               deviceId: cleanDeviceId,
               deviceName: posDev?.name || legacyShift.deviceName,
             },
-          });
-          register = await this.prisma.cashRegister.findUnique({
-            where: { id: legacyShift.id },
-            include: {
-              cashier: { select: { id: true, name: true } },
-              discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
-              movements: true,
-        tips: true,
-              sales: {
-                orderBy: { createdAt: "desc" },
-                include: { payments: true, returns: { include: { items: true } } },
-              },
-              _count: { select: { sales: true } },
-            },
+            include: fullInclude,
           });
         }
       }
     } else if (cashierId) {
-      // Sin X-Device-Id: busca por usuario (SIN ATAJO AL NEGOCIO)
+      // Sin X-Device-Id ni plataforma web explícita: busca por usuario
       register = await this.prisma.cashRegister.findFirst({
         where: { businessId, cashierId, status: "OPEN" },
-        include: {
-          cashier: { select: { id: true, name: true } },
-          discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
-          movements: true,
-        tips: true,
-          sales: {
-            orderBy: { createdAt: "desc" },
-            include: { payments: true, returns: { include: { items: true } } },
-          },
-          _count: { select: { sales: true } },
-        },
+        include: fullInclude,
         orderBy: { openedAt: "desc" },
       });
     }
@@ -560,22 +605,95 @@ export class CashRegisterService {
     deviceId?: string,
     deviceName?: string,
     userRole: string = UserRole.CAJERO,
+    clientPlatform?: string,
   ) {
     const cleanDeviceId = deviceId?.trim() || null;
     let cleanDeviceName = deviceName?.trim() || null;
+    const isWeb = this.isWebPlatform(clientPlatform);
+    const openingCash = Number(dto.openingCash ?? dto.initialAmount ?? dto.amount ?? 0);
 
-    if (cleanDeviceId) {
-      if (!cleanDeviceName) {
-        const posDev = await this.prisma.posDevice.findFirst({
-          where: { businessId, deviceId: cleanDeviceId },
+    if (isWeb) {
+      const createdWeb = await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${businessId}:web_shift:${cashierId}`}))`;
+
+        const existingWebOpen = await tx.cashRegister.findFirst({
+          where: {
+            businessId,
+            cashierId,
+            status: "OPEN",
+            registerSource: "WEB",
+          },
+          orderBy: { openedAt: "desc" },
+        });
+
+        if (existingWebOpen) {
+          throw new BadRequestException({
+            statusCode: 400,
+            code: 'WEB_REGISTER_ALREADY_OPEN',
+            message: 'Ya tenés una caja web abierta. Seguí con esa o cerrala antes de abrir otra.',
+            error: 'Bad Request',
+          });
+        }
+
+        const cashierUser = await tx.user.findUnique({
+          where: { id: cashierId },
           select: { name: true },
         });
+        const webDeviceName = this.buildWebRegisterName(cashierUser?.name);
+
+        this.logger.log(
+          `[open][WEB] cashier=${cashierId} businessId=${businessId} deviceId=${cleanDeviceId} deviceName="${webDeviceName}" openingCash=${openingCash}`,
+        );
+
+        return tx.cashRegister.create({
+          data: {
+            businessId,
+            cashierId,
+            openingCash,
+            notes: dto.notes,
+            status: "OPEN",
+            deviceId: cleanDeviceId,
+            deviceName: webDeviceName,
+            registerSource: "WEB",
+          },
+          include: {
+            cashier: { select: { id: true, name: true } },
+            discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
+            movements: true,
+            tips: true,
+            sales: { include: { payments: true, returns: { include: { items: true } } } },
+          },
+        });
+      });
+
+      return this.obfuscateRegister(
+        this.formatRegister(createdWeb),
+        businessId,
+        userRole,
+        cashierId,
+        cleanDeviceId ?? undefined,
+      );
+    }
+
+    let deviceCategory: string | null = null;
+    if (cleanDeviceId) {
+      const posDev = await this.prisma.posDevice.findFirst({
+        where: { businessId, deviceId: cleanDeviceId },
+        select: { name: true, category: true },
+      });
+      deviceCategory = posDev?.category || null;
+      if (!cleanDeviceName) {
         cleanDeviceName = posDev?.name || null;
       }
 
-      // Validar si esa computadora ya tiene turno abierto
+      // Validar si ese equipo físico ya tiene turno abierto
       const openOnDevice = await this.prisma.cashRegister.findFirst({
-        where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
+        where: {
+          businessId,
+          deviceId: cleanDeviceId,
+          status: "OPEN",
+          registerSource: { not: "WEB" },
+        },
       });
       if (openOnDevice) {
         throw new BadRequestException({
@@ -586,14 +704,20 @@ export class CashRegisterService {
         });
       }
 
-      // Adopción de turnos viejos: si no tiene turno y existe uno abierto del mismo usuario con deviceId nulo
+      // Adopción de turnos viejos: si no tiene turno y existe uno abierto del mismo usuario con deviceId nulo (no web)
       const legacyShift = await this.prisma.cashRegister.findFirst({
-        where: { businessId, cashierId, deviceId: null, status: "OPEN" },
+        where: {
+          businessId,
+          cashierId,
+          deviceId: null,
+          status: "OPEN",
+          registerSource: { not: "WEB" },
+        },
         include: {
           cashier: { select: { id: true, name: true } },
           discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
           movements: true,
-        tips: true,
+          tips: true,
           sales: { include: { payments: true, returns: { include: { items: true } } } },
         },
         orderBy: { openedAt: "desc" },
@@ -610,7 +734,7 @@ export class CashRegisterService {
             cashier: { select: { id: true, name: true } },
             discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
             movements: true,
-        tips: true,
+            tips: true,
             sales: { include: { payments: true, returns: { include: { items: true } } } },
           },
         });
@@ -626,8 +750,8 @@ export class CashRegisterService {
       }
     }
 
-    const openingCash = Number(dto.openingCash ?? dto.initialAmount ?? dto.amount ?? 0);
-    this.logger.log(`[open] cashier=${cashierId} businessId=${businessId} deviceId=${cleanDeviceId} openingCash=${openingCash}`);
+    const registerSource = this.resolveRegisterSource(clientPlatform, deviceCategory);
+    this.logger.log(`[open] cashier=${cashierId} businessId=${businessId} deviceId=${cleanDeviceId} source=${registerSource} openingCash=${openingCash}`);
     const created = await this.prisma.cashRegister.create({
       data: {
         businessId,
@@ -637,6 +761,7 @@ export class CashRegisterService {
         status: "OPEN",
         deviceId: cleanDeviceId,
         deviceName: cleanDeviceName,
+        registerSource,
       },
       include: {
         cashier: { select: { id: true, name: true } },
@@ -656,59 +781,123 @@ export class CashRegisterService {
     cashierId?: string,
     userRole?: string,
     deviceId?: string,
+    clientPlatform?: string,
   ) {
     const cleanDeviceId = (deviceId || dto.deviceId || '').trim() || null;
+    const isWeb = this.isWebPlatform(clientPlatform);
+    const isExplicitTarget = Boolean(
+      registerId && registerId !== 'close' && registerId !== 'current',
+    );
     let register;
 
-    if (registerId && registerId !== 'close' && registerId !== 'current') {
+    const closeInclude = {
+      cashier: { select: { id: true, name: true } },
+      discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
+      sales: { include: { payments: true, returns: { include: { items: true } } } },
+      movements: true,
+      tips: true,
+    };
+
+    if (isExplicitTarget) {
+      if (isWeb) {
+        if (userRole !== UserRole.ENCARGADO && userRole !== UserRole.SUPERADMIN) {
+          throw new ForbiddenException('Solo el encargado puede cerrar un turno desde esta ruta');
+        }
+
+        const hasExplicitCash =
+          (dto.closingCash !== undefined && dto.closingCash !== null) ||
+          (dto.actualAmount !== undefined && dto.actualAmount !== null) ||
+          (dto.amount !== undefined && dto.amount !== null) ||
+          typeof (dto as any).counted === 'number' ||
+          (dto.counted && dto.counted.CASH !== undefined && dto.counted.CASH !== null) ||
+          Boolean(
+            (dto.denominations && dto.denominations.length > 0) ||
+              (dto.counted?.denominations && dto.counted.denominations.length > 0),
+          );
+
+        if (!hasExplicitCash) {
+          throw new BadRequestException({
+            statusCode: 400,
+            code: 'CLOSING_CASH_REQUIRED',
+            message: 'Debés ingresar el efectivo contado para cerrar el turno.',
+            error: 'Bad Request',
+          });
+        }
+
+        const rawReason = (dto.reason || dto.discrepancyNote || dto.notes || '').trim();
+        if (rawReason.length < 5) {
+          throw new BadRequestException({
+            statusCode: 400,
+            code: 'REASON_REQUIRED',
+            message: 'El motivo es obligatorio y debe tener al menos 5 caracteres.',
+            error: 'Bad Request',
+          });
+        }
+        if (!dto.reason) {
+          dto.reason = rawReason;
+        }
+      }
+
       register = await this.prisma.cashRegister.findFirst({
-        where: { id: registerId, businessId, status: "OPEN" },
-        include: {
-          cashier: { select: { id: true, name: true } },
-          discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
-          sales: { include: { payments: true, returns: { include: { items: true } } } },
-          movements: true,
-        tips: true,
-        },
+        where: { id: registerId!, businessId, status: "OPEN" },
+        include: closeInclude,
       });
-    } else {
-      if (cleanDeviceId) {
+    } else if (isWeb) {
+      if (cashierId) {
         register = await this.prisma.cashRegister.findFirst({
-          where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
-          include: {
-            cashier: { select: { id: true, name: true } },
-            discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
-            sales: { include: { payments: true, returns: { include: { items: true } } } },
-            movements: true,
-        tips: true,
+          where: {
+            businessId,
+            cashierId,
+            status: "OPEN",
+            registerSource: "WEB",
           },
+          include: closeInclude,
           orderBy: { openedAt: "desc" },
         });
 
-        // Adopción si hay turno de este usuario con deviceId null
+        if (register && cleanDeviceId && register.deviceId !== cleanDeviceId) {
+          const newDeviceName = this.buildWebRegisterName(register.cashier?.name);
+          register = await this.prisma.cashRegister.update({
+            where: { id: register.id },
+            data: {
+              deviceId: cleanDeviceId,
+              deviceName: newDeviceName,
+            },
+            include: closeInclude,
+          });
+        }
+      }
+    } else {
+      if (cleanDeviceId) {
+        register = await this.prisma.cashRegister.findFirst({
+          where: {
+            businessId,
+            deviceId: cleanDeviceId,
+            status: "OPEN",
+            registerSource: { not: "WEB" },
+          },
+          include: closeInclude,
+          orderBy: { openedAt: "desc" },
+        });
+
+        // Adopción si hay turno de este usuario con deviceId null (no web)
         if (!register && cashierId) {
           register = await this.prisma.cashRegister.findFirst({
-            where: { businessId, cashierId, deviceId: null, status: "OPEN" },
-            include: {
-              cashier: { select: { id: true, name: true } },
-              discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
-              sales: { include: { payments: true, returns: { include: { items: true } } } },
-              movements: true,
-        tips: true,
+            where: {
+              businessId,
+              cashierId,
+              deviceId: null,
+              status: "OPEN",
+              registerSource: { not: "WEB" },
             },
+            include: closeInclude,
             orderBy: { openedAt: "desc" },
           });
         }
       } else {
         register = await this.prisma.cashRegister.findFirst({
           where: { businessId, ...(cashierId ? { cashierId } : {}), status: "OPEN" },
-          include: {
-            cashier: { select: { id: true, name: true } },
-            discrepancyAuthorizer: { select: { id: true, name: true, role: true } },
-            sales: { include: { payments: true, returns: { include: { items: true } } } },
-            movements: true,
-        tips: true,
-          },
+          include: closeInclude,
           orderBy: { openedAt: "desc" },
         });
       }
@@ -724,7 +913,7 @@ export class CashRegisterService {
             : 'Solo el encargado puede cerrar el turno de otro usuario',
         );
       }
-      if (cleanDeviceId && register.deviceId && register.deviceId !== cleanDeviceId) {
+      if (!isWeb && cleanDeviceId && register.deviceId && register.deviceId !== cleanDeviceId) {
         throw new ForbiddenException('Los cajeros solo pueden cerrar el turno de su propia computadora');
       }
     }
@@ -1126,7 +1315,7 @@ export class CashRegisterService {
       action: isAboveTolerance ? 'CIERRE_TURNO_CON_DESCUADRE' : (dto.reason ? 'CIERRE_TURNO_FORZADO' : 'CIERRE_TURNO'),
       entityType: 'CashRegister',
       entityId: register.id,
-      approvedById: authorizedById || undefined,
+      approvedById: authorizedById || (isExplicitTarget && cashierId ? cashierId : undefined),
       reason: finalNotes,
       before: isAboveTolerance ? {
         expectedCash: Number(expectedCashDec.toDecimalPlaces(2)),
@@ -1136,6 +1325,14 @@ export class CashRegisterService {
         reason: finalReason,
         note: finalDiscrepancyNote,
       } : undefined,
+      after: {
+        closedByUserId: cashierId || null,
+        registerCashierId: register.cashierId,
+        registerSource: register.registerSource || 'DESKTOP',
+        expectedCash: Number(expectedCashDec.toDecimalPlaces(2)),
+        closingCash: Number(closingCashDec.toDecimalPlaces(2)),
+        difference: Number(differenceDec.toDecimalPlaces(2)),
+      },
     });
 
         // 213a: Barrido de vencimiento y corrección de reservas al cerrar caja
@@ -1188,25 +1385,75 @@ export class CashRegisterService {
   async addMovement(registerId: string | null | undefined, dto: CashMovementDto, businessId: string, userId: string, userRole: string, deviceId?: string, clientPlatform?: string) {
     let register;
     const isTargetingOther = registerId && registerId !== 'movements' && registerId !== 'movement' && registerId !== 'current';
-    
+    const cleanDeviceId = deviceId?.trim() || null;
+    const isWeb = this.isWebPlatform(clientPlatform);
+
     if (isTargetingOther) {
       if (userRole === 'CAJERO') {
-         throw new ForbiddenException("Los cajeros solo pueden agregar movimientos a su turno actual.");
+        throw new ForbiddenException("Los cajeros solo pueden agregar movimientos a su turno actual.");
       }
       register = await this.prisma.cashRegister.findFirst({
         where: { id: registerId, businessId, status: "OPEN" },
+        include: { cashier: { select: { id: true, name: true } } },
       });
+      if (
+        isWeb &&
+        register &&
+        register.cashierId === userId &&
+        register.registerSource === 'WEB' &&
+        cleanDeviceId &&
+        register.deviceId !== cleanDeviceId
+      ) {
+        register = await this.prisma.cashRegister.update({
+          where: { id: register.id },
+          data: {
+            deviceId: cleanDeviceId,
+            deviceName: this.buildWebRegisterName(register.cashier?.name),
+          },
+          include: { cashier: { select: { id: true, name: true } } },
+        });
+      }
+    } else if (isWeb) {
+      register = await this.prisma.cashRegister.findFirst({
+        where: {
+          businessId,
+          cashierId: userId,
+          status: "OPEN",
+          registerSource: "WEB",
+        },
+        include: { cashier: { select: { id: true, name: true } } },
+        orderBy: { openedAt: "desc" },
+      });
+      if (register && cleanDeviceId && register.deviceId !== cleanDeviceId) {
+        register = await this.prisma.cashRegister.update({
+          where: { id: register.id },
+          data: {
+            deviceId: cleanDeviceId,
+            deviceName: this.buildWebRegisterName(register.cashier?.name),
+          },
+          include: { cashier: { select: { id: true, name: true } } },
+        });
+      }
     } else {
-      const cleanDeviceId = deviceId?.trim() || null;
       if (cleanDeviceId) {
         register = await this.prisma.cashRegister.findFirst({
-          where: { businessId, deviceId: cleanDeviceId, status: "OPEN" },
+          where: {
+            businessId,
+            deviceId: cleanDeviceId,
+            status: "OPEN",
+            registerSource: { not: "WEB" },
+          },
           orderBy: { openedAt: "desc" },
         });
       }
       if (!register) {
         register = await this.prisma.cashRegister.findFirst({
-          where: { businessId, cashierId: userId, status: "OPEN" },
+          where: {
+            businessId,
+            cashierId: userId,
+            status: "OPEN",
+            ...(cleanDeviceId ? { registerSource: { not: "WEB" } } : {}),
+          },
           orderBy: { openedAt: "desc" },
         });
       }
@@ -1214,7 +1461,6 @@ export class CashRegisterService {
 
     if (!register) throw new NotFoundException("No hay una caja abierta para registrar movimientos");
 
-    const isWeb = clientPlatform?.toLowerCase().startsWith('web');
     if (isWeb && isTargetingOther && register.cashierId !== userId) {
       throw new ForbiddenException({
         statusCode: 403,
@@ -1659,15 +1905,71 @@ export class CashRegisterService {
       orderBy: { openedAt: "asc" },
     });
 
-    return openShifts.map((s) => ({
-      id: s.id,
-      deviceId: s.deviceId ?? null,
-      deviceName: s.deviceName ?? null,
-      cashierId: s.cashierId,
-      cashierName: s.cashier?.name ?? null,
-      openedAt: s.openedAt,
-      openingCash: Number(s.openingCash),
-      status: s.status,
-    }));
+    const deviceIds = Array.from(
+      new Set(openShifts.map((s) => s.deviceId).filter((id): id is string => Boolean(id && id.trim()))),
+    );
+
+    const [devices, terminals] = await Promise.all([
+      deviceIds.length > 0
+        ? this.prisma.posDevice.findMany({
+            where: { businessId, deviceId: { in: deviceIds } },
+            select: { deviceId: true, category: true, platform: true, lastSeenAt: true },
+          })
+        : Promise.resolve([]),
+      deviceIds.length > 0
+        ? this.prisma.posTerminal.findMany({
+            where: { businessId, deviceIdentifier: { in: deviceIds } },
+            select: {
+              deviceIdentifier: true,
+              lastSeenAt: true,
+              hasPendingOfflineSales: true,
+              pendingSalesCount: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const deviceById = new Map(devices.map((d) => [d.deviceId, d]));
+    const terminalById = new Map(terminals.map((t) => [t.deviceIdentifier, t]));
+
+    return openShifts.map((s) => {
+      const dev = s.deviceId ? deviceById.get(s.deviceId) : undefined;
+      const term = s.deviceId ? terminalById.get(s.deviceId) : undefined;
+
+      const rawSource = (s as any).registerSource as string | undefined;
+      const registerSource: 'WEB' | 'DESKTOP' | 'MOBILE' =
+        rawSource === 'WEB' || rawSource === 'MOBILE' || rawSource === 'DESKTOP'
+          ? rawSource
+          : this.resolveRegisterSource(dev?.platform, dev?.category);
+
+      let lastSeenAt: Date | null = null;
+      if (term?.lastSeenAt && dev?.lastSeenAt) {
+        lastSeenAt = term.lastSeenAt > dev.lastSeenAt ? term.lastSeenAt : dev.lastSeenAt;
+      } else {
+        lastSeenAt = term?.lastSeenAt ?? dev?.lastSeenAt ?? null;
+      }
+
+      const isDesktop = registerSource === 'DESKTOP';
+      const pendingOfflineSalesCount = isDesktop ? (term?.pendingSalesCount ?? 0) : 0;
+      const hasPendingOfflineSales = isDesktop
+        ? Boolean(term?.hasPendingOfflineSales || pendingOfflineSalesCount > 0)
+        : false;
+
+      return {
+        id: s.id,
+        deviceId: s.deviceId ?? null,
+        deviceName: s.deviceName ?? null,
+        registerSource,
+        registerType: registerSource,
+        cashierId: s.cashierId,
+        cashierName: s.cashier?.name ?? null,
+        openedAt: s.openedAt,
+        openingCash: Number(s.openingCash),
+        status: s.status,
+        lastSeenAt,
+        hasPendingOfflineSales,
+        pendingOfflineSalesCount,
+      };
+    });
   }
 }

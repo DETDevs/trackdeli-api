@@ -2327,6 +2327,7 @@ WHERE a."customerId" = c."id"
       await this.ensureCustomerDeliveryReferenceSchema();
       await this.ensureQuotesSchema();
       await this.ensureQuoteReceiptLinksSchema();
+      await this.ensureWebUserCashRegisterSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4757,6 +4758,107 @@ WHERE a."customerId" = c."id"
     } catch (err: any) {
       this.logger.warn(
         `[PrismaService] ⚠ 266b - Advertencia sincronizando enlaces públicos para proformas: ${err.message}`,
+      );
+    }
+  }
+
+  /**
+   * 270a - Turnos web por usuario (registerSource: DESKTOP | WEB | MOBILE).
+   * DDL idempotente con advisory lock 270001.
+   */
+  private async ensureWebUserCashRegisterSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(270001)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_cash_registers"
+            ADD COLUMN IF NOT EXISTS "registerSource" VARCHAR(20) NOT NULL DEFAULT 'DESKTOP';
+        `);
+
+        // Backfill idempotente para turnos existentes a partir de pos_devices y deviceName
+        await this.$executeRawUnsafe(`
+          UPDATE "pos_cash_registers" r
+          SET "registerSource" = 'WEB'
+          WHERE r."registerSource" = 'DESKTOP'
+            AND (
+              EXISTS (
+                SELECT 1
+                FROM "pos_devices" d
+                WHERE d."businessId" = r."businessId"
+                  AND d."deviceId" = r."deviceId"
+                  AND (UPPER(COALESCE(d."category", '')) = 'WEB' OR LOWER(COALESCE(d."platform", '')) LIKE 'web%')
+              )
+              OR r."deviceName" IN ('Móvil Web', 'Navegador Web')
+              OR r."deviceName" ILIKE 'Caja web · %'
+            );
+        `);
+
+        await this.$executeRawUnsafe(`
+          UPDATE "pos_cash_registers" r
+          SET "registerSource" = 'MOBILE'
+          WHERE r."registerSource" = 'DESKTOP'
+            AND EXISTS (
+              SELECT 1
+              FROM "pos_devices" d
+              WHERE d."businessId" = r."businessId"
+                AND d."deviceId" = r."deviceId"
+                AND (UPPER(COALESCE(d."category", '')) = 'MOBILE' OR LOWER(COALESCE(d."platform", '')) LIKE 'mobile%')
+            );
+        `);
+
+        // Ajustar índice único por dispositivo para que aplique solo a equipos físicos (DESKTOP / MOBILE)
+        const devIdxRows: Array<{ indexdef: string }> = await this.$queryRawUnsafe(`
+          SELECT indexdef
+          FROM pg_indexes
+          WHERE schemaname = current_schema()
+            AND indexname = 'pos_cash_registers_business_device_open_idx'
+        `);
+        if (!devIdxRows.length || !devIdxRows[0].indexdef.includes('registerSource')) {
+          await this.$executeRawUnsafe(`
+            DROP INDEX IF EXISTS "pos_cash_registers_business_device_open_idx";
+          `);
+          await this.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_cash_registers_business_device_open_idx"
+            ON "pos_cash_registers"("businessId", "deviceId")
+            WHERE "deviceId" IS NOT NULL AND "status" = 'OPEN' AND "registerSource" <> 'WEB';
+          `);
+        }
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_cash_registers_business_cashier_source_status_idx"
+          ON "pos_cash_registers"("businessId", "cashierId", "registerSource", "status");
+        `);
+
+        // Verificar si existen turnos web abiertos duplicados del mismo usuario antes de crear el índice único
+        const dupWebShifts: Array<{ businessId: string; cashierId: string; cnt: number }> =
+          await this.$queryRawUnsafe(`
+            SELECT "businessId", "cashierId", COUNT(*)::int AS cnt
+            FROM "pos_cash_registers"
+            WHERE "status" = 'OPEN' AND "registerSource" = 'WEB'
+            GROUP BY "businessId", "cashierId"
+            HAVING COUNT(*) > 1
+            LIMIT 1
+          `);
+
+        if (dupWebShifts.length === 0) {
+          await this.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_cash_registers_business_cashier_web_open_idx"
+            ON "pos_cash_registers"("businessId", "cashierId")
+            WHERE "status" = 'OPEN' AND "registerSource" = 'WEB';
+          `);
+        } else {
+          this.logger.warn(
+            '[PrismaService] ⚠ 270a - Se detectaron turnos web abiertos duplicados (huérfanos); se omite índice único en BD para no bloquear el arranque y se aplica la regla en código.',
+          );
+        }
+
+        this.logger.log('[PrismaService] ✓ 270a - Esquema de turnos web por usuario sincronizado');
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(270001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[PrismaService] ⚠ 270a - Advertencia sincronizando esquema de turnos web por usuario: ${err.message}`,
       );
     }
   }

@@ -1502,6 +1502,7 @@ model CashRegister {
   cashier       User       @relation("CashierRegisters", fields: [cashierId], references: [id])
   deviceId      String?    @db.VarChar(100)
   deviceName    String?    @db.VarChar(150)
+  registerSource String    @default("DESKTOP") @db.VarChar(20)
 
   openedAt      DateTime   @default(now())
   closedAt      DateTime?
@@ -1542,6 +1543,7 @@ model CashRegister {
 
   @@index([businessId, status, closedAt])
   @@index([businessId, deviceId])
+  @@index([businessId, cashierId, registerSource, status])
   @@map("pos_cash_registers")
 }
 

@@ -49,8 +49,9 @@ export class CashRegisterController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
     @Headers("x-device-id") deviceId?: string,
+    @Headers("x-client-platform") hPlatform?: string,
   ) {
-    return this.service.getCurrent(resolveBusinessId(user, qBid), user.sub, user.role, deviceId);
+    return this.service.getCurrent(resolveBusinessId(user, qBid), user.sub, user.role, deviceId, hPlatform);
   }
 
   @Get("status")
@@ -58,8 +59,9 @@ export class CashRegisterController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
     @Headers("x-device-id") deviceId?: string,
+    @Headers("x-client-platform") hPlatform?: string,
   ) {
-    const current = await this.service.getCurrent(resolveBusinessId(user, qBid), user.sub, user.role, deviceId);
+    const current = await this.service.getCurrent(resolveBusinessId(user, qBid), user.sub, user.role, deviceId, hPlatform);
     return {
       isOpen: !!current,
       shiftId: current?.id ?? null,
@@ -77,10 +79,11 @@ export class CashRegisterController {
     @Query("businessId") qBid?: string,
     @Headers("x-device-id") hDeviceId?: string,
     @Headers("x-device-name") hDeviceName?: string,
+    @Headers("x-client-platform") hPlatform?: string,
   ) {
     const deviceId = (hDeviceId || dto.deviceId || '').trim() || undefined;
     const deviceName = (hDeviceName || dto.deviceName || '').trim() || undefined;
-    return this.service.open(dto, resolveBusinessId(user, qBid), user.sub, deviceId, deviceName, user.role);
+    return this.service.open(dto, resolveBusinessId(user, qBid), user.sub, deviceId, deviceName, user.role, hPlatform);
   }
 
   @Post("close")
@@ -92,13 +95,13 @@ export class CashRegisterController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
     @Headers("x-device-id") hDeviceId?: string,
+    @Headers("x-client-platform") hPlatform?: string,
   ) {
     const deviceId = (hDeviceId || dto.deviceId || '').trim() || undefined;
-    return this.service.close(null, dto, resolveBusinessId(user, qBid), user.sub, user.role, deviceId);
+    return this.service.close(null, dto, resolveBusinessId(user, qBid), user.sub, user.role, deviceId, hPlatform);
   }
 
   @Post(":id/close")
-  @UseGuards(NoWebPlatformGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
   close(
@@ -107,14 +110,17 @@ export class CashRegisterController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
     @Headers("x-device-id") hDeviceId?: string,
+    @Headers("x-client-platform") hPlatform?: string,
   ) {
+    if (user.role !== UserRole.ENCARGADO && user.role !== UserRole.SUPERADMIN) {
+      throw new ForbiddenException('Solo el encargado puede cerrar el turno de otra caja');
+    }
     const deviceId = (hDeviceId || dto.deviceId || '').trim() || undefined;
-    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub, user.role, deviceId);
+    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub, user.role, deviceId, hPlatform);
   }
 
   @Post(":id/force-close")
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
-  @UseGuards(NoWebPlatformGuard)
   @UseInterceptors(IdempotencyInterceptor)
   @RequirePosAction(PosAction.CIERRE_TURNO_OTRO)
   forceClose(
@@ -123,6 +129,7 @@ export class CashRegisterController {
     @CurrentUser() user: JwtPayload,
     @Query("businessId") qBid?: string,
     @Headers("x-device-id") hDeviceId?: string,
+    @Headers("x-client-platform") hPlatform?: string,
   ) {
     if (user.role === UserRole.CAJERO || (user.role !== UserRole.ENCARGADO && user.role !== UserRole.SUPERADMIN)) {
       throw new ForbiddenException('Solo el encargado puede forzar el cierre de turno de otro usuario');
@@ -135,7 +142,7 @@ export class CashRegisterController {
       });
     }
     const deviceId = (hDeviceId || dto.deviceId || '').trim() || undefined;
-    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub, user.role, deviceId);
+    return this.service.close(id, dto, resolveBusinessId(user, qBid), user.sub, user.role, deviceId, hPlatform);
   }
 
   @Post("movements")
