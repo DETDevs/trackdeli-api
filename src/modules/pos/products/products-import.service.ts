@@ -147,6 +147,62 @@ export class ProductsImportService {
     return !row || row.every((c) => c === null || c === undefined || String(c).trim() === '');
   }
 
+  private unwrapExcelCellValue(val: any): any {
+    if (val === null || val === undefined || val instanceof Date) return val;
+    if (typeof val === 'object') {
+      if ('result' in val) {
+        const res = (val as any).result;
+        if (res && typeof res === 'object' && 'error' in res) return '';
+        return res ?? '';
+      }
+      if (Array.isArray((val as any).richText)) {
+        return (val as any).richText.map((r: any) => r?.text ?? '').join('');
+      }
+      if ('text' in val) {
+        return this.unwrapExcelCellValue((val as any).text);
+      }
+    }
+    return val;
+  }
+
+  private async normalizeXlsxBuffer(fileBuffer: Buffer): Promise<Buffer> {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const JSZip = require('jszip');
+    const zip = await JSZip.loadAsync(fileBuffer);
+    let modified = false;
+    for (const [name, entry] of Object.entries<any>(zip.files)) {
+      if (!entry.dir && (name.endsWith('.xml') || name.endsWith('.rels'))) {
+        const content: string = await entry.async('string');
+        const cleaned = content
+          .replace(/^\uFEFF/, '')
+          .replace(/<x:/g, '<')
+          .replace(/<\/x:/g, '</')
+          .replace(/\s+xmlns:x=/g, ' xmlns=');
+        if (cleaned !== content) {
+          zip.file(name, cleaned);
+          modified = true;
+        }
+      }
+    }
+    return modified ? await zip.generateAsync({ type: 'nodebuffer' }) : fileBuffer;
+  }
+
+  private async loadExcelWorkbook(fileBuffer: Buffer): Promise<exceljs.Workbook> {
+    const workbook = new exceljs.Workbook();
+    try {
+      await workbook.xlsx.load(fileBuffer as any);
+      if (workbook.worksheets.length > 0) {
+        return workbook;
+      }
+    } catch {
+      // Fallback below for OpenXML files using explicit `x:` namespace prefix or BOM
+    }
+    const normalizedBuffer = await this.normalizeXlsxBuffer(fileBuffer);
+    const fallbackWorkbook = new exceljs.Workbook();
+    await fallbackWorkbook.xlsx.load(normalizedBuffer as any);
+    return fallbackWorkbook;
+  }
+
   private isEqual(a: any, b: any): boolean {
     if (a === b) return true;
     if (a == null && b == null) return true; // loose equality checks null == undefined
@@ -251,9 +307,8 @@ export class ProductsImportService {
         throw new BadRequestException('Error al parsear archivo CSV');
       }
     } else {
-      const workbook = new exceljs.Workbook();
       try {
-        await workbook.xlsx.load(fileBuffer as any);
+        const workbook = await this.loadExcelWorkbook(fileBuffer);
         sheets = workbook.worksheets.map(ws => ws.name);
         const ws = workbook.worksheets[0];
         ws.eachRow((row, rowNumber) => {
@@ -263,7 +318,7 @@ export class ProductsImportService {
         rows = rows.map(r => {
           const arr = [...r];
           arr.shift();
-          return arr;
+          return arr.map(c => this.unwrapExcelCellValue(c));
         });
       } catch (e) {
         throw new BadRequestException('Error al parsear archivo Excel. Verifique que sea un .xlsx válido.');
@@ -400,8 +455,7 @@ export class ProductsImportService {
     if (isCsv) {
       rows = parse(fileBuffer, { skip_empty_lines: true, relax_column_count: true });
     } else {
-      const workbook = new exceljs.Workbook();
-      await workbook.xlsx.load(fileBuffer as any);
+      const workbook = await this.loadExcelWorkbook(fileBuffer);
       const ws = workbook.getWorksheet(sheetName) || workbook.worksheets[0];
       ws.eachRow((row, rowNumber) => {
         rows.push(row.values as any[]);
@@ -409,7 +463,7 @@ export class ProductsImportService {
       rows = rows.map(r => {
         const arr = Array.isArray(r) ? [...r] : Object.values(r);
         arr.shift();
-        return arr;
+        return arr.map(c => this.unwrapExcelCellValue(c));
       });
       // console.log("EXCEL ROWS:", rows);
     }
