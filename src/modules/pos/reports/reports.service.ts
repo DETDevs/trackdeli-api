@@ -89,12 +89,24 @@ export class ReportsService {
           i."productName" AS product_name,
           GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0))::float AS net_qty,
           (
-            ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
-            * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
+            CASE
+              WHEN s."taxModel" = 'PER_LINE' THEN
+                GREATEST(0, i.subtotal - COALESCE(i."manualDiscountShare", 0))
+                * (CASE WHEN i.quantity > 0 THEN GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)) / i.quantity ELSE 0 END)
+              ELSE
+                ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
+                * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
+            END
           )::float AS line_revenue,
           (
-            ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
-            * (CASE WHEN s.subtotal > 0 THEN (s."discountAmount" / s.subtotal) ELSE 0 END)
+            CASE
+              WHEN s."taxModel" = 'PER_LINE' THEN
+                COALESCE(i."manualDiscountShare", 0)
+                * (CASE WHEN i.quantity > 0 THEN GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)) / i.quantity ELSE 0 END)
+              ELSE
+                ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
+                * (CASE WHEN s.subtotal > 0 THEN (s."discountAmount" / s.subtotal) ELSE 0 END)
+            END
           )::float AS line_discount,
           COALESCE(i."unit_cost", pc.unit_cost)::float AS unit_cost,
           CASE
@@ -298,7 +310,7 @@ export class ReportsService {
               { productName: { contains: 'domicilio', mode: 'insensitive' } },
             ],
           },
-          select: { id: true },
+          select: { id: true, discount: true, manualDiscountShare: true },
         },
       },
     });
@@ -314,6 +326,13 @@ export class ReportsService {
       if (baseFee.lte(0)) continue;
 
       const hasDeliveryItem = (s.items || []).length > 0;
+      const deliveryItemDiscount = (s.items || []).reduce(
+        (sum, it: any) =>
+          sum
+            .plus(new Prisma.Decimal(it.manualDiscountShare || 0))
+            .plus(new Prisma.Decimal(it.discount || 0)),
+        new Prisma.Decimal(0),
+      );
       if (
         hasDeliveryItem &&
         s.taxModel === 'LEGACY' &&
@@ -326,10 +345,19 @@ export class ReportsService {
       }
 
       if (hasDeliveryItem && Number(s.subtotal || 0) > 0 && Number(s.discountAmount || 0) > 0) {
-        const sub = new Prisma.Decimal(s.subtotal);
-        const disc = new Prisma.Decimal(s.discountAmount);
-        const factor = Prisma.Decimal.max(0, new Prisma.Decimal(1).minus(disc.div(sub)));
-        baseFee = baseFee.mul(factor);
+        if (s.taxModel === 'PER_LINE') {
+          // 271a2: En ventas nuevas PER_LINE la línea de envío se guarda con manualDiscountShare = 0 y discount = 0,
+          // por lo que el ingreso por envío es el monto completo. En ventas PER_LINE anteriores al 271a2,
+          // la línea de envío tiene manualDiscountShare > 0 y se respeta ese descuento histórico.
+          if (deliveryItemDiscount.gt(0)) {
+            baseFee = Prisma.Decimal.max(0, baseFee.minus(deliveryItemDiscount));
+          }
+        } else {
+          const sub = new Prisma.Decimal(s.subtotal);
+          const disc = new Prisma.Decimal(s.discountAmount);
+          const factor = Prisma.Decimal.max(0, new Prisma.Decimal(1).minus(disc.div(sub)));
+          baseFee = baseFee.mul(factor);
+        }
       }
 
       if (s.status === 'PARTIALLY_RETURNED' && Number(s.total || 0) > 0) {
@@ -1181,8 +1209,14 @@ export class ReportsService {
         this.prisma.$queryRaw<any[]>`
           SELECT
             COALESCE(SUM(
-              ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
-              * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
+              CASE
+                WHEN s."taxModel" = 'PER_LINE' THEN
+                  GREATEST(0, i.subtotal - COALESCE(i."manualDiscountShare", 0))
+                  * (CASE WHEN i.quantity > 0 THEN GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)) / i.quantity ELSE 0 END)
+                ELSE
+                  ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
+                  * (CASE WHEN s.subtotal > 0 THEN (1 - (s."discountAmount" / s.subtotal)) ELSE 1 END)
+              END
             ), 0)::float AS delivery_revenue
           FROM pos_sale_items i
           JOIN pos_sales s ON s.id = i."saleId"
@@ -2238,6 +2272,7 @@ export class ReportsService {
             COALESCE(SUM(GREATEST(0, s.subtotal - COALESCE(deliv_items.deliv_subtotal, 0))), 0)::float AS "prodGrossSales",
             COALESCE(SUM(GREATEST(0, s."discountAmount" - (
               CASE
+                WHEN s."taxModel" = 'PER_LINE' THEN COALESCE(deliv_items.deliv_discount, 0)
                 WHEN COALESCE(deliv_items.deliv_discount, 0) > 0 THEN COALESCE(deliv_items.deliv_discount, 0)
                 WHEN s.subtotal > 0 THEN s."discountAmount" * (COALESCE(deliv_items.deliv_subtotal, 0) / s.subtotal)
                 ELSE 0
@@ -2248,6 +2283,7 @@ export class ReportsService {
               GREATEST(0, s.subtotal - COALESCE(deliv_items.deliv_subtotal, 0))
               - GREATEST(0, s."discountAmount" - (
                   CASE
+                    WHEN s."taxModel" = 'PER_LINE' THEN COALESCE(deliv_items.deliv_discount, 0)
                     WHEN COALESCE(deliv_items.deliv_discount, 0) > 0 THEN COALESCE(deliv_items.deliv_discount, 0)
                     WHEN s.subtotal > 0 THEN s."discountAmount" * (COALESCE(deliv_items.deliv_subtotal, 0) / s.subtotal)
                     ELSE 0

@@ -832,26 +832,22 @@ export class SalesService {
         });
       }
 
-      // 221a / 271a: Si es A Domicilio y hay costo de envío, agregar línea de envío al comprobante (siempre sin IVA)
-      if (saleChannel === 'DOMICILIO' && effectiveDeliveryFee > 0) {
-        const alreadyHasDeliveryItem = dto.items.some(
-          (it) => !it.productId && (it.productName.toLowerCase().includes('envío') || it.productName.toLowerCase().includes('domicilio')),
+      // 221a / 271a / 271a2: El descuento manual aplica solo a la mercadería.
+      // Primero se calculan los totales de productos con el descuento, y luego se suma la línea
+      // "Envío a domicilio" con su monto completo, sin descuento y sin IVA (taxable: false).
+      const shouldAppendDeliveryLine =
+        saleChannel === 'DOMICILIO' &&
+        effectiveDeliveryFee > 0 &&
+        !dto.items.some(
+          (it) =>
+            !it.productId &&
+            (it.productName.toLowerCase().includes('envío') ||
+              it.productName.toLowerCase().includes('envio') ||
+              it.productName.toLowerCase().includes('domicilio')),
         );
-        if (!alreadyHasDeliveryItem) {
-          lineCostData.push({ unitCost: null, costSource: 'NONE' });
-          rawItemsForCalc.push({
-            productId: null,
-            productName: 'Envío a domicilio',
-            barcode: null,
-            unitPrice: effectiveDeliveryFee,
-            priceTier: 'RETAIL',
-            quantity: 1,
-            discount: 0,
-            listPrice: null,
-            taxable: false,
-          });
-        }
-      }
+      const deliveryFeeAmount = shouldAppendDeliveryLine
+        ? Math.round(effectiveDeliveryFee * 100) / 100
+        : 0;
 
       const calcResult = calculateSaleTotals(
         rawItemsForCalc,
@@ -860,10 +856,10 @@ export class SalesService {
         Boolean(dto.isSplitSale),
       );
 
-      const subtotal = calcResult.subtotal;
+      const subtotal = Math.round((calcResult.subtotal + deliveryFeeAmount) * 100) / 100;
       const discountAmount = calcResult.discountAmount;
 
-      // Validación de descuento según políticas
+      // Validación de descuento según políticas (sobre el subtotal de mercadería)
       const requestedDiscount = dto.discountAmount || 0;
       if (requestedDiscount > 0) {
         if (!policies.discountsEnabled) {
@@ -901,9 +897,12 @@ export class SalesService {
       const appliedTaxIncluded = calcResult.taxIncluded;
       const appliedTaxRate = calcResult.taxRate;
       const taxAmount = calcResult.taxAmount;
-      const total = calcResult.total;
+      const total = Math.round((calcResult.total + deliveryFeeAmount) * 100) / 100;
       const taxModel = calcResult.taxModel;
-      const listPriceTotal = calcResult.listPriceTotal;
+      const listPriceTotal =
+        calcResult.taxModel === 'PER_LINE'
+          ? Math.round((calcResult.listPriceTotal + deliveryFeeAmount) * 100) / 100
+          : calcResult.listPriceTotal;
       const listDiscountTotal = calcResult.listDiscountTotal;
 
       let hasAuditDiscrepancy = false;
@@ -946,6 +945,28 @@ export class SalesService {
         unitCost: lineCostData[idx]?.unitCost ?? null,
         costSource: lineCostData[idx]?.costSource ?? 'NONE',
       }));
+
+      if (shouldAppendDeliveryLine && deliveryFeeAmount > 0) {
+        processedItems.push({
+          productId: null,
+          productName: 'Envío a domicilio',
+          barcode: null,
+          unitPrice: deliveryFeeAmount,
+          priceTier: 'RETAIL',
+          quantity: 1,
+          discount: 0,
+          subtotal: deliveryFeeAmount,
+          listPrice: null,
+          listPriceDiscount: 0,
+          manualDiscountShare: 0,
+          taxable: false,
+          taxRate: 0,
+          taxAmount: 0,
+          origin: 'CASHIER',
+          unitCost: null,
+          costSource: 'NONE',
+        });
+      }
 
       // 1. Detectar porción de crédito y prima
       const hasDirectCredit = (dto.paymentMethod as any) === PosPaymentMethod.CREDITO || (dto as any).paymentType === PosPaymentMethod.CREDITO;
