@@ -832,15 +832,12 @@ export class SalesService {
         });
       }
 
-      // 221a: Si es A Domicilio y hay costo de envío, agregar línea de envío al comprobante
+      // 221a / 271a: Si es A Domicilio y hay costo de envío, agregar línea de envío al comprobante (siempre sin IVA)
       if (saleChannel === 'DOMICILIO' && effectiveDeliveryFee > 0) {
         const alreadyHasDeliveryItem = dto.items.some(
           (it) => !it.productId && (it.productName.toLowerCase().includes('envío') || it.productName.toLowerCase().includes('domicilio')),
         );
         if (!alreadyHasDeliveryItem) {
-          const isDeliveryTaxable = business.deliveryTaxable !== null && business.deliveryTaxable !== undefined
-            ? business.deliveryTaxable
-            : Boolean(business.taxEnabled);
           lineCostData.push({ unitCost: null, costSource: 'NONE' });
           rawItemsForCalc.push({
             productId: null,
@@ -851,7 +848,7 @@ export class SalesService {
             quantity: 1,
             discount: 0,
             listPrice: null,
-            taxable: isDeliveryTaxable,
+            taxable: false,
           });
         }
       }
