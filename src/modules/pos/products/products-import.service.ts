@@ -513,9 +513,13 @@ export class ProductsImportService {
     const existingProducts = await this.prisma.product.findMany({ where: { businessId } });
     const productBySku = new Map<string, any>();
     const productByName = new Map<string, any>();
+    const productByBarcode = new Map<string, any>();
     for (const p of existingProducts) {
       if (p.sku) productBySku.set(this.normalizeStr(p.sku), p);
       productByName.set(this.normalizeStr(p.name), p);
+      if (p.barcode && String(p.barcode).trim()) {
+        productByBarcode.set(String(p.barcode).trim(), p);
+      }
     }
 
     const categories = await this.prisma.category.findMany({ where: { businessId } });
@@ -529,8 +533,9 @@ export class ProductsImportService {
     const toCreate: any[] = [];
     const toUpdate: any[] = [];
 
-    const processedSkus = new Set<string>();
-    const processedNames = new Set<string>();
+    const processedSkus = new Map<string, number>();
+    const processedNames = new Map<string, number>();
+    const processedBarcodes = new Map<string, number>();
 
     for (let rIdx = 0; rIdx < dataRows.length; rIdx++) {
       const row = dataRows[rIdx];
@@ -722,6 +727,8 @@ export class ProductsImportService {
 
       const skuKey = payload.core.sku ? this.normalizeStr(payload.core.sku) : '';
       const nameKey = this.normalizeStr(payload.core.name);
+      const barcodeKey = payload.core.barcode ? String(payload.core.barcode).trim() : '';
+      if (barcodeKey) payload.core.barcode = barcodeKey;
 
       // Igual que el formulario: un SERVICIO no controla inventario.
       if (payload.core.type === 'SERVICE') {
@@ -731,15 +738,49 @@ export class ProductsImportService {
         delete payload.core.maxStock;
       }
 
-      if ((skuKey && processedSkus.has(skuKey)) || processedNames.has(nameKey)) {
-        result.errors.push({ row: rowNum, column: '', message: 'Fila duplicada en el archivo de importación.' });
+      if (skuKey && processedSkus.has(skuKey)) {
+        result.errors.push({
+          row: rowNum,
+          column: 'sku',
+          message: `SKU '${payload.core.sku}' duplicado en el archivo (ya aparece en la fila ${processedSkus.get(skuKey)}).`,
+        });
         continue;
       }
-      if (skuKey) processedSkus.add(skuKey);
-      processedNames.add(nameKey);
+      if (processedNames.has(nameKey)) {
+        result.errors.push({
+          row: rowNum,
+          column: 'name',
+          message: `Nombre '${payload.core.name}' duplicado en el archivo (ya aparece en la fila ${processedNames.get(nameKey)}).`,
+        });
+        continue;
+      }
+      if (barcodeKey && processedBarcodes.has(barcodeKey)) {
+        result.errors.push({
+          row: rowNum,
+          column: 'barcode',
+          message: `Código de barras '${barcodeKey}' duplicado en el archivo (ya aparece en la fila ${processedBarcodes.get(barcodeKey)}).`,
+        });
+        continue;
+      }
 
       let existing = skuKey ? productBySku.get(skuKey) : productByName.get(nameKey);
       if (!existing && !skuKey) existing = productByName.get(nameKey);
+
+      if (barcodeKey) {
+        const existingByBarcode = productByBarcode.get(barcodeKey);
+        if (existingByBarcode && (!existing || existingByBarcode.id !== existing.id)) {
+          result.errors.push({
+            row: rowNum,
+            column: 'barcode',
+            message: `El código de barras '${barcodeKey}' ya pertenece al producto '${existingByBarcode.name}'.`,
+          });
+          continue;
+        }
+      }
+
+      if (skuKey) processedSkus.set(skuKey, rowNum);
+      processedNames.set(nameKey, rowNum);
+      if (barcodeKey) processedBarcodes.set(barcodeKey, rowNum);
 
       const hasWholesalePrice = payload.core.wholesalePrice !== undefined && payload.core.wholesalePrice !== null;
       const hasWholesaleMinQty = payload.core.wholesaleMinQty !== undefined && payload.core.wholesaleMinQty !== null;
@@ -915,66 +956,75 @@ export class ProductsImportService {
     }
 
     if (!dryRun) {
-      await this.prisma.$transaction(async (tx) => {
-        for (const item of toCreate) {
-          const p = await tx.product.create({ data: item.data });
-          const stockNum = Number(p.stock);
-          if (p.trackStock && stockNum > 0) {
-            let batchId: string | null = null;
-            if (business?.tracksBatches && p.tracksBatches) {
-              if (item.lotNumber) {
-                const batch = await this.batchesService.receive(tx, {
-                  businessId,
-                  productId: p.id,
-                  batchNumber: item.lotNumber,
-                  expiryDate: item.expiryDate,
-                  qty: stockNum,
-                  cost: p.cost ? Number(p.cost) : null,
-                });
-                batchId = batch.id;
-              } else {
-                const batch = await this.batchesService.ensureInitialBatch(
-                  tx,
-                  businessId,
-                  p.id,
-                  stockNum,
-                  p.cost ? Number(p.cost) : null,
-                );
-                batchId = batch?.id || null;
-              }
-            }
-            await tx.stockMovement.create({
-              data: {
-                businessId,
-                productId: p.id,
-                userId,
-                type: StockMovementType.INITIAL,
-                quantity: p.stock,
-                stockBefore: 0,
-                stockAfter: p.stock,
-                concept: 'Importación de catálogo (inicial)',
-                batchId,
-              },
-            });
-          }
-          result.created++;
-        }
-        for (const item of toUpdate) {
-          const p = await tx.product.update({ where: { id: item.id }, data: item.data });
-          if (item.stockDiff !== 0) {
-            let batchId: string | null = null;
-            if (business?.tracksBatches && p.tracksBatches) {
-              if (item.stockDiff > 0) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          for (const item of toCreate) {
+            const p = await tx.product.create({ data: item.data });
+            const stockNum = Number(p.stock);
+            if (p.trackStock && stockNum > 0) {
+              let batchId: string | null = null;
+              if (business?.tracksBatches && p.tracksBatches) {
                 if (item.lotNumber) {
                   const batch = await this.batchesService.receive(tx, {
                     businessId,
                     productId: p.id,
                     batchNumber: item.lotNumber,
                     expiryDate: item.expiryDate,
-                    qty: item.stockDiff,
+                    qty: stockNum,
                     cost: p.cost ? Number(p.cost) : null,
                   });
                   batchId = batch.id;
+                } else {
+                  const batch = await this.batchesService.ensureInitialBatch(
+                    tx,
+                    businessId,
+                    p.id,
+                    stockNum,
+                    p.cost ? Number(p.cost) : null,
+                  );
+                  batchId = batch?.id || null;
+                }
+              }
+              await tx.stockMovement.create({
+                data: {
+                  businessId,
+                  productId: p.id,
+                  userId,
+                  type: StockMovementType.INITIAL,
+                  quantity: p.stock,
+                  stockBefore: 0,
+                  stockAfter: p.stock,
+                  concept: 'Importación de catálogo (inicial)',
+                  batchId,
+                },
+              });
+            }
+            result.created++;
+          }
+          for (const item of toUpdate) {
+            const p = await tx.product.update({ where: { id: item.id }, data: item.data });
+            if (item.stockDiff !== 0) {
+              let batchId: string | null = null;
+              if (business?.tracksBatches && p.tracksBatches) {
+                if (item.stockDiff > 0) {
+                  if (item.lotNumber) {
+                    const batch = await this.batchesService.receive(tx, {
+                      businessId,
+                      productId: p.id,
+                      batchNumber: item.lotNumber,
+                      expiryDate: item.expiryDate,
+                      qty: item.stockDiff,
+                      cost: p.cost ? Number(p.cost) : null,
+                    });
+                    batchId = batch.id;
+                  } else {
+                    const adj = await this.batchesService.adjust(tx, {
+                      businessId,
+                      productId: p.id,
+                      delta: item.stockDiff,
+                    });
+                    batchId = adj?.batchId || null;
+                  }
                 } else {
                   const adj = await this.batchesService.adjust(tx, {
                     businessId,
@@ -983,49 +1033,60 @@ export class ProductsImportService {
                   });
                   batchId = adj?.batchId || null;
                 }
-              } else {
-                const adj = await this.batchesService.adjust(tx, {
+              }
+              await tx.stockMovement.create({
+                data: {
                   businessId,
                   productId: p.id,
-                  delta: item.stockDiff,
-                });
-                batchId = adj?.batchId || null;
-              }
-            }
-            await tx.stockMovement.create({
-              data: {
-                businessId,
-                productId: p.id,
-                userId,
-                type: StockMovementType.AJUSTE,
-                quantity: item.stockDiff,
-                stockBefore: item.oldStock,
-                stockAfter: p.stock,
-                concept: 'Importación de catálogo (edición manual)',
-                batchId,
-              },
-            });
-          } else if (business?.tracksBatches && p.tracksBatches && item.lotNumber) {
-            const currentStock = Number(p.stock);
-            if (currentStock > 0) {
-              const existingBatch = await tx.productBatch.findFirst({
-                where: { businessId, productId: p.id, batchNumber: item.lotNumber },
+                  userId,
+                  type: StockMovementType.AJUSTE,
+                  quantity: item.stockDiff,
+                  stockBefore: item.oldStock,
+                  stockAfter: p.stock,
+                  concept: 'Importación de catálogo (edición manual)',
+                  batchId,
+                },
               });
-              if (!existingBatch) {
-                await this.batchesService.receive(tx, {
-                  businessId,
-                  productId: p.id,
-                  batchNumber: item.lotNumber,
-                  expiryDate: item.expiryDate,
-                  qty: currentStock,
-                  cost: p.cost ? Number(p.cost) : null,
+            } else if (business?.tracksBatches && p.tracksBatches && item.lotNumber) {
+              const currentStock = Number(p.stock);
+              if (currentStock > 0) {
+                const existingBatch = await tx.productBatch.findFirst({
+                  where: { businessId, productId: p.id, batchNumber: item.lotNumber },
                 });
+                if (!existingBatch) {
+                  await this.batchesService.receive(tx, {
+                    businessId,
+                    productId: p.id,
+                    batchNumber: item.lotNumber,
+                    expiryDate: item.expiryDate,
+                    qty: currentStock,
+                    cost: p.cost ? Number(p.cost) : null,
+                  });
+                }
               }
             }
+            result.updated++;
           }
-          result.updated++;
+        });
+      } catch (err: any) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          const target = Array.isArray(err.meta?.target) ? err.meta.target.join(',') : String(err.meta?.target || '');
+          if (target.includes('barcode')) {
+            throw new BadRequestException(
+              'Hay códigos de barras duplicados en el archivo o que ya existen en tu catálogo. Revisá la columna Código de Barras y volvé a intentar.',
+            );
+          }
+          if (target.includes('sku')) {
+            throw new BadRequestException(
+              'Hay SKUs duplicados en el archivo o que ya existen en tu catálogo. Revisá la columna SKU y volvé a intentar.',
+            );
+          }
+          throw new BadRequestException(
+            'Se encontró un valor duplicado que ya existe en tu catálogo. Revisá los datos e intentá de nuevo.',
+          );
         }
-      });
+        throw err;
+      }
     } else {
       result.created = toCreate.length;
       result.updated = toUpdate.length;
