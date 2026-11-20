@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 
-export type PriceTier = 'RETAIL' | 'WHOLESALE';
+export type PriceTier = 'RETAIL' | 'WHOLESALE' | 'PROMO';
 
 export interface ResolvedUnitPrice {
   unitPrice: number;
@@ -8,18 +8,22 @@ export interface ResolvedUnitPrice {
 }
 
 /**
- * 176a - Función única usada por todos los flujos de venta:
- * Si wholesale_enabled en el negocio y el producto tiene precio por mayor y qty >= wholesale_min_qty -> precio por mayor;
- * si no -> precio normal.
+ * 176a / 292a - Función única usada por todos los flujos de venta:
+ * Prioridad automática por línea:
+ * 1. WHOLESALE: si wholesale_enabled y el producto tiene wholesalePrice y qty >= wholesaleMinQty
+ * 2. PROMO: si no aplica precio etiqueta (useListPrice && listPrice > price) y el producto tiene promoDiscountPct (0 < pct < 100)
+ * 3. RETAIL: precio normal
  */
 export function resolveLineUnitPrice(
   product: {
     price: number;
     wholesalePrice?: Prisma.Decimal | number | null;
     wholesaleMinQty?: Prisma.Decimal | number | null;
+    promoDiscountPct?: Prisma.Decimal | number | null;
+    listPrice?: Prisma.Decimal | number | null;
   },
   qty: number,
-  business?: { wholesaleEnabled?: boolean | null } | null,
+  business?: { wholesaleEnabled?: boolean | null; useListPrice?: boolean | null } | null,
 ): ResolvedUnitPrice {
   const isWholesaleActive = Boolean(business?.wholesaleEnabled);
   const wholesalePrice =
@@ -38,6 +42,28 @@ export function resolveLineUnitPrice(
     return {
       unitPrice: wholesalePrice,
       priceTier: 'WHOLESALE',
+    };
+  }
+
+  const basePrice = Number(product.price) || 0;
+  const rawListPrice = product.listPrice != null ? Number(product.listPrice) : null;
+  const hasActiveListDiscount =
+    Boolean(business?.useListPrice) &&
+    rawListPrice !== null &&
+    rawListPrice > basePrice;
+
+  const rawPromoPct =
+    product.promoDiscountPct != null ? Number(product.promoDiscountPct) : null;
+  if (
+    !hasActiveListDiscount &&
+    rawPromoPct !== null &&
+    Number.isFinite(rawPromoPct) &&
+    rawPromoPct > 0 &&
+    rawPromoPct < 100
+  ) {
+    return {
+      unitPrice: Math.round(basePrice * (1 - rawPromoPct / 100) * 100) / 100,
+      priceTier: 'PROMO',
     };
   }
 
@@ -103,6 +129,7 @@ export function resolveChannelUnitPrice(
     price: number;
     wholesalePrice?: Prisma.Decimal | number | null;
     wholesaleMinQty?: Prisma.Decimal | number | null;
+    promoDiscountPct?: Prisma.Decimal | number | null;
     listPrice?: Prisma.Decimal | number | null;
   },
   qty: number,
@@ -113,8 +140,12 @@ export function resolveChannelUnitPrice(
   priceTier: PriceTier;
   listPrice?: number | null;
 } {
-  const resolved = resolveLineUnitPrice(product, qty, business);
   const ch = (channel || 'MOSTRADOR').toUpperCase();
+  const effectiveProduct =
+    ch === 'PEDIDOSYA'
+      ? { ...product, promoDiscountPct: null }
+      : product;
+  const resolved = resolveLineUnitPrice(effectiveProduct, qty, business);
 
   if (ch !== 'PEDIDOSYA') {
     const listPrice = business?.useListPrice && product?.listPrice != null ? Number(product.listPrice) : null;

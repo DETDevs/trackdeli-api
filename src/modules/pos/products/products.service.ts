@@ -155,6 +155,10 @@ export class ProductsService {
       wholesale_min_qty,
       wholesale_enabled: isWholesaleEnabled,
       wholesaleEnabled: isWholesaleEnabled,
+      allowDiscount: product.allowDiscount !== false,
+      allow_discount: product.allowDiscount !== false,
+      promoDiscountPct: product.promoDiscountPct != null ? Number(product.promoDiscountPct) : null,
+      promo_discount_pct: product.promoDiscountPct != null ? Number(product.promoDiscountPct) : null,
     };
 
     if (businessChannelConfig?.pedidosYaChannelEnabled) {
@@ -856,11 +860,28 @@ export class ProductsService {
       }
     }
 
+    const rawAllowDiscount =
+      dto.allowDiscount !== undefined ? dto.allowDiscount : dto.allow_discount;
+    const rawPromoDiscountPct =
+      dto.promoDiscountPct !== undefined ? dto.promoDiscountPct : dto.promo_discount_pct;
+    let normalizedPromoDiscountPct: number | null = null;
+    if (rawPromoDiscountPct !== undefined && rawPromoDiscountPct !== null) {
+      const pctNum = Number(rawPromoDiscountPct);
+      if (!Number.isFinite(pctNum) || pctNum < 0 || pctNum >= 100) {
+        throw new BadRequestException('El descuento promocional debe ser mayor a 0 y menor a 100%');
+      }
+      normalizedPromoDiscountPct = pctNum > 0 ? Math.round(pctNum * 100) / 100 : null;
+    }
+
     const {
       trackInventory,
       attributes: _ignored,
       wholesale_price: _wp,
       wholesale_min_qty: _wmq,
+      allowDiscount: _ad,
+      allow_discount: _adSnake,
+      promoDiscountPct: _pdp,
+      promo_discount_pct: _pdpSnake,
       initialLotNumber,
       initialExpiryDate,
       laboratorio,
@@ -885,6 +906,8 @@ export class ProductsService {
         ...productData,
         wholesalePrice: rawWholesalePrice != null ? new Prisma.Decimal(rawWholesalePrice) : null,
         wholesaleMinQty: rawWholesaleMinQty != null ? new Prisma.Decimal(rawWholesaleMinQty) : null,
+        allowDiscount: rawAllowDiscount !== undefined ? Boolean(rawAllowDiscount) : true,
+        promoDiscountPct: normalizedPromoDiscountPct,
         unit,
         type,
         trackStock,
@@ -1071,11 +1094,20 @@ export class ProductsService {
       }
     }
 
+    const rawAllowDiscount =
+      dto.allowDiscount !== undefined ? dto.allowDiscount : dto.allow_discount;
+    const rawPromoDiscountPct =
+      dto.promoDiscountPct !== undefined ? dto.promoDiscountPct : dto.promo_discount_pct;
+
     const {
       trackInventory,
       attributes: incomingAttributes,
       wholesale_price: _wp,
       wholesale_min_qty: _wmq,
+      allowDiscount: _ad,
+      allow_discount: _adSnake,
+      promoDiscountPct: _pdp,
+      promo_discount_pct: _pdpSnake,
       confirm: _confirm,
       laboratorio,
       laboratory,
@@ -1089,6 +1121,21 @@ export class ProductsService {
       supplier_id,
       ...updateData
     } = dto as any;
+
+    if (rawAllowDiscount !== undefined) {
+      (updateData as any).allowDiscount = Boolean(rawAllowDiscount);
+    }
+    if (rawPromoDiscountPct !== undefined) {
+      if (rawPromoDiscountPct === null) {
+        (updateData as any).promoDiscountPct = null;
+      } else {
+        const pctNum = Number(rawPromoDiscountPct);
+        if (!Number.isFinite(pctNum) || pctNum < 0 || pctNum >= 100) {
+          throw new BadRequestException('El descuento promocional debe ser mayor a 0 y menor a 100%');
+        }
+        (updateData as any).promoDiscountPct = pctNum > 0 ? Math.round(pctNum * 100) / 100 : null;
+      }
+    }
 
     if (dto.listPrice !== undefined) (updateData as any).listPrice = dto.listPrice;
     if (dto.minStock !== undefined) (updateData as any).minStock = dto.minStock;

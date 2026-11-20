@@ -161,6 +161,26 @@ export class UpdateProductDto {
 
   @IsOptional()
   @IsBoolean()
+  allowDiscount?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allow_discount?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0, { message: 'El porcentaje de descuento debe ser mayor o igual a 0' })
+  @Max(99.99, { message: 'El porcentaje de descuento debe ser menor a 100' })
+  promoDiscountPct?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0, { message: 'El porcentaje de descuento debe ser mayor o igual a 0' })
+  @Max(99.99, { message: 'El porcentaje de descuento debe ser menor a 100' })
+  promo_discount_pct?: number | null;
+
+  @IsOptional()
+  @IsBoolean()
   isActive?: boolean;
 
   @IsOptional()

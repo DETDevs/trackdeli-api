@@ -1057,6 +1057,8 @@ model Product {
   listPrice       Float?
   markupPct       Float?
   taxable         Boolean   @default(false)
+  allowDiscount    Boolean  @default(true) @map("allow_discount")
+  promoDiscountPct Float?   @map("promo_discount_pct")
 
   unit        String   @default("UND") @db.VarChar(10)
   isRecipe    Boolean  @default(false)

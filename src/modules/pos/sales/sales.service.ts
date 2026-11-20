@@ -19,7 +19,7 @@ import { resolveLineUnitPrice, resolveChannelUnitPrice } from './utils/pricing.u
 
 import { BatchesService } from '../batches/batches.service';
 import { buildBusinessDateRange } from '../../../common/utils/date.util';
-import { calculateSaleTotals, calculateTipFromTotal, RawSaleItemCalculationInput } from './utils/sale-calculation.util';
+import { calculateSaleTotals, calculateTipFromTotal, isLineBlockedFromManualDiscount, RawSaleItemCalculationInput } from './utils/sale-calculation.util';
 
 @Injectable()
 export class SalesService {
@@ -743,6 +743,45 @@ export class SalesService {
           taxable = Boolean(item.taxable);
         }
 
+        const itemAllowDiscount = product ? (product as any).allowDiscount !== false : true;
+        const itemDiscountRaw = Number(item.discount || 0);
+        if (!Number.isFinite(itemDiscountRaw) || itemDiscountRaw < 0) {
+          throw new BadRequestException({
+            statusCode: 400,
+            code: 'INVALID_DISCOUNT',
+            message: `El descuento aplicado a "${item.productName || product?.name || 'producto'}" no es válido.`,
+          });
+        }
+        const grossLineAmount = Math.round(effectiveUnitPrice * requestedQty * 100) / 100;
+        if (itemDiscountRaw > grossLineAmount + 0.01) {
+          throw new BadRequestException({
+            statusCode: 400,
+            code: 'INVALID_DISCOUNT',
+            message: `El descuento aplicado a "${item.productName || product?.name || 'producto'}" supera su monto (${grossLineAmount.toFixed(2)}).`,
+          });
+        }
+        const itemDiscountClamped = Math.min(Math.round(itemDiscountRaw * 100) / 100, grossLineAmount);
+
+        if (
+          itemDiscountClamped > 0 &&
+          !dto.isOfflineSync &&
+          isLineBlockedFromManualDiscount(
+            {
+              allowDiscount: itemAllowDiscount,
+              priceTier,
+              listPrice,
+              unitPrice: effectiveUnitPrice,
+            },
+            Boolean(business.useListPrice),
+          )
+        ) {
+          throw new BadRequestException({
+            statusCode: 400,
+            code: 'DISCOUNT_NOT_ALLOWED_ON_ITEM',
+            message: `El producto "${item.productName || product?.name || 'seleccionado'}" ya tiene un descuento aplicado o no admite descuento manual.`,
+          });
+        }
+
         // 247c: Determinar costo histórico y origen para la línea
         let itemUnitCost: number | null = null;
         let itemCostSource = 'NONE';
@@ -825,10 +864,11 @@ export class SalesService {
           unitPrice: effectiveUnitPrice,
           priceTier,
           quantity: item.quantity,
-          discount: item.discount || 0,
+          discount: itemDiscountClamped,
           subtotal: (dto.isSplitSale && item.subtotal !== undefined) ? item.subtotal : undefined,
           listPrice,
           taxable,
+          allowDiscount: itemAllowDiscount,
         });
       }
 
@@ -859,9 +899,19 @@ export class SalesService {
       const subtotal = Math.round((calcResult.subtotal + deliveryFeeAmount) * 100) / 100;
       const discountAmount = calcResult.discountAmount;
 
-      // Validación de descuento según políticas (sobre el subtotal de mercadería)
-      const requestedDiscount = dto.discountAmount || 0;
-      if (requestedDiscount > 0) {
+      const requestedGlobalDiscount = Number(dto.discountAmount || 0);
+      if (requestedGlobalDiscount > 0 && calcResult.eligibleForGlobalDiscountSubtotal <= 0 && !dto.isOfflineSync) {
+        throw new BadRequestException({
+          statusCode: 400,
+          code: 'DISCOUNT_NOT_ALLOWED',
+          message: 'Ningún producto de la venta admite descuento general adicional.',
+        });
+      }
+
+      // Validación de descuento según políticas (descuento por línea + descuento general)
+      const totalManualDiscount =
+        Math.round((calcResult.lineDiscountTotal + calcResult.discountAmount) * 100) / 100;
+      if (totalManualDiscount > 0) {
         if (!policies.discountsEnabled) {
           throw new ForbiddenException({
             statusCode: 403,
@@ -870,15 +920,28 @@ export class SalesService {
           });
         }
         if (userRole === UserRole.CAJERO) {
-          const subtotalBase = calcResult.subtotal;
+          const grossBase = calcResult.lines.reduce(
+            (sum, l) => sum + Number(l.unitPrice || 0) * Number(l.quantity || 0),
+            0,
+          );
           const maxAllowedPercent = policies.cashierMaxDiscountPercent ?? 10;
-          const discountPercent = subtotalBase > 0 ? (requestedDiscount / subtotalBase) * 100 : 0;
+          const overallPercent = grossBase > 0 ? (totalManualDiscount / grossBase) * 100 : 0;
+          let maxLinePercent = 0;
+          for (const l of calcResult.lines) {
+            const lineGross = Number(l.unitPrice || 0) * Number(l.quantity || 0);
+            if (lineGross > 0 && Number(l.discount || 0) > 0) {
+              const linePct = (Number(l.discount) / lineGross) * 100;
+              if (linePct > maxLinePercent) maxLinePercent = linePct;
+            }
+          }
+          const discountPercent = Math.max(overallPercent, maxLinePercent);
           if (discountPercent > maxAllowedPercent + 0.01) {
-            if (dto.approvalToken) {
+            const discountToken = dto.discountApprovalToken || dto.approvalToken;
+            if (discountToken) {
               await this.approvalsService.consumeToken(
                 businessId,
                 PosAction.APLICAR_DESCUENTO,
-                dto.approvalToken,
+                discountToken,
                 tx,
               );
             } else {

@@ -2328,6 +2328,7 @@ WHERE a."customerId" = c."id"
       await this.ensureQuotesSchema();
       await this.ensureQuoteReceiptLinksSchema();
       await this.ensureWebUserCashRegisterSchema();
+      await this.ensureProductDiscountSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4385,6 +4386,27 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠️ 251a - Advertencia sincronizando requireOpenShiftToSell en pos_policies: ${err.message}`);
+    }
+  }
+
+  /**
+   * 292a - Descuento en producto y bloqueo de descuento manual por producto en pos_products.
+   * DDL idempotente con advisory lock 292001.
+   */
+  private async ensureProductDiscountSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(292001)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_products"
+            ADD COLUMN IF NOT EXISTS "allow_discount" BOOLEAN NOT NULL DEFAULT true,
+            ADD COLUMN IF NOT EXISTS "promo_discount_pct" DOUBLE PRECISION;
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(292001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠️ 292a - Advertencia sincronizando descuentos en pos_products: ${err.message}`);
     }
   }
 

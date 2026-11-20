@@ -21,6 +21,7 @@ export interface RawSaleItemCalculationInput {
   priceTier?: string;
   listPrice?: number | null;
   taxable?: boolean | null;
+  allowDiscount?: boolean;
 }
 
 export interface BusinessCalculationContext {
@@ -50,7 +51,9 @@ export interface CalculatedSaleLine {
 export interface CalculatedSaleSummary {
   taxModel: 'PER_LINE' | 'LEGACY';
   subtotal: number; // suma de netos de las líneas
-  discountAmount: number; // descuento manual del cajero
+  discountAmount: number; // descuento manual general del cajero
+  lineDiscountTotal: number; // suma de descuentos manuales por línea
+  eligibleForGlobalDiscountSubtotal: number; // subtotal elegible para descuento general
   subtotalBeforeTax: number; // subtotal - discountAmount
   listPriceTotal: number; // suma de precios de etiqueta
   listDiscountTotal: number; // suma de descuentos de etiqueta
@@ -60,6 +63,29 @@ export interface CalculatedSaleSummary {
   taxAmount: number;
   total: number;
   lines: CalculatedSaleLine[];
+}
+
+export function isLineBlockedFromManualDiscount(
+  item: {
+    allowDiscount?: boolean;
+    priceTier?: string | null;
+    listPrice?: number | null;
+    unitPrice: number;
+  },
+  useListPrice: boolean = false,
+): boolean {
+  if (item.allowDiscount === false) return true;
+  const tier = (item.priceTier || 'RETAIL').toUpperCase();
+  if (tier === 'WHOLESALE' || tier === 'PROMO') return true;
+  if (
+    useListPrice &&
+    item.listPrice !== undefined &&
+    item.listPrice !== null &&
+    Number(item.listPrice) > Number(item.unitPrice)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function calculateSaleTotals(
@@ -76,6 +102,8 @@ export function calculateSaleTotals(
     // MODO LEGACY (Compatibilidad con desktops no actualizados)
     // ══════════════════════════════════════════════════════════════════════
     let subtotalCents = 0;
+    let lineDiscountTotalCents = 0;
+    let eligibleForGlobalCents = 0;
     const lines: CalculatedSaleLine[] = [];
 
     for (const item of rawItems) {
@@ -86,6 +114,15 @@ export function calculateSaleTotals(
 
       const netCents = Math.round(itemSubtotal * 100);
       subtotalCents += netCents;
+      const itemDiscCents = Math.max(0, Math.round(itemDiscount * 100));
+      lineDiscountTotalCents += itemDiscCents;
+      if (
+        !isLineBlockedFromManualDiscount(item, Boolean(business.useListPrice)) &&
+        itemDiscCents === 0 &&
+        netCents > 0
+      ) {
+        eligibleForGlobalCents += netCents;
+      }
 
       lines.push({
         productId: item.productId || null,
@@ -133,6 +170,8 @@ export function calculateSaleTotals(
       taxModel: 'LEGACY',
       subtotal: subtotalCents / 100,
       discountAmount: discountAmountCents / 100,
+      lineDiscountTotal: lineDiscountTotalCents / 100,
+      eligibleForGlobalDiscountSubtotal: eligibleForGlobalCents / 100,
       subtotalBeforeTax: finalSubtotalCents / 100,
       listPriceTotal: 0,
       listDiscountTotal: 0,
@@ -146,19 +185,20 @@ export function calculateSaleTotals(
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  // MODO PER_LINE (Ticket 206a - Estándar nuevo en centavos exactos)
+  // MODO PER_LINE (Ticket 206a + 292a - Estándar nuevo en centavos exactos)
   // ══════════════════════════════════════════════════════════════════════
   const useListPrice = Boolean(business.useListPrice);
-  const n = rawItems.length;
 
   interface TempLine {
     raw: RawSaleItemCalculationInput;
+    effectiveDiscountCents: number;
     netCents: number;
     unitPriceCents: number;
     listPriceNum: number | null;
     listPriceDiscountCents: number;
     lineListPriceTotalCents: number;
     manualDiscountShareCents: number;
+    isEligibleForGlobal: boolean;
     taxable: boolean;
     lineTaxCents: number;
   }
@@ -166,19 +206,30 @@ export function calculateSaleTotals(
   let subtotalNetCents = 0;
   let totalListPriceCents = 0;
   let totalListDiscountCents = 0;
+  let totalLineDiscountCents = 0;
+  let eligibleForGlobalCents = 0;
 
   const tempLines: TempLine[] = [];
 
   for (const item of rawItems) {
-    const itemDiscountCents = Math.round((item.discount || 0) * 100);
     const unitPriceCents = Math.round(item.unitPrice * 100);
     const qty = item.quantity;
+    const grossLineCents = Math.max(0, Math.round(item.unitPrice * qty * 100));
+    const isBlocked = isLineBlockedFromManualDiscount(item, useListPrice);
+    const rawItemDiscountCents = Math.max(0, Math.round((item.discount || 0) * 100));
+    const itemDiscountCents = isBlocked ? 0 : Math.min(rawItemDiscountCents, grossLineCents);
 
     const netCents = isSplitSale && item.subtotal !== undefined
       ? Math.round(item.subtotal * 100)
-      : Math.round(item.unitPrice * qty * 100) - itemDiscountCents;
+      : Math.max(0, grossLineCents - itemDiscountCents);
 
     subtotalNetCents += netCents;
+    totalLineDiscountCents += itemDiscountCents;
+
+    const isEligibleForGlobal = !isBlocked && itemDiscountCents === 0 && netCents > 0;
+    if (isEligibleForGlobal) {
+      eligibleForGlobalCents += netCents;
+    }
 
     let listPriceNum: number | null = null;
     let listPriceDiscountCents = 0;
@@ -199,30 +250,35 @@ export function calculateSaleTotals(
 
     tempLines.push({
       raw: item,
+      effectiveDiscountCents: itemDiscountCents,
       netCents,
       unitPriceCents,
       listPriceNum,
       listPriceDiscountCents,
       lineListPriceTotalCents,
       manualDiscountShareCents: 0,
+      isEligibleForGlobal,
       taxable: Boolean(item.taxable),
       lineTaxCents: 0,
     });
   }
 
-  // 2. Reparto proporcional del descuento manual del cajero
+  // 2. Reparto proporcional del descuento manual general SOLO sobre líneas elegibles (Opción A)
   const rawDiscountAmountCents = Math.max(0, Math.round((discountAmountInput || 0) * 100));
-  const totalManualDiscountCents = Math.min(rawDiscountAmountCents, subtotalNetCents);
+  const totalManualDiscountCents = Math.min(rawDiscountAmountCents, eligibleForGlobalCents);
 
-  if (totalManualDiscountCents > 0 && subtotalNetCents > 0) {
+  if (totalManualDiscountCents > 0 && eligibleForGlobalCents > 0) {
+    const eligibleLines = tempLines.filter((tl) => tl.isEligibleForGlobal);
     let accumulatedShareCents = 0;
-    for (let i = 0; i < n; i++) {
-      if (i === n - 1) {
-        // La última línea absorbe la diferencia de centavos
-        tempLines[i].manualDiscountShareCents = totalManualDiscountCents - accumulatedShareCents;
+    for (let i = 0; i < eligibleLines.length; i++) {
+      if (i === eligibleLines.length - 1) {
+        // La última línea elegible absorbe la diferencia de centavos
+        eligibleLines[i].manualDiscountShareCents = totalManualDiscountCents - accumulatedShareCents;
       } else {
-        const share = Math.round(totalManualDiscountCents * (tempLines[i].netCents / subtotalNetCents));
-        tempLines[i].manualDiscountShareCents = share;
+        const share = Math.round(
+          totalManualDiscountCents * (eligibleLines[i].netCents / eligibleForGlobalCents),
+        );
+        eligibleLines[i].manualDiscountShareCents = share;
         accumulatedShareCents += share;
       }
     }
@@ -251,7 +307,7 @@ export function calculateSaleTotals(
     barcode: tl.raw.barcode || null,
     unitPrice: tl.raw.unitPrice,
     quantity: tl.raw.quantity,
-    discount: tl.raw.discount || 0,
+    discount: tl.effectiveDiscountCents / 100,
     subtotal: tl.netCents / 100,
     priceTier: tl.raw.priceTier || 'RETAIL',
     listPrice: tl.listPriceNum,
@@ -266,6 +322,8 @@ export function calculateSaleTotals(
     taxModel: 'PER_LINE',
     subtotal: subtotalNetCents / 100,
     discountAmount: totalManualDiscountCents / 100,
+    lineDiscountTotal: totalLineDiscountCents / 100,
+    eligibleForGlobalDiscountSubtotal: eligibleForGlobalCents / 100,
     subtotalBeforeTax: subtotalBeforeTaxCents / 100,
     listPriceTotal: totalListPriceCents / 100,
     listDiscountTotal: totalListDiscountCents / 100,

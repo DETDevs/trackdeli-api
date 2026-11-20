@@ -58,6 +58,10 @@ export class CreateSaleItemDto {
   @IsOptional()
   @IsString()
   origin?: string;
+
+  @IsOptional()
+  @IsString()
+  priceTier?: string;
 }
 
 export class PaymentDto {
@@ -313,6 +317,10 @@ export class CreateSaleDto {
   @IsOptional()
   @IsString()
   approvalToken?: string;
+
+  @IsOptional()
+  @IsString()
+  discountApprovalToken?: string;
 
   @IsOptional()
   @IsString()
