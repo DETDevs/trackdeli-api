@@ -10,7 +10,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { PosPaymentMethod, TableOrderStatus, TableShape, UserRole } from '@prisma/client';
+import { PosPaymentMethod, Prisma, TableOrderStatus, TableShape, UserRole } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { JwtPayload } from '../../../common/types/jwt-payload.interface';
 import { SalesService } from '../sales/sales.service';
@@ -33,6 +33,7 @@ import { MergeSubAccountsDto } from './dto/merge-sub-accounts.dto';
 import { UndoSplitDto } from './dto/undo-split.dto';
 import { SetOrderDiscountDto } from './dto/set-order-discount.dto';
 import { SetOrderTipDto } from './dto/set-order-tip.dto';
+import { RequestTableBillDto } from './dto/request-table-bill.dto';
 import { PoliciesService } from '../policies/policies.service';
 import { getSalonLabels } from '../salon/salon-profile.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
@@ -44,6 +45,7 @@ import {
 } from './split-equal.util';
 import {
   calculateSaleTotals,
+  calculateTipFromTotal,
   CalculatedSaleSummary,
   RawSaleItemCalculationInput,
 } from '../sales/utils/sale-calculation.util';
@@ -423,6 +425,131 @@ export class TablesService {
         data: { splitVersion: { increment: 1 } },
       });
     });
+  }
+
+  /**
+   * 267a - Si la orden estaba en bill_status = 'REQUESTED' (o tenía cuentas ACTIVE),
+   * al modificarse el pedido vuelve a 'NONE', sube bill_version y las cuentas ACTIVE pasan a SUPERSEDED (ORDER_MODIFIED).
+   */
+  private async markBillSupersededOnOrderModified(
+    orderId: string,
+    tx?: Prisma.TransactionClient,
+  ) {
+    const db = tx || this.prisma;
+    const current = await db.tableOrder.findUnique({
+      where: { id: orderId },
+      select: { id: true, billStatus: true },
+    });
+    if (!current) return;
+
+    const activeBillsCount = await db.tableOrderBill.count({
+      where: { tableOrderId: orderId, status: 'ACTIVE' },
+    });
+
+    if (current.billStatus === 'REQUESTED' || activeBillsCount > 0) {
+      const now = new Date();
+      if (activeBillsCount > 0) {
+        await db.tableOrderBill.updateMany({
+          where: { tableOrderId: orderId, status: 'ACTIVE' },
+          data: {
+            status: 'SUPERSEDED',
+            supersededReason: 'ORDER_MODIFIED',
+            supersededAt: now,
+          },
+        });
+      }
+      await db.tableOrder.update({
+        where: { id: orderId },
+        data: {
+          billStatus: 'NONE',
+          billRequestedAt: null,
+          billRequestedByName: null,
+          billVersion: { increment: 1 },
+        },
+      });
+    }
+  }
+
+  private async getReceiptSettingsForBill(businessId: string) {
+    const settings = await this.prisma.posReceiptSettings.findUnique({
+      where: { businessId },
+    });
+    if (settings) {
+      return settings;
+    }
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { posFooter: true },
+    });
+    return {
+      id: null,
+      businessId,
+      logoImage: null,
+      showLogo: false,
+      headerLines: [],
+      footerLines: business?.posFooter ? [business.posFooter] : ['¡Gracias por su compra!'],
+      showBusinessName: true,
+      showAddress: true,
+      showPhone: true,
+      showTaxId: true,
+      showCashier: true,
+      showCustomer: true,
+      showTaxBreakdown: true,
+      showBatches: false,
+      paperWidthMm: 80,
+      updatedAt: null,
+      updatedById: null,
+    };
+  }
+
+  private isSameBillConsumption(prevSnapshot: any, nextSnapshot: any): boolean {
+    if (!prevSnapshot || !nextSnapshot) return false;
+    if (
+      Number(prevSnapshot.subtotal) !== Number(nextSnapshot.subtotal) ||
+      Number(prevSnapshot.discountAmount) !== Number(nextSnapshot.discountAmount) ||
+      Number(prevSnapshot.taxAmount) !== Number(nextSnapshot.taxAmount) ||
+      Number(prevSnapshot.total) !== Number(nextSnapshot.total)
+    ) {
+      return false;
+    }
+    const prevLines = Array.isArray(prevSnapshot.lines) ? prevSnapshot.lines : [];
+    const nextLines = Array.isArray(nextSnapshot.lines) ? nextSnapshot.lines : [];
+    if (prevLines.length !== nextLines.length) return false;
+    for (let i = 0; i < prevLines.length; i++) {
+      const a = prevLines[i];
+      const b = nextLines[i];
+      if (
+        (a.productId || null) !== (b.productId || null) ||
+        a.productName !== b.productName ||
+        Number(a.quantity) !== Number(b.quantity) ||
+        Number(a.unitPrice) !== Number(b.unitPrice) ||
+        Number(a.subtotal) !== Number(b.subtotal)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private formatBillResponse(bill: any, isReprint: boolean) {
+    return {
+      id: bill.id,
+      businessId: bill.businessId,
+      tableOrderId: bill.tableOrderId,
+      tableId: bill.tableId,
+      subAccountId: bill.subAccountId || null,
+      sequence: bill.sequence,
+      status: bill.status,
+      supersededReason: bill.supersededReason || null,
+      supersededAt: bill.supersededAt || null,
+      requestedById: bill.requestedById,
+      requestedByRole: bill.requestedByRole,
+      requestedByName: bill.requestedByName,
+      snapshot: bill.snapshot,
+      clientRequestId: bill.clientRequestId || null,
+      createdAt: bill.createdAt,
+      isReprint,
+    };
   }
 
   async findAllTables(businessId: string, zoneId?: string) {
@@ -925,6 +1052,16 @@ export class TablesService {
         ? { id: currentOrder.assignedWaiter.id, name: currentOrder.assignedWaiter.name }
         : null;
 
+      const billStatus = currentOrder ? ((currentOrder as any).billStatus || 'NONE') : 'NONE';
+      const billRequestedAt = currentOrder ? ((currentOrder as any).billRequestedAt || null) : null;
+      const billRequestedByName = currentOrder ? ((currentOrder as any).billRequestedByName || null) : null;
+      const billVersion = currentOrder ? ((currentOrder as any).billVersion ?? 0) : 0;
+      const displayStatus = !isOccupied
+        ? ('FREE' as const)
+        : billStatus === 'REQUESTED'
+        ? ('BILL_REQUESTED' as const)
+        : ('OCCUPIED' as const);
+
       return {
         id: t.id,
         number: t.number,
@@ -940,6 +1077,10 @@ export class TablesService {
         assignedWaiterId: currentOrder?.assignedWaiterId || null,
         assignedWaiter,
         status: isOccupied ? ('OCCUPIED' as const) : ('FREE' as const),
+        displayStatus,
+        billStatus,
+        billRequestedAt,
+        billRequestedByName,
         currentOrder: currentOrder
           ? {
               id: currentOrder.id,
@@ -954,6 +1095,10 @@ export class TablesService {
               assignedWaiter,
               itemsCount,
               total: Math.round(total * 100) / 100,
+              billStatus,
+              billRequestedAt,
+              billRequestedByName,
+              billVersion,
             }
           : null,
       };
@@ -1175,6 +1320,7 @@ export class TablesService {
     if (order.splitMode === 'EQUAL') {
       await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
     }
+    await this.markBillSupersededOnOrderModified(order.id);
 
     return this.getActiveTableOrder(businessId, tableId);
   }
@@ -1226,6 +1372,7 @@ export class TablesService {
       if (order.splitMode === 'EQUAL') {
         await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
       }
+      await this.markBillSupersededOnOrderModified(order.id);
       return this.getActiveTableOrder(businessId, tableId);
     }
 
@@ -1276,6 +1423,7 @@ export class TablesService {
       if (order.splitMode === 'EQUAL') {
         await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
       }
+      await this.markBillSupersededOnOrderModified(order.id);
       return this.getActiveTableOrder(businessId, tableId);
     }
 
@@ -1294,6 +1442,7 @@ export class TablesService {
     if (order.splitMode === 'EQUAL') {
       await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
     }
+    await this.markBillSupersededOnOrderModified(order.id);
 
     return this.getActiveTableOrder(businessId, tableId);
   }
@@ -1326,6 +1475,7 @@ export class TablesService {
     if (order.splitMode === 'EQUAL') {
       await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
     }
+    await this.markBillSupersededOnOrderModified(order.id);
     return this.getActiveTableOrder(businessId, tableId);
   }
 
@@ -1580,12 +1730,20 @@ export class TablesService {
           });
 
           if (remainingOpen === 0) {
+            await tx.tableOrderBill.updateMany({
+              where: { tableOrderId: order.id, status: 'ACTIVE' },
+              data: { status: 'PAID' },
+            });
+
             const closedOrder = await tx.tableOrder.update({
               where: { id: order.id },
               data: {
                 status: TableOrderStatus.CLOSED,
                 closedAt: new Date(),
                 saleId: sale.id,
+                billStatus: 'NONE',
+                billRequestedAt: null,
+                billRequestedByName: null,
               },
             });
 
@@ -1612,6 +1770,15 @@ export class TablesService {
               allAccountsPaid: true,
             };
           } else {
+            await tx.tableOrderBill.updateMany({
+              where: {
+                tableOrderId: order.id,
+                subAccountId: subAccount.id,
+                status: 'ACTIVE',
+              },
+              data: { status: 'PAID' },
+            });
+
             this.logger.log(
               `[checkoutTableOrder] Mesa ${order.table.number} - subcuenta "${subAccount.label}" pagada (quedan ${remainingOpen} abiertas). Venta: ${sale.id}`,
             );
@@ -1695,12 +1862,20 @@ export class TablesService {
 
         const sale = await this.salesService.create(saleDto, businessId, cashierId, userRole, clientInfo, tx);
 
+        await tx.tableOrderBill.updateMany({
+          where: { tableOrderId: order.id, status: 'ACTIVE' },
+          data: { status: 'PAID' },
+        });
+
         const closedOrder = await tx.tableOrder.update({
           where: { id: order.id },
           data: {
             status: TableOrderStatus.CLOSED,
             closedAt: new Date(),
             saleId: sale.id,
+            billStatus: 'NONE',
+            billRequestedAt: null,
+            billRequestedByName: null,
           },
         });
 
@@ -1783,6 +1958,15 @@ export class TablesService {
       cancelledByUserName = dbUser?.name || user.email || null;
     }
 
+    await this.prisma.tableOrderBill.updateMany({
+      where: { tableOrderId: order.id, status: 'ACTIVE' },
+      data: {
+        status: 'CANCELLED',
+        supersededReason: 'ORDER_CANCELLED',
+        supersededAt: new Date(),
+      },
+    });
+
     const cancelledOrder = await this.prisma.tableOrder.update({
       where: { id: order.id },
       data: {
@@ -1791,6 +1975,9 @@ export class TablesService {
         cancelledByUserId: user?.sub || null,
         cancelledByUserName,
         cancellationReason: dto?.reason?.trim() || null,
+        billStatus: 'NONE',
+        billRequestedAt: null,
+        billRequestedByName: null,
       },
     });
 
@@ -2258,6 +2445,10 @@ export class TablesService {
       total: orderTotal,
       splitVersion: order.splitVersion !== undefined ? order.splitVersion : 0,
       splitMode: order.splitMode || null,
+      billStatus: order.billStatus || 'NONE',
+      billRequestedAt: order.billRequestedAt || null,
+      billRequestedByName: order.billRequestedByName || null,
+      billVersion: order.billVersion !== undefined ? order.billVersion : 0,
       tipMode: order.tipMode || null,
       tipPercent: order.tipPercent != null ? Number(order.tipPercent) : null,
       tipAmount: order.tipAmount != null ? Number(order.tipAmount) : null,
@@ -2786,6 +2977,7 @@ export class TablesService {
     if (order.splitMode === 'EQUAL') {
       await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
     }
+    await this.markBillSupersededOnOrderModified(order.id);
 
     await this.prisma.orderItemVoid.create({
       data: {
@@ -3033,6 +3225,7 @@ export class TablesService {
           },
         });
       }
+      await this.markBillSupersededOnOrderModified(order.id, tx);
     });
 
     return this.getActiveTableOrder(businessId, tableId);
@@ -3159,6 +3352,7 @@ export class TablesService {
           details: `Movido ${moveQty} de "${item.productName}" a "${destAccount.label}"`,
         },
       });
+      await this.markBillSupersededOnOrderModified(order.id, tx);
     });
 
     return this.getActiveTableOrder(businessId, tableId);
@@ -3278,6 +3472,7 @@ export class TablesService {
           details: `Agregada subcuenta "${label}"`,
         },
       });
+      await this.markBillSupersededOnOrderModified(order.id, tx);
     });
 
     return this.getActiveTableOrder(businessId, tableId);
@@ -3374,6 +3569,7 @@ export class TablesService {
           details: `Subcuenta "${fromAccount.label}" combinada en "${toAccount.label}"`,
         },
       });
+      await this.markBillSupersededOnOrderModified(order.id, tx);
     });
 
     return this.getActiveTableOrder(businessId, tableId);
@@ -3466,6 +3662,7 @@ export class TablesService {
           details: 'División deshecha. La orden vuelve a ser cuenta única normal.',
         },
       });
+      await this.markBillSupersededOnOrderModified(order.id, tx);
     });
 
     return this.getActiveTableOrder(businessId, tableId);
@@ -3606,8 +3803,649 @@ export class TablesService {
     if (order.splitMode === 'EQUAL') {
       await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
     }
+    await this.markBillSupersededOnOrderModified(order.id);
 
     return this.getActiveTableOrder(businessId, tableId);
+  }
+
+  /**
+   * 267a - "Pedir la cuenta" (precuenta):
+   * - Cambia bill_status a REQUESTED
+   * - Crea fila en table_order_bills con snapshot del cálculo único (267a0)
+   * - No cierra la mesa ni crea venta
+   * - Idempotente por clientRequestId
+   */
+  async requestTableBill(
+    businessId: string,
+    tableId: string,
+    dto: RequestTableBillDto,
+    user: JwtPayload,
+  ) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: {
+        id: true,
+        name: true,
+        posAddress: true,
+        posPhone: true,
+        whatsappNumber: true,
+        taxId: true,
+        currency: true,
+        salonProfile: true,
+        taxRate: true,
+        taxEnabled: true,
+        taxIncluded: true,
+        useListPrice: true,
+      },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+    if (business.salonProfile === 'TALLER') {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'NOT_AVAILABLE',
+        message: 'La solicitud de cuenta (precuenta) solo está disponible para restaurantes, comedores y bares',
+      });
+    }
+
+    const table = await this.prisma.restaurantTable.findFirst({
+      where: { id: tableId, businessId, isActive: true },
+      include: {
+        zone: { select: { id: true, name: true } },
+      },
+    });
+    if (!table) {
+      throw new NotFoundException('Mesa no encontrada');
+    }
+
+    const cleanClientReqId = dto?.clientRequestId?.trim() || null;
+    if (cleanClientReqId) {
+      const existingBill = await this.prisma.tableOrderBill.findUnique({
+        where: {
+          businessId_clientRequestId: {
+            businessId,
+            clientRequestId: cleanClientReqId,
+          },
+        },
+      });
+      if (existingBill) {
+        const isReprint = Boolean((existingBill.snapshot as any)?.isReprint ?? existingBill.sequence > 1);
+        const tableOrder = await this.getActiveTableOrder(businessId, tableId).catch(() => null);
+        const receiptSettings = await this.getReceiptSettingsForBill(businessId);
+        return {
+          bill: this.formatBillResponse(existingBill, isReprint),
+          isReprint,
+          tableOrder,
+          receiptSettings,
+        };
+      }
+    }
+
+    // Si el cuerpo incluye intención de propina, reutilizamos la lógica de setOrderTip (263a)
+    if (dto?.tip) {
+      await this.setOrderTip(businessId, tableId, {
+        subAccountId: dto.subAccountId,
+        mode: dto.tip.mode,
+        percent: dto.tip.percent,
+        amount: dto.tip.amount,
+        currency: dto.tip.currency,
+      });
+    }
+
+    const openOrder = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      include: {
+        items: {
+          include: {
+            product: {
+              select: ORDER_ITEM_PRODUCT_SELECT,
+            },
+          },
+          orderBy: { createdAt: 'asc' },
+        },
+        subAccounts: {
+          orderBy: { createdAt: 'asc' },
+        },
+        table: {
+          select: {
+            id: true,
+            number: true,
+            capacity: true,
+            shape: true,
+            zoneId: true,
+            zone: { select: { id: true, name: true } },
+          },
+        },
+        assignedWaiter: {
+          select: { id: true, name: true },
+        },
+      },
+    });
+
+    if (!openOrder) {
+      const latestOrder = await this.prisma.tableOrder.findFirst({
+        where: { tableId, businessId },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, status: true },
+      });
+      if (!latestOrder) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'EMPTY_ORDER',
+          message: 'La mesa no tiene productos para pedir la cuenta',
+        });
+      }
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'EMPTY_ORDER',
+        message: 'La mesa no tiene un pedido abierto con productos para pedir la cuenta',
+      });
+    }
+
+    if (!openOrder.items || openOrder.items.length === 0) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'EMPTY_ORDER',
+        message: 'La mesa no tiene productos para pedir la cuenta',
+      });
+    }
+
+    let targetSubAccount: any = null;
+    if (dto?.subAccountId) {
+      targetSubAccount = (openOrder.subAccounts || []).find((sa) => sa.id === dto.subAccountId);
+      if (!targetSubAccount) {
+        throw new NotFoundException({
+          statusCode: 404,
+          error: 'Not Found',
+          code: 'SUB_ACCOUNT_NOT_FOUND',
+          message: 'Subcuenta no encontrada en la orden',
+        });
+      }
+      if (targetSubAccount.status === 'PAID') {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'SUB_ACCOUNT_ALREADY_PAID',
+          message: 'Esta subcuenta ya fue cobrada',
+        });
+      }
+      if (openOrder.splitMode === 'ITEMS') {
+        const saItems = openOrder.items.filter((i) => i.subAccountId === targetSubAccount.id);
+        if (saItems.length === 0) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'EMPTY_ORDER',
+            message: 'La subcuenta no tiene productos para pedir la cuenta',
+          });
+        }
+      }
+    }
+
+    // Resolver nombre del solicitante (sin FK a users: el mesero vive en pos_waiters)
+    const requestedById = user?.sub || 'unknown';
+    const requestedByRole = user?.role || 'CAJERO';
+    let requestedByName = '';
+    if (user?.role === UserRole.WAITER) {
+      if (user.waiterName) {
+        requestedByName = user.waiterName;
+      } else {
+        const waiter = await this.prisma.waiter.findFirst({
+          where: { id: user.sub, businessId },
+          select: { name: true },
+        });
+        requestedByName = waiter?.name || 'Mesero';
+      }
+    } else {
+      const dbUser = user?.sub
+        ? await this.prisma.user.findUnique({
+            where: { id: user.sub },
+            select: { name: true, email: true },
+          })
+        : null;
+      requestedByName = dbUser?.name || dbUser?.email || user?.email || requestedByRole;
+    }
+
+    const policies = await this.policiesService.get(businessId);
+    const labels = getSalonLabels(business.salonProfile);
+    const tableLabel = formatTableDisplayName(labels.table, openOrder.table?.number || table.number);
+
+    // Construir totales y líneas usando el cálculo único del 267a0
+    let billLines: any[] = [];
+    let subtotal = 0;
+    let discountPercent = Number(openOrder.discountPercent || 0);
+    let discountAmount = 0;
+    let subtotalBeforeTax = 0;
+    let taxEnabled = Boolean(business.taxEnabled);
+    let taxIncluded = Boolean(business.taxIncluded);
+    let taxRate = business.taxEnabled === false ? 0 : Number(business.taxRate ?? 15);
+    let taxAmount = 0;
+    let total = 0;
+    let subAccountLabel: string | null = null;
+
+    if (targetSubAccount) {
+      subAccountLabel = targetSubAccount.label;
+      if (openOrder.splitMode === 'EQUAL') {
+        const sorted = sortSubAccountsDeterministically(openOrder.subAccounts);
+        const splitResult = calculateEqualSplitItems(openOrder, sorted, targetSubAccount.id, business);
+        const fixed = Number(targetSubAccount.fixedAmount || 0);
+        const saTaxable = Math.max(0, splitResult.targetSubtotal - splitResult.saDiscount);
+        let saTax = 0;
+        const effectiveRate = business.taxEnabled === false ? 0 : Number(business.taxRate || 0);
+        if (effectiveRate > 0) {
+          if (business.taxIncluded) {
+            saTax = Math.round((saTaxable - saTaxable / (1 + effectiveRate / 100)) * 100) / 100;
+          } else {
+            saTax = Math.round(saTaxable * (effectiveRate / 100) * 100) / 100;
+          }
+        }
+        subtotal = splitResult.targetSubtotal;
+        discountAmount = splitResult.saDiscount;
+        subtotalBeforeTax = saTaxable;
+        taxAmount = saTax;
+        taxRate = effectiveRate;
+        total = fixed;
+        billLines = splitResult.items.map((it) => ({
+          productId: it.productId || null,
+          productName: it.productName,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          subtotal: it.subtotal,
+          discount: it.discount || 0,
+        }));
+      } else {
+        // ITEMS subaccount
+        const { subAccountsMap } = this.computeItemsSplitSubAccountTotals(openOrder, business);
+        const saTotals = subAccountsMap.get(targetSubAccount.id);
+        if (!saTotals) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'EMPTY_ORDER',
+            message: 'La subcuenta no tiene productos para pedir la cuenta',
+          });
+        }
+        const saCalc = saTotals.calc;
+        subtotal = saCalc.subtotal;
+        discountAmount = saCalc.discountAmount;
+        subtotalBeforeTax = saCalc.subtotalBeforeTax;
+        taxEnabled = saCalc.taxEnabled;
+        taxIncluded = saCalc.taxIncluded;
+        taxRate = saCalc.taxRate;
+        taxAmount = saCalc.taxAmount;
+        total = saCalc.total;
+        const saRawItems = openOrder.items.filter((i) => i.subAccountId === targetSubAccount.id);
+        billLines = saCalc.lines.map((l, idx) => ({
+          id: saRawItems[idx]?.id || null,
+          productId: l.productId,
+          productName: l.productName,
+          quantity: l.quantity,
+          unitPrice: l.unitPrice,
+          subtotal: l.subtotal,
+          discount: l.discount,
+          manualDiscountShare: l.manualDiscountShare,
+          taxable: l.taxable,
+          taxRate: l.taxRate,
+          taxAmount: l.taxAmount,
+          notes: saRawItems[idx]?.notes || null,
+        }));
+      }
+    } else {
+      // Orden completa
+      const orderCalc = this.computeOrderTotals(
+        openOrder.items,
+        {
+          discountPercent: openOrder.discountPercent,
+          discountAmount: openOrder.discountAmount,
+        },
+        business,
+      );
+      subtotal = orderCalc.subtotal;
+      discountAmount = orderCalc.discountAmount;
+      subtotalBeforeTax = orderCalc.subtotalBeforeTax;
+      taxEnabled = orderCalc.taxEnabled;
+      taxIncluded = orderCalc.taxIncluded;
+      taxRate = orderCalc.taxRate;
+      taxAmount = orderCalc.taxAmount;
+      total = orderCalc.total;
+      billLines = orderCalc.lines.map((l, idx) => ({
+        id: openOrder.items[idx]?.id || null,
+        productId: l.productId,
+        productName: l.productName,
+        quantity: l.quantity,
+        unitPrice: l.unitPrice,
+        subtotal: l.subtotal,
+        discount: l.discount,
+        manualDiscountShare: l.manualDiscountShare,
+        taxable: l.taxable,
+        taxRate: l.taxRate,
+        taxAmount: l.taxAmount,
+        notes: openOrder.items[idx]?.notes || null,
+      }));
+    }
+
+    // Propina elegida (263): se muestra como información en el snapshot y en totalWithTip,
+    // sin alterar el total a pagar (total).
+    const tipSource = targetSubAccount && targetSubAccount.tipMode ? targetSubAccount : openOrder;
+    const rawTipMode = tipSource?.tipMode || null;
+    const rawTipPercent = tipSource?.tipPercent != null ? Number(tipSource.tipPercent) : null;
+    const rawTipCustomAmount = tipSource?.tipAmount != null ? Number(tipSource.tipAmount) : null;
+    const rawTipCurrency = tipSource?.tipCurrency || 'NIO';
+
+    let resolvedTipAmount = 0;
+    let resolvedTipMode: string | null = rawTipMode;
+    let resolvedTipPercent: number | null = null;
+    let resolvedTipCurrency: string | null = null;
+
+    if (policies.tipEnabled && rawTipMode && rawTipMode !== 'NONE') {
+      if (rawTipMode === 'PERCENT' && rawTipPercent && rawTipPercent > 0) {
+        resolvedTipPercent = rawTipPercent;
+        resolvedTipAmount = calculateTipFromTotal(total, rawTipPercent);
+        resolvedTipCurrency = 'NIO';
+      } else if (rawTipMode === 'CUSTOM' && rawTipCustomAmount && rawTipCustomAmount > 0) {
+        resolvedTipAmount = Math.round(rawTipCustomAmount * 100) / 100;
+        resolvedTipCurrency = rawTipCurrency;
+      }
+    } else if (rawTipMode === 'NONE') {
+      resolvedTipMode = 'NONE';
+    } else {
+      resolvedTipMode = null;
+    }
+
+    const totalWithTip = Math.round((total + resolvedTipAmount) * 100) / 100;
+    const now = new Date();
+
+    const baseSnapshot: any = {
+      businessName: business.name,
+      businessAddress: business.posAddress || null,
+      businessPhone: business.posPhone || business.whatsappNumber || null,
+      businessTaxId: business.taxId || null,
+      currency: business.currency || 'NIO',
+      tableId: openOrder.tableId,
+      tableNumber: openOrder.table?.number || table.number,
+      tableLabel,
+      zoneName: openOrder.table?.zone?.name || table.zone?.name || 'Sin zona',
+      subAccountId: targetSubAccount ? targetSubAccount.id : null,
+      subAccountLabel,
+      splitMode: openOrder.splitMode || null,
+      waiterId: openOrder.assignedWaiter?.id || openOrder.openedByWaiterId || null,
+      waiterName: openOrder.assignedWaiter?.name || openOrder.openedByWaiterName || null,
+      customerName: openOrder.customerName || null,
+      requestedById,
+      requestedByRole,
+      requestedByName,
+      requestedAt: now.toISOString(),
+      lines: billLines,
+      items: billLines,
+      subtotal,
+      discountPercent,
+      discountAmount,
+      discountTotal: discountAmount,
+      subtotalBeforeTax,
+      taxEnabled,
+      taxIncluded,
+      taxRate,
+      taxAmount,
+      taxTotal: taxAmount,
+      total,
+      tipMode: resolvedTipMode,
+      tipPercent: resolvedTipPercent,
+      tipAmount: resolvedTipAmount,
+      tipCurrency: resolvedTipCurrency,
+      tip:
+        resolvedTipMode && resolvedTipMode !== 'NONE' && resolvedTipAmount > 0
+          ? {
+              mode: resolvedTipMode,
+              percent: resolvedTipPercent,
+              amount: resolvedTipAmount,
+              currency: resolvedTipCurrency || 'NIO',
+            }
+          : null,
+      totalWithTip,
+      legend: 'Cuenta. No es un comprobante de pago.',
+      disclaimer: 'Cuenta. No es un comprobante de pago.',
+    };
+
+    const targetSubId = targetSubAccount ? targetSubAccount.id : null;
+
+    const { createdBill, isReprint } = await this.prisma.$transaction(async (tx) => {
+      const lockedRows = await tx.$queryRaw<Array<{ id: string; status: TableOrderStatus }>>`
+        SELECT id, status
+        FROM pos_table_orders
+        WHERE id = ${openOrder.id}
+        FOR UPDATE
+      `;
+      if (!lockedRows.length || lockedRows[0].status !== TableOrderStatus.OPEN) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'ORDER_NOT_OPEN',
+          message: 'La orden ya no está abierta',
+        });
+      }
+
+      if (cleanClientReqId) {
+        const dup = await tx.tableOrderBill.findUnique({
+          where: {
+            businessId_clientRequestId: {
+              businessId,
+              clientRequestId: cleanClientReqId,
+            },
+          },
+        });
+        if (dup) {
+          const dupReprint = Boolean((dup.snapshot as any)?.isReprint ?? dup.sequence > 1);
+          return { createdBill: dup, isReprint: dupReprint };
+        }
+      }
+
+      const prevBills = await tx.tableOrderBill.findMany({
+        where: {
+          tableOrderId: openOrder.id,
+          subAccountId: targetSubId,
+        },
+        orderBy: { sequence: 'desc' },
+      });
+
+      const lastBill = prevBills.length > 0 ? prevBills[0] : null;
+      const nextSequence = lastBill ? lastBill.sequence + 1 : 1;
+      const sameConsumption = lastBill
+        ? this.isSameBillConsumption(lastBill.snapshot, baseSnapshot)
+        : false;
+      const computedIsReprint = nextSequence > 1 && sameConsumption;
+
+      const activePrevBills = prevBills.filter((b) => b.status === 'ACTIVE');
+      if (activePrevBills.length > 0) {
+        const supReason = sameConsumption ? 'REPRINT' : 'ORDER_MODIFIED';
+        await tx.tableOrderBill.updateMany({
+          where: {
+            id: { in: activePrevBills.map((b) => b.id) },
+          },
+          data: {
+            status: 'SUPERSEDED',
+            supersededReason: supReason,
+            supersededAt: now,
+          },
+        });
+      }
+
+      const finalSnapshot = {
+        ...baseSnapshot,
+        sequence: nextSequence,
+        isReprint: computedIsReprint,
+      };
+
+      const bill = await tx.tableOrderBill.create({
+        data: {
+          businessId,
+          tableOrderId: openOrder.id,
+          tableId: openOrder.tableId,
+          subAccountId: targetSubId,
+          sequence: nextSequence,
+          status: 'ACTIVE',
+          requestedById,
+          requestedByRole,
+          requestedByName,
+          snapshot: finalSnapshot,
+          clientRequestId: cleanClientReqId,
+          createdAt: now,
+        },
+      });
+
+      await tx.tableOrder.update({
+        where: { id: openOrder.id },
+        data: {
+          billStatus: 'REQUESTED',
+          billRequestedAt: now,
+          billRequestedByName: requestedByName,
+        },
+      });
+
+      return { createdBill: bill, isReprint: computedIsReprint };
+    });
+
+    await this.auditService.record({
+      businessId,
+      userId: requestedById,
+      userRole: requestedByRole,
+      action: 'TABLE_BILL_REQUESTED',
+      entityType: 'TableOrderBill',
+      entityId: createdBill.id,
+      after: {
+        tableOrderId: openOrder.id,
+        tableId: openOrder.tableId,
+        subAccountId: createdBill.subAccountId,
+        sequence: createdBill.sequence,
+        isReprint,
+        total,
+        tipAmount: resolvedTipAmount,
+        totalWithTip,
+      },
+    });
+
+    const [updatedOrder, receiptSettings] = await Promise.all([
+      this.getActiveTableOrder(businessId, tableId),
+      this.getReceiptSettingsForBill(businessId),
+    ]);
+
+    return {
+      bill: this.formatBillResponse(createdBill, isReprint),
+      isReprint,
+      tableOrder: updatedOrder,
+      receiptSettings,
+    };
+  }
+
+  /**
+   * 267a - Historial de cuentas de la orden de la mesa.
+   */
+  async getTableOrderBills(businessId: string, tableId: string, orderId?: string) {
+    let targetOrderId = orderId?.trim() || null;
+
+    if (!targetOrderId) {
+      const openOrder = await this.prisma.tableOrder.findFirst({
+        where: { tableId, businessId, status: TableOrderStatus.OPEN },
+        select: { id: true },
+      });
+      if (openOrder) {
+        targetOrderId = openOrder.id;
+      } else {
+        const latestOrder = await this.prisma.tableOrder.findFirst({
+          where: { tableId, businessId },
+          orderBy: { createdAt: 'desc' },
+          select: { id: true },
+        });
+        if (!latestOrder) {
+          return [];
+        }
+        targetOrderId = latestOrder.id;
+      }
+    }
+
+    const bills = await this.prisma.tableOrderBill.findMany({
+      where: {
+        businessId,
+        tableOrderId: targetOrderId,
+      },
+      orderBy: [{ createdAt: 'desc' }, { sequence: 'desc' }],
+    });
+
+    return bills.map((b) =>
+      this.formatBillResponse(
+        b,
+        Boolean((b.snapshot as any)?.isReprint ?? b.sequence > 1),
+      ),
+    );
+  }
+
+  /**
+   * 267a - Cancela la solicitud de cuenta (vuelve a bill_status = 'NONE' y marca las cuentas activas como CANCELLED).
+   */
+  async cancelTableBillRequest(
+    businessId: string,
+    tableId: string,
+    subAccountId?: string,
+    user?: JwtPayload,
+  ) {
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+    });
+    if (!order) {
+      throw new NotFoundException('No hay un pedido abierto para esta mesa');
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const whereClause: any = {
+        tableOrderId: order.id,
+        status: 'ACTIVE',
+      };
+      if (subAccountId) {
+        whereClause.subAccountId = subAccountId;
+      }
+
+      await tx.tableOrderBill.updateMany({
+        where: whereClause,
+        data: {
+          status: 'CANCELLED',
+          supersededReason: 'CANCELLED_BY_USER',
+          supersededAt: now,
+        },
+      });
+
+      const remainingActive = await tx.tableOrderBill.count({
+        where: {
+          tableOrderId: order.id,
+          status: 'ACTIVE',
+        },
+      });
+
+      if (remainingActive === 0 || !subAccountId) {
+        await tx.tableOrder.update({
+          where: { id: order.id },
+          data: {
+            billStatus: 'NONE',
+            billRequestedAt: null,
+            billRequestedByName: null,
+            billVersion: { increment: 1 },
+          },
+        });
+      }
+    });
+
+    this.logger.log(
+      `[cancelTableBillRequest] Solicitud de cuenta cancelada para mesa ${tableId} (orden ${order.id}) por ${user?.sub || 'system'}`,
+    );
+
+    return {
+      success: true,
+      tableOrder: await this.getActiveTableOrder(businessId, tableId),
+    };
   }
 }
 

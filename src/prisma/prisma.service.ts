@@ -2329,6 +2329,7 @@ WHERE a."customerId" = c."id"
       await this.ensureQuoteReceiptLinksSchema();
       await this.ensureWebUserCashRegisterSchema();
       await this.ensureProductDiscountSchema();
+      await this.ensureTableOrderBillsSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4881,6 +4882,73 @@ WHERE a."customerId" = c."id"
     } catch (err: any) {
       this.logger.warn(
         `[PrismaService] ⚠ 270a - Advertencia sincronizando esquema de turnos web por usuario: ${err.message}`,
+      );
+    }
+  }
+
+  /**
+   * 267a - "Cuenta pedida" y registro de cuentas de mesa (table_order_bills).
+   * DDL idempotente con advisory lock 267001.
+   */
+  private async ensureTableOrderBillsSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(267001)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_table_orders"
+            ADD COLUMN IF NOT EXISTS "bill_status" VARCHAR(20) NOT NULL DEFAULT 'NONE',
+            ADD COLUMN IF NOT EXISTS "bill_requested_at" TIMESTAMP(3),
+            ADD COLUMN IF NOT EXISTS "bill_requested_by_name" VARCHAR(100),
+            ADD COLUMN IF NOT EXISTS "bill_version" INTEGER NOT NULL DEFAULT 0;
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "table_order_bills" (
+            "id" TEXT NOT NULL,
+            "business_id" TEXT NOT NULL,
+            "table_order_id" TEXT NOT NULL,
+            "table_id" TEXT NOT NULL,
+            "sub_account_id" TEXT,
+            "sequence" INTEGER NOT NULL DEFAULT 1,
+            "status" VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+            "superseded_reason" VARCHAR(50),
+            "superseded_at" TIMESTAMP(3),
+            "requested_by_id" VARCHAR(100) NOT NULL,
+            "requested_by_role" VARCHAR(30) NOT NULL,
+            "requested_by_name" VARCHAR(100) NOT NULL,
+            "snapshot" JSONB NOT NULL,
+            "client_request_id" VARCHAR(100),
+            "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "table_order_bills_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "table_order_bills_business_id_fkey" FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "table_order_bills_table_order_id_fkey" FOREIGN KEY ("table_order_id") REFERENCES "pos_table_orders"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "table_order_bills_table_id_fkey" FOREIGN KEY ("table_id") REFERENCES "pos_restaurant_tables"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            CONSTRAINT "table_order_bills_sub_account_id_fkey" FOREIGN KEY ("sub_account_id") REFERENCES "order_sub_accounts"("id") ON DELETE SET NULL ON UPDATE CASCADE
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE UNIQUE INDEX IF NOT EXISTS "table_order_bills_business_id_client_request_id_key"
+            ON "table_order_bills"("business_id", "client_request_id");
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "table_order_bills_table_order_id_created_at_idx"
+            ON "table_order_bills"("table_order_id", "created_at" DESC);
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "table_order_bills_business_id_table_order_id_idx"
+            ON "table_order_bills"("business_id", "table_order_id");
+        `);
+
+        this.logger.log('[PrismaService] ✓ 267a - Esquema de cuentas de mesa (table_order_bills) sincronizado');
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(267001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[PrismaService] ⚠ 267a - Advertencia sincronizando esquema de cuentas de mesa: ${err.message}`,
       );
     }
   }

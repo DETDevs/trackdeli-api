@@ -374,10 +374,11 @@ model Business {
   kitchenMode           String                  @default("NONE") @map("kitchen_mode") @db.VarChar(20)
   billingAnchorDay      Int?                    @map("billing_anchor_day")
   wholesaleEnabled      Boolean                 @default(false) @map("wholesale_enabled")
-  kitchenRounds         KitchenRound[]
-  orderItemVoids        OrderItemVoid[]
-  orderSubAccounts      OrderSubAccount[]
-  orderSplitLogs        OrderSplitLog[]
+  kitchenRounds          KitchenRound[]
+  orderItemVoids         OrderItemVoid[]
+  orderSubAccounts       OrderSubAccount[]
+  orderSplitLogs         OrderSplitLog[]
+  tableOrderBills        TableOrderBill[]
 
   // Finanzas
   payableAccounts       PayableAccount[]
@@ -1934,6 +1935,7 @@ model RestaurantTable {
 
   orders        TableOrder[]
   kitchenRounds KitchenRound[]
+  bills         TableOrderBill[]
 
   @@unique([businessId, number])
   @@index([businessId])
@@ -1978,11 +1980,17 @@ model TableOrder {
   tipAmount          Decimal?          @db.Decimal(12, 2)
   tipCurrency        String?           @db.VarChar(10)
 
+  billStatus          String            @default("NONE") @map("bill_status") @db.VarChar(20)
+  billRequestedAt     DateTime?         @map("bill_requested_at")
+  billRequestedByName String?           @map("bill_requested_by_name") @db.VarChar(100)
+  billVersion         Int               @default(0) @map("bill_version")
+
   items          TableOrderItem[]
   kitchenRounds  KitchenRound[]
   orderItemVoids OrderItemVoid[]
   subAccounts    OrderSubAccount[]
   splitLogs      OrderSplitLog[]
+  bills          TableOrderBill[]
 
   @@index([businessId, status])
   @@index([tableId, status])
@@ -2564,10 +2572,38 @@ model OrderSubAccount {
   createdAt    DateTime        @default(now()) @map("created_at")
 
   items        TableOrderItem[]
+  bills        TableOrderBill[]
 
   @@index([businessId])
   @@index([tableOrderId])
   @@map("order_sub_accounts")
+}
+
+model TableOrderBill {
+  id               String           @id @default(uuid())
+  businessId       String           @map("business_id")
+  business         Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  tableOrderId     String           @map("table_order_id")
+  tableOrder       TableOrder       @relation(fields: [tableOrderId], references: [id], onDelete: Cascade)
+  tableId          String           @map("table_id")
+  table            RestaurantTable  @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  subAccountId     String?          @map("sub_account_id")
+  subAccount       OrderSubAccount? @relation(fields: [subAccountId], references: [id], onDelete: SetNull)
+  sequence         Int              @default(1)
+  status           String           @default("ACTIVE") @db.VarChar(20)
+  supersededReason String?          @map("superseded_reason") @db.VarChar(50)
+  supersededAt     DateTime?        @map("superseded_at")
+  requestedById    String           @map("requested_by_id") @db.VarChar(100)
+  requestedByRole  String           @map("requested_by_role") @db.VarChar(30)
+  requestedByName  String           @map("requested_by_name") @db.VarChar(100)
+  snapshot         Json
+  clientRequestId  String?          @map("client_request_id") @db.VarChar(100)
+  createdAt        DateTime         @default(now()) @map("created_at")
+
+  @@unique([businessId, clientRequestId])
+  @@index([tableOrderId, createdAt(sort: Desc)])
+  @@index([businessId, tableOrderId])
+  @@map("table_order_bills")
 }
 
 model OrderSplitLog {

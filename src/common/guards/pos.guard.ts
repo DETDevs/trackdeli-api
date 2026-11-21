@@ -166,6 +166,10 @@ export class PosGuard implements CanActivate {
         (method === 'PATCH' && /^\/pos\/tables\/[^/]+\/order\/items\/[^/]+$/.test(normalizedPath)) ||
         (method === 'DELETE' && /^\/pos\/tables\/[^/]+\/order\/items\/[^/]+$/.test(normalizedPath)) ||
         (method === 'PATCH' && /^\/pos\/tables\/[^/]+\/order\/tip$/.test(normalizedPath)) ||
+        (method === 'POST' && /^\/pos\/tables\/[^/]+\/order\/request-bill$/.test(normalizedPath)) ||
+        (method === 'GET' && /^\/pos\/tables\/[^/]+\/order\/bills$/.test(normalizedPath)) ||
+        (method === 'POST' && /^\/pos\/tables\/[^/]+\/order\/cancel-bill-request$/.test(normalizedPath)) ||
+        (method === 'GET' && normalizedPath === '/pos/receipt-settings') ||
         (method === 'POST' && /^\/pos\/tables\/[^/]+\/order\/split\/(start|move|add-account|merge|undo)$/.test(normalizedPath));
 
       if (!isAllowed) {

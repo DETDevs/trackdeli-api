@@ -42,6 +42,7 @@ import { MergeSubAccountsDto } from './dto/merge-sub-accounts.dto';
 import { UndoSplitDto } from './dto/undo-split.dto';
 import { SetOrderDiscountDto } from './dto/set-order-discount.dto';
 import { SetOrderTipDto } from './dto/set-order-tip.dto';
+import { RequestTableBillDto } from './dto/request-table-bill.dto';
 
 @SkipMembershipCheck()
 @SkipWebAdminAccess()
@@ -370,6 +371,46 @@ export class TablesController {
     @Query('businessId') qBid?: string,
   ) {
     return this.service.setOrderTip(resolveBusinessId(user, qBid), tableId, dto);
+  }
+
+  @Post(':id/order/request-bill')
+  @Roles(UserRole.WAITER, UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @HttpCode(HttpStatus.OK)
+  requestBill(
+    @Param('id') tableId: string,
+    @Body() dto: RequestTableBillDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.requestTableBill(resolveBusinessId(user, qBid), tableId, dto || {}, user);
+  }
+
+  @Get(':id/order/bills')
+  @Roles(UserRole.WAITER, UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  getOrderBills(
+    @Param('id') tableId: string,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+    @Query('orderId') orderId?: string,
+  ) {
+    return this.service.getTableOrderBills(resolveBusinessId(user, qBid), tableId, orderId);
+  }
+
+  @Post(':id/order/cancel-bill-request')
+  @Roles(UserRole.WAITER, UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @HttpCode(HttpStatus.OK)
+  cancelBillRequest(
+    @Param('id') tableId: string,
+    @Body() body: { subAccountId?: string },
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.cancelTableBillRequest(
+      resolveBusinessId(user, qBid),
+      tableId,
+      body?.subAccountId,
+      user,
+    );
   }
 }
 
