@@ -57,15 +57,15 @@ export class ReportsService {
         SELECT
           p.id AS product_id,
           CASE
-            WHEN p.cost IS NOT NULL THEN 'PRODUCT_COST'
             WHEN rs.root_id IS NOT NULL AND rs.has_missing = false THEN 'RECIPE'
+            WHEN p.cost IS NOT NULL AND (rs.root_id IS NULL OR p.cost > 0) THEN 'PRODUCT_COST'
             WHEN p."type" = 'SERVICE' AND rs.root_id IS NULL
               AND NOT EXISTS (SELECT 1 FROM pos_product_components x WHERE x."parentProductId" = p.id) THEN 'LABOR'
             ELSE 'UNKNOWN'
           END AS cost_source,
           CASE
-            WHEN p.cost IS NOT NULL THEN p.cost::float
             WHEN rs.root_id IS NOT NULL AND rs.has_missing = false THEN rs.recipe_cost
+            WHEN p.cost IS NOT NULL AND (rs.root_id IS NULL OR p.cost > 0) THEN p.cost::float
             WHEN p."type" = 'SERVICE' AND rs.root_id IS NULL
               AND NOT EXISTS (SELECT 1 FROM pos_product_components x WHERE x."parentProductId" = p.id) THEN 0::float
             ELSE NULL
@@ -108,8 +108,12 @@ export class ReportsService {
                 * (CASE WHEN s.subtotal > 0 THEN (s."discountAmount" / s.subtotal) ELSE 0 END)
             END
           )::float AS line_discount,
-          COALESCE(i."unit_cost", pc.unit_cost)::float AS unit_cost,
           CASE
+            WHEN i."cost_source" = 'LABOR' AND COALESCE(i."unit_cost", 0) = 0 AND pc.cost_source = 'RECIPE' AND pc.unit_cost IS NOT NULL THEN pc.unit_cost
+            ELSE COALESCE(i."unit_cost", pc.unit_cost)
+          END::float AS unit_cost,
+          CASE
+            WHEN i."cost_source" = 'LABOR' AND COALESCE(i."unit_cost", 0) = 0 AND pc.cost_source = 'RECIPE' AND pc.unit_cost IS NOT NULL THEN 'RECIPE'
             WHEN i."cost_source" IS NOT NULL THEN
               CASE WHEN i."cost_source" = 'NONE' THEN 'UNKNOWN' ELSE i."cost_source" END
             ELSE COALESCE(pc.cost_source, 'UNKNOWN')

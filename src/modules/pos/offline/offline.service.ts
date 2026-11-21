@@ -520,9 +520,39 @@ export class OfflineService {
             let itemCostSource = 'NONE';
 
             if (product) {
-              if (product.type === 'SERVICE') {
-                itemUnitCost = 0;
-                itemCostSource = 'LABOR';
+              const hasRecipeComponents =
+                Boolean(product.isRecipe) &&
+                Array.isArray(product.recipeComponents) &&
+                product.recipeComponents.length > 0;
+
+              if (hasRecipeComponents) {
+                let recipeCostSum = 0;
+                let hasCompCost = false;
+                for (const comp of product.recipeComponents) {
+                  const compProd = comp.componentProduct;
+                  if (compProd && compProd.cost != null) {
+                    hasCompCost = true;
+                    recipeCostSum += Number(comp.quantity) * Number(compProd.cost);
+                  }
+                }
+                if (hasCompCost) {
+                  itemUnitCost = Math.round(recipeCostSum * 10000) / 10000;
+                  itemCostSource = 'RECIPE';
+                } else if (product.cost != null && Number(product.cost) > 0) {
+                  itemUnitCost = Number(product.cost);
+                  itemCostSource = 'PRODUCT';
+                } else {
+                  itemUnitCost = null;
+                  itemCostSource = 'NONE';
+                }
+              } else if (product.type === 'SERVICE') {
+                if (product.cost != null && Number(product.cost) > 0) {
+                  itemUnitCost = Number(product.cost);
+                  itemCostSource = 'PRODUCT';
+                } else {
+                  itemUnitCost = 0;
+                  itemCostSource = 'LABOR';
+                }
               } else if (itemAllocRes) {
                 let allocQtySum = 0;
                 let allocCostSum = 0;
@@ -540,26 +570,6 @@ export class OfflineService {
                 if (hasAnyCost && allocQtySum > 0) {
                   itemUnitCost = Math.round((allocCostSum / allocQtySum) * 10000) / 10000;
                   itemCostSource = 'BATCH';
-                } else if (product.cost != null) {
-                  itemUnitCost = Number(product.cost);
-                  itemCostSource = 'PRODUCT';
-                } else {
-                  itemUnitCost = null;
-                  itemCostSource = 'NONE';
-                }
-              } else if (product.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
-                let recipeCostSum = 0;
-                let hasCompCost = false;
-                for (const comp of product.recipeComponents) {
-                  const compProd = comp.componentProduct;
-                  if (compProd && compProd.cost != null) {
-                    hasCompCost = true;
-                    recipeCostSum += (Number(comp.quantity) * Number(compProd.cost));
-                  }
-                }
-                if (hasCompCost) {
-                  itemUnitCost = Math.round(recipeCostSum * 10000) / 10000;
-                  itemCostSource = 'RECIPE';
                 } else if (product.cost != null) {
                   itemUnitCost = Number(product.cost);
                   itemCostSource = 'PRODUCT';

@@ -1528,6 +1528,8 @@ export class ProductsService {
             unit: true,
             stock: true,
             trackStock: true,
+            price: true,
+            cost: true,
           },
         },
       },
@@ -1541,6 +1543,8 @@ export class ProductsService {
       unit: c.componentProduct.unit || 'UND',
       currentStock: Number(c.componentProduct.stock),
       quantity: Number(c.quantity),
+      price: c.componentProduct.price != null ? Number(c.componentProduct.price) : 0,
+      cost: c.componentProduct.cost != null ? Number(c.componentProduct.cost) : null,
     }));
   }
 
@@ -1726,6 +1730,21 @@ export class ProductsService {
       quantity: Number(c.quantity),
     }));
 
+    // Calcular costo total de los componentes (COGS de la receta/combo)
+    let computedRecipeCostSum = 0;
+    let hasAllComponentCosts = validatedData.length > 0;
+    for (const c of validatedData) {
+      const compProd = componentMap.get(c.componentProductId);
+      if (compProd && compProd.cost != null) {
+        computedRecipeCostSum += Number(c.quantity) * Number(compProd.cost);
+      } else {
+        hasAllComponentCosts = false;
+      }
+    }
+    const syncedRecipeCost = hasAllComponentCosts
+      ? Math.round(computedRecipeCostSum * 10000) / 10000
+      : undefined;
+
     return await this.prisma.$transaction(async (tx) => {
       // Reemplaza el conjunto completo
       await tx.productComponent.deleteMany({
@@ -1738,7 +1757,10 @@ export class ProductsService {
 
       await tx.product.update({
         where: { id: productId },
-        data: { isRecipe: true },
+        data: {
+          isRecipe: true,
+          ...(syncedRecipeCost !== undefined ? { cost: syncedRecipeCost } : {}),
+        },
       });
 
       await this.auditService.record(
