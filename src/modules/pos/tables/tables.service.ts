@@ -42,6 +42,33 @@ import {
   sortSubAccountsDeterministically,
   calculateEqualSplitItems,
 } from './split-equal.util';
+import {
+  calculateSaleTotals,
+  CalculatedSaleSummary,
+  RawSaleItemCalculationInput,
+} from '../sales/utils/sale-calculation.util';
+
+const ORDER_ITEM_PRODUCT_SELECT = {
+  id: true,
+  name: true,
+  imageUrl: true,
+  price: true,
+  unit: true,
+  stock: true,
+  sendToKitchen: true,
+  taxable: true,
+  listPrice: true,
+  allowDiscount: true,
+  barcode: true,
+};
+
+const ORDER_BUSINESS_TAX_SELECT = {
+  salonProfile: true,
+  taxRate: true,
+  taxEnabled: true,
+  taxIncluded: true,
+  useListPrice: true,
+};
 
 @Injectable()
 export class TablesService {
@@ -98,6 +125,305 @@ export class TablesService {
     private readonly workshopService: WorkshopService,
     private readonly policiesService: PoliciesService,
   ) {}
+
+  /**
+   * 267a0 - Único método interno de cálculo de totales de orden de mesa,
+   * usando calculateSaleTotals (PER_LINE) con los datos del negocio y de cada producto.
+   */
+  computeOrderTotals(
+    items: any[],
+    discountInput?: {
+      discountPercent?: any;
+      discountAmount?: any;
+      overrideDiscountAmount?: number;
+    },
+    business?: {
+      taxRate?: number | null;
+      taxEnabled?: boolean | null;
+      taxIncluded?: boolean | null;
+      useListPrice?: boolean | null;
+    } | null,
+  ): CalculatedSaleSummary {
+    const useListPrice = Boolean(business?.useListPrice);
+    const rawItems: RawSaleItemCalculationInput[] = (items || []).map((item: any) => {
+      const prod = item.product;
+      const listPrice =
+        item.listPrice !== undefined && item.listPrice !== null
+          ? Number(item.listPrice)
+          : useListPrice && prod?.listPrice != null
+          ? Number(prod.listPrice)
+          : null;
+      const taxable =
+        item.taxable !== undefined && item.taxable !== null
+          ? Boolean(item.taxable)
+          : Boolean(prod?.taxable);
+      const allowDiscount =
+        item.allowDiscount !== undefined
+          ? Boolean(item.allowDiscount)
+          : prod
+          ? prod.allowDiscount !== false
+          : true;
+
+      return {
+        productId: item.productId || null,
+        productName: item.productName || prod?.name || 'Producto',
+        barcode: item.barcode || prod?.barcode || null,
+        unitPrice: Number(item.unitPrice),
+        quantity: Number(item.quantity),
+        discount: 0,
+        priceTier: item.priceTier || 'RETAIL',
+        listPrice,
+        taxable,
+        allowDiscount,
+      };
+    });
+
+    const businessCtx = {
+      useListPrice,
+      taxEnabled:
+        business?.taxEnabled !== undefined && business?.taxEnabled !== null
+          ? Boolean(business.taxEnabled)
+          : true,
+      taxIncluded: Boolean(business?.taxIncluded),
+      taxRate:
+        business?.taxRate !== undefined && business?.taxRate !== null && Number(business.taxRate) > 0
+          ? Number(business.taxRate)
+          : 15,
+    };
+
+    const baseCalc = calculateSaleTotals(rawItems, 0, businessCtx);
+    const eligibleSubtotal = baseCalc.eligibleForGlobalDiscountSubtotal;
+    const rawSubtotal = baseCalc.subtotal;
+
+    let storedOrderDiscount = 0;
+    const discountPercent = Number(discountInput?.discountPercent || 0);
+    const discountAmountOrder = Number(discountInput?.discountAmount || 0);
+    if (discountPercent > 0) {
+      const baseForPct = eligibleSubtotal > 0 ? eligibleSubtotal : rawSubtotal;
+      storedOrderDiscount = Math.round(baseForPct * (discountPercent / 100) * 100) / 100;
+    } else if (discountAmountOrder > 0) {
+      storedOrderDiscount = Math.min(rawSubtotal, Math.round(discountAmountOrder * 100) / 100);
+    }
+
+    const effectiveDiscountAmount =
+      discountInput?.overrideDiscountAmount !== undefined
+        ? Math.max(0, Math.round(Number(discountInput.overrideDiscountAmount) * 100) / 100)
+        : storedOrderDiscount;
+
+    return calculateSaleTotals(rawItems, effectiveDiscountAmount, businessCtx);
+  }
+
+  private buildSaleDtoItems(
+    items: any[],
+    business?: { useListPrice?: boolean | null } | null,
+  ) {
+    const useListPrice = Boolean(business?.useListPrice);
+    return (items || []).map((i: any) => {
+      const prod = i.product;
+      const listPrice =
+        i.listPrice !== undefined && i.listPrice !== null
+          ? Number(i.listPrice)
+          : useListPrice && prod?.listPrice != null
+          ? Number(prod.listPrice)
+          : undefined;
+      const taxable =
+        i.taxable !== undefined && i.taxable !== null
+          ? Boolean(i.taxable)
+          : Boolean(prod?.taxable);
+
+      return {
+        productId: i.productId,
+        productName: i.productName,
+        unitPrice: Number(i.unitPrice),
+        quantity: round3(Number(i.quantity)),
+        discount: 0,
+        taxable,
+        ...(listPrice !== undefined ? { listPrice } : {}),
+      };
+    });
+  }
+
+  private computeItemsSplitSubAccountTotals(
+    order: any,
+    business?: {
+      taxRate?: number | null;
+      taxEnabled?: boolean | null;
+      taxIncluded?: boolean | null;
+      useListPrice?: boolean | null;
+    } | null,
+  ) {
+    const rawSubAccounts = order.subAccounts || [];
+    const sorted = [...rawSubAccounts].sort(
+      (a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+
+    const orderCalc = this.computeOrderTotals(
+      order.items || [],
+      {
+        discountPercent: order.discountPercent,
+        discountAmount: order.discountAmount,
+      },
+      business,
+    );
+    const totalOrderDiscount = orderCalc.discountAmount;
+
+    const baseBySub = sorted.map((sa: any) => {
+      const saRawItems = (order.items || []).filter((i: any) => i.subAccountId === sa.id);
+      const baseCalc = this.computeOrderTotals(
+        saRawItems,
+        { overrideDiscountAmount: 0 },
+        business,
+      );
+      return {
+        sa,
+        saRawItems,
+        baseCalc,
+        eligibleSubtotal: baseCalc.eligibleForGlobalDiscountSubtotal,
+      };
+    });
+
+    const totalEligible =
+      Math.round(
+        baseBySub.reduce((sum, entry) => sum + entry.eligibleSubtotal, 0) * 100,
+      ) / 100;
+
+    let lastEligibleIdx = -1;
+    for (let i = baseBySub.length - 1; i >= 0; i--) {
+      if (baseBySub[i].eligibleSubtotal > 0) {
+        lastEligibleIdx = i;
+        break;
+      }
+    }
+    if (lastEligibleIdx === -1 && baseBySub.length > 0) {
+      lastEligibleIdx = baseBySub.length - 1;
+    }
+
+    let accDiscount = 0;
+    const resultMap = new Map<
+      string,
+      {
+        subtotal: number;
+        discount: number;
+        tax: number;
+        total: number;
+        itemsCount: number;
+        calc: CalculatedSaleSummary;
+      }
+    >();
+
+    for (let idx = 0; idx < baseBySub.length; idx++) {
+      const { sa, saRawItems, eligibleSubtotal } = baseBySub[idx];
+      let saDisc = 0;
+      if (totalOrderDiscount > 0 && totalEligible > 0 && eligibleSubtotal > 0) {
+        if (idx === lastEligibleIdx) {
+          saDisc = Math.max(0, Math.round((totalOrderDiscount - accDiscount) * 100) / 100);
+        } else {
+          saDisc = Math.round(totalOrderDiscount * (eligibleSubtotal / totalEligible) * 100) / 100;
+          accDiscount = Math.round((accDiscount + saDisc) * 100) / 100;
+        }
+      }
+
+      const saCalc = this.computeOrderTotals(
+        saRawItems,
+        { overrideDiscountAmount: saDisc },
+        business,
+      );
+      let itemsCount = 0;
+      for (const it of saRawItems) {
+        itemsCount += Number(it.quantity);
+      }
+
+      resultMap.set(sa.id, {
+        subtotal: saCalc.subtotal,
+        discount: saCalc.discountAmount,
+        tax: saCalc.taxAmount,
+        total: saCalc.total,
+        itemsCount,
+        calc: saCalc,
+      });
+    }
+
+    return {
+      orderCalc,
+      subAccountsMap: resultMap,
+    };
+  }
+
+  private async assertCanMutateEqualSplitOrder(orderId: string, splitMode?: string | null) {
+    if (splitMode !== 'EQUAL') return;
+    const paidCount = await this.prisma.orderSubAccount.count({
+      where: { tableOrderId: orderId, status: 'PAID' },
+    });
+    if (paidCount > 0) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'SPLIT_HAS_PAID_ACCOUNTS',
+        message:
+          'No se puede modificar el pedido porque la cuenta está dividida en partes iguales y ya tiene subcuentas pagadas',
+      });
+    }
+  }
+
+  private async recalculateEqualSplitAmountsIfNeeded(businessId: string, orderId: string) {
+    const order = await this.prisma.tableOrder.findUnique({
+      where: { id: orderId },
+      include: {
+        items: {
+          include: {
+            product: { select: ORDER_ITEM_PRODUCT_SELECT },
+          },
+          orderBy: { createdAt: 'asc' },
+        },
+        subAccounts: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+
+    if (!order || order.splitMode !== 'EQUAL' || !order.subAccounts || order.subAccounts.length === 0) {
+      return;
+    }
+
+    const hasPaid = order.subAccounts.some((sa) => sa.status === 'PAID');
+    if (hasPaid) {
+      return;
+    }
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: ORDER_BUSINESS_TAX_SELECT,
+    });
+
+    const calc = this.computeOrderTotals(
+      order.items,
+      {
+        discountPercent: order.discountPercent,
+        discountAmount: order.discountAmount,
+      },
+      business,
+    );
+
+    const sorted = sortSubAccountsDeterministically(order.subAccounts);
+    const parts = sorted.length;
+    const totalCents = Math.round(calc.total * 100);
+    const baseCents = Math.floor(totalCents / parts);
+    const remainderCents = totalCents - baseCents * parts;
+
+    await this.prisma.$transaction(async (tx) => {
+      for (let i = 0; i < parts; i++) {
+        const partCents = i === parts - 1 ? baseCents + remainderCents : baseCents;
+        await tx.orderSubAccount.update({
+          where: { id: sorted[i].id },
+          data: { fixedAmount: partCents / 100 },
+        });
+      }
+      await tx.tableOrder.update({
+        where: { id: order.id },
+        data: { splitVersion: { increment: 1 } },
+      });
+    });
+  }
 
   async findAllTables(businessId: string, zoneId?: string) {
     const business = await this.prisma.business.findUnique({
@@ -531,7 +857,7 @@ export class TablesService {
   async getTablesStatus(businessId: string, zoneId?: string) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { salonProfile: true },
+      select: ORDER_BUSINESS_TAX_SELECT,
     });
     const isTaller = business?.salonProfile === 'TALLER';
 
@@ -553,7 +879,13 @@ export class TablesService {
         orders: {
           where: { status: TableOrderStatus.OPEN },
           include: {
-            items: true,
+            items: {
+              include: {
+                product: {
+                  select: ORDER_ITEM_PRODUCT_SELECT,
+                },
+              },
+            },
             assignedWaiter: {
               select: { id: true, name: true },
             },
@@ -577,8 +909,16 @@ export class TablesService {
       if (currentOrder) {
         for (const item of currentOrder.items) {
           itemsCount += Number(item.quantity);
-          total += Number(item.quantity) * Number(item.unitPrice);
         }
+        const calc = this.computeOrderTotals(
+          currentOrder.items,
+          {
+            discountPercent: currentOrder.discountPercent,
+            discountAmount: currentOrder.discountAmount,
+          },
+          business,
+        );
+        total = calc.total;
       }
 
       const assignedWaiter = currentOrder?.assignedWaiter
@@ -628,13 +968,18 @@ export class TablesService {
       throw new NotFoundException('Mesa no encontrada');
     }
 
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: ORDER_BUSINESS_TAX_SELECT,
+    });
+
     const existingOrder = await this.prisma.tableOrder.findFirst({
       where: { tableId, status: TableOrderStatus.OPEN },
       include: {
         items: {
           include: {
             product: {
-              select: { id: true, name: true, imageUrl: true, price: true },
+              select: ORDER_ITEM_PRODUCT_SELECT,
             },
           },
         },
@@ -658,7 +1003,7 @@ export class TablesService {
     });
 
     if (existingOrder) {
-      return this.formatOrderResponse(existingOrder);
+      return this.formatOrderResponse(existingOrder, business?.taxRate || 0, business);
     }
 
     const isWaiter = user?.role === UserRole.WAITER;
@@ -677,7 +1022,7 @@ export class TablesService {
         items: {
           include: {
             product: {
-              select: { id: true, name: true, imageUrl: true, price: true, unit: true, stock: true },
+              select: ORDER_ITEM_PRODUCT_SELECT,
             },
           },
         },
@@ -698,13 +1043,13 @@ export class TablesService {
     });
 
     this.logger.log(`[openTableOrder] Orden ${newOrder.id} abierta para mesa ${table.number}`);
-    return this.formatOrderResponse(newOrder);
+    return this.formatOrderResponse(newOrder, business?.taxRate || 0, business);
   }
 
   async getActiveTableOrder(businessId: string, tableId: string) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { taxRate: true, taxEnabled: true, taxIncluded: true },
+      select: ORDER_BUSINESS_TAX_SELECT,
     });
 
     const order = await this.prisma.tableOrder.findFirst({
@@ -713,7 +1058,7 @@ export class TablesService {
         items: {
           include: {
             product: {
-              select: { id: true, name: true, imageUrl: true, price: true, unit: true, stock: true, sendToKitchen: true },
+              select: ORDER_ITEM_PRODUCT_SELECT,
             },
           },
           orderBy: { createdAt: 'asc' },
@@ -782,6 +1127,8 @@ export class TablesService {
         orderBy: { createdAt: 'asc' },
       });
       defaultSubAccountId = firstOpen ? firstOpen.id : null;
+    } else if (order.splitMode === 'EQUAL') {
+      await this.assertCanMutateEqualSplitOrder(order.id, order.splitMode);
     }
 
     for (const item of dto.items) {
@@ -823,6 +1170,10 @@ export class TablesService {
           },
         });
       }
+    }
+
+    if (order.splitMode === 'EQUAL') {
+      await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
     }
 
     return this.getActiveTableOrder(businessId, tableId);
@@ -870,9 +1221,15 @@ export class TablesService {
           message: 'AUTHORIZATION_REQUIRED',
         });
       }
+      await this.assertCanMutateEqualSplitOrder(order.id, order.splitMode);
       await this.prisma.tableOrderItem.delete({ where: { id: itemId } });
+      if (order.splitMode === 'EQUAL') {
+        await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
+      }
       return this.getActiveTableOrder(businessId, tableId);
     }
+
+    await this.assertCanMutateEqualSplitOrder(order.id, order.splitMode);
 
     const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
 
@@ -916,6 +1273,9 @@ export class TablesService {
         }
       }
 
+      if (order.splitMode === 'EQUAL') {
+        await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
+      }
       return this.getActiveTableOrder(businessId, tableId);
     }
 
@@ -930,6 +1290,10 @@ export class TablesService {
         ...(dto.notes !== undefined && { notes: dto.notes.trim() || null }),
       },
     });
+
+    if (order.splitMode === 'EQUAL') {
+      await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
+    }
 
     return this.getActiveTableOrder(businessId, tableId);
   }
@@ -957,7 +1321,11 @@ export class TablesService {
       });
     }
 
+    await this.assertCanMutateEqualSplitOrder(order.id, order.splitMode);
     await this.prisma.tableOrderItem.delete({ where: { id: itemId } });
+    if (order.splitMode === 'EQUAL') {
+      await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
+    }
     return this.getActiveTableOrder(businessId, tableId);
   }
 
@@ -1012,7 +1380,14 @@ export class TablesService {
         const order = await tx.tableOrder.findUnique({
           where: { id: lockedOrder.id },
           include: {
-            items: true,
+            items: {
+              include: {
+                product: {
+                  select: ORDER_ITEM_PRODUCT_SELECT,
+                },
+              },
+              orderBy: { createdAt: 'asc' },
+            },
             subAccounts: {
               orderBy: { createdAt: 'asc' },
             },
@@ -1035,10 +1410,9 @@ export class TablesService {
 
         const business = await tx.business.findUnique({
           where: { id: businessId },
-          select: { taxRate: true, taxIncluded: true, taxEnabled: true, salonProfile: true },
+          select: ORDER_BUSINESS_TAX_SELECT,
         });
         const labels = getSalonLabels(business?.salonProfile);
-        const taxRate = business?.taxRate || 0;
 
         const isSplit = Boolean(order.splitMode) || (order.subAccounts && order.subAccounts.length > 0);
         let orderWaiterId: string | undefined = order.assignedWaiterId || undefined;
@@ -1113,55 +1487,10 @@ export class TablesService {
               throw new BadRequestException('La subcuenta no contiene productos para cobrar');
             }
 
-            let totalOrderSubtotal = 0;
-            for (const item of order.items) {
-              totalOrderSubtotal += Number(item.quantity) * Number(item.unitPrice);
-            }
-            totalOrderSubtotal = Math.round(totalOrderSubtotal * 100) / 100;
-
-            const discountPercent = Number(order.discountPercent || 0);
-            const discountAmountTotal = Number(order.discountAmount || 0);
-            let totalOrderDiscount = 0;
-            if (discountPercent > 0) {
-              totalOrderDiscount = Math.round(totalOrderSubtotal * (discountPercent / 100) * 100) / 100;
-            } else if (discountAmountTotal > 0) {
-              totalOrderDiscount = Math.min(totalOrderSubtotal, Math.round(discountAmountTotal * 100) / 100);
-            }
-
-            const sortedSubAccounts = [...order.subAccounts].sort(
-              (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
-            );
-            const subAccountIdx = sortedSubAccounts.findIndex((sa) => sa.id === subAccount.id);
-            const isLastSubAccount = subAccountIdx === sortedSubAccounts.length - 1;
-
-            let saSubtotal = 0;
-            for (const item of saItems) {
-              saSubtotal += Number(item.quantity) * Number(item.unitPrice);
-            }
-            saSubtotal = Math.round(saSubtotal * 100) / 100;
-
-            let saDiscount = 0;
-            if (totalOrderSubtotal > 0 && totalOrderDiscount > 0) {
-              let accumulatedDiscount = 0;
-              for (let j = 0; j < sortedSubAccounts.length - 1; j++) {
-                const saJItems = order.items.filter((i) => i.subAccountId === sortedSubAccounts[j].id);
-                let subJ = 0;
-                for (const it of saJItems) subJ += Number(it.quantity) * Number(it.unitPrice);
-                subJ = Math.round(subJ * 100) / 100;
-                const discJ = Math.round(totalOrderDiscount * (subJ / totalOrderSubtotal) * 100) / 100;
-                if (j === subAccountIdx) {
-                  saDiscount = discJ;
-                }
-                accumulatedDiscount += discJ;
-              }
-              if (isLastSubAccount) {
-                saDiscount = Math.round((totalOrderDiscount - accumulatedDiscount) * 100) / 100;
-              }
-            }
-
-            const taxable = Math.max(0, saSubtotal - saDiscount);
-            const taxAmount = Math.round(taxable * (taxRate / 100) * 100) / 100;
-            const total = Math.round((taxable + taxAmount) * 100) / 100;
+            const { subAccountsMap } = this.computeItemsSplitSubAccountTotals(order, business);
+            const saTotals = subAccountsMap.get(subAccount.id);
+            const saDiscount = saTotals ? saTotals.discount : 0;
+            const total = saTotals ? saTotals.total : 0;
 
             const amountPaid = dto.amountPaid !== undefined ? dto.amountPaid : total;
 
@@ -1186,13 +1515,7 @@ export class TablesService {
                 : `${formatTableDisplayName(labels.table, order.table?.number)} (${subAccount.label})`,
               reference: dto.reference || dto.paymentReference,
               payments: dto.payments,
-              items: saItems.map((i) => ({
-                productId: i.productId,
-                productName: i.productName,
-                unitPrice: i.unitPrice,
-                quantity: round3(Number(i.quantity)),
-                discount: 0,
-              })),
+              items: this.buildSaleDtoItems(saItems, business),
             };
           } else {
             // EQUAL mode: 171e Prorrateo determinístico de productos reales
@@ -1309,17 +1632,40 @@ export class TablesService {
         }
 
         // Normal checkout (unsplit order)
-        let subtotal = 0;
-        for (const item of order.items) {
-          subtotal += Number(item.quantity) * Number(item.unitPrice);
-        }
+        const storedOrderCalc = this.computeOrderTotals(
+          order.items,
+          {
+            discountPercent: order.discountPercent,
+            discountAmount: order.discountAmount,
+          },
+          business,
+        );
+        const hasStoredOrderDiscount =
+          Number(order.discountPercent || 0) > 0 || Number(order.discountAmount || 0) > 0;
+        const clientSentDiscount =
+          dto.discountAmount !== undefined && dto.discountAmount !== null
+            ? Math.max(0, Math.round(Number(dto.discountAmount) * 100) / 100)
+            : 0;
 
-        const discountAmount = dto.discountAmount || 0;
-        const taxable = Math.max(0, subtotal - discountAmount);
-        const taxAmount = taxable * (taxRate / 100);
-        const total = taxable + taxAmount;
+        // Regla 267a0: la fuente de verdad es el descuento guardado en la orden;
+        // si la orden no tiene descuento guardado y el cliente manda discountAmount (ej. desktop en carrito), se usa ese sin duplicar.
+        const effectiveDiscountInput = hasStoredOrderDiscount
+          ? storedOrderCalc.discountAmount
+          : clientSentDiscount;
 
-        const amountPaid = dto.amountPaid !== undefined ? dto.amountPaid : Math.round(total * 100) / 100;
+        const finalOrderCalc =
+          effectiveDiscountInput !== storedOrderCalc.discountAmount
+            ? this.computeOrderTotals(
+                order.items,
+                { overrideDiscountAmount: effectiveDiscountInput },
+                business,
+              )
+            : storedOrderCalc;
+
+        const discountAmount = finalOrderCalc.discountAmount;
+        const total = finalOrderCalc.total;
+
+        const amountPaid = dto.amountPaid !== undefined ? dto.amountPaid : total;
 
         const saleDto: CreateSaleDto = {
           paymentMethod: dto.paymentMethod || PosPaymentMethod.EFECTIVO,
@@ -1344,13 +1690,7 @@ export class TablesService {
           payments: dto.payments,
           bankId: dto.bankId,
           bankName: dto.bankName,
-          items: order.items.map((i) => ({
-            productId: i.productId,
-            productName: i.productName,
-            unitPrice: i.unitPrice,
-            quantity: round3(Number(i.quantity)),
-            discount: 0,
-          })),
+          items: this.buildSaleDtoItems(order.items, business),
         };
 
         const sale = await this.salesService.create(saleDto, businessId, cashierId, userRole, clientInfo, tx);
@@ -1673,16 +2013,19 @@ export class TablesService {
   private formatOrderResponse(
     order: any,
     taxRate: number = 0,
-    business?: { taxRate?: number | null; taxEnabled?: boolean | null; taxIncluded?: boolean | null } | null,
+    business?: {
+      taxRate?: number | null;
+      taxEnabled?: boolean | null;
+      taxIncluded?: boolean | null;
+      useListPrice?: boolean | null;
+    } | null,
     policies?: { tipEnabled?: boolean | null; tipDefaultPercent?: any } | null,
   ) {
-    let subtotal = 0;
     let itemsCount = 0;
 
     const formattedItems = (order.items || []).map((item: any) => {
       const itemQty = Number(item.quantity);
       const itemSubtotal = itemQty * item.unitPrice;
-      subtotal += itemSubtotal;
       itemsCount += itemQty;
       return {
         id: item.id,
@@ -1710,20 +2053,30 @@ export class TablesService {
       };
     });
 
-    subtotal = Math.round(subtotal * 100) / 100;
+    const effectiveBusiness = business || {
+      taxRate,
+      taxEnabled: taxRate > 0,
+      taxIncluded: false,
+      useListPrice: false,
+    };
+
+    const orderCalc = this.computeOrderTotals(
+      order.items || [],
+      {
+        discountPercent: order.discountPercent,
+        discountAmount: order.discountAmount,
+      },
+      effectiveBusiness,
+    );
 
     const discountPercent = Number(order.discountPercent || 0);
     const discountAmount = Number(order.discountAmount || 0);
-    let totalDiscount = 0;
-    if (discountPercent > 0) {
-      totalDiscount = Math.round(subtotal * (discountPercent / 100) * 100) / 100;
-    } else if (discountAmount > 0) {
-      totalDiscount = Math.min(subtotal, Math.round(discountAmount * 100) / 100);
-    }
-
-    const taxable = Math.max(0, subtotal - totalDiscount);
-    const taxTotal = Math.round(taxable * (taxRate / 100) * 100) / 100;
-    const orderTotal = Math.round((taxable + taxTotal) * 100) / 100;
+    let subtotal = orderCalc.subtotal;
+    let totalDiscount = orderCalc.discountAmount;
+    let taxTotal = orderCalc.taxAmount;
+    let orderTotal = orderCalc.total;
+    const resolvedTaxRate =
+      effectiveBusiness.taxEnabled === false ? 0 : Number(effectiveBusiness.taxRate ?? taxRate);
 
     // Formatear subcuentas con cálculo proporcional exacto al centavo
     let formattedSubAccounts: any[] = [];
@@ -1735,12 +2088,15 @@ export class TablesService {
         formattedSubAccounts = sorted.map((sa: any) => {
           const fixed = Number(sa.fixedAmount || 0);
           try {
-            const splitResult = calculateEqualSplitItems(order, sorted, sa.id, business);
+            const splitResult = calculateEqualSplitItems(order, sorted, sa.id, effectiveBusiness);
             const saTaxable = Math.max(0, splitResult.targetSubtotal - splitResult.saDiscount);
             let saTax = 0;
-            const effectiveTaxRate = business?.taxRate ?? taxRate;
+            const effectiveTaxRate =
+              effectiveBusiness?.taxEnabled === false
+                ? 0
+                : (effectiveBusiness?.taxRate ?? taxRate);
             if (effectiveTaxRate > 0) {
-              if (business?.taxIncluded) {
+              if (effectiveBusiness?.taxIncluded) {
                 saTax = Math.round((saTaxable - saTaxable / (1 + effectiveTaxRate / 100)) * 100) / 100;
               } else {
                 saTax = Math.round(saTaxable * (effectiveTaxRate / 100) * 100) / 100;
@@ -1788,7 +2144,7 @@ export class TablesService {
           }
         });
       } else {
-        // Modo ITEMS
+        // Modo ITEMS: usar computeItemsSplitSubAccountTotals con computeOrderTotals
         const itemsBySub = new Map<string, any[]>();
         for (const sa of rawSubAccounts) {
           itemsBySub.set(sa.id, []);
@@ -1802,42 +2158,24 @@ export class TablesService {
         const sorted = [...rawSubAccounts].sort(
           (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
         );
-        let accDiscount = 0;
-        let accTax = 0;
+        const { subAccountsMap } = this.computeItemsSplitSubAccountTotals(order, effectiveBusiness);
 
-        formattedSubAccounts = sorted.map((sa: any, idx: number) => {
+        let sumSubTotals = 0;
+        let sumSubTaxes = 0;
+        let sumSubDiscounts = 0;
+
+        formattedSubAccounts = sorted.map((sa: any) => {
           const saItems = itemsBySub.get(sa.id) || [];
-          let saSub = 0;
-          let saCount = 0;
-          for (const it of saItems) {
-            saSub += it.subtotal;
-            saCount += it.quantity;
-          }
-          saSub = Math.round(saSub * 100) / 100;
+          const saTotals = subAccountsMap.get(sa.id);
+          const saSub = saTotals ? saTotals.subtotal : 0;
+          const saDisc = saTotals ? saTotals.discount : 0;
+          const saTax = saTotals ? saTotals.tax : 0;
+          const saTot = saTotals ? saTotals.total : 0;
+          const saCount = saTotals ? saTotals.itemsCount : 0;
 
-          const isLast = idx === sorted.length - 1;
-          let saDisc = 0;
-          if (subtotal > 0 && totalDiscount > 0) {
-            if (isLast) {
-              saDisc = Math.round((totalDiscount - accDiscount) * 100) / 100;
-            } else {
-              saDisc = Math.round(totalDiscount * (saSub / subtotal) * 100) / 100;
-              accDiscount += saDisc;
-            }
-          }
-
-          const saTaxable = Math.max(0, saSub - saDisc);
-          let saTax = 0;
-          if (taxRate > 0) {
-            if (isLast) {
-              saTax = Math.round((taxTotal - accTax) * 100) / 100;
-            } else {
-              saTax = Math.round(saTaxable * (taxRate / 100) * 100) / 100;
-              accTax += saTax;
-            }
-          }
-
-          const saTot = Math.round((saTaxable + saTax) * 100) / 100;
+          sumSubTotals = Math.round((sumSubTotals + saTot) * 100) / 100;
+          sumSubTaxes = Math.round((sumSubTaxes + saTax) * 100) / 100;
+          sumSubDiscounts = Math.round((sumSubDiscounts + saDisc) * 100) / 100;
 
           return {
             id: sa.id,
@@ -1859,6 +2197,16 @@ export class TablesService {
             items: saItems,
           };
         });
+
+        // Asegurar que la orden dividida por ITEMS cuadre exactamente al centavo con la suma de sus subcuentas
+        const assignedItemsCount = formattedItems.filter(
+          (fi: any) => fi.subAccountId && itemsBySub.has(fi.subAccountId),
+        ).length;
+        if (assignedItemsCount === formattedItems.length && formattedSubAccounts.length > 0) {
+          totalDiscount = sumSubDiscounts;
+          taxTotal = sumSubTaxes;
+          orderTotal = sumSubTotals;
+        }
       }
     }
 
@@ -1905,7 +2253,7 @@ export class TablesService {
       discountPercent,
       discountAmount,
       discountTotal: totalDiscount,
-      taxRate,
+      taxRate: resolvedTaxRate,
       taxTotal,
       total: orderTotal,
       splitVersion: order.splitVersion !== undefined ? order.splitVersion : 0,
@@ -2417,6 +2765,8 @@ export class TablesService {
       }
     }
 
+    await this.assertCanMutateEqualSplitOrder(order.id, order.splitMode);
+
     const currentQty = Number(item.quantity);
     const voidQty =
       dto.qty !== undefined && dto.qty > 0 && dto.qty < currentQty
@@ -2431,6 +2781,10 @@ export class TablesService {
         where: { id: item.id },
         data: { quantity: remainingQty },
       });
+    }
+
+    if (order.splitMode === 'EQUAL') {
+      await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
     }
 
     await this.prisma.orderItemVoid.create({
@@ -2509,7 +2863,7 @@ export class TablesService {
   ) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
-      select: { salonProfile: true, taxRate: true },
+      select: ORDER_BUSINESS_TAX_SELECT,
     });
     if (business?.salonProfile === 'TALLER') {
       throw new BadRequestException({
@@ -2523,7 +2877,14 @@ export class TablesService {
     const order = await this.prisma.tableOrder.findFirst({
       where: { tableId, businessId, status: TableOrderStatus.OPEN },
       include: {
-        items: true,
+        items: {
+          include: {
+            product: {
+              select: ORDER_ITEM_PRODUCT_SELECT,
+            },
+          },
+          orderBy: { createdAt: 'asc' },
+        },
         subAccounts: true,
       },
     });
@@ -2565,23 +2926,12 @@ export class TablesService {
     const discountPercent = dto.discountPercent !== undefined ? dto.discountPercent : Number(order.discountPercent || 0);
     const discountAmount = dto.discountAmount !== undefined ? dto.discountAmount : Number(order.discountAmount || 0);
 
-    let orderSubtotal = 0;
-    for (const item of order.items) {
-      orderSubtotal += Number(item.quantity) * Number(item.unitPrice);
-    }
-    orderSubtotal = Math.round(orderSubtotal * 100) / 100;
-
-    let totalDiscount = 0;
-    if (discountPercent > 0) {
-      totalDiscount = Math.round(orderSubtotal * (discountPercent / 100) * 100) / 100;
-    } else if (discountAmount > 0) {
-      totalDiscount = Math.min(orderSubtotal, Math.round(discountAmount * 100) / 100);
-    }
-
-    const taxRate = business?.taxRate || 0;
-    const taxable = Math.max(0, orderSubtotal - totalDiscount);
-    const taxAmount = Math.round(taxable * (taxRate / 100) * 100) / 100;
-    const orderTotal = Math.round((taxable + taxAmount) * 100) / 100;
+    const orderCalc = this.computeOrderTotals(
+      order.items,
+      { discountPercent, discountAmount },
+      business,
+    );
+    const orderTotal = orderCalc.total;
 
     const newSplitVersion = order.splitVersion + 1;
 
@@ -3239,6 +3589,8 @@ export class TablesService {
       throw new NotFoundException('No hay un pedido abierto para esta mesa');
     }
 
+    await this.assertCanMutateEqualSplitOrder(order.id, order.splitMode);
+
     const discountPercent = dto.discountPercent !== undefined ? dto.discountPercent : 0;
     const discountAmount = dto.discountAmount !== undefined ? dto.discountAmount : 0;
 
@@ -3250,6 +3602,10 @@ export class TablesService {
         splitVersion: { increment: 1 },
       },
     });
+
+    if (order.splitMode === 'EQUAL') {
+      await this.recalculateEqualSplitAmountsIfNeeded(businessId, order.id);
+    }
 
     return this.getActiveTableOrder(businessId, tableId);
   }
