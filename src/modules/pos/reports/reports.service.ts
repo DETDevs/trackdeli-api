@@ -101,7 +101,7 @@ export class ReportsService {
           (
             CASE
               WHEN s."taxModel" = 'PER_LINE' THEN
-                COALESCE(i."manualDiscountShare", 0)
+                (COALESCE(i.discount, 0) + COALESCE(i."manualDiscountShare", 0))
                 * (CASE WHEN i.quantity > 0 THEN GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)) / i.quantity ELSE 0 END)
               ELSE
                 ((CASE WHEN i.quantity > 0 THEN i.subtotal / i.quantity ELSE i."unitPrice" END) * GREATEST(0, i.quantity - COALESCE(i."returnedQty", 0)))
@@ -440,7 +440,7 @@ export class ReportsService {
       SELECT
         COUNT(s.id)::int AS "totalSales",
         COALESCE(SUM(GREATEST(0, s.total - COALESCE(refunds.total_refund, 0))), 0)::float AS "totalRevenue",
-        COALESCE(SUM(s."discountAmount"), 0)::float AS "totalDiscount",
+        COALESCE(SUM(s."discountAmount" + COALESCE(lines_breakdown.line_item_discounts, 0)), 0)::float AS "totalDiscount",
         COALESCE(SUM(GREATEST(0, s."taxAmount" - COALESCE(refunds.tax_refund, 0))), 0)::float AS "totalTax",
         COALESCE(SUM(GREATEST(0, s.subtotal - s."discountAmount" - COALESCE(refunds.net_refund, 0))), 0)::float AS "netRevenue",
         COALESCE(SUM(
@@ -467,6 +467,7 @@ export class ReportsService {
       LEFT JOIN (
         SELECT
           i."saleId",
+          SUM(COALESCE(i.discount, 0)) AS line_item_discounts,
           SUM(CASE WHEN i.taxable = true THEN GREATEST(0, (i.subtotal - i."manualDiscountShare") - COALESCE(ri.net_refund, 0)) ELSE 0 END) AS taxable_net,
           SUM(CASE WHEN i.taxable = false THEN GREATEST(0, (i.subtotal - i."manualDiscountShare") - COALESCE(ri.net_refund, 0)) ELSE 0 END) AS exempt_net
         FROM pos_sale_items i
@@ -2273,8 +2274,8 @@ export class ReportsService {
       const [rows, deliv] = await Promise.all([
         this.prisma.$queryRaw<any[]>`
           SELECT
-            COALESCE(SUM(GREATEST(0, s.subtotal - COALESCE(deliv_items.deliv_subtotal, 0))), 0)::float AS "prodGrossSales",
-            COALESCE(SUM(GREATEST(0, s."discountAmount" - (
+            COALESCE(SUM(GREATEST(0, s.subtotal + COALESCE(line_disc.total_line_disc, 0) - COALESCE(deliv_items.deliv_subtotal, 0))), 0)::float AS "prodGrossSales",
+            COALESCE(SUM(GREATEST(0, COALESCE(line_disc.total_line_disc, 0) + s."discountAmount" - (
               CASE
                 WHEN s."taxModel" = 'PER_LINE' THEN COALESCE(deliv_items.deliv_discount, 0)
                 WHEN COALESCE(deliv_items.deliv_discount, 0) > 0 THEN COALESCE(deliv_items.deliv_discount, 0)
@@ -2343,6 +2344,15 @@ export class ReportsService {
               )
             GROUP BY si."saleId"
           ) deliv_items ON deliv_items."saleId" = s.id
+          LEFT JOIN (
+            SELECT
+              si."saleId",
+              COALESCE(SUM(si.discount), 0) AS total_line_disc
+            FROM pos_sale_items si
+            JOIN pos_sales ps ON ps.id = si."saleId"
+            WHERE ps."businessId" = ${businessId}
+            GROUP BY si."saleId"
+          ) line_disc ON line_disc."saleId" = s.id
           WHERE s."businessId" = ${businessId}
             AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
             AND (s."createdAt" AT TIME ZONE 'UTC') >= ${fromDt} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${toDt};
@@ -2770,37 +2780,46 @@ export class ReportsService {
       take: 10,
     });
 
-    // 3. Descuentos
+    // 3. Descuentos (incluye tanto descuento general de la venta como descuentos manuales por producto)
     const discountsAgg: any[] = await this.prisma.$queryRaw`
       SELECT
-        COUNT(id)::int AS count,
-        COALESCE(SUM("discountAmount"), 0)::float AS "totalAmount"
-      FROM pos_sales
-      WHERE "businessId" = ${businessId}
-        AND "discountAmount" > 0
-        AND status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
-        AND ("createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND ("createdAt" AT TIME ZONE 'UTC') <= ${endDate};
+        COUNT(s.id)::int AS count,
+        COALESCE(SUM(s."discountAmount" + COALESCE(ld.line_disc, 0)), 0)::float AS "totalAmount"
+      FROM pos_sales s
+      LEFT JOIN (
+        SELECT "saleId", SUM(COALESCE(discount, 0)) AS line_disc
+        FROM pos_sale_items
+        GROUP BY "saleId"
+      ) ld ON ld."saleId" = s.id
+      WHERE s."businessId" = ${businessId}
+        AND (s."discountAmount" > 0 OR COALESCE(ld.line_disc, 0) > 0)
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate};
     `;
 
-    const discountsRecent = await this.prisma.sale.findMany({
-      where: {
-        businessId,
-        discountAmount: { gt: 0 },
-        status: { in: ['COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED'] },
-        createdAt: { gte: startDate, lte: endDate },
-      },
-      select: {
-        id: true,
-        invoiceNumber: true,
-        subtotal: true,
-        discountAmount: true,
-        total: true,
-        createdAt: true,
-        cashierId: true,
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-    });
+    const discountsRecentRaw: any[] = await this.prisma.$queryRaw`
+      SELECT
+        s.id,
+        s."invoiceNumber",
+        (s.subtotal + COALESCE(ld.line_disc, 0))::float AS subtotal,
+        (s."discountAmount" + COALESCE(ld.line_disc, 0))::float AS "discountAmount",
+        s.total::float AS total,
+        s."createdAt",
+        s."cashierId"
+      FROM pos_sales s
+      LEFT JOIN (
+        SELECT "saleId", SUM(COALESCE(discount, 0)) AS line_disc
+        FROM pos_sale_items
+        GROUP BY "saleId"
+      ) ld ON ld."saleId" = s.id
+      WHERE s."businessId" = ${businessId}
+        AND (s."discountAmount" > 0 OR COALESCE(ld.line_disc, 0) > 0)
+        AND s.status IN ('COMPLETED', 'PARTIALLY_RETURNED', 'RETURNED')
+        AND (s."createdAt" AT TIME ZONE 'UTC') >= ${startDate} AND (s."createdAt" AT TIME ZONE 'UTC') <= ${endDate}
+      ORDER BY s."createdAt" DESC
+      LIMIT 10;
+    `;
+    const discountsRecent = discountsRecentRaw;
 
     const userIds = new Set<string>();
     for (const v of voidedSalesRecent) {
