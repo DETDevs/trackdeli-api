@@ -152,6 +152,7 @@ export class PosGuard implements CanActivate {
 
       const isAllowed =
         (method === 'GET' && normalizedPath === '/pos/tables/status') ||
+        (method === 'GET' && normalizedPath === '/pos/salon/zones') ||
         (method === 'GET' && /^\/pos\/tables\/[^/]+\/order$/.test(normalizedPath)) ||
         (method === 'GET' && /^\/pos\/tables\/[^/]+\/order\/rounds$/.test(normalizedPath)) ||
         (method === 'POST' && /^\/pos\/tables\/[^/]+\/open-order$/.test(normalizedPath)) ||
