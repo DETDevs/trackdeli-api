@@ -17,6 +17,7 @@ import { AdminListUsersQueryDto } from './dto/admin-list-users-query.dto';
 import * as bcrypt from 'bcrypt';
 
 import { UserQuotaService } from './user-quota.service';
+import { PushService } from '../pos/push/push.service';
 
 const USER_SELECT_FIELDS = {
   id: true,
@@ -38,6 +39,7 @@ export class AdminUsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly userQuotaService: UserQuotaService,
+    private readonly pushService: PushService,
   ) {}
 
   async createUser(currentUser: JwtPayload, dto: AdminCreateUserDto) {
@@ -194,6 +196,16 @@ export class AdminUsersService {
       data: { isActive: dto.isActive },
       select: USER_SELECT_FIELDS,
     });
+
+    if (dto.isActive === false) {
+      try {
+        await this.pushService.deactivateTokensByUser(targetUser.id);
+      } catch (err: any) {
+        this.logger.warn(
+          `[updateStatus] No se pudieron desactivar tokens push del usuario ${targetUser.id}: ${err?.message || 'desconocido'}`,
+        );
+      }
+    }
 
     this.logger.log(`[updateStatus] OK targetUserId=${targetUser.id}, isActive=${dto.isActive}, changedBy=${currentUser.sub}`);
     return updated;

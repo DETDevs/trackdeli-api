@@ -74,6 +74,7 @@ const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
 
 import { UserQuotaService, BASE_USER_LIMIT } from '../users/user-quota.service';
 import { ClientVersionService } from '../client-version/client-version.service';
+import { PushService } from '../pos/push/push.service';
 
 @Injectable()
 export class SuperAdminService {
@@ -85,6 +86,7 @@ export class SuperAdminService {
     private readonly userQuotaService: UserQuotaService,
     private readonly auditService: AuditService,
     private readonly clientVersionService: ClientVersionService,
+    private readonly pushService: PushService,
   ) { }
 
   private async fetchEnrichedBusinesses(now: Date = new Date()) {
@@ -3341,6 +3343,16 @@ export class SuperAdminService {
         ...(dto.status === PosDeviceStatus.ACTIVE && { archivedAt: null }),
       },
     });
+
+    if (dto.status === PosDeviceStatus.REVOKED) {
+      try {
+        await this.pushService.deactivateTokensByDevice(businessId, device.deviceId);
+      } catch (err: any) {
+        this.logger.warn(
+          `[updateBusinessDevice] No se pudieron desactivar tokens push del dispositivo ${device.deviceId}: ${err?.message || 'desconocido'}`,
+        );
+      }
+    }
 
     let action = 'DEVICE_UPDATED';
     if (dto.status && dto.status !== device.status) {

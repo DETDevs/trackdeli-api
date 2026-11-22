@@ -2336,6 +2336,7 @@ WHERE a."customerId" = c."id"
       await this.ensurePromotionsSchema();
       await this.ensureMobileDevicesSchema();
       await this.ensureDeviceArchiveSchema();
+      await this.ensurePushNotificationsSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4979,6 +4980,119 @@ WHERE a."customerId" = c."id"
     } catch (err: any) {
       this.logger.warn(
         `[PrismaService] ⚠ 297a - Advertencia sincronizando esquema de archivado de equipos: ${err.message}`,
+      );
+    }
+  }
+
+  /**
+   * 300a - Base de notificaciones push para app móvil (tablas nuevas:
+   * pos_push_tokens, pos_push_preferences, pos_push_log).
+   * DDL idempotente con advisory lock 3000100, sin tocar tablas existentes.
+   */
+  private async ensurePushNotificationsSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(3000100)`);
+      try {
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_push_tokens" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "userId" TEXT NOT NULL,
+            "deviceId" VARCHAR(100) NOT NULL,
+            "token" TEXT NOT NULL,
+            "platform" VARCHAR(30) NOT NULL DEFAULT 'android',
+            "appVersion" VARCHAR(50),
+            "isActive" BOOLEAN NOT NULL DEFAULT true,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "lastSeenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "lastErrorAt" TIMESTAMP(3),
+            "lastErrorCode" VARCHAR(100),
+            CONSTRAINT "pos_push_tokens_pkey" PRIMARY KEY ("id")
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE UNIQUE INDEX IF NOT EXISTS "pos_push_tokens_deviceId_key"
+            ON "pos_push_tokens"("deviceId");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE UNIQUE INDEX IF NOT EXISTS "pos_push_tokens_token_key"
+            ON "pos_push_tokens"("token");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_push_tokens_businessId_idx"
+            ON "pos_push_tokens"("businessId");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_push_tokens_userId_idx"
+            ON "pos_push_tokens"("userId");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_push_tokens_businessId_isActive_idx"
+            ON "pos_push_tokens"("businessId", "isActive");
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_push_preferences" (
+            "id" TEXT NOT NULL,
+            "userId" TEXT NOT NULL,
+            "category" VARCHAR(50) NOT NULL,
+            "enabled" BOOLEAN NOT NULL DEFAULT true,
+            "quietStart" VARCHAR(5),
+            "quietEnd" VARCHAR(5),
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_push_preferences_pkey" PRIMARY KEY ("id")
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE UNIQUE INDEX IF NOT EXISTS "pos_push_preferences_userId_category_key"
+            ON "pos_push_preferences"("userId", "category");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_push_preferences_userId_idx"
+            ON "pos_push_preferences"("userId");
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_push_log" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "userId" TEXT,
+            "deviceId" VARCHAR(100),
+            "category" VARCHAR(50) NOT NULL,
+            "dedupeKey" VARCHAR(200),
+            "status" VARCHAR(20) NOT NULL,
+            "errorCode" VARCHAR(100),
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_push_log_pkey" PRIMARY KEY ("id")
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_push_log_businessId_createdAt_idx"
+            ON "pos_push_log"("businessId", "createdAt");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_push_log_businessId_dedupeKey_createdAt_idx"
+            ON "pos_push_log"("businessId", "dedupeKey", "createdAt");
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_push_log_createdAt_idx"
+            ON "pos_push_log"("createdAt");
+        `);
+
+        this.logger.log(
+          '[PrismaService] ✓ 300a - Tablas e índices de notificaciones push sincronizados (pos_push_tokens, pos_push_preferences, pos_push_log).',
+        );
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(3000100)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[PrismaService] ⚠ 300a - Advertencia sincronizando esquema de notificaciones push: ${err.message}`,
       );
     }
   }

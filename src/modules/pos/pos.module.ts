@@ -40,6 +40,7 @@ import { PosQuotesModule } from './quotes/pos-quotes.module';
 import { PosNotificationsCenterModule } from './notifications-center/pos-notifications-center.module';
 import { UnitsModule } from './units/units.module';
 import { PromotionsModule } from './promotions/promotions.module';
+import { PushModule } from './push/push.module';
 
 @Module({
   imports: [
@@ -80,10 +81,11 @@ import { PromotionsModule } from './promotions/promotions.module';
     PosQuotesModule,
     PosNotificationsCenterModule,
     PromotionsModule,
+    PushModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
-  exports: [ProductFieldsModule, UnitsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule, PrintAuditModule, BatchesModule, ReceiptLinksModule, PresaleTicketsModule, BanksModule, ChannelsModule, PosQuotesModule, PromotionsModule],
+  exports: [ProductFieldsModule, UnitsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule, PrintAuditModule, BatchesModule, ReceiptLinksModule, PresaleTicketsModule, BanksModule, ChannelsModule, PosQuotesModule, PromotionsModule, PushModule],
 })
 export class PosModule {}
 

@@ -22,6 +22,7 @@ import { UpdateDeviceDto } from './dto/update-device.dto';
 import { UpdatePosSubscriptionDto } from './dto/update-pos-subscription.dto';
 import { RegisterWebDeviceDto } from './dto/register-web-device.dto';
 import { PairMobileDeviceDto } from './dto/pair-mobile-device.dto';
+import { PushService } from '../push/push.service';
 
 @Injectable()
 export class PosDevicesService {
@@ -30,6 +31,7 @@ export class PosDevicesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly pushService: PushService,
   ) {}
 
   /**
@@ -350,6 +352,16 @@ export class PosDevicesService {
         ...(dto.status === PosDeviceStatus.ACTIVE && { archivedAt: null }),
       },
     });
+
+    if (dto.status === PosDeviceStatus.REVOKED) {
+      try {
+        await this.pushService.deactivateTokensByDevice(businessId, device.deviceId);
+      } catch (err: any) {
+        this.logger.warn(
+          `[updateDevice] No se pudieron desactivar tokens push del dispositivo ${device.deviceId}: ${err?.message || 'desconocido'}`,
+        );
+      }
+    }
 
     let action = 'DEVICE_UPDATED';
     if (dto.status && dto.status !== device.status) {

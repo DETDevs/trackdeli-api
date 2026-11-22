@@ -3,6 +3,7 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { UserQuotaService } from '../../users/user-quota.service';
 import { UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { PushService } from '../push/push.service';
 
 @Injectable()
 export class PosUsersService {
@@ -11,6 +12,7 @@ export class PosUsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly quotaService: UserQuotaService,
+    private readonly pushService: PushService,
   ) {}
 
   private generateTempPassword(): string {
@@ -301,6 +303,13 @@ export class PosUsersService {
       data: { isActive: false },
       select: { id: true, name: true, email: true, phone: true, role: true, isActive: true, createdAt: true }
     });
+    try {
+      await this.pushService.deactivateTokensByUser(id);
+    } catch (err: any) {
+      this.logger.warn(
+        `[deactivateUser] No se pudieron desactivar tokens push del usuario ${id}: ${err?.message || 'desconocido'}`,
+      );
+    }
     this.logger.log(`[deactivateUser] updaterId=${updaterId} desactivó a userId=${id}`);
     return updated;
   }

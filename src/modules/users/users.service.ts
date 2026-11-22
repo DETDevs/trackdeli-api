@@ -8,6 +8,7 @@ import { UserResponseDto } from './dto/user-response.dto';
 import * as bcrypt from 'bcrypt';
 import { User, UserRole } from '@prisma/client';
 import { UploadService } from '../upload/upload.service';
+import { PushService } from '../pos/push/push.service';
 
 @Injectable()
 export class UsersService {
@@ -16,6 +17,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly uploadService: UploadService,
+    private readonly pushService: PushService,
   ) { }
 
   private toResponseDto(user: User): UserResponseDto {
@@ -96,6 +98,16 @@ export class UsersService {
       },
     });
 
+    if (dto.isActive === false) {
+      try {
+        await this.pushService.deactivateTokensByUser(id);
+      } catch (err: any) {
+        this.logger.warn(
+          `[update] No se pudieron desactivar tokens push del usuario ${id}: ${err?.message || 'desconocido'}`,
+        );
+      }
+    }
+
     this.logger.log(`[update] OK userId=${id}, camposModificados=${Object.keys(dto).join(',')}`);
     return this.toResponseDto(updatedUser);
   }
@@ -120,6 +132,14 @@ export class UsersService {
       where: { id },
       data: { isActive: false },
     });
+
+    try {
+      await this.pushService.deactivateTokensByUser(id);
+    } catch (err: any) {
+      this.logger.warn(
+        `[deactivate] No se pudieron desactivar tokens push del usuario ${id}: ${err?.message || 'desconocido'}`,
+      );
+    }
 
     this.logger.log(`[deactivate] OK userId=${id} desactivado por requesterId=${requesterId}`);
     return this.toResponseDto(updatedUser);
