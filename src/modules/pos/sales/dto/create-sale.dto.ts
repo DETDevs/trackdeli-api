@@ -391,6 +391,10 @@ export class CreateSaleDto {
   waiterId?: string;
 
   @IsOptional()
+  @IsBoolean()
+  applyPromotions?: boolean;
+
+  @IsOptional()
   @ValidateNested()
   @Type(() => TipInputDto)
   tip?: TipInputDto;

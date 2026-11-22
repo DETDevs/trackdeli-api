@@ -2333,6 +2333,7 @@ WHERE a."customerId" = c."id"
       await this.ensurePosUnitsAndSaleItemUnitSchema();
       await this.ensureProductPresentationsSchema();
       await this.ensureProductVariantsSchema();
+      await this.ensurePromotionsSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -6209,6 +6210,93 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 294c - Advertencia sincronizando variantes: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  /**
+   * 294d: Asegura la tabla pos_promotions y las columnas de promoción aplicada en pos_sale_items.
+   * DDL idempotente con advisory lock 2940400.
+   */
+  public async ensurePromotionsSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(2940400)`);
+
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_promotions" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "name" VARCHAR(150) NOT NULL,
+              "type" VARCHAR(30) NOT NULL,
+              "scope" VARCHAR(20) NOT NULL,
+              "productIds" JSONB NOT NULL DEFAULT '[]'::jsonb,
+              "categoryIds" JSONB NOT NULL DEFAULT '[]'::jsonb,
+              "discountPct" DECIMAL(5, 2),
+              "discountAmount" DECIMAL(12, 2),
+              "buyQty" INTEGER,
+              "payQty" INTEGER,
+              "minQty" DECIMAL(12, 3),
+              "tierUnitPrice" DECIMAL(12, 2),
+              "startsAt" TIMESTAMP(3),
+              "endsAt" TIMESTAMP(3),
+              "daysOfWeek" JSONB NOT NULL DEFAULT '[]'::jsonb,
+              "startTime" VARCHAR(5),
+              "endTime" VARCHAR(5),
+              "channels" JSONB NOT NULL DEFAULT '[]'::jsonb,
+              "priority" INTEGER NOT NULL DEFAULT 0,
+              "isActive" BOOLEAN NOT NULL DEFAULT true,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_promotions_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_promotions_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_promotions_businessId_isActive_idx"
+            ON "pos_promotions"("businessId", "isActive");
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_promotions_businessId_isActive_priority_idx"
+            ON "pos_promotions"("businessId", "isActive", "priority");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "promotionId" TEXT;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "promotionName" VARCHAR(150);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "promoDiscount" DECIMAL(12, 2) NOT NULL DEFAULT 0;
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_sale_items_promotionId_idx"
+            ON "pos_sale_items"("promotionId");
+          `);
+          await tx.$executeRawUnsafe(`
+            DO $$ BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'pos_sale_items_promotionId_fkey'
+              ) THEN
+                ALTER TABLE "pos_sale_items"
+                  ADD CONSTRAINT "pos_sale_items_promotionId_fkey"
+                  FOREIGN KEY ("promotionId") REFERENCES "pos_promotions"("id")
+                  ON DELETE SET NULL ON UPDATE CASCADE;
+              END IF;
+            END $$;
+          `);
+
+          this.logger.log(
+            `[PrismaService] ✓ 294d - Esquema de promociones (pos_promotions, pos_sale_items) sincronizado.`,
+          );
+        },
+        { maxWait: 10000, timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 294d - Advertencia sincronizando promociones: ${err?.message || err}`);
       throw err;
     }
   }

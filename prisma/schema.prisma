@@ -435,6 +435,9 @@ model Business {
   // 294b - Presentaciones de producto
   productPresentations         ProductPresentation[]
 
+  // 294d - Promociones dinámicas con vigencia
+  promotions                   PosPromotion[]
+
   @@map("businesses")
 }
 
@@ -1288,11 +1291,18 @@ model SaleItem {
   presentationName    String?              @db.VarChar(100)
   conversionFactor    Decimal              @default(1) @db.Decimal(12, 3)
 
+  // 294d: Promoción dinámica aplicada al renglón
+  promotionId         String?
+  promotion           PosPromotion?        @relation(fields: [promotionId], references: [id], onDelete: SetNull)
+  promotionName       String?              @db.VarChar(150)
+  promoDiscount       Decimal              @default(0) @db.Decimal(12, 2)
+
   returnItems      SaleReturnItem[]
   batchAllocations SaleItemBatch[]
 
   @@index([saleId])
   @@index([presentationId])
+  @@index([promotionId])
   @@map("pos_sale_items")
 }
 
@@ -1324,6 +1334,45 @@ model ProductPresentation {
   @@index([businessId, productId, isActive, sortOrder])
   @@index([productId])
   @@map("pos_product_presentations")
+}
+
+model PosPromotion {
+  id             String     @id @default(uuid())
+  businessId     String
+  business       Business   @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name           String     @db.VarChar(150)
+  /// 'PERCENT_DISCOUNT' | 'FIXED_DISCOUNT' | 'BUY_N_PAY_M' | 'QTY_PRICE_TIER'
+  type           String     @db.VarChar(30)
+  /// 'PRODUCT' | 'CATEGORY'
+  scope          String     @db.VarChar(20)
+  productIds     Json       @default("[]")
+  categoryIds    Json       @default("[]")
+  discountPct    Decimal?   @db.Decimal(5, 2)
+  discountAmount Decimal?   @db.Decimal(12, 2)
+  buyQty         Int?
+  payQty         Int?
+  minQty         Decimal?   @db.Decimal(12, 3)
+  tierUnitPrice  Decimal?   @db.Decimal(12, 2)
+  startsAt       DateTime?
+  endsAt         DateTime?
+  /// Días de la semana 0=Dom..6=Sáb en hora de Managua; vacío = todos
+  daysOfWeek     Json       @default("[]")
+  /// Hora inicio "HH:mm" en America/Managua
+  startTime      String?    @db.VarChar(5)
+  /// Hora fin "HH:mm" en America/Managua
+  endTime        String?    @db.VarChar(5)
+  /// Canales permitidos ('MOSTRADOR','DOMICILIO','PEDIDOSYA'); vacío = todos
+  channels       Json       @default("[]")
+  priority       Int        @default(0)
+  isActive       Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  saleItems      SaleItem[]
+
+  @@index([businessId, isActive])
+  @@index([businessId, isActive, priority])
+  @@map("pos_promotions")
 }
 
 model PosUnit {

@@ -17,6 +17,9 @@ export interface RawSaleItemCalculationInput {
   unitPrice: number;
   quantity: number;
   discount?: number;
+  promoDiscount?: number;
+  promotionId?: string | null;
+  promotionName?: string | null;
   subtotal?: number;
   priceTier?: string;
   listPrice?: number | null;
@@ -38,6 +41,9 @@ export interface CalculatedSaleLine {
   unitPrice: number;
   quantity: number;
   discount: number;
+  promoDiscount: number;
+  promotionId: string | null;
+  promotionName: string | null;
   subtotal: number; // neto cobrado de la línea
   priceTier: string;
   listPrice: number | null;
@@ -53,6 +59,7 @@ export interface CalculatedSaleSummary {
   subtotal: number; // suma de netos de las líneas
   discountAmount: number; // descuento manual general del cajero
   lineDiscountTotal: number; // suma de descuentos manuales por línea
+  promoDiscountTotal: number; // suma de descuentos por promociones dinámicas
   eligibleForGlobalDiscountSubtotal: number; // subtotal elegible para descuento general
   subtotalBeforeTax: number; // subtotal - discountAmount
   listPriceTotal: number; // suma de precios de etiqueta
@@ -71,10 +78,13 @@ export function isLineBlockedFromManualDiscount(
     priceTier?: string | null;
     listPrice?: number | null;
     unitPrice: number;
+    promotionId?: string | null;
+    promoDiscount?: number | null;
   },
   useListPrice: boolean = false,
 ): boolean {
   if (item.allowDiscount === false) return true;
+  if (item.promotionId || Number(item.promoDiscount || 0) > 0) return true;
   const tier = (item.priceTier || 'RETAIL').toUpperCase();
   if (tier === 'WHOLESALE' || tier === 'PROMO') return true;
   if (
@@ -103,22 +113,34 @@ export function calculateSaleTotals(
     // ══════════════════════════════════════════════════════════════════════
     let subtotalCents = 0;
     let lineDiscountTotalCents = 0;
+    let promoDiscountTotalCents = 0;
     let eligibleForGlobalCents = 0;
     const lines: CalculatedSaleLine[] = [];
 
     for (const item of rawItems) {
-      const itemDiscount = item.discount || 0;
-      const itemSubtotal = isSplitSale && item.subtotal !== undefined
-        ? item.subtotal
-        : (item.unitPrice * item.quantity - itemDiscount);
+      const isBlocked = isLineBlockedFromManualDiscount(item, Boolean(business.useListPrice));
+      const grossLineCents = Math.max(0, Math.round(item.unitPrice * item.quantity * 100));
+      const promoDiscountCents = Math.min(
+        grossLineCents,
+        Math.max(0, Math.round((item.promoDiscount || 0) * 100)),
+      );
+      const rawItemDiscCents = Math.max(0, Math.round((item.discount || 0) * 100));
+      const itemDiscCents = isBlocked
+        ? 0
+        : Math.min(rawItemDiscCents, Math.max(0, grossLineCents - promoDiscountCents));
+      const itemDiscount = itemDiscCents / 100;
 
-      const netCents = Math.round(itemSubtotal * 100);
+      const netCents = isSplitSale && item.subtotal !== undefined
+        ? Math.round(item.subtotal * 100)
+        : Math.max(0, grossLineCents - promoDiscountCents - itemDiscCents);
+
       subtotalCents += netCents;
-      const itemDiscCents = Math.max(0, Math.round(itemDiscount * 100));
       lineDiscountTotalCents += itemDiscCents;
+      promoDiscountTotalCents += promoDiscountCents;
       if (
-        !isLineBlockedFromManualDiscount(item, Boolean(business.useListPrice)) &&
+        !isBlocked &&
         itemDiscCents === 0 &&
+        promoDiscountCents === 0 &&
         netCents > 0
       ) {
         eligibleForGlobalCents += netCents;
@@ -131,6 +153,9 @@ export function calculateSaleTotals(
         unitPrice: item.unitPrice,
         quantity: item.quantity,
         discount: itemDiscount,
+        promoDiscount: promoDiscountCents / 100,
+        promotionId: item.promotionId || null,
+        promotionName: item.promotionName || null,
         subtotal: netCents / 100,
         priceTier: item.priceTier || 'RETAIL',
         listPrice: null,
@@ -171,6 +196,7 @@ export function calculateSaleTotals(
       subtotal: subtotalCents / 100,
       discountAmount: discountAmountCents / 100,
       lineDiscountTotal: lineDiscountTotalCents / 100,
+      promoDiscountTotal: promoDiscountTotalCents / 100,
       eligibleForGlobalDiscountSubtotal: eligibleForGlobalCents / 100,
       subtotalBeforeTax: finalSubtotalCents / 100,
       listPriceTotal: 0,
@@ -185,13 +211,14 @@ export function calculateSaleTotals(
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  // MODO PER_LINE (Ticket 206a + 292a - Estándar nuevo en centavos exactos)
+  // MODO PER_LINE (Ticket 206a + 292a + 294d - Estándar nuevo en centavos exactos)
   // ══════════════════════════════════════════════════════════════════════
   const useListPrice = Boolean(business.useListPrice);
 
   interface TempLine {
     raw: RawSaleItemCalculationInput;
     effectiveDiscountCents: number;
+    promoDiscountCents: number;
     netCents: number;
     unitPriceCents: number;
     listPriceNum: number | null;
@@ -207,6 +234,7 @@ export function calculateSaleTotals(
   let totalListPriceCents = 0;
   let totalListDiscountCents = 0;
   let totalLineDiscountCents = 0;
+  let totalPromoDiscountCents = 0;
   let eligibleForGlobalCents = 0;
 
   const tempLines: TempLine[] = [];
@@ -216,17 +244,25 @@ export function calculateSaleTotals(
     const qty = item.quantity;
     const grossLineCents = Math.max(0, Math.round(item.unitPrice * qty * 100));
     const isBlocked = isLineBlockedFromManualDiscount(item, useListPrice);
+    const promoDiscountCents = Math.min(
+      grossLineCents,
+      Math.max(0, Math.round((item.promoDiscount || 0) * 100)),
+    );
     const rawItemDiscountCents = Math.max(0, Math.round((item.discount || 0) * 100));
-    const itemDiscountCents = isBlocked ? 0 : Math.min(rawItemDiscountCents, grossLineCents);
+    const itemDiscountCents = isBlocked
+      ? 0
+      : Math.min(rawItemDiscountCents, Math.max(0, grossLineCents - promoDiscountCents));
 
     const netCents = isSplitSale && item.subtotal !== undefined
       ? Math.round(item.subtotal * 100)
-      : Math.max(0, grossLineCents - itemDiscountCents);
+      : Math.max(0, grossLineCents - promoDiscountCents - itemDiscountCents);
 
     subtotalNetCents += netCents;
     totalLineDiscountCents += itemDiscountCents;
+    totalPromoDiscountCents += promoDiscountCents;
 
-    const isEligibleForGlobal = !isBlocked && itemDiscountCents === 0 && netCents > 0;
+    const isEligibleForGlobal =
+      !isBlocked && itemDiscountCents === 0 && promoDiscountCents === 0 && netCents > 0;
     if (isEligibleForGlobal) {
       eligibleForGlobalCents += netCents;
     }
@@ -251,6 +287,7 @@ export function calculateSaleTotals(
     tempLines.push({
       raw: item,
       effectiveDiscountCents: itemDiscountCents,
+      promoDiscountCents,
       netCents,
       unitPriceCents,
       listPriceNum,
@@ -327,6 +364,9 @@ export function calculateSaleTotals(
     unitPrice: tl.raw.unitPrice,
     quantity: tl.raw.quantity,
     discount: tl.effectiveDiscountCents / 100,
+    promoDiscount: tl.promoDiscountCents / 100,
+    promotionId: tl.raw.promotionId || null,
+    promotionName: tl.raw.promotionName || null,
     subtotal: tl.netCents / 100,
     priceTier: tl.raw.priceTier || 'RETAIL',
     listPrice: tl.listPriceNum,
@@ -342,6 +382,7 @@ export function calculateSaleTotals(
     subtotal: subtotalNetCents / 100,
     discountAmount: totalManualDiscountCents / 100,
     lineDiscountTotal: totalLineDiscountCents / 100,
+    promoDiscountTotal: totalPromoDiscountCents / 100,
     eligibleForGlobalDiscountSubtotal: eligibleForGlobalCents / 100,
     subtotalBeforeTax: subtotalBeforeTaxCents / 100,
     listPriceTotal: totalListPriceCents / 100,

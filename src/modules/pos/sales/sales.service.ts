@@ -20,7 +20,18 @@ import { resolveLineUnitPrice, resolveChannelUnitPrice } from './utils/pricing.u
 
 import { BatchesService } from '../batches/batches.service';
 import { buildBusinessDateRange } from '../../../common/utils/date.util';
-import { calculateSaleTotals, calculateTipFromTotal, isLineBlockedFromManualDiscount, RawSaleItemCalculationInput } from './utils/sale-calculation.util';
+import {
+  calculateSaleTotals,
+  calculateTipFromTotal,
+  isLineBlockedFromManualDiscount,
+  RawSaleItemCalculationInput,
+} from './utils/sale-calculation.util';
+import { PreviewSaleDto } from './dto/preview-sale.dto';
+import {
+  evaluateLinePromotion,
+  isPromotionActiveAt,
+  PromotionRule,
+} from '../promotions/promotions-engine.util';
 
 @Injectable()
 export class SalesService {
@@ -51,6 +62,51 @@ export class SalesService {
       formattedReturns.reduce((acc: number, r: any) => acc + Number(r.refundAmount || 0), 0).toFixed(2),
     );
     const netTotal = Math.max(0, Number((totalNum - refundTotal).toFixed(2)));
+    const formattedItems = (sale.items || []).map((i: any) => {
+      const returnedQtyNum =
+        i.returnedQty != null
+          ? Number(new Prisma.Decimal(i.returnedQty.toString()).toDecimalPlaces(3))
+          : 0;
+      const promoDiscountNum =
+        i.promoDiscount != null
+          ? Number(new Prisma.Decimal(i.promoDiscount.toString()).toDecimalPlaces(2))
+          : 0;
+      const itemCopy = {
+        ...i,
+        unit: i.unit || i.product?.unit || 'UND',
+        presentationId: i.presentationId ?? null,
+        presentationName: i.presentationName ?? null,
+        conversionFactor: i.conversionFactor != null ? Number(i.conversionFactor) : 1,
+        promotionId: i.promotionId ?? null,
+        promotionName: i.promotionName ?? null,
+        promoDiscount: promoDiscountNum,
+        priceTier: i.priceTier || 'RETAIL',
+        price_tier: i.priceTier || 'RETAIL',
+        returnedQty: returnedQtyNum,
+        returnableQty: round3(Math.max(0, (i.quantity || 0) - returnedQtyNum)),
+        batches: (i.batchAllocations || []).map((ba: any) => ({
+          batchNumber: ba.batch?.batchNumber,
+          expiryDate: ba.batch?.expiryDate,
+          quantity: Number(ba.quantity),
+        })),
+      };
+      if (itemCopy.product) {
+        if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
+          delete itemCopy.product.cost;
+          delete itemCopy.product.costAtTime;
+        }
+      }
+      if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
+        delete itemCopy.cost;
+        delete itemCopy.costAtTime;
+      }
+      return itemCopy;
+    });
+    const promoDiscountTotal = Number(
+      formattedItems
+        .reduce((acc: number, it: any) => acc + Number(it.promoDiscount || 0), 0)
+        .toFixed(2),
+    );
     return {
       ...sale,
       sellerId: sale.sellerId || null,
@@ -58,6 +114,7 @@ export class SalesService {
       cashierName: sale.cashier?.name || null,
       refundTotal,
       netTotal,
+      promoDiscountTotal,
       subtotal: sale.subtotal != null ? Number(new Prisma.Decimal(sale.subtotal.toString()).toDecimalPlaces(2)) : 0,
       total: totalNum,
       discountAmount: sale.discountAmount != null ? Number(new Prisma.Decimal(sale.discountAmount.toString()).toDecimalPlaces(2)) : 0,
@@ -83,39 +140,7 @@ export class SalesService {
             createdAt: sale.tip.createdAt,
           }
         : null,
-      items: (sale.items || []).map((i: any) => {
-        const returnedQtyNum =
-          i.returnedQty != null
-            ? Number(new Prisma.Decimal(i.returnedQty.toString()).toDecimalPlaces(3))
-            : 0;
-        const itemCopy = {
-          ...i,
-          unit: i.unit || i.product?.unit || 'UND',
-          presentationId: i.presentationId ?? null,
-          presentationName: i.presentationName ?? null,
-          conversionFactor: i.conversionFactor != null ? Number(i.conversionFactor) : 1,
-          priceTier: i.priceTier || 'RETAIL',
-          price_tier: i.priceTier || 'RETAIL',
-          returnedQty: returnedQtyNum,
-          returnableQty: round3(Math.max(0, (i.quantity || 0) - returnedQtyNum)),
-          batches: (i.batchAllocations || []).map((ba: any) => ({
-            batchNumber: ba.batch?.batchNumber,
-            expiryDate: ba.batch?.expiryDate,
-            quantity: Number(ba.quantity),
-          })),
-        };
-        if (itemCopy.product) {
-          if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
-            delete itemCopy.product.cost;
-            delete itemCopy.product.costAtTime;
-          }
-        }
-        if (userRole === UserRole.CAJERO || userRole === UserRole.WAITER) {
-          delete itemCopy.cost;
-          delete itemCopy.costAtTime;
-        }
-        return itemCopy;
-      }),
+      items: formattedItems,
       returns: formattedReturns,
       payments: (sale.payments || []).map((p: any) => ({
         ...p,
@@ -166,6 +191,656 @@ export class SalesService {
           },
         }
         : null,
+    };
+  }
+
+  private async resolveAndCalculateCart(
+    db: Prisma.TransactionClient | PrismaService,
+    params: {
+      businessId: string;
+      business: {
+        wholesaleEnabled?: boolean | null;
+        useListPrice?: boolean | null;
+        taxEnabled?: boolean | null;
+        taxIncluded?: boolean | null;
+        taxRate?: number | null;
+        pedidosYaChannelEnabled?: boolean | null;
+        pedidosYaCommissionPct?: number | null;
+        pedidosYaTaxPct?: number | null;
+        pedidosYaPriceMode?: string | null;
+        pedidosYaRounding?: string | null;
+        pedidosYaCapAtListPrice?: boolean | null;
+      };
+      policies: { priceOverrideEnabled?: boolean | null };
+      dto: {
+        items: Array<{
+          productId?: string;
+          presentationId?: string;
+          productName?: string;
+          barcode?: string;
+          unitPrice?: number;
+          quantity: number;
+          discount?: number;
+          subtotal?: number;
+          listPrice?: number;
+          taxable?: boolean;
+          origin?: string;
+        }>;
+        discountAmount?: number;
+        isSplitSale?: boolean;
+        presaleTicketId?: string;
+        applyPromotions?: boolean;
+        isOfflineSync?: boolean;
+      };
+      saleChannel: string;
+      effectiveDeliveryFee: number;
+      isQuoteExpired?: boolean;
+      lockedQuote?: any;
+      quotedItems?: Array<{ productId: string | null; unitPrice: number }>;
+      validatePriceMismatch: boolean;
+      validateManualDiscountBlocked: boolean;
+      includeRecipeComponents: boolean;
+      now?: Date;
+    },
+  ) {
+    const {
+      businessId,
+      business,
+      policies,
+      dto,
+      saleChannel,
+      effectiveDeliveryFee,
+      isQuoteExpired = false,
+      lockedQuote = null,
+      quotedItems = [],
+      validatePriceMismatch,
+      validateManualDiscountBlocked,
+      includeRecipeComponents,
+    } = params;
+
+    const now = params.now ?? new Date();
+    const shouldApplyPromotions = Boolean(dto.applyPromotions);
+
+    const [businessUnits, allActivePromotions] = await Promise.all([
+      db.posUnit.findMany({
+        where: { businessId },
+        select: { code: true, allowsDecimals: true },
+      }),
+      shouldApplyPromotions
+        ? db.posPromotion.findMany({
+            where: { businessId, isActive: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const unitDecimalsMap = new Map<string, boolean>(
+      businessUnits.map((u) => [u.code.toUpperCase(), u.allowsDecimals]),
+    );
+    const activePromotions: PromotionRule[] = shouldApplyPromotions
+      ? allActivePromotions.filter((p) => isPromotionActiveAt(p, now, saleChannel))
+      : [];
+
+    const resolvedLines: Array<{
+      itemIdx: number;
+      item: any;
+      product: any;
+      presentation: any;
+      unitCode: string;
+      requestedQty: number;
+      conversionFactor: number;
+      baseQty: number;
+      priceTier: string;
+      effectiveUnitPrice: number;
+      listPrice: number | null;
+      taxable: boolean | null | undefined;
+      itemAllowDiscount: boolean;
+      itemDiscountClamped: number;
+      promotionId: string | null;
+      promotionName: string | null;
+      promoDiscount: number;
+    }> = [];
+
+    const totalBaseDemandByProduct = new Map<string, { product: any; totalBaseQty: number }>();
+    const totalRecipeCompDemand = new Map<string, { compProd: any; parentName: string; totalQty: number }>();
+    const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
+
+    for (let itemIdx = 0; itemIdx < dto.items.length; itemIdx++) {
+      const item = dto.items[itemIdx];
+      let priceTier = 'RETAIL';
+      let effectiveUnitPrice = item.unitPrice ?? 0;
+      let product: any = null;
+      let presentation: any = null;
+      let unitCode = 'UND';
+      let requestedQty = round3(item.quantity);
+      let conversionFactor = 1;
+      let baseQty = requestedQty;
+      let promotionId: string | null = null;
+      let promotionName: string | null = null;
+      let promoDiscount = 0;
+
+      if (item.productId) {
+        product = await db.product.findFirst({
+          where: { id: item.productId, businessId },
+          ...(includeRecipeComponents
+            ? {
+                include: {
+                  recipeComponents: {
+                    include: {
+                      componentProduct: true,
+                    },
+                  },
+                },
+              }
+            : {}),
+        });
+        if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
+        assertNotVariantParent(product);
+
+        const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
+        unitCode = prodUnitCode;
+        const unitAllowsDecimals =
+          unitDecimalsMap.get(prodUnitCode) !== undefined
+            ? Boolean(unitDecimalsMap.get(prodUnitCode))
+            : prodUnitCode !== 'UND';
+
+        if (item.presentationId) {
+          presentation = await db.productPresentation.findFirst({
+            where: {
+              id: item.presentationId,
+              businessId,
+              productId: product.id,
+            },
+          });
+          if (!presentation) {
+            throw new NotFoundException({
+              statusCode: 404,
+              error: 'Not Found',
+              code: 'PRESENTATION_NOT_FOUND',
+              message: `La presentación seleccionada no existe para "${product.name}".`,
+            });
+          }
+          if (!presentation.isActive) {
+            throw new BadRequestException({
+              statusCode: 400,
+              error: 'Bad Request',
+              code: 'PRESENTATION_INACTIVE',
+              message: `La presentación "${presentation.name}" de "${product.name}" está desactivada.`,
+            });
+          }
+
+          // Las presentaciones siempre se venden en cantidades enteras (salvo split sale)
+          requestedQty = validateProductQuantity(
+            presentation.name,
+            item.quantity,
+            product.name,
+            Boolean(dto.isSplitSale),
+            false,
+          );
+          conversionFactor = Number(presentation.factor);
+          baseQty = round3(requestedQty * conversionFactor);
+
+          // 294b / 294d: Ni promoDiscountPct fijo ni promociones dinámicas aplican a presentaciones
+          const resolved = resolveChannelUnitPrice(
+            {
+              price: Number(presentation.price),
+              wholesalePrice: presentation.wholesalePrice,
+              wholesaleMinQty: presentation.wholesaleMinQty,
+              listPrice: presentation.listPrice,
+              promoDiscountPct: null,
+            },
+            requestedQty,
+            business,
+            saleChannel,
+          );
+          priceTier = resolved.priceTier;
+          const expectedPrice = resolved.unitPrice;
+
+          if (item.unitPrice !== undefined && item.unitPrice !== null) {
+            const diff = Math.abs(item.unitPrice - expectedPrice);
+            const isPresaleSellerLine = Boolean(dto.presaleTicketId && (item as any).origin === 'SELLER');
+            const isQuotedPriceMatch =
+              Boolean(lockedQuote && !isQuoteExpired) &&
+              quotedItems.some(
+                (qi) =>
+                  qi.productId === item.productId &&
+                  Math.abs(Number(qi.unitPrice) - Number(item.unitPrice)) <= 0.01,
+              );
+            if (
+              validatePriceMismatch &&
+              diff > 0.01 &&
+              !policies.priceOverrideEnabled &&
+              !dto.isSplitSale &&
+              !isPresaleSellerLine &&
+              !isQuotedPriceMatch
+            ) {
+              throw new BadRequestException({
+                statusCode: 400,
+                error: 'Bad Request',
+                code: 'PRICE_MISMATCH',
+                message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${expectedPrice}) para "${product.name} (${presentation.name})"`,
+              });
+            }
+            effectiveUnitPrice = item.unitPrice;
+          } else {
+            effectiveUnitPrice = expectedPrice;
+          }
+        } else {
+          requestedQty = validateProductQuantity(
+            prodUnitCode,
+            item.quantity,
+            product.name,
+            Boolean(dto.isSplitSale),
+            unitDecimalsMap.get(prodUnitCode),
+          );
+          conversionFactor = 1;
+          baseQty = requestedQty;
+
+          const defaultResolved = resolveChannelUnitPrice(product, requestedQty, business, saleChannel);
+          const isPresaleSellerLine = Boolean(dto.presaleTicketId && (item as any).origin === 'SELLER');
+          const isQuotedPriceMatch =
+            Boolean(lockedQuote && !isQuoteExpired) &&
+            quotedItems.some(
+              (qi) =>
+                qi.productId === item.productId &&
+                Math.abs(Number(qi.unitPrice) - Number(item.unitPrice)) <= 0.01,
+            );
+
+          let promoApplied = false;
+          if (shouldApplyPromotions && activePromotions.length > 0 && !dto.isSplitSale) {
+            const retailResolved = resolveChannelUnitPrice(
+              {
+                price: Number(product.price),
+                wholesalePrice: null,
+                wholesaleMinQty: null,
+                promoDiscountPct: null,
+                listPrice: product.listPrice,
+              },
+              requestedQty,
+              business,
+              saleChannel,
+            );
+            const wholesaleUnitPrice =
+              defaultResolved.priceTier === 'WHOLESALE' ? defaultResolved.unitPrice : null;
+
+            let promoDecision = evaluateLinePromotion(
+              {
+                productId: product.id,
+                parentProductId: product.parentProductId ?? null,
+                categoryId: product.categoryId ?? null,
+                presentationId: null,
+                quantity: requestedQty,
+                retailUnitPrice: retailResolved.unitPrice,
+                unitAllowsDecimals,
+                wholesaleUnitPrice,
+              },
+              activePromotions,
+            );
+
+            if (promoDecision.applied) {
+              promoApplied = true;
+              const expectedPrice = retailResolved.unitPrice;
+              if (item.unitPrice !== undefined && item.unitPrice !== null) {
+                const diff = Math.abs(item.unitPrice - expectedPrice);
+                if (
+                  validatePriceMismatch &&
+                  diff > 0.01 &&
+                  !policies.priceOverrideEnabled &&
+                  !isPresaleSellerLine &&
+                  !isQuotedPriceMatch
+                ) {
+                  throw new BadRequestException({
+                    statusCode: 400,
+                    error: 'Bad Request',
+                    code: 'PRICE_MISMATCH',
+                    message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${expectedPrice}) para "${product.name}"`,
+                  });
+                }
+                effectiveUnitPrice = item.unitPrice;
+                if (diff > 0.01) {
+                  promoDecision = evaluateLinePromotion(
+                    {
+                      productId: product.id,
+                      parentProductId: product.parentProductId ?? null,
+                      categoryId: product.categoryId ?? null,
+                      presentationId: null,
+                      quantity: requestedQty,
+                      retailUnitPrice: effectiveUnitPrice,
+                      unitAllowsDecimals,
+                      wholesaleUnitPrice: null,
+                    },
+                    activePromotions,
+                  );
+                }
+              } else {
+                effectiveUnitPrice = expectedPrice;
+              }
+
+              if (promoDecision.applied) {
+                priceTier = 'PROMO';
+                promotionId = promoDecision.promotionId;
+                promotionName = promoDecision.promotionName;
+                promoDiscount = promoDecision.promoDiscount;
+              } else {
+                promoApplied = false;
+              }
+            }
+          }
+
+          if (!promoApplied) {
+            priceTier = defaultResolved.priceTier;
+            const expectedPrice = defaultResolved.unitPrice;
+
+            if (item.unitPrice !== undefined && item.unitPrice !== null) {
+              const diff = Math.abs(item.unitPrice - expectedPrice);
+              if (
+                validatePriceMismatch &&
+                diff > 0.01 &&
+                !policies.priceOverrideEnabled &&
+                !dto.isSplitSale &&
+                !isPresaleSellerLine &&
+                !isQuotedPriceMatch
+              ) {
+                throw new BadRequestException({
+                  statusCode: 400,
+                  error: 'Bad Request',
+                  code: 'PRICE_MISMATCH',
+                  message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${expectedPrice}) para "${product.name}"`,
+                });
+              }
+              effectiveUnitPrice = item.unitPrice;
+            } else {
+              effectiveUnitPrice = expectedPrice;
+            }
+          }
+        }
+
+        if (product.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
+          for (const comp of product.recipeComponents) {
+            const compProd = comp.componentProduct;
+            if (compProd && compProd.trackStock === true) {
+              const compRequestedQty = round3(baseQty * Number(comp.quantity));
+              const entry = totalRecipeCompDemand.get(compProd.id);
+              if (entry) {
+                entry.totalQty = round3(entry.totalQty + compRequestedQty);
+              } else {
+                totalRecipeCompDemand.set(compProd.id, {
+                  compProd,
+                  parentName: product.name,
+                  totalQty: compRequestedQty,
+                });
+              }
+            }
+          }
+        } else if (product.trackStock === true) {
+          const entry = totalBaseDemandByProduct.get(product.id);
+          if (entry) {
+            entry.totalBaseQty = round3(entry.totalBaseQty + baseQty);
+          } else {
+            totalBaseDemandByProduct.set(product.id, { product, totalBaseQty: baseQty });
+          }
+        }
+      } else {
+        if (item.unitPrice === undefined || item.unitPrice === null) {
+          throw new BadRequestException({
+            statusCode: 400,
+            code: 'UNIT_PRICE_REQUIRED',
+            message: `Debés indicar el precio unitario para "${item.productName || 'producto libre'}".`,
+          });
+        }
+        effectiveUnitPrice = Number(item.unitPrice);
+      }
+
+      let listPrice: number | null = null;
+      if (item.listPrice !== undefined && item.listPrice !== null) {
+        listPrice = Number(item.listPrice);
+      } else if (business.useListPrice && presentation?.listPrice != null) {
+        listPrice = Number(presentation.listPrice);
+      } else if (!presentation && business.useListPrice && product?.listPrice != null) {
+        listPrice = Number(product.listPrice);
+      }
+
+      let taxable: boolean | null | undefined = undefined;
+      if (item.taxable !== undefined && item.taxable !== null) {
+        taxable = Boolean(item.taxable);
+      }
+
+      const itemAllowDiscount = product ? (product as any).allowDiscount !== false : true;
+      const itemDiscountRaw = Number(item.discount || 0);
+      if (!Number.isFinite(itemDiscountRaw) || itemDiscountRaw < 0) {
+        throw new BadRequestException({
+          statusCode: 400,
+          code: 'INVALID_DISCOUNT',
+          message: `El descuento aplicado a "${item.productName || product?.name || 'producto'}" no es válido.`,
+        });
+      }
+      const grossLineAmount = Math.round(effectiveUnitPrice * requestedQty * 100) / 100;
+      const maxManualLineAmount = Math.max(0, Math.round((grossLineAmount - promoDiscount) * 100) / 100);
+      if (itemDiscountRaw > grossLineAmount + 0.01) {
+        throw new BadRequestException({
+          statusCode: 400,
+          code: 'INVALID_DISCOUNT',
+          message: `El descuento aplicado a "${item.productName || product?.name || 'producto'}" supera su monto (${grossLineAmount.toFixed(2)}).`,
+        });
+      }
+      const itemDiscountClamped = Math.min(Math.round(itemDiscountRaw * 100) / 100, maxManualLineAmount);
+
+      if (
+        validateManualDiscountBlocked &&
+        itemDiscountRaw > 0 &&
+        !dto.isOfflineSync &&
+        isLineBlockedFromManualDiscount(
+          {
+            allowDiscount: itemAllowDiscount,
+            priceTier,
+            listPrice,
+            unitPrice: effectiveUnitPrice,
+            promotionId,
+            promoDiscount,
+          },
+          Boolean(business.useListPrice),
+        )
+      ) {
+        throw new BadRequestException({
+          statusCode: 400,
+          code: 'DISCOUNT_NOT_ALLOWED_ON_ITEM',
+          message: `El producto "${item.productName || product?.name || 'seleccionado'}" ya tiene un descuento o promoción aplicada y no admite descuento manual.`,
+        });
+      }
+
+      resolvedLines.push({
+        itemIdx,
+        item,
+        product,
+        presentation,
+        unitCode,
+        requestedQty,
+        conversionFactor,
+        baseQty,
+        priceTier,
+        effectiveUnitPrice,
+        listPrice,
+        taxable,
+        itemAllowDiscount,
+        itemDiscountClamped,
+        promotionId,
+        promotionName,
+        promoDiscount,
+      });
+
+      rawItemsForCalc.push({
+        productId: item.productId || null,
+        productName: item.productName || product?.name || 'Producto',
+        barcode: item.barcode || presentation?.barcode || product?.barcode || null,
+        unitPrice: effectiveUnitPrice,
+        priceTier,
+        quantity: requestedQty,
+        discount: itemDiscountClamped,
+        promoDiscount,
+        promotionId,
+        promotionName,
+        subtotal: dto.isSplitSale && item.subtotal !== undefined ? item.subtotal : undefined,
+        listPrice,
+        taxable,
+        allowDiscount: itemAllowDiscount,
+      });
+    }
+
+    const shouldAppendDeliveryLine =
+      saleChannel === 'DOMICILIO' &&
+      effectiveDeliveryFee > 0 &&
+      !dto.items.some(
+        (it) =>
+          !it.productId &&
+          ((it.productName || '').toLowerCase().includes('envío') ||
+            (it.productName || '').toLowerCase().includes('envio') ||
+            (it.productName || '').toLowerCase().includes('domicilio')),
+      );
+    const deliveryFeeAmount = shouldAppendDeliveryLine
+      ? Math.round(effectiveDeliveryFee * 100) / 100
+      : 0;
+
+    const calcResult = calculateSaleTotals(
+      rawItemsForCalc,
+      dto.discountAmount || 0,
+      business,
+      Boolean(dto.isSplitSale),
+    );
+
+    const subtotal = Math.round((calcResult.subtotal + deliveryFeeAmount) * 100) / 100;
+    const discountAmount = calcResult.discountAmount;
+    const taxAmount = calcResult.taxAmount;
+    const total = Math.round((calcResult.total + deliveryFeeAmount) * 100) / 100;
+    const listPriceTotal =
+      calcResult.taxModel === 'PER_LINE'
+        ? Math.round((calcResult.listPriceTotal + deliveryFeeAmount) * 100) / 100
+        : calcResult.listPriceTotal;
+    const listDiscountTotal = calcResult.listDiscountTotal;
+
+    return {
+      resolvedLines,
+      totalBaseDemandByProduct,
+      totalRecipeCompDemand,
+      shouldAppendDeliveryLine,
+      deliveryFeeAmount,
+      calcResult,
+      subtotal,
+      discountAmount,
+      taxAmount,
+      total,
+      listPriceTotal,
+      listDiscountTotal,
+    };
+  }
+
+  async preview(dto: PreviewSaleDto, businessId: string) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: {
+        taxRate: true,
+        taxEnabled: true,
+        taxIncluded: true,
+        wholesaleEnabled: true,
+        useListPrice: true,
+        deliveryChannelEnabled: true,
+        pedidosYaChannelEnabled: true,
+        deliveryDefaultFee: true,
+        pedidosYaCommissionPct: true,
+        pedidosYaTaxPct: true,
+        pedidosYaPriceMode: true,
+        pedidosYaRounding: true,
+        pedidosYaCapAtListPrice: true,
+      },
+    });
+    if (!business) throw new NotFoundException('Negocio no encontrado');
+
+    const rawChannel = (dto.channel || 'MOSTRADOR').toUpperCase().trim();
+    if (!['MOSTRADOR', 'DOMICILIO', 'PEDIDOSYA'].includes(rawChannel)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Canal de venta inválido. Los canales permitidos son MOSTRADOR, DOMICILIO o PEDIDOSYA',
+      });
+    }
+    if (rawChannel === 'DOMICILIO' && !business.deliveryChannelEnabled) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'El canal de venta "A domicilio" no está activo para este negocio',
+      });
+    }
+    if (rawChannel === 'PEDIDOSYA' && !business.pedidosYaChannelEnabled) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'El canal de venta "PedidosYa" no está activo para este negocio',
+      });
+    }
+
+    const policies = await this.policiesService.get(businessId);
+    const effectiveDeliveryFee =
+      rawChannel === 'DOMICILIO'
+        ? dto.deliveryFee !== undefined && dto.deliveryFee !== null
+          ? Math.max(0, Number(dto.deliveryFee))
+          : (business.deliveryDefaultFee ?? 0)
+        : 0;
+
+    const previewResult = await this.resolveAndCalculateCart(this.prisma, {
+      businessId,
+      business,
+      policies,
+      dto,
+      saleChannel: rawChannel,
+      effectiveDeliveryFee,
+      validatePriceMismatch: false,
+      validateManualDiscountBlocked: false,
+      includeRecipeComponents: false,
+    });
+
+    const { calcResult, resolvedLines, subtotal, discountAmount, taxAmount, total, listPriceTotal, listDiscountTotal, deliveryFeeAmount } = previewResult;
+    const useListPrice = Boolean(business.useListPrice);
+
+    return {
+      channel: rawChannel,
+      applyPromotions: Boolean(dto.applyPromotions),
+      taxModel: calcResult.taxModel,
+      subtotal,
+      promoDiscountTotal: calcResult.promoDiscountTotal,
+      lineDiscountTotal: calcResult.lineDiscountTotal,
+      discountAmount,
+      totalDiscount:
+        Math.round((calcResult.promoDiscountTotal + calcResult.lineDiscountTotal + discountAmount) * 100) /
+        100,
+      eligibleForGlobalDiscountSubtotal: calcResult.eligibleForGlobalDiscountSubtotal,
+      subtotalBeforeTax: calcResult.subtotalBeforeTax,
+      deliveryFee: deliveryFeeAmount,
+      listPriceTotal,
+      listDiscountTotal,
+      taxEnabled: calcResult.taxEnabled,
+      taxIncluded: calcResult.taxIncluded,
+      taxRate: calcResult.taxRate,
+      taxAmount,
+      total,
+      items: calcResult.lines.map((l, idx) => {
+        const meta = resolvedLines[idx];
+        return {
+          ...l,
+          unit: meta?.unitCode || 'UND',
+          presentationId: meta?.presentation?.id ?? null,
+          presentationName: meta?.presentation?.name ?? null,
+          conversionFactor: meta?.conversionFactor ?? 1,
+          allowManualDiscount: !isLineBlockedFromManualDiscount(
+            {
+              allowDiscount: meta?.itemAllowDiscount ?? true,
+              priceTier: l.priceTier,
+              listPrice: l.listPrice,
+              unitPrice: l.unitPrice,
+              promotionId: l.promotionId,
+              promoDiscount: l.promoDiscount,
+            },
+            useListPrice,
+          ),
+        };
+      }),
     };
   }
 
@@ -610,7 +1285,6 @@ export class SalesService {
       }
 
       let hasNegativeStock = false;
-      const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
       const lineCostData: Array<{
         unitCost: number | null;
         costSource: string;
@@ -623,271 +1297,33 @@ export class SalesService {
       }> = [];
       const batchAllocationsByIndex = new Map<number, { allocations: any[]; stockBefore: number }>();
 
-      const businessUnits = await tx.posUnit.findMany({
-        where: { businessId },
-        select: { code: true, allowsDecimals: true },
+      const {
+        resolvedLines,
+        totalBaseDemandByProduct,
+        totalRecipeCompDemand,
+        shouldAppendDeliveryLine,
+        deliveryFeeAmount,
+        calcResult,
+        subtotal,
+        discountAmount,
+        taxAmount,
+        total,
+        listPriceTotal,
+        listDiscountTotal,
+      } = await this.resolveAndCalculateCart(tx, {
+        businessId,
+        business,
+        policies,
+        dto,
+        saleChannel,
+        effectiveDeliveryFee,
+        isQuoteExpired,
+        lockedQuote,
+        quotedItems,
+        validatePriceMismatch: true,
+        validateManualDiscountBlocked: true,
+        includeRecipeComponents: true,
       });
-      const unitDecimalsMap = new Map<string, boolean>(
-        businessUnits.map((u) => [u.code.toUpperCase(), u.allowsDecimals]),
-      );
-
-      // Pasada 1 (294b): Resolver productos/presentaciones, validar cantidades enteras/decimales y precios,
-      // y acumular la demanda total en unidad base por producto para validar stock agregado.
-      const resolvedLines: Array<{
-        itemIdx: number;
-        item: any;
-        product: any;
-        presentation: any;
-        requestedQty: number;
-        conversionFactor: number;
-        baseQty: number;
-        priceTier: string;
-        effectiveUnitPrice: number;
-        listPrice: number | null;
-        taxable: boolean | null | undefined;
-        itemAllowDiscount: boolean;
-        itemDiscountClamped: number;
-      }> = [];
-
-      const totalBaseDemandByProduct = new Map<string, { product: any; totalBaseQty: number }>();
-      const totalRecipeCompDemand = new Map<string, { compProd: any; parentName: string; totalQty: number }>();
-
-      for (let itemIdx = 0; itemIdx < dto.items.length; itemIdx++) {
-        const item = dto.items[itemIdx];
-        let priceTier = 'RETAIL';
-        let effectiveUnitPrice = item.unitPrice;
-        let product: any = null;
-        let presentation: any = null;
-        let requestedQty = round3(item.quantity);
-        let conversionFactor = 1;
-        let baseQty = requestedQty;
-
-        if (item.productId) {
-          product = await tx.product.findFirst({
-            where: { id: item.productId, businessId },
-            include: {
-              recipeComponents: {
-                include: {
-                  componentProduct: true,
-                },
-              },
-            },
-          });
-          if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
-          assertNotVariantParent(product);
-
-          const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
-
-          if (item.presentationId) {
-            presentation = await tx.productPresentation.findFirst({
-              where: {
-                id: item.presentationId,
-                businessId,
-                productId: product.id,
-              },
-            });
-            if (!presentation) {
-              throw new NotFoundException({
-                statusCode: 404,
-                error: 'Not Found',
-                code: 'PRESENTATION_NOT_FOUND',
-                message: `La presentación seleccionada no existe para "${product.name}".`,
-              });
-            }
-            if (!presentation.isActive) {
-              throw new BadRequestException({
-                statusCode: 400,
-                error: 'Bad Request',
-                code: 'PRESENTATION_INACTIVE',
-                message: `La presentación "${presentation.name}" de "${product.name}" está desactivada.`,
-              });
-            }
-
-            // Las presentaciones siempre se venden en cantidades enteras (salvo split sale)
-            requestedQty = validateProductQuantity(
-              presentation.name,
-              item.quantity,
-              product.name,
-              Boolean(dto.isSplitSale),
-              false,
-            );
-            conversionFactor = Number(presentation.factor);
-            baseQty = round3(requestedQty * conversionFactor);
-
-            // 294b: La promo porcentual del producto (promoDiscountPct) NO aplica a presentaciones
-            const resolved = resolveChannelUnitPrice(
-              {
-                price: Number(presentation.price),
-                wholesalePrice: presentation.wholesalePrice,
-                wholesaleMinQty: presentation.wholesaleMinQty,
-                listPrice: presentation.listPrice,
-                promoDiscountPct: null,
-              },
-              requestedQty,
-              business,
-              saleChannel,
-            );
-            priceTier = resolved.priceTier;
-            const expectedPrice = resolved.unitPrice;
-
-            if (item.unitPrice !== undefined && item.unitPrice !== null) {
-              const diff = Math.abs(item.unitPrice - expectedPrice);
-              const isPresaleSellerLine = Boolean(dto.presaleTicketId && (item as any).origin === 'SELLER');
-              const isQuotedPriceMatch =
-                Boolean(lockedQuote && !isQuoteExpired) &&
-                quotedItems.some(
-                  (qi) =>
-                    qi.productId === item.productId &&
-                    Math.abs(Number(qi.unitPrice) - Number(item.unitPrice)) <= 0.01,
-                );
-              if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale && !isPresaleSellerLine && !isQuotedPriceMatch) {
-                throw new BadRequestException({
-                  statusCode: 400,
-                  error: 'Bad Request',
-                  code: 'PRICE_MISMATCH',
-                  message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${expectedPrice}) para "${product.name} (${presentation.name})"`,
-                });
-              }
-              effectiveUnitPrice = item.unitPrice;
-            } else {
-              effectiveUnitPrice = expectedPrice;
-            }
-          } else {
-            requestedQty = validateProductQuantity(
-              prodUnitCode,
-              item.quantity,
-              product.name,
-              Boolean(dto.isSplitSale),
-              unitDecimalsMap.get(prodUnitCode),
-            );
-            conversionFactor = 1;
-            baseQty = requestedQty;
-
-            // 221a: Resolver precio unitario según regla de venta por mayor y canal de venta
-            const resolved = resolveChannelUnitPrice(product, requestedQty, business, saleChannel);
-            priceTier = resolved.priceTier;
-            const expectedPrice = resolved.unitPrice;
-
-            if (item.unitPrice !== undefined && item.unitPrice !== null) {
-              const diff = Math.abs(item.unitPrice - expectedPrice);
-              const isPresaleSellerLine = Boolean(dto.presaleTicketId && (item as any).origin === 'SELLER');
-              const isQuotedPriceMatch =
-                Boolean(lockedQuote && !isQuoteExpired) &&
-                quotedItems.some(
-                  (qi) =>
-                    qi.productId === item.productId &&
-                    Math.abs(Number(qi.unitPrice) - Number(item.unitPrice)) <= 0.01,
-                );
-              if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale && !isPresaleSellerLine && !isQuotedPriceMatch) {
-                throw new BadRequestException({
-                  statusCode: 400,
-                  error: 'Bad Request',
-                  code: 'PRICE_MISMATCH',
-                  message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${expectedPrice}) para "${product.name}"`,
-                });
-              }
-              effectiveUnitPrice = item.unitPrice;
-            } else {
-              effectiveUnitPrice = expectedPrice;
-            }
-          }
-
-          if (product.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
-            for (const comp of product.recipeComponents) {
-              const compProd = comp.componentProduct;
-              if (compProd && compProd.trackStock === true) {
-                const compRequestedQty = round3(baseQty * Number(comp.quantity));
-                const entry = totalRecipeCompDemand.get(compProd.id);
-                if (entry) {
-                  entry.totalQty = round3(entry.totalQty + compRequestedQty);
-                } else {
-                  totalRecipeCompDemand.set(compProd.id, {
-                    compProd,
-                    parentName: product.name,
-                    totalQty: compRequestedQty,
-                  });
-                }
-              }
-            }
-          } else if (product.trackStock === true) {
-            const entry = totalBaseDemandByProduct.get(product.id);
-            if (entry) {
-              entry.totalBaseQty = round3(entry.totalBaseQty + baseQty);
-            } else {
-              totalBaseDemandByProduct.set(product.id, { product, totalBaseQty: baseQty });
-            }
-          }
-        }
-
-        let listPrice: number | null = null;
-        if (item.listPrice !== undefined && item.listPrice !== null) {
-          listPrice = Number(item.listPrice);
-        } else if (business.useListPrice && presentation?.listPrice != null) {
-          listPrice = Number(presentation.listPrice);
-        } else if (!presentation && business.useListPrice && product?.listPrice != null) {
-          listPrice = Number(product.listPrice);
-        }
-
-        let taxable: boolean | null | undefined = undefined;
-        if (item.taxable !== undefined && item.taxable !== null) {
-          taxable = Boolean(item.taxable);
-        }
-
-        const itemAllowDiscount = product ? (product as any).allowDiscount !== false : true;
-        const itemDiscountRaw = Number(item.discount || 0);
-        if (!Number.isFinite(itemDiscountRaw) || itemDiscountRaw < 0) {
-          throw new BadRequestException({
-            statusCode: 400,
-            code: 'INVALID_DISCOUNT',
-            message: `El descuento aplicado a "${item.productName || product?.name || 'producto'}" no es válido.`,
-          });
-        }
-        const grossLineAmount = Math.round(effectiveUnitPrice * requestedQty * 100) / 100;
-        if (itemDiscountRaw > grossLineAmount + 0.01) {
-          throw new BadRequestException({
-            statusCode: 400,
-            code: 'INVALID_DISCOUNT',
-            message: `El descuento aplicado a "${item.productName || product?.name || 'producto'}" supera su monto (${grossLineAmount.toFixed(2)}).`,
-          });
-        }
-        const itemDiscountClamped = Math.min(Math.round(itemDiscountRaw * 100) / 100, grossLineAmount);
-
-        if (
-          itemDiscountClamped > 0 &&
-          !dto.isOfflineSync &&
-          isLineBlockedFromManualDiscount(
-            {
-              allowDiscount: itemAllowDiscount,
-              priceTier,
-              listPrice,
-              unitPrice: effectiveUnitPrice,
-            },
-            Boolean(business.useListPrice),
-          )
-        ) {
-          throw new BadRequestException({
-            statusCode: 400,
-            code: 'DISCOUNT_NOT_ALLOWED_ON_ITEM',
-            message: `El producto "${item.productName || product?.name || 'seleccionado'}" ya tiene un descuento aplicado o no admite descuento manual.`,
-          });
-        }
-
-        resolvedLines.push({
-          itemIdx,
-          item,
-          product,
-          presentation,
-          requestedQty,
-          conversionFactor,
-          baseQty,
-          priceTier,
-          effectiveUnitPrice,
-          listPrice,
-          taxable,
-          itemAllowDiscount,
-          itemDiscountClamped,
-        });
-      }
 
       // Chequeo agregado de stock en unidad base por producto (soporta carrito mixto presentación + unidad base)
       for (const { product, totalBaseQty } of totalBaseDemandByProduct.values()) {
@@ -970,12 +1406,6 @@ export class SalesService {
           requestedQty,
           conversionFactor,
           baseQty,
-          priceTier,
-          effectiveUnitPrice,
-          listPrice,
-          taxable,
-          itemAllowDiscount,
-          itemDiscountClamped,
         } = line;
 
         let itemUnitCost: number | null = null;
@@ -1075,48 +1505,7 @@ export class SalesService {
           baseQty,
           requestedQty,
         });
-
-        rawItemsForCalc.push({
-          productId: item.productId || null,
-          productName: item.productName || product?.name || 'Producto',
-          barcode: item.barcode || presentation?.barcode || product?.barcode || null,
-          unitPrice: effectiveUnitPrice,
-          priceTier,
-          quantity: requestedQty,
-          discount: itemDiscountClamped,
-          subtotal: (dto.isSplitSale && item.subtotal !== undefined) ? item.subtotal : undefined,
-          listPrice,
-          taxable,
-          allowDiscount: itemAllowDiscount,
-        });
       }
-
-      // 221a / 271a / 271a2: El descuento manual aplica solo a la mercadería.
-      // Primero se calculan los totales de productos con el descuento, y luego se suma la línea
-      // "Envío a domicilio" con su monto completo, sin descuento y sin IVA (taxable: false).
-      const shouldAppendDeliveryLine =
-        saleChannel === 'DOMICILIO' &&
-        effectiveDeliveryFee > 0 &&
-        !dto.items.some(
-          (it) =>
-            !it.productId &&
-            (it.productName.toLowerCase().includes('envío') ||
-              it.productName.toLowerCase().includes('envio') ||
-              it.productName.toLowerCase().includes('domicilio')),
-        );
-      const deliveryFeeAmount = shouldAppendDeliveryLine
-        ? Math.round(effectiveDeliveryFee * 100) / 100
-        : 0;
-
-      const calcResult = calculateSaleTotals(
-        rawItemsForCalc,
-        dto.discountAmount || 0,
-        business,
-        Boolean(dto.isSplitSale),
-      );
-
-      const subtotal = Math.round((calcResult.subtotal + deliveryFeeAmount) * 100) / 100;
-      const discountAmount = calcResult.discountAmount;
 
       const requestedGlobalDiscount = Number(dto.discountAmount || 0);
       if (requestedGlobalDiscount > 0 && calcResult.eligibleForGlobalDiscountSubtotal <= 0 && !dto.isOfflineSync) {
@@ -1178,14 +1567,7 @@ export class SalesService {
       const appliedTaxEnabled = calcResult.taxEnabled;
       const appliedTaxIncluded = calcResult.taxIncluded;
       const appliedTaxRate = calcResult.taxRate;
-      const taxAmount = calcResult.taxAmount;
-      const total = Math.round((calcResult.total + deliveryFeeAmount) * 100) / 100;
       const taxModel = calcResult.taxModel;
-      const listPriceTotal =
-        calcResult.taxModel === 'PER_LINE'
-          ? Math.round((calcResult.listPriceTotal + deliveryFeeAmount) * 100) / 100
-          : calcResult.listPriceTotal;
-      const listDiscountTotal = calcResult.listDiscountTotal;
 
       let hasAuditDiscrepancy = false;
       let auditNote = "";
@@ -1216,6 +1598,9 @@ export class SalesService {
         presentationId: lineCostData[idx]?.presentationId ?? null,
         presentationName: lineCostData[idx]?.presentationName ?? null,
         conversionFactor: new Prisma.Decimal(lineCostData[idx]?.conversionFactor ?? 1),
+        promotionId: l.promotionId ?? null,
+        promotionName: l.promotionName ?? null,
+        promoDiscount: new Prisma.Decimal(l.promoDiscount || 0),
         unitPrice: l.unitPrice,
         priceTier: l.priceTier,
         quantity: l.quantity,
@@ -1241,6 +1626,9 @@ export class SalesService {
           presentationId: null,
           presentationName: null,
           conversionFactor: new Prisma.Decimal(1),
+          promotionId: null,
+          promotionName: null,
+          promoDiscount: new Prisma.Decimal(0),
           unitPrice: deliveryFeeAmount,
           priceTier: 'RETAIL',
           quantity: 1,
@@ -3216,35 +3604,36 @@ export class SalesService {
           });
         }
 
-        // Calculation of line refund with proration and tax snapshot
+        // Calculation of line refund with proration over net charged subtotal (including promos/discounts) and tax snapshot
         const returningQtyDec = new Prisma.Decimal(itemInput.qty.toString());
-        const lineBaseSubtotalDec = new Prisma.Decimal(saleItem.unitPrice.toString()).times(returningQtyDec);
+        const qtyRatio = returningQtyDec.dividedBy(new Prisma.Decimal(saleItem.quantity.toString()));
+        const lineChargedSubtotalDec = new Prisma.Decimal(saleItem.subtotal.toString()).times(qtyRatio);
 
         let lineTaxDec = new Prisma.Decimal(0);
         let lineRefundDec = new Prisma.Decimal(0);
         let proratedDiscountDec = new Prisma.Decimal(0);
 
         if (sale.taxModel === 'PER_LINE') {
-          // 206a: Devolución parcial en nuevo modelo por línea
-          // Reembolso = neto de la línea - su manualDiscountShare proporcional + su taxAmount proporcional
-          const qtyRatio = returningQtyDec.dividedBy(new Prisma.Decimal(saleItem.quantity.toString()));
+          // 206a / 294d: Devolución parcial en nuevo modelo por línea prorrateando sobre lo cobrado en el renglón
           proratedDiscountDec = new Prisma.Decimal(saleItem.manualDiscountShare || 0).times(qtyRatio).toDecimalPlaces(2);
-          const netBaseDec = lineBaseSubtotalDec.minus(proratedDiscountDec);
+          const netBaseDec = lineChargedSubtotalDec.minus(proratedDiscountDec);
 
           if (saleItem.taxable && (saleItem.taxAmount || 0) > 0) {
             lineTaxDec = new Prisma.Decimal(saleItem.taxAmount.toString()).times(qtyRatio).toDecimalPlaces(2);
           } else {
             lineTaxDec = new Prisma.Decimal(0);
           }
-          lineRefundDec = netBaseDec.plus(lineTaxDec).toDecimalPlaces(2);
+          lineRefundDec = sale.taxIncluded
+            ? netBaseDec.toDecimalPlaces(2)
+            : netBaseDec.plus(lineTaxDec).toDecimalPlaces(2);
         } else {
-          // Ventas LEGACY siguen con la lógica actual
+          // Ventas LEGACY prorratean sobre el neto cobrado del renglón
           const saleSubtotalDec = new Prisma.Decimal(sale.subtotal.toString());
           const saleDiscountDec = new Prisma.Decimal(sale.discountAmount.toString());
           if (saleSubtotalDec.greaterThan(0) && saleDiscountDec.greaterThan(0)) {
-            proratedDiscountDec = lineBaseSubtotalDec.dividedBy(saleSubtotalDec).times(saleDiscountDec).toDecimalPlaces(2);
+            proratedDiscountDec = lineChargedSubtotalDec.dividedBy(saleSubtotalDec).times(saleDiscountDec).toDecimalPlaces(2);
           }
-          const netBaseDec = lineBaseSubtotalDec.minus(proratedDiscountDec);
+          const netBaseDec = lineChargedSubtotalDec.minus(proratedDiscountDec);
 
           if (sale.taxEnabled && sale.taxRate > 0) {
             const rateDec = new Prisma.Decimal(sale.taxRate.toString()).dividedBy(100);

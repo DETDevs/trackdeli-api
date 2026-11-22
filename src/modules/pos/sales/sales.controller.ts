@@ -1,5 +1,5 @@
 import {
-  Body, Controller, ForbiddenException, Get, Param, Post, Query, Req, UseGuards,
+  Body, Controller, ForbiddenException, Get, HttpCode, HttpStatus, Param, Post, Query, Req, UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
@@ -13,6 +13,7 @@ import { UserRole } from '@prisma/client';
 import { resolveBusinessId } from "../pos.utils";
 import { SalesService } from "./sales.service";
 import { CreateSaleDto } from "./dto/create-sale.dto";
+import { PreviewSaleDto } from "./dto/preview-sale.dto";
 import { CancelSaleDto } from "./dto/cancel-sale.dto";
 import { PosPermissionsGuard } from "../permissions/permissions.guard";
 import { RequirePosAction } from "../permissions/require-action.decorator";
@@ -68,6 +69,17 @@ export class SalesController {
       },
       user.role,
     );
+  }
+
+  @Post("preview")
+  @HttpCode(HttpStatus.OK)
+  @RequirePosAction(PosAction.VENDER_COBRAR)
+  preview(
+    @Body() dto: PreviewSaleDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.preview(dto, resolveBusinessId(user, qBid));
   }
 
   @Post()
