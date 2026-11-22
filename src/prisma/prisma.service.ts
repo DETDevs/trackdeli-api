@@ -2332,6 +2332,7 @@ WHERE a."customerId" = c."id"
       await this.ensureTableOrderBillsSchema();
       await this.ensurePosUnitsAndSaleItemUnitSchema();
       await this.ensureProductPresentationsSchema();
+      await this.ensureProductVariantsSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -6157,6 +6158,57 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 294b - Advertencia sincronizando presentaciones: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * 294c: Asegura las columnas e índice de variantes de producto en pos_products.
+   * DDL idempotente con advisory lock 2940300.
+   */
+  public async ensureProductVariantsSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(2940300)`);
+
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "parentProductId" TEXT;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "isVariantParent" BOOLEAN NOT NULL DEFAULT false;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "variantAxes" JSONB;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_products" ADD COLUMN IF NOT EXISTS "variantValues" JSONB;
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_products_businessId_parentProductId_idx"
+            ON "pos_products"("businessId", "parentProductId");
+          `);
+          await tx.$executeRawUnsafe(`
+            DO $$ BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'pos_products_parentProductId_fkey'
+              ) THEN
+                ALTER TABLE "pos_products"
+                  ADD CONSTRAINT "pos_products_parentProductId_fkey"
+                  FOREIGN KEY ("parentProductId") REFERENCES "pos_products"("id")
+                  ON DELETE CASCADE ON UPDATE CASCADE;
+              END IF;
+            END $$;
+          `);
+
+          this.logger.log(
+            `[PrismaService] ✓ 294c - Esquema de variantes de producto en pos_products sincronizado.`,
+          );
+        },
+        { maxWait: 10000, timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 294c - Advertencia sincronizando variantes: ${err?.message || err}`);
       throw err;
     }
   }

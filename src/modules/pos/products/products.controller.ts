@@ -101,6 +101,7 @@ export class ProductsController {
     @Query("expiry") expiry?: string,
     @Query("expiryMonth") expiryMonth?: string,
     @Query("sort") sort?: string,
+    @Query("groupVariants") groupVariants?: string,
   ) {
     return this.service.findAll(
       resolveBusinessId(user, qBid),
@@ -114,6 +115,7 @@ export class ProductsController {
         expiry,
         expiryMonth,
         sort,
+        groupVariants: groupVariants === "true" || groupVariants === "1",
       },
       user.role,
     );

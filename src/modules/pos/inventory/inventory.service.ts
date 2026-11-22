@@ -15,6 +15,7 @@ import { PosAction } from '../permissions/permissions.service';
 import { CreateAdjustmentDto } from './dto/create-adjustment.dto';
 import { BatchCountDto } from './dto/batch-count.dto';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
+import { assertNotVariantParent } from '../products/variant.utils';
 
 import { BatchesService } from '../batches/batches.service';
 import { buildBusinessDateRange } from '../../../common/utils/date.util';
@@ -93,6 +94,7 @@ export class InventoryService {
           },
         });
       }
+      assertNotVariantParent(product);
 
       if (!product.trackStock) {
         throw new UnprocessableEntityException({
@@ -351,6 +353,7 @@ export class InventoryService {
             },
           });
         }
+        assertNotVariantParent(product);
 
         if (!product.trackStock) {
           continue; // Productos sin trackStock se omiten del conteo físico

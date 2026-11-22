@@ -37,6 +37,7 @@ import { RequestTableBillDto } from './dto/request-table-bill.dto';
 import { PoliciesService } from '../policies/policies.service';
 import { getSalonLabels } from '../salon/salon-profile.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
+import { assertNotVariantParent } from '../products/variant.utils';
 import { WorkshopService } from '../workshop/workshop.service';
 import {
   formatTableDisplayName,
@@ -1300,6 +1301,7 @@ export class TablesService {
       if (!product) {
         throw new NotFoundException(`Producto ${item.productId} no encontrado o inactivo`);
       }
+      assertNotVariantParent(product);
 
       const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
       const itemQty = validateProductQuantity(

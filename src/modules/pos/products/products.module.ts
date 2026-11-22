@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
 import { ProductsController } from './products.controller';
 import { ProductPresentationsController } from './product-presentations.controller';
+import { ProductVariantsController } from './product-variants.controller';
 import { ProductsService } from './products.service';
 import { ProductPresentationsService } from './product-presentations.service';
+import { ProductVariantsService } from './product-variants.service';
 import { PrismaModule } from '../../../prisma/prisma.module';
 import { AuditModule } from '../audit/audit.module';
 import { ProductsImportService } from './products-import.service';
@@ -17,9 +19,20 @@ import { UploadModule } from '../../upload/upload.module';
     ProductsImportController,
     SuperAdminProductsImportController,
     ProductPresentationsController,
+    ProductVariantsController,
     ProductsController,
   ],
-  providers: [ProductsService, ProductPresentationsService, ProductsImportService],
-  exports: [ProductsService, ProductPresentationsService, ProductsImportService],
+  providers: [
+    ProductsService,
+    ProductPresentationsService,
+    ProductVariantsService,
+    ProductsImportService,
+  ],
+  exports: [
+    ProductsService,
+    ProductPresentationsService,
+    ProductVariantsService,
+    ProductsImportService,
+  ],
 })
 export class ProductsModule {}

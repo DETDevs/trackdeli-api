@@ -15,6 +15,7 @@ import { AuditService } from '../audit/audit.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { PosAction } from '../permissions/permissions.service';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
+import { assertNotVariantParent } from '../products/variant.utils';
 import { resolveLineUnitPrice, resolveChannelUnitPrice } from './utils/pricing.util';
 
 import { BatchesService } from '../batches/batches.service';
@@ -673,6 +674,7 @@ export class SalesService {
             },
           });
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
+          assertNotVariantParent(product);
 
           const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
 

@@ -1082,6 +1082,13 @@ model Product {
   isActive    Boolean   @default(true)
   attributes  Json      @default("{}")
 
+  parentProductId String?
+  parentProduct   Product?  @relation("ProductVariants", fields: [parentProductId], references: [id], onDelete: Cascade)
+  variants        Product[] @relation("ProductVariants")
+  isVariantParent Boolean   @default(false)
+  variantAxes     Json?
+  variantValues   Json?
+
   saleItems              SaleItem[]
   saleReturnItems        SaleReturnItem[]
   stockMovements         StockMovement[]
@@ -1102,6 +1109,7 @@ model Product {
 
   @@unique([businessId, barcode])
   @@unique([businessId, sku])
+  @@index([businessId, parentProductId])
   @@map("pos_products")
 }
 

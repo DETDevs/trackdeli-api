@@ -18,6 +18,7 @@ import {
 } from '../../../common/utils/date.util';
 import { calculateSaleTotals } from '../sales/utils/sale-calculation.util';
 import { round3 } from '../products/product-unit.util';
+import { assertNotVariantParent } from '../products/variant.utils';
 import { resolveLineUnitPrice } from '../sales/utils/pricing.util';
 import { CreatePresaleTicketDto } from './dto/create-presale-ticket.dto';
 import { UpdatePresaleItemsDto } from './dto/update-presale-items.dto';
@@ -185,6 +186,9 @@ export class PresaleTicketsService {
       });
 
       const productMap = new Map(products.map((p) => [p.id, p]));
+      for (const p of products) {
+        assertNotVariantParent(p);
+      }
 
       // Bloquear también los componentes de recetas
       const recipeCompIds: string[] = [];
@@ -873,6 +877,7 @@ export class PresaleTicketsService {
             where: { id: act.productId, businessId },
           });
           if (!product) throw new NotFoundException('Producto no encontrado');
+          assertNotVariantParent(product);
 
           // Reservar stock si aplica
           let reservedQty = 0;

@@ -17,6 +17,11 @@ import { SetRecipeComponentsDto } from "./dto/set-recipe-components.dto";
 import { BulkUpdateProductsDto } from "./dto/bulk-update-products.dto";
 import { validateProductQuantity, round3 } from "./product-unit.util";
 import { formatPresentation } from './product-presentations.service';
+import {
+  assertNotVariantParent,
+  buildVariantName,
+  formatVariantSummary,
+} from './variant.utils';
 
 import { BatchesService } from '../batches/batches.service';
 import { UnitsService } from '../units/units.service';
@@ -74,7 +79,12 @@ export class ProductsService {
 
   private mapProductWithInventory(product: any, twoStepSaleEnabled?: boolean) {
     if (!product) return product;
-    const { recipeComponents: rawComponents, reservedStock: _rStock, ...rest } = product;
+    const {
+      recipeComponents: rawComponents,
+      reservedStock: _rStock,
+      variants: _rawVariants,
+      ...rest
+    } = product;
     const isRecipe = Boolean(product.isRecipe);
     const components = rawComponents
       ? rawComponents.map((c: any) => ({
@@ -99,6 +109,10 @@ export class ProductsService {
       unit: product.unit || 'UND',
       trackInventory: product.trackStock,
       isRecipe,
+      parentProductId: product.parentProductId ?? null,
+      isVariantParent: Boolean(product.isVariantParent),
+      variantAxes: product.variantAxes ?? null,
+      variantValues: product.variantValues ?? null,
       ...(isRecipe && components ? { components } : {}),
     };
 
@@ -442,6 +456,7 @@ export class ProductsService {
       expiry?: string;
       expiryMonth?: string;
       sort?: string;
+      groupVariants?: boolean;
     },
     userRole?: string,
   ) {
@@ -451,6 +466,12 @@ export class ProductsService {
       where.isActive = filters.isActive;
     } else {
       where.isActive = true;
+    }
+
+    if (filters?.groupVariants) {
+      where.parentProductId = null;
+    } else {
+      where.isVariantParent = false;
     }
 
     if (filters?.categoryId) where.categoryId = filters.categoryId;
@@ -481,6 +502,21 @@ export class ProductsService {
         { barcode: { contains: filters.search, mode: "insensitive" } },
         { sku: { contains: filters.search, mode: "insensitive" } },
         { presentations: { some: { isActive: true, barcode: { contains: filters.search, mode: "insensitive" } } } },
+        ...(filters?.groupVariants
+          ? [
+              {
+                variants: {
+                  some: {
+                    OR: [
+                      { name: { contains: filters.search, mode: "insensitive" } },
+                      { barcode: { contains: filters.search, mode: "insensitive" } },
+                      { sku: { contains: filters.search, mode: "insensitive" } },
+                    ],
+                  },
+                },
+              },
+            ]
+          : []),
         ...(matchingIds.length > 0 ? [{ id: { in: matchingIds } }] : []),
       ];
     }
@@ -500,6 +536,13 @@ export class ProductsService {
               componentProduct: { select: { id: true, name: true, unit: true, stock: true } },
             },
           },
+          ...(filters?.groupVariants
+            ? {
+                variants: {
+                  orderBy: { name: 'asc' as const },
+                },
+              }
+            : {}),
         },
         orderBy: { name: "asc" },
       }),
@@ -572,8 +615,16 @@ export class ProductsService {
     const todayStr = formatDateInTimezone(new Date(), 'America/Managua');
     const todayMs = new Date(todayStr + 'T00:00:00.000Z').getTime();
 
+    const rawProductMap = new Map(products.map((pr) => [pr.id, pr]));
+
     let mapped = products.map((p) => {
       const item = this.filterActiveAttributes(p, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled, business);
+      if (filters?.groupVariants) {
+        item.variants =
+          p.isVariantParent && Array.isArray((p as any).variants)
+            ? (p as any).variants.map((v: any) => formatVariantSummary(v, userRole))
+            : [];
+      }
       if (business?.tracksBatches) {
         const b = batchMap.get(p.id);
         item.nextExpiryDate = b?.nextExpiryDate ?? null;
@@ -586,7 +637,15 @@ export class ProductsService {
     });
 
     if (filters?.lowStock) {
-      mapped = mapped.filter((p) => p.trackStock && Number(p.stock) <= Number(p.minStock));
+      mapped = mapped.filter((p) => {
+        const raw = rawProductMap.get(p.id) as any;
+        if (p.isVariantParent && Array.isArray(raw?.variants)) {
+          return raw.variants.some(
+            (v: any) => v.isActive && v.trackStock && Number(v.stock) <= Number(v.minStock),
+          );
+        }
+        return p.trackStock && Number(p.stock) <= Number(p.minStock);
+      });
     }
 
     // Filtros de vencimiento solo si el negocio tiene tracksBatches activo
@@ -715,7 +774,7 @@ export class ProductsService {
     this.logger.log(`[findByBarcode] barcode=${barcode} businessId=${businessId}`);
     const trimmedBarcode = (barcode || '').trim();
     const product = await this.prisma.product.findFirst({
-      where: { businessId, barcode: trimmedBarcode, isActive: true },
+      where: { businessId, barcode: trimmedBarcode, isActive: true, isVariantParent: false },
       include: {
         category: true,
         presentations: {
@@ -739,7 +798,7 @@ export class ProductsService {
           businessId,
           barcode: trimmedBarcode,
           isActive: true,
-          product: { isActive: true },
+          product: { isActive: true, isVariantParent: false },
         },
         include: {
           product: {
@@ -1252,6 +1311,9 @@ export class ProductsService {
     if (trackStock !== undefined) {
       (updateData as any).trackStock = trackStock;
     }
+    if (product.isVariantParent) {
+      (updateData as any).trackStock = false;
+    }
 
     const rawWholesalePrice = dto.wholesalePrice !== undefined ? dto.wholesalePrice : dto.wholesale_price;
     const rawWholesaleMinQty = dto.wholesaleMinQty !== undefined ? dto.wholesaleMinQty : dto.wholesale_min_qty;
@@ -1305,8 +1367,11 @@ export class ProductsService {
     }
     const unitAllowsDecimals = unitDef?.allowsDecimals;
     if (dto.stock !== undefined && dto.stock !== null) {
+      if (product.isVariantParent && Number(dto.stock) !== Number(product.stock)) {
+        assertNotVariantParent(product);
+      }
       dto.stock = validateProductQuantity(effectiveUnit, dto.stock, dto.name || product.name, false, unitAllowsDecimals);
-      (updateData as any).stock = dto.stock;
+      (updateData as any).stock = product.isVariantParent ? 0 : dto.stock;
     }
     if (dto.minStock !== undefined && dto.minStock !== null) {
       dto.minStock = validateProductQuantity(effectiveUnit, dto.minStock, dto.name || product.name, false, unitAllowsDecimals);
@@ -1333,36 +1398,103 @@ export class ProductsService {
     }
 
     this.logger.log(`[update] id=${id} businessId=${businessId}`);
-    const updated = await this.prisma.product.update({
-      where: { id },
-      data: updateData,
-      include: {
-        category: true,
-        supplier: { select: { id: true, name: true } },
-        presentations: {
-          where: { isActive: true },
-          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-        },
-      },
-    });
-
-    const currentStock = Number(product.stock);
-    if (dto.stock !== undefined && dto.stock !== currentStock && (trackStock ?? product.trackStock)) {
-      const stockDiff = round3(dto.stock - currentStock);
-      await this.prisma.stockMovement.create({
-        data: {
-          businessId,
-          productId: product.id,
-          userId: userId || 'system',
-          type: StockMovementType.AJUSTE,
-          quantity: stockDiff,
-          stockBefore: currentStock,
-          stockAfter: dto.stock,
-          cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
-          concept: 'Edición manual de producto',
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const saved = await tx.product.update({
+        where: { id },
+        data: updateData,
+        include: {
+          category: true,
+          supplier: { select: { id: true, name: true } },
+          presentations: {
+            where: { isActive: true },
+            orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          },
         },
       });
-    }
+
+      const currentStock = Number(product.stock);
+      if (
+        !product.isVariantParent &&
+        dto.stock !== undefined &&
+        dto.stock !== currentStock &&
+        (trackStock ?? product.trackStock)
+      ) {
+        const stockDiff = round3(dto.stock - currentStock);
+        await tx.stockMovement.create({
+          data: {
+            businessId,
+            productId: product.id,
+            userId: userId || 'system',
+            type: StockMovementType.AJUSTE,
+            quantity: stockDiff,
+            stockBefore: currentStock,
+            stockAfter: dto.stock,
+            cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
+            concept: 'Edición manual de producto',
+          },
+        });
+      }
+
+      if (product.isVariantParent) {
+        // Heredar al conjunto de variantes: categoría, IVA, unidad, allowDiscount, baja lógica y foto (solo si no tiene foto propia).
+        // Precio, costo, código de barras, SKU y existencia NO se copian.
+        const childSharedUpdate: Prisma.ProductUncheckedUpdateManyInput = {};
+        if (dto.categoryId !== undefined) childSharedUpdate.categoryId = saved.categoryId;
+        if (dto.taxable !== undefined) childSharedUpdate.taxable = saved.taxable;
+        if (dto.taxIncluded !== undefined) childSharedUpdate.taxIncluded = saved.taxIncluded;
+        if (dto.unit !== undefined) childSharedUpdate.unit = saved.unit;
+        if (rawAllowDiscount !== undefined) childSharedUpdate.allowDiscount = saved.allowDiscount;
+        if (dto.isActive === false) childSharedUpdate.isActive = false;
+
+        if (Object.keys(childSharedUpdate).length > 0) {
+          await tx.product.updateMany({
+            where: { businessId, parentProductId: id },
+            data: childSharedUpdate,
+          });
+        }
+
+        if (dto.imageUrl !== undefined) {
+          const orImageConditions: Prisma.ProductWhereInput[] = [
+            { imageUrl: null },
+            { imageUrl: '' },
+          ];
+          if (product.imageUrl) {
+            orImageConditions.push({ imageUrl: product.imageUrl });
+          }
+          await tx.product.updateMany({
+            where: {
+              businessId,
+              parentProductId: id,
+              OR: orImageConditions,
+            },
+            data: { imageUrl: saved.imageUrl },
+          });
+        }
+
+        if (dto.name !== undefined && saved.name !== product.name) {
+          const children = await tx.product.findMany({
+            where: { businessId, parentProductId: id },
+            select: { id: true, variantValues: true },
+          });
+          const axesOrder = Array.isArray(saved.variantAxes)
+            ? (saved.variantAxes as any[]).map((k) => String(k))
+            : [];
+          for (const child of children) {
+            const nextChildName = buildVariantName(
+              saved.name,
+              axesOrder,
+              child.variantValues as Record<string, string> | null | undefined,
+            );
+            await tx.product.update({
+              where: { id: child.id },
+              data: { name: nextChildName },
+            });
+          }
+        }
+      }
+
+      return saved;
+    });
 
     const activeFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: true },
@@ -1376,7 +1508,21 @@ export class ProductsService {
   async remove(id: string, businessId: string) {
     const product = await this.prisma.product.findFirst({ where: { id, businessId } });
     if (!product) throw new NotFoundException("Producto no encontrado");
-    const removed = await this.prisma.product.update({ where: { id }, data: { isActive: false } });
+
+    const removed = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.product.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      if (product.isVariantParent) {
+        await tx.product.updateMany({
+          where: { businessId, parentProductId: id },
+          data: { isActive: false },
+        });
+      }
+      return updated;
+    });
+
     return this.mapProductWithInventory(removed);
   }
 
@@ -1526,6 +1672,7 @@ export class ProductsService {
     return this.prisma.$transaction(async (tx) => {
       const product = await tx.product.findFirst({ where: { id: productId, businessId } });
       if (!product) throw new NotFoundException("Producto no encontrado");
+      assertNotVariantParent(product);
 
       const unitDef = await this.unitsService.findByCode(businessId, product.unit, tx);
       const qty = validateProductQuantity(product.unit, Math.abs(dto.quantity), product.name, false, unitDef?.allowsDecimals);

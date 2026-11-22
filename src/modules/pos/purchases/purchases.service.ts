@@ -26,6 +26,7 @@ import { VoidPurchaseDto } from './dto/void-purchase.dto';
 import { ApplyPurchasePriceUpdatesDto } from './dto/apply-price-updates.dto';
 import { buildBusinessDateRange } from '../../../common/utils/date.util';
 import { validateProductQuantity, round3 } from '../products/product-unit.util';
+import { assertNotVariantParent } from '../products/variant.utils';
 
 import { BatchesService } from '../batches/batches.service';
 
@@ -221,6 +222,7 @@ export class PurchasesService {
             },
           });
         }
+        assertNotVariantParent(product);
 
         const isTracked = this.batchesService.isTracked(business, product);
 

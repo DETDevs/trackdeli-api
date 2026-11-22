@@ -26,6 +26,7 @@ import {
 } from '../sales/utils/sale-calculation.util';
 import { resolveLineUnitPrice } from '../sales/utils/pricing.util';
 import { round3, validateProductQuantity } from '../products/product-unit.util';
+import { assertNotVariantParent } from '../products/variant.utils';
 import { CreateQuoteDto, CreateQuoteItemDto } from './dto/create-quote.dto';
 import { UpdateQuoteDto } from './dto/update-quote.dto';
 import { UpdateQuoteStatusDto } from './dto/update-quote-status.dto';
@@ -423,6 +424,7 @@ export class PosQuotesService {
           message: `Producto ${cleanProductId} no encontrado`,
         });
       }
+      assertNotVariantParent(product);
 
       if (!product.isActive) {
         if (missingProductStatus === 'UNPROCESSABLE') {

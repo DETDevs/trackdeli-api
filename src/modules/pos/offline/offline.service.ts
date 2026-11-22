@@ -14,6 +14,7 @@ import {
   ResolveDiscrepancyDto,
 } from "./dto/offline.dto";
 import { validateProductQuantity, round3 } from "../products/product-unit.util";
+import { assertNotVariantParent } from "../products/variant.utils";
 
 import { BatchesService } from "../batches/batches.service";
 import { calculateSaleTotals, RawSaleItemCalculationInput } from "../sales/utils/sale-calculation.util";
@@ -294,6 +295,7 @@ export class OfflineService {
               });
 
               if (product) {
+                assertNotVariantParent(product);
                 if (item.presentationId) {
                   presentation = await tx.productPresentation.findFirst({
                     where: {
@@ -1210,7 +1212,7 @@ export class OfflineService {
         orderBy: { name: "asc" },
       }),
       this.prisma.product.findMany({
-        where: { businessId, isActive: true },
+        where: { businessId, isActive: true, isVariantParent: false },
         include: {
           category: true,
           recipeComponents: {
