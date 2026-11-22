@@ -323,6 +323,7 @@ export class BusinessProductsService {
               productType: posSub.productType,
               status: isPosActive ? BusinessProductStatus.ACTIVE : BusinessProductStatus.INACTIVE,
               posVertical: posSub.posVertical ?? business.posVertical,
+              maxMobileDevices: (posSub as any)?.maxMobileDevices ?? 0,
               posMonthlyFee: posSub.posMonthlyFee ? Number(posSub.posMonthlyFee) : null,
               autoRenew: posSub.autoRenew ?? true,
               renewalCanceledAt: posSub.renewalCanceledAt ?? null,
@@ -339,6 +340,7 @@ export class BusinessProductsService {
                 ? BusinessProductStatus.ACTIVE
                 : BusinessProductStatus.INACTIVE,
               posVertical: business.posVertical,
+              maxMobileDevices: 0,
               posMonthlyFee: null,
               autoRenew: true,
               renewalCanceledAt: null,
