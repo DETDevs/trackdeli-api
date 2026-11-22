@@ -6,9 +6,10 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
+import * as crypto from 'crypto';
 import { resolveBusinessCoverage } from '../../modules/superadmin/utils/membership-billing.util';
 import { PrismaService } from '../../prisma/prisma.service';
-import { BusinessProductType, UserRole } from '@prisma/client';
+import { BusinessProductType, PosDeviceStatus, UserRole } from '@prisma/client';
 import { BusinessProductsService } from '../../modules/business-products/business-products.service';
 
 @Injectable()
@@ -97,6 +98,7 @@ export class PosGuard implements CanActivate {
         trialStartedAt: true,
         trialEndsAt: true,
         webAdminEnabled: true,
+        maxMobileDevices: true,
       },
     });
 
@@ -114,6 +116,76 @@ export class PosGuard implements CanActivate {
     const rawPlatform =
       request.headers['x-client-platform'] || request.headers['X-Client-Platform'];
     const platform = (rawPlatform || '').toString().toLowerCase();
+
+    // 277a: Control y validación para peticiones desde app móvil (Android / iOS)
+    if (platform.startsWith('mobile')) {
+      const maxMobileDevices = (posSub as any)?.maxMobileDevices ?? 0;
+      if (maxMobileDevices <= 0) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'MOBILE_APP_NOT_ENABLED',
+          message: 'La app móvil no está activa para este negocio. Contactá a NEXOL.',
+        });
+      }
+
+      const deviceIdRaw =
+        request.headers['x-device-id'] || request.headers['X-Device-Id'];
+      const deviceSecretRaw =
+        request.headers['x-device-secret'] || request.headers['X-Device-Secret'];
+      const deviceId = deviceIdRaw ? String(deviceIdRaw).trim() : null;
+      const deviceSecret = deviceSecretRaw ? String(deviceSecretRaw).trim() : null;
+
+      if (!deviceId || !deviceSecret) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'MOBILE_DEVICE_NOT_PAIRED',
+          message:
+            'Este teléfono no está vinculado a tu negocio. Pedile al encargado un código de vinculación.',
+        });
+      }
+
+      const device = await this.prisma.posDevice.findFirst({
+        where: {
+          businessId: user.businessId,
+          deviceId,
+          category: 'MOBILE',
+        },
+      });
+
+      if (!device || device.status !== PosDeviceStatus.ACTIVE) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'MOBILE_DEVICE_NOT_PAIRED',
+          message:
+            'Este teléfono no está vinculado a tu negocio. Pedile al encargado un código de vinculación.',
+        });
+      }
+
+      const secretHash = crypto
+        .createHash('sha256')
+        .update(deviceSecret)
+        .digest('hex');
+
+      if (!device.secretHash || secretHash !== device.secretHash) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'MOBILE_DEVICE_NOT_PAIRED',
+          message:
+            'Este teléfono no está vinculado a tu negocio. Pedile al encargado un código de vinculación.',
+        });
+      }
+
+      this.prisma.posDevice
+        .update({
+          where: { id: device.id },
+          data: { lastSeenAt: new Date(), lastUserId: user.sub },
+        })
+        .catch(() => {});
+    }
 
     // 166a / 167a: Restricción webAdminEnabled solo aplica a usuarios del backoffice/admin (CAJERO, ENCARGADO).
     // No aplica a WAITER (comandero), REPARTIDOR ni SUPERADMIN. Tampoco a rutas de comandero (/pos/tables).

@@ -130,6 +130,7 @@ export class SuperAdminService {
               posVertical: true,
               posMonthlyFee: true,
               maxDevices: true,
+              maxMobileDevices: true,
               carteraMonthlyFee: true,
               citasMonthlyFee: true,
               deliveryMonthlyFee: true,
@@ -153,11 +154,13 @@ export class SuperAdminService {
         businessId: string;
         lastSeenAt: Date | null;
         activeDesktopDevices: number;
+        activeMobileDevices: number;
         activeDevices: number;
       }>>(`
         SELECT "businessId",
                MAX("lastSeenAt") as "lastSeenAt",
                COUNT(CASE WHEN "status" = 'ACTIVE' AND "category" = 'DESKTOP' THEN 1 END)::INTEGER as "activeDesktopDevices",
+               COUNT(CASE WHEN "status" = 'ACTIVE' AND "category" = 'MOBILE' THEN 1 END)::INTEGER as "activeMobileDevices",
                COUNT(CASE WHEN "status" = 'ACTIVE' THEN 1 END)::INTEGER as "activeDevices"
         FROM "pos_devices"
         GROUP BY "businessId"
@@ -326,6 +329,10 @@ export class SuperAdminService {
         active: dev?.activeDesktopDevices || dev?.activeDevices || 0,
         allowed: posSub?.maxDevices ?? null,
       };
+      const mobileDevices = {
+        active: dev?.activeMobileDevices || 0,
+        allowed: (posSub as any)?.maxMobileDevices ?? 0,
+      };
 
       const users = {
         active: userMap.get(b.id) || 0,
@@ -378,6 +385,9 @@ export class SuperAdminService {
         posVertical: b.posVertical,
         salonProfile: b.salonProfile,
         maxDevices: posSub?.maxDevices ?? null,
+        maxMobileDevices: (posSub as any)?.maxMobileDevices ?? 0,
+        activeMobileDevices: dev?.activeMobileDevices || 0,
+        mobileDevices,
         trialHours: posSub?.trialHours ?? null,
         trialStartedAt: posSub?.trialStartedAt ?? null,
         trialEndsAt: posSub?.trialEndsAt ?? null,
@@ -987,8 +997,12 @@ export class SuperAdminService {
       (s) => s.productType === BusinessProductType.POS,
     );
     const maxDevices = posSub?.maxDevices ?? null;
+    const maxMobileDevices = (posSub as any)?.maxMobileDevices ?? 0;
     const activeDevices = await this.prisma.posDevice.count({
       where: { businessId: id, status: PosDeviceStatus.ACTIVE, category: 'DESKTOP' },
+    });
+    const activeMobileDevices = await this.prisma.posDevice.count({
+      where: { businessId: id, status: PosDeviceStatus.ACTIVE, category: 'MOBILE' },
     });
 
     const userUsage = await this.userQuotaService.getUsage(id);
@@ -1051,6 +1065,8 @@ export class SuperAdminService {
       hasCarteraCobro: hasCarteraActive,
       hasCitas: hasCitasActive,
       maxDevices,
+      maxMobileDevices,
+      activeMobileDevices,
       backofficeTier: (posSub as any)?.backofficeTier ?? 'BASIC',
       trialHours: (posSub as any)?.trialHours ?? null,
       trialStartedAt: (posSub as any)?.trialStartedAt ?? null,
@@ -1351,6 +1367,7 @@ export class SuperAdminService {
         const posVertical = resolvedPosVertical;
 
         const maxDevices = dto.maxDevices !== undefined ? dto.maxDevices : 1;
+        const maxMobileDevices = dto.maxMobileDevices !== undefined ? dto.maxMobileDevices : 0;
 
         const posSub = await tx.businessProductSubscription.create({
           data: {
@@ -1360,6 +1377,7 @@ export class SuperAdminService {
             posVertical,
             posMonthlyFee: new Prisma.Decimal(posFee),
             maxDevices,
+            maxMobileDevices,
             webAdminEnabled,
             webBillingEnabled,
             maxWebDevices,
@@ -1382,6 +1400,7 @@ export class SuperAdminService {
               posVertical,
               posMonthlyFee: posFee,
               maxDevices,
+              maxMobileDevices,
               webAdminEnabled,
               webBillingEnabled,
               maxWebDevices,
@@ -1794,6 +1813,13 @@ export class SuperAdminService {
       await this.prisma.businessProductSubscription.updateMany({
         where: { businessId: id, productType: BusinessProductType.POS },
         data: { posVertical: updatePosVertical },
+      });
+    }
+
+    if (dto.maxMobileDevices !== undefined) {
+      await this.prisma.businessProductSubscription.updateMany({
+        where: { businessId: id, productType: BusinessProductType.POS },
+        data: { maxMobileDevices: dto.maxMobileDevices ?? 0 },
       });
     }
 
@@ -3272,11 +3298,15 @@ export class SuperAdminService {
       throw new NotFoundException('Dispositivo no encontrado');
     }
 
+    const isRevokingMobile =
+      device.category === 'MOBILE' && dto.status === PosDeviceStatus.REVOKED;
+
     const updated = await this.prisma.posDevice.update({
       where: { id: device.id },
       data: {
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.name !== undefined && { name: dto.name.trim() }),
+        ...(isRevokingMobile && { secretHash: null }),
       },
     });
 
@@ -3355,11 +3385,15 @@ export class SuperAdminService {
       throw new NotFoundException('Dispositivo web no encontrado');
     }
 
+    const isRevokingMobile =
+      device.category === 'MOBILE' && dto.status === PosDeviceStatus.REVOKED;
+
     const updated = await this.prisma.posDevice.update({
       where: { id: device.id },
       data: {
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.name !== undefined && { name: dto.name.trim() }),
+        ...(isRevokingMobile && { secretHash: null }),
       },
     });
 
@@ -3435,6 +3469,38 @@ export class SuperAdminService {
 
       this.logger.log(
         `[updatePosSubscription] Límite maxDevices de businessId=${businessId} cambiado de ${sub.maxDevices} a ${updatedSub.maxDevices}`,
+      );
+    }
+
+    if (dto.maxMobileDevices !== undefined) {
+      if (
+        dto.maxMobileDevices !== null &&
+        (dto.maxMobileDevices < 0 || dto.maxMobileDevices > 50)
+      ) {
+        throw new BadRequestException('maxMobileDevices debe estar entre 0 y 50');
+      }
+
+      const prevMaxMobileDevices = (updatedSub as any).maxMobileDevices ?? 0;
+      updatedSub = await this.prisma.businessProductSubscription.update({
+        where: { id: sub.id },
+        data: {
+          maxMobileDevices: dto.maxMobileDevices ?? 0,
+        },
+      });
+
+      await this.auditService.record({
+        businessId,
+        userId: actorUser?.sub || 'system-superadmin',
+        userRole: actorUser?.role || 'SUPERADMIN',
+        action: 'MOBILE_DEVICE_LIMIT_CHANGED',
+        entityType: 'BusinessProductSubscription',
+        entityId: sub.id,
+        before: { maxMobileDevices: prevMaxMobileDevices },
+        after: { maxMobileDevices: (updatedSub as any).maxMobileDevices },
+      });
+
+      this.logger.log(
+        `[updatePosSubscription] Límite maxMobileDevices de businessId=${businessId} cambiado de ${prevMaxMobileDevices} a ${(updatedSub as any).maxMobileDevices} por ${actorUser?.sub || 'system'}`,
       );
     }
 

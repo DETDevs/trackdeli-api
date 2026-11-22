@@ -1,4 +1,10 @@
-export const KNOWN_PLATFORMS = ['desktop-win', 'desktop-mac', 'desktop-linux'];
+export const KNOWN_PLATFORMS = [
+  'desktop-win',
+  'desktop-mac',
+  'desktop-linux',
+  'mobile-android',
+  'mobile-ios',
+];
 export const DEFAULT_PLATFORM = 'desktop-win';
 export const SETTING_KEY_PREFIX = 'min_version:';
 export const SKIP_CLIENT_VERSION_CHECK_KEY = 'skip_client_version_check';

@@ -350,6 +350,7 @@ model Business {
   posExchangeRates PosExchangeRate[]
   saleReturns      SaleReturn[]
   posDevices       PosDevice[]
+  mobilePairingCodes PosMobilePairingCode[]
   productBatches   ProductBatch[]
 
   // Subscripciones de Productos y Auditoría
@@ -2217,6 +2218,24 @@ model PosDevice {
   @@map("pos_devices")
 }
 
+model PosMobilePairingCode {
+  id             String    @id @default(uuid())
+  businessId     String
+  business       Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  codeHash       String    @db.VarChar(100)
+  expiresAt      DateTime
+  createdBy      String    @db.VarChar(100)
+  isUsed         Boolean   @default(false)
+  usedAt         DateTime?
+  usedByDeviceId String?   @db.VarChar(100)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([businessId, isUsed])
+  @@index([codeHash])
+  @@map("pos_mobile_pairing_codes")
+}
+
 // ═══════════════════════════════════════════════
 // BUSINESS PRODUCT SUBSCRIPTIONS & AUDIT LOGS
 // ═══════════════════════════════════════════════
@@ -2242,6 +2261,7 @@ model BusinessProductSubscription {
   webAdminEnabled         Boolean                @default(true)
   webBillingEnabled       Boolean                @default(false)
   maxWebDevices           Int?                   @default(2)
+  maxMobileDevices        Int                    @default(0)
   webBillingMonthlyUsd    Decimal?               @db.Decimal(10, 2)
   backofficeTier          String?                @default("BASIC") @db.VarChar(20)
   trialHours              Int?

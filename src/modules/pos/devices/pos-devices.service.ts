@@ -1,5 +1,8 @@
 import {
+  BadRequestException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -17,6 +20,7 @@ import { JwtPayload } from '../../../common/types/jwt-payload.interface';
 import { UpdateDeviceDto } from './dto/update-device.dto';
 import { UpdatePosSubscriptionDto } from './dto/update-pos-subscription.dto';
 import { RegisterWebDeviceDto } from './dto/register-web-device.dto';
+import { PairMobileDeviceDto } from './dto/pair-mobile-device.dto';
 
 @Injectable()
 export class PosDevicesService {
@@ -68,15 +72,89 @@ export class PosDevicesService {
     const platform = platformRaw ? String(platformRaw).trim().toLowerCase() : null;
     const isDesktopWin = platform === 'desktop-win';
 
+    const versionRaw = headers['x-client-version'] || headers['X-Client-Version'];
+    const appVersion = versionRaw ? String(versionRaw).trim() : null;
+
+    const ipAddress = req?.ip || req?.connection?.remoteAddress || undefined;
+
     // 165a: Los dispositivos web solo se registran al cobrar, no al iniciar sesión
     if (platform && platform.startsWith('web')) {
       return;
     }
 
-    const versionRaw = headers['x-client-version'] || headers['X-Client-Version'];
-    const appVersion = versionRaw ? String(versionRaw).trim() : null;
+    // 277a: Los teléfonos móviles solo se registran mediante código, nunca en el login.
+    const isMobile = Boolean(platform && platform.startsWith('mobile'));
+    if (isMobile) {
+      const secretRaw = headers['x-device-secret'] || headers['X-Device-Secret'];
+      const deviceSecret = secretRaw ? String(secretRaw).trim() : null;
 
-    const ipAddress = req?.ip || req?.connection?.remoteAddress || undefined;
+      if (!deviceId || !deviceSecret) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'MOBILE_DEVICE_NOT_PAIRED',
+          message:
+            'Este teléfono no está vinculado a tu negocio. Pedile al encargado un código de vinculación.',
+        });
+      }
+
+      const maxMobileDevices = (posSub as any).maxMobileDevices ?? 0;
+      if (maxMobileDevices <= 0) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'MOBILE_APP_NOT_ENABLED',
+          message: 'La app móvil no está activa para este negocio. Contactá a NEXOL.',
+        });
+      }
+
+      const mobileDevice = await this.prisma.posDevice.findFirst({
+        where: {
+          businessId: user.businessId,
+          deviceId,
+          category: 'MOBILE',
+        },
+      });
+
+      if (!mobileDevice || mobileDevice.status !== PosDeviceStatus.ACTIVE) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'MOBILE_DEVICE_NOT_PAIRED',
+          message:
+            'Este teléfono no está vinculado a tu negocio. Pedile al encargado un código de vinculación.',
+        });
+      }
+
+      const secretHash = crypto
+        .createHash('sha256')
+        .update(deviceSecret)
+        .digest('hex');
+
+      if (!mobileDevice.secretHash || secretHash !== mobileDevice.secretHash) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'MOBILE_DEVICE_NOT_PAIRED',
+          message:
+            'Este teléfono no está vinculado a tu negocio. Pedile al encargado un código de vinculación.',
+        });
+      }
+
+      // Actualizar lastSeenAt, lastUserId y metadata del teléfono
+      await this.prisma.posDevice.update({
+        where: { id: mobileDevice.id },
+        data: {
+          lastSeenAt: new Date(),
+          lastUserId: user.id,
+          ...(appVersion && { appVersion }),
+          ...(platform && { platform }),
+          ...(deviceName && !mobileDevice.name && { name: deviceName }),
+        },
+      });
+
+      return;
+    }
 
     // Si el header X-Device-Id no viene:
     if (!deviceId) {
@@ -259,11 +337,15 @@ export class PosDevicesService {
       throw new NotFoundException('Dispositivo no encontrado');
     }
 
+    const isRevokingMobile =
+      device.category === 'MOBILE' && dto.status === PosDeviceStatus.REVOKED;
+
     const updated = await this.prisma.posDevice.update({
       where: { id: device.id },
       data: {
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.name !== undefined && { name: dto.name.trim() }),
+        ...(isRevokingMobile && { secretHash: null }),
       },
     });
 
@@ -315,6 +397,7 @@ export class PosDevicesService {
         ...(dto.maxDevices !== undefined && { maxDevices: dto.maxDevices }),
         ...(dto.webBillingEnabled !== undefined && { webBillingEnabled: dto.webBillingEnabled }),
         ...(dto.maxWebDevices !== undefined && { maxWebDevices: dto.maxWebDevices }),
+        ...(dto.maxMobileDevices !== undefined && { maxMobileDevices: dto.maxMobileDevices }),
       },
     });
 
@@ -639,6 +722,340 @@ export class PosDevicesService {
       maxWebDevices,
       activeWebDevices,
       hasOpenShift: !!openShift,
+    };
+  }
+
+  private pairFailedAttempts = new Map<string, { count: number; resetAt: number }>();
+
+  private checkPairRateLimit(keys: string[]) {
+    const now = Date.now();
+    for (const key of keys) {
+      if (!key) continue;
+      const record = this.pairFailedAttempts.get(key);
+      if (record && record.resetAt > now) {
+        if (record.count >= 5) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.TOO_MANY_REQUESTS,
+              error: 'Too Many Requests',
+              code: 'TOO_MANY_ATTEMPTS',
+              message:
+                'Demasiados intentos fallidos de vinculación. Esperá 10 minutos para reintentar.',
+            },
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+        }
+      }
+    }
+  }
+
+  private recordPairFailure(keys: string[]) {
+    const now = Date.now();
+    for (const key of keys) {
+      if (!key) continue;
+      const record = this.pairFailedAttempts.get(key);
+      if (!record || record.resetAt <= now) {
+        this.pairFailedAttempts.set(key, { count: 1, resetAt: now + 10 * 60 * 1000 });
+      } else {
+        record.count += 1;
+      }
+    }
+  }
+
+  private clearPairFailures(keys: string[]) {
+    for (const key of keys) {
+      if (key) this.pairFailedAttempts.delete(key);
+    }
+  }
+
+  /**
+   * 277a - Genera un código de vinculación para app móvil (8 caracteres).
+   * Solo ENCARGADO y SUPERADMIN.
+   * Vence a los 10 minutos. Anula los anteriores sin usar de este negocio.
+   */
+  async createMobilePairingCode(businessId: string, userId: string) {
+    const posSub = await this.prisma.businessProductSubscription.findUnique({
+      where: {
+        businessId_productType: {
+          businessId,
+          productType: BusinessProductType.POS,
+        },
+      },
+    });
+
+    const maxMobileDevices = (posSub as any)?.maxMobileDevices ?? 0;
+    if (
+      !posSub ||
+      posSub.status !== BusinessProductStatus.ACTIVE ||
+      maxMobileDevices <= 0
+    ) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'MOBILE_APP_NOT_ENABLED',
+        message: 'La app móvil no está activa para este negocio. Contactá a NEXOL.',
+      });
+    }
+
+    const activeMobileDevices = await this.prisma.posDevice.count({
+      where: {
+        businessId,
+        category: 'MOBILE',
+        status: PosDeviceStatus.ACTIVE,
+      },
+    });
+
+    if (activeMobileDevices >= maxMobileDevices) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'MOBILE_DEVICE_LIMIT',
+        message: `Límite de teléfonos alcanzado (${activeMobileDevices}/${maxMobileDevices}). Pedile al encargado que libere un equipo o contactá a NEXOL para ampliar el cupo.`,
+        maxMobileDevices,
+        activeMobileDevices,
+      });
+    }
+
+    // Anular códigos anteriores sin usar de este negocio
+    await (this.prisma as any).posMobilePairingCode.updateMany({
+      where: {
+        businessId,
+        isUsed: false,
+      },
+      data: {
+        isUsed: true,
+      },
+    });
+
+    // 8 caracteres: números y letras mayúsculas sin caracteres ambiguos (0/O, 1/I)
+    const CHARSET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      code += CHARSET[crypto.randomInt(0, CHARSET.length)];
+    }
+
+    const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutos
+
+    await (this.prisma as any).posMobilePairingCode.create({
+      data: {
+        businessId,
+        codeHash,
+        expiresAt,
+        createdBy: userId,
+        isUsed: false,
+      },
+    });
+
+    await this.auditService.record({
+      businessId,
+      userId,
+      userRole: 'ENCARGADO',
+      action: 'MOBILE_PAIRING_CODE_GENERATED',
+      entityType: 'PosMobilePairingCode',
+      reason: 'Código de vinculación generado para app móvil',
+    });
+
+    return { code, expiresAt };
+  }
+
+  /**
+   * 277a - Vinculación de teléfono con código (sin sesión previa).
+   * Valida código, cupo, registra/reactiva teléfono y genera secreto del teléfono.
+   * Idempotente por deviceId + businessId.
+   */
+  async pairMobileDevice(dto: PairMobileDeviceDto, ipAddress?: string) {
+    const cleanDeviceId = (dto.deviceId || '').trim();
+    const cleanCode = (dto.code || '').trim().toUpperCase();
+    const cleanName = (dto.deviceName || '').trim() || 'Móvil POS';
+    const cleanPlatform = (dto.platform || '').trim().toLowerCase() || 'mobile-android';
+
+    const limiterKeys: string[] = [];
+    if (ipAddress) limiterKeys.push(`pair:ip:${ipAddress}`);
+    if (cleanDeviceId) limiterKeys.push(`pair:device:${cleanDeviceId}`);
+
+    this.checkPairRateLimit(limiterKeys);
+
+    if (!cleanCode || !cleanDeviceId) {
+      this.recordPairFailure(limiterKeys);
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'PAIRING_CODE_INVALID',
+        message: 'El código no es válido o ya venció. Pedile uno nuevo al encargado.',
+      });
+    }
+
+    const codeHash = crypto.createHash('sha256').update(cleanCode).digest('hex');
+
+    const pairingRecord = await (this.prisma as any).posMobilePairingCode.findFirst({
+      where: {
+        codeHash,
+        isUsed: false,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!pairingRecord) {
+      this.recordPairFailure(limiterKeys);
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'PAIRING_CODE_INVALID',
+        message: 'El código no es válido o ya venció. Pedile uno nuevo al encargado.',
+      });
+    }
+
+    const businessId = pairingRecord.businessId;
+
+    const result = await this.prisma.$transaction(
+      async (tx: any) => {
+        // 1. Marcar código como usado atómicamente
+        const updatedCode = await tx.posMobilePairingCode.updateMany({
+          where: {
+            id: pairingRecord.id,
+            isUsed: false,
+            expiresAt: { gt: new Date() },
+          },
+          data: {
+            isUsed: true,
+            usedAt: new Date(),
+            usedByDeviceId: cleanDeviceId,
+          },
+        });
+
+        if (updatedCode.count === 0) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'PAIRING_CODE_INVALID',
+            message: 'El código no es válido o ya venció. Pedile uno nuevo al encargado.',
+          });
+        }
+
+        // 2. Validar suscripción POS y cupo móvil
+        const posSub = await tx.businessProductSubscription.findUnique({
+          where: {
+            businessId_productType: {
+              businessId,
+              productType: BusinessProductType.POS,
+            },
+          },
+        });
+
+        const maxMobile = (posSub as any)?.maxMobileDevices ?? 0;
+        if (
+          !posSub ||
+          posSub.status !== BusinessProductStatus.ACTIVE ||
+          maxMobile <= 0
+        ) {
+          throw new ForbiddenException({
+            statusCode: 403,
+            error: 'Forbidden',
+            code: 'MOBILE_APP_NOT_ENABLED',
+            message: 'La app móvil no está activa para este negocio. Contactá a NEXOL.',
+          });
+        }
+
+        // 3. Verificar si el teléfono ya está registrado y activo en este negocio
+        const existingDevice = await tx.posDevice.findUnique({
+          where: {
+            businessId_deviceId: {
+              businessId,
+              deviceId: cleanDeviceId,
+            },
+          },
+        });
+
+        const isCurrentlyActiveMobile =
+          existingDevice &&
+          existingDevice.category === 'MOBILE' &&
+          existingDevice.status === PosDeviceStatus.ACTIVE;
+
+        if (!isCurrentlyActiveMobile) {
+          const activeMobileDevices = await tx.posDevice.count({
+            where: {
+              businessId,
+              category: 'MOBILE',
+              status: PosDeviceStatus.ACTIVE,
+            },
+          });
+
+          if (activeMobileDevices >= maxMobile) {
+            throw new ForbiddenException({
+              statusCode: 403,
+              error: 'Forbidden',
+              code: 'MOBILE_DEVICE_LIMIT',
+              message: `Límite de teléfonos alcanzado (${activeMobileDevices}/${maxMobile}). Pedile al encargado que libere un equipo o contactá a NEXOL para ampliar el cupo.`,
+            });
+          }
+        }
+
+        // 4. Generar secreto de 256 bits y guardar solo su hash SHA-256
+        const deviceSecret = crypto.randomBytes(32).toString('hex');
+        const secretHash = crypto.createHash('sha256').update(deviceSecret).digest('hex');
+
+        // 5. Upsert atómico del dispositivo móvil
+        const device = await tx.posDevice.upsert({
+          where: {
+            businessId_deviceId: {
+              businessId,
+              deviceId: cleanDeviceId,
+            },
+          },
+          update: {
+            name: cleanName,
+            category: 'MOBILE',
+            platform: cleanPlatform,
+            status: PosDeviceStatus.ACTIVE,
+            secretHash,
+            lastSeenAt: new Date(),
+          },
+          create: {
+            businessId,
+            deviceId: cleanDeviceId,
+            name: cleanName,
+            category: 'MOBILE',
+            platform: cleanPlatform,
+            status: PosDeviceStatus.ACTIVE,
+            secretHash,
+            firstSeenAt: new Date(),
+            lastSeenAt: new Date(),
+          },
+        });
+
+        const business = await tx.business.findUnique({
+          where: { id: businessId },
+          select: { name: true },
+        });
+
+        return {
+          businessId,
+          businessName: business?.name || '',
+          deviceSecret,
+          deviceId: device.id,
+        };
+      },
+      { timeout: 15000 },
+    );
+
+    this.clearPairFailures(limiterKeys);
+
+    await this.auditService.record({
+      businessId,
+      userId: pairingRecord.createdBy,
+      userRole: 'SYSTEM',
+      action: 'MOBILE_DEVICE_PAIRED',
+      entityType: 'PosDevice',
+      entityId: result.deviceId,
+      reason: `Teléfono vinculado con código: deviceId=${cleanDeviceId}`,
+      ipAddress,
+    });
+
+    return {
+      businessId: result.businessId,
+      businessName: result.businessName,
+      deviceSecret: result.deviceSecret,
     };
   }
 }

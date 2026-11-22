@@ -131,12 +131,16 @@ export class ClientVersionGuard implements CanActivate {
         `[ClientVersionGuard] 426 CLIENT_UPDATE_REQUIRED: plataforma="${platform}", versionActual="${clientVersion || 'desconocida'}", versionMinima="${minVersion}", ruta="${rawUrl}"`,
       );
 
+      const appName = platform.startsWith('mobile')
+        ? 'la aplicación móvil'
+        : 'la aplicación de escritorio';
+
       throw new HttpException(
         {
           statusCode: HTTP_STATUS_UPGRADE_REQUIRED,
           error: 'Upgrade Required',
           code: 'CLIENT_UPDATE_REQUIRED',
-          message: `Se requiere actualizar la aplicación de escritorio a la versión ${minVersion} o superior para continuar operando.`,
+          message: `Se requiere actualizar ${appName} a la versión ${minVersion} o superior para continuar operando.`,
           minVersion,
           currentVersion: clientVersion || 'unknown',
         },

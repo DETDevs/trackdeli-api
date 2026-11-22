@@ -2334,6 +2334,7 @@ WHERE a."customerId" = c."id"
       await this.ensureProductPresentationsSchema();
       await this.ensureProductVariantsSchema();
       await this.ensurePromotionsSchema();
+      await this.ensureMobileDevicesSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4891,6 +4892,61 @@ WHERE a."customerId" = c."id"
     } catch (err: any) {
       this.logger.warn(
         `[PrismaService] ⚠ 270a - Advertencia sincronizando esquema de turnos web por usuario: ${err.message}`,
+      );
+    }
+  }
+
+  /**
+   * 277a - Tablas y columnas para app móvil:
+   * - business_product_subscriptions.maxMobileDevices (int not null default 0)
+   * - pos_mobile_pairing_codes (tabla de códigos de vinculación)
+   * DDL idempotente con advisory lock 2770100.
+   */
+  private async ensureMobileDevicesSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(2770100)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "business_product_subscriptions"
+            ADD COLUMN IF NOT EXISTS "maxMobileDevices" INTEGER NOT NULL DEFAULT 0;
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_mobile_pairing_codes" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "codeHash" VARCHAR(100) NOT NULL,
+            "expiresAt" TIMESTAMP(3) NOT NULL,
+            "createdBy" VARCHAR(100) NOT NULL,
+            "isUsed" BOOLEAN NOT NULL DEFAULT false,
+            "usedAt" TIMESTAMP(3),
+            "usedByDeviceId" VARCHAR(100),
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_mobile_pairing_codes_pkey" PRIMARY KEY ("id"),
+            CONSTRAINT "pos_mobile_pairing_codes_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_mobile_pairing_codes_businessId_isUsed_idx"
+            ON "pos_mobile_pairing_codes"("businessId", "isUsed");
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_mobile_pairing_codes_codeHash_idx"
+            ON "pos_mobile_pairing_codes"("codeHash");
+        `);
+
+        this.logger.log(
+          '[PrismaService] ✓ 277a - Columnas y tablas para app móvil sincronizadas (maxMobileDevices, pos_mobile_pairing_codes).',
+        );
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(2770100)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[PrismaService] ⚠ 277a - Advertencia sincronizando esquema de app móvil: ${err.message}`,
       );
     }
   }

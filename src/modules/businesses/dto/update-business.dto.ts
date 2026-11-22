@@ -225,5 +225,12 @@ export class UpdateBusinessDto {
   @IsOptional()
   @IsBoolean()
   confirm?: boolean;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(0)
+  @Max(50)
+  maxMobileDevices?: number | null;
 }
 

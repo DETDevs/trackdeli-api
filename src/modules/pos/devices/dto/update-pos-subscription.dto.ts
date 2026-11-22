@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, Min, ValidateIf } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, Max, Min, ValidateIf } from 'class-validator';
 
 export class UpdatePosSubscriptionDto {
   @IsOptional()
@@ -20,6 +20,13 @@ export class UpdatePosSubscriptionDto {
   @IsInt()
   @Min(0)
   maxWebDevices?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(0)
+  @Max(50)
+  maxMobileDevices?: number | null;
 
   @IsOptional()
   @ValidateIf((_, v) => v !== null)

@@ -1,4 +1,4 @@
-import { IsBoolean, IsDateString, IsEmail, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
+import { IsBoolean, IsDateString, IsEmail, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Max, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { BusinessType, PosVertical, PaymentMethod } from '@prisma/client';
 import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
@@ -129,6 +129,13 @@ export class CreateBusinessSuperAdminDto {
   @IsInt()
   @Min(0)
   maxWebDevices?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(0)
+  @Max(50)
+  maxMobileDevices?: number | null;
 
   @IsOptional()
   @ValidateIf((_, v) => v !== null)
