@@ -5084,8 +5084,37 @@ WHERE a."customerId" = c."id"
             ON "pos_push_log"("createdAt");
         `);
 
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_user_notifications" (
+            "id" TEXT NOT NULL,
+            "businessId" TEXT NOT NULL,
+            "userId" TEXT NOT NULL,
+            "category" VARCHAR(50) NOT NULL,
+            "title" VARCHAR(120) NOT NULL,
+            "body" VARCHAR(250) NOT NULL,
+            "data" JSONB NOT NULL DEFAULT '{}'::jsonb,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "readAt" TIMESTAMP(3),
+            CONSTRAINT "pos_user_notifications_pkey" PRIMARY KEY ("id")
+          );
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_user_notifications_biz_user_created_idx"
+            ON "pos_user_notifications"("businessId", "userId", "createdAt" DESC, "id" DESC);
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_user_notifications_biz_user_unread_idx"
+            ON "pos_user_notifications"("businessId", "userId")
+            WHERE "readAt" IS NULL;
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_user_notifications_createdAt_idx"
+            ON "pos_user_notifications"("createdAt");
+        `);
+
         this.logger.log(
-          '[PrismaService] ✓ 300a - Tablas e índices de notificaciones push sincronizados (pos_push_tokens, pos_push_preferences, pos_push_log).',
+          '[PrismaService] ✓ 300a/300f - Tablas e índices de notificaciones push sincronizados (pos_push_tokens, pos_push_preferences, pos_push_log, pos_user_notifications).',
         );
       } finally {
         await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(3000100)`);

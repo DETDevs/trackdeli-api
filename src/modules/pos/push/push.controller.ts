@@ -5,8 +5,11 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
+  Patch,
   Post,
   Put,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -76,5 +79,50 @@ export class PushController {
       user.sub,
       mobileDevice.deviceId,
     );
+  }
+
+  @Get('inbox')
+  getInbox(
+    @CurrentUser() user: JwtPayload,
+    @Req() req: any,
+    @Query('cursor') cursor?: string,
+    @Query('take') take?: string,
+  ) {
+    const mobileDevice: MobileDeviceContext = req.mobileDevice;
+    const parsedTake = take !== undefined && take !== '' ? Number(take) : undefined;
+    return this.pushService.listInbox(
+      mobileDevice.businessId,
+      user.sub,
+      cursor,
+      parsedTake,
+    );
+  }
+
+  @Get('inbox/unread-count')
+  getInboxUnreadCount(@CurrentUser() user: JwtPayload, @Req() req: any) {
+    const mobileDevice: MobileDeviceContext = req.mobileDevice;
+    return this.pushService.getInboxUnreadCount(mobileDevice.businessId, user.sub);
+  }
+
+  @Patch('inbox/:id/read')
+  @HttpCode(HttpStatus.OK)
+  markInboxItemRead(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Req() req: any,
+  ) {
+    const mobileDevice: MobileDeviceContext = req.mobileDevice;
+    return this.pushService.markInboxItemRead(
+      mobileDevice.businessId,
+      user.sub,
+      id,
+    );
+  }
+
+  @Post('inbox/read-all')
+  @HttpCode(HttpStatus.OK)
+  markAllInboxRead(@CurrentUser() user: JwtPayload, @Req() req: any) {
+    const mobileDevice: MobileDeviceContext = req.mobileDevice;
+    return this.pushService.markAllInboxRead(mobileDevice.businessId, user.sub);
   }
 }

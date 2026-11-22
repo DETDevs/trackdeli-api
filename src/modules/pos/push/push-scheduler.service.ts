@@ -150,11 +150,6 @@ export class PushSchedulerService {
       errors: 0,
     };
 
-    if (!this.pushService.isEnabled()) {
-      summary.skipped = 'PUSH_DISABLED';
-      return summary;
-    }
-
     const lockRows = await this.prisma.$queryRaw<{ locked: boolean }[]>`
       SELECT pg_try_advisory_lock(${PUSH_MORNING_CRON_LOCK_ID}::int) AS locked
     `;
@@ -164,6 +159,9 @@ export class PushSchedulerService {
     }
 
     try {
+      // 300f: retención de 60 días del historial de avisos bajo el mismo candado de las 8:00 AM
+      await this.pushService.cleanupOldUserNotifications();
+
       const todayManagua = formatDateInTimezone(referenceDate, DEFAULT_BUSINESS_TIMEZONE);
       summary.dateManagua = todayManagua;
 

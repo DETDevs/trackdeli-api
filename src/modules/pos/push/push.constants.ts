@@ -62,6 +62,9 @@ export const INVALID_FCM_TOKEN_ERRORS: ReadonlySet<string> = new Set([
 
 export const PUSH_FIREBASE_APP_NAME = 'nexol-pos-push';
 export const PUSH_LOG_RETENTION_DAYS = 30;
+export const PUSH_INBOX_RETENTION_DAYS = 60;
+export const PUSH_INBOX_DEFAULT_TAKE = 30;
+export const PUSH_INBOX_MAX_TAKE = 50;
 export const DEFAULT_DEDUPE_WINDOW_MINUTES = 60;
 export const FCM_MULTICAST_BATCH_SIZE = 500;
 export const PUSH_TEST_COOLDOWN_MS = 60 * 1000;

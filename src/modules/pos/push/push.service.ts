@@ -5,6 +5,7 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  NotFoundException,
   OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -36,6 +37,9 @@ import {
   PUSH_BROADCAST_COOLDOWN_MS,
   PUSH_DEDUPE_LOCK_NAMESPACE,
   PUSH_FIREBASE_APP_NAME,
+  PUSH_INBOX_DEFAULT_TAKE,
+  PUSH_INBOX_MAX_TAKE,
+  PUSH_INBOX_RETENTION_DAYS,
   PUSH_LOG_RETENTION_DAYS,
   PUSH_MANAGEMENT_ROLES,
   PUSH_TEST_COOLDOWN_MS,
@@ -96,6 +100,8 @@ export interface SendPushInput {
   };
   dedupeKey?: string;
   dedupeWindowMinutes?: number;
+  /** Si es true (ej. /pos/push/test), no se guarda en el historial de avisos. */
+  skipInbox?: boolean;
 }
 
 export interface SendPushResult {
@@ -629,6 +635,7 @@ export class PushService implements OnModuleInit {
       },
       dedupeKey: `test:${deviceId}:${Math.floor(nowMs / 1000)}`,
       dedupeWindowMinutes: 1,
+      skipInbox: true,
     });
 
     return {
@@ -648,7 +655,7 @@ export class PushService implements OnModuleInit {
    */
   sendFireAndForget(input: SendPushInput): Promise<void> {
     try {
-      if (!this.isEnabled()) {
+      if (!this.isEnabled() && input.skipInbox) {
         return Promise.resolve();
       }
       return Promise.resolve()
@@ -676,7 +683,7 @@ export class PushService implements OnModuleInit {
    */
   notifyLowStockCrossed(businessId: string, productIds: string[]): Promise<void> {
     try {
-      if (!this.isEnabled() || !businessId || !productIds || productIds.length === 0) {
+      if (!businessId || !productIds || productIds.length === 0) {
         return Promise.resolve();
       }
       const uniqueIds = Array.from(new Set(productIds.filter(Boolean)));
@@ -890,12 +897,12 @@ export class PushService implements OnModuleInit {
    */
   async send(input: SendPushInput): Promise<SendPushResult> {
     try {
-      if (!this.isEnabled() || !this.messagingClient) {
-        return { sent: 0, failed: 0, skipped: 'PUSH_DISABLED' };
-      }
-
       if (!input.businessId || !input.category) {
         return { sent: 0, failed: 0, skipped: 'INVALID_INPUT' };
+      }
+
+      if ((!this.isEnabled() || !this.messagingClient) && input.skipInbox) {
+        return { sent: 0, failed: 0, skipped: 'PUSH_DISABLED' };
       }
 
       const dedupeKey = input.dedupeKey ? input.dedupeKey.trim().slice(0, 200) : null;
@@ -955,6 +962,24 @@ export class PushService implements OnModuleInit {
     input: SendPushInput,
     dedupeKey: string | null,
   ): Promise<SendPushResult> {
+    // Contenido corto y sin datos personales; data estrictamente { category, screen, id }
+    const safeTitle = String(input.title || '').trim().slice(0, 100);
+    const safeBody = String(input.body || '').trim().slice(0, 200);
+    const safeData: Record<string, string> = {
+      category: String(input.data?.category || input.category),
+      screen: String(input.data?.screen || ''),
+      id: String(input.data?.id || ''),
+    };
+
+    // 300f: guardar en el historial por destinatario ANTES de intentar Firebase y aunque Firebase falle
+    if (!input.skipInbox) {
+      await this.recordUserNotifications(input, safeTitle, safeBody, safeData);
+    }
+
+    if (!this.isEnabled() || !this.messagingClient) {
+      return { sent: 0, failed: 0, skipped: 'PUSH_DISABLED' };
+    }
+
     const targets = await this.resolveTargets(input);
 
     if (targets.length === 0) {
@@ -1031,15 +1056,6 @@ export class PushService implements OnModuleInit {
     if (eligibleTargets.length === 0) {
       return { sent: 0, failed: 0, skipped: skippedCount };
     }
-
-    // Contenido corto y sin datos personales; data estrictamente { category, screen, id }
-    const safeTitle = String(input.title || '').trim().slice(0, 100);
-    const safeBody = String(input.body || '').trim().slice(0, 200);
-    const safeData: Record<string, string> = {
-      category: String(input.data?.category || input.category),
-      screen: String(input.data?.screen || ''),
-      id: String(input.data?.id || ''),
-    };
 
     const priority: 'high' | 'normal' = HIGH_PRIORITY_CATEGORIES.has(input.category)
       ? 'high'
@@ -1284,6 +1300,292 @@ export class PushService implements OnModuleInit {
   private computeInt32Hash(input: string): number {
     const digest = crypto.createHash('sha256').update(input).digest();
     return digest.readInt32BE(0);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // HISTORIAL DE AVISOS POR USUARIO (300f — pos_user_notifications)
+  // ═══════════════════════════════════════════════════════════════
+
+  private async resolveInboxRecipientUserIds(input: SendPushInput): Promise<string[]> {
+    let userIds: string[] = [];
+
+    if (input.userIds && input.userIds.length > 0) {
+      const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+        SELECT "id"
+        FROM "users"
+        WHERE "businessId" = ${input.businessId}
+          AND "isActive" = true
+          AND "id" = ANY(${input.userIds}::text[])
+      `;
+      userIds = rows.map((r) => r.id);
+    } else if (input.roles && input.roles.length > 0) {
+      const roleStrings = input.roles.map((r) => String(r));
+      const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+        SELECT "id"
+        FROM "users"
+        WHERE "businessId" = ${input.businessId}
+          AND "isActive" = true
+          AND "role"::text = ANY(${roleStrings}::text[])
+      `;
+      userIds = rows.map((r) => r.id);
+    } else if (input.deviceId) {
+      const rows = await this.prisma.$queryRaw<{ userId: string }[]>`
+        SELECT DISTINCT t."userId"
+        FROM "pos_push_tokens" t
+        INNER JOIN "users" u ON u."id" = t."userId" AND u."isActive" = true
+        WHERE t."businessId" = ${input.businessId}
+          AND t."deviceId" = ${input.deviceId}
+      `;
+      userIds = rows.map((r) => r.userId);
+    }
+
+    const unique = Array.from(new Set(userIds));
+    if (input.excludeUserIds && input.excludeUserIds.length > 0) {
+      const excluded = new Set(input.excludeUserIds);
+      return unique.filter((id) => !excluded.has(id));
+    }
+    return unique;
+  }
+
+  private async recordUserNotifications(
+    input: SendPushInput,
+    safeTitle: string,
+    safeBody: string,
+    safeData: Record<string, string>,
+  ): Promise<void> {
+    try {
+      const recipientUserIds = await this.resolveInboxRecipientUserIds(input);
+      if (recipientUserIds.length === 0) return;
+
+      const isMandatory = MANDATORY_PUSH_CATEGORIES.has(input.category);
+      let eligibleUserIds = recipientUserIds;
+
+      if (!isMandatory) {
+        const prefRows = await this.prisma.$queryRaw<
+          { userId: string; enabled: boolean }[]
+        >`
+          SELECT "userId", "enabled"
+          FROM "pos_push_preferences"
+          WHERE "category" = ${input.category}
+            AND "userId" = ANY(${recipientUserIds}::text[])
+        `;
+        const prefMap = new Map<string, boolean>();
+        for (const p of prefRows) {
+          prefMap.set(p.userId, Boolean(p.enabled));
+        }
+
+        const defaultEnabled = this.getDefaultEnabled(input.category);
+        eligibleUserIds = recipientUserIds.filter((uid) => {
+          if (prefMap.has(uid)) {
+            return prefMap.get(uid) === true;
+          }
+          return defaultEnabled;
+        });
+      }
+
+      if (eligibleUserIds.length === 0) return;
+
+      const dataJson = JSON.stringify(safeData);
+      const now = new Date();
+      for (const uid of eligibleUserIds) {
+        const id = crypto.randomUUID();
+        await this.prisma.$executeRaw`
+          INSERT INTO "pos_user_notifications" (
+            "id", "businessId", "userId", "category", "title", "body", "data", "createdAt", "readAt"
+          ) VALUES (
+            ${id}, ${input.businessId}, ${uid}, ${input.category},
+            ${safeTitle}, ${safeBody}, ${dataJson}::jsonb, ${now}, NULL
+          )
+        `;
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[PushService.recordUserNotifications] Error guardando historial (category=${input.category}): ${err?.message || 'desconocido'}`,
+      );
+    }
+  }
+
+  private encodeInboxCursor(createdAt: Date, id: string): string {
+    return Buffer.from(
+      JSON.stringify({ c: createdAt.toISOString(), i: id }),
+      'utf8',
+    ).toString('base64url');
+  }
+
+  private decodeInboxCursor(raw?: string): { createdAt: Date; id: string } | null {
+    if (!raw || !raw.trim()) return null;
+    try {
+      const parsed = JSON.parse(
+        Buffer.from(raw.trim(), 'base64url').toString('utf8'),
+      ) as { c?: unknown; i?: unknown };
+      if (typeof parsed?.c !== 'string' || typeof parsed?.i !== 'string' || !parsed.i) {
+        throw new Error('invalid');
+      }
+      const dt = new Date(parsed.c);
+      if (Number.isNaN(dt.getTime())) {
+        throw new Error('invalid_date');
+      }
+      return { createdAt: dt, id: parsed.i };
+    } catch {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'INVALID_CURSOR',
+        message: 'El cursor de paginación no es válido.',
+      });
+    }
+  }
+
+  async listInbox(
+    businessId: string,
+    userId: string,
+    cursor?: string,
+    takeRaw?: number,
+  ) {
+    const safeTake = Number.isFinite(takeRaw)
+      ? Math.min(PUSH_INBOX_MAX_TAKE, Math.max(1, Math.floor(takeRaw!)))
+      : PUSH_INBOX_DEFAULT_TAKE;
+    const decoded = this.decodeInboxCursor(cursor);
+
+    type InboxRow = {
+      id: string;
+      category: string;
+      title: string;
+      body: string;
+      data: Record<string, string> | null;
+      createdAt: Date;
+      readAt: Date | null;
+    };
+
+    const cursorIso = decoded ? decoded.createdAt.toISOString() : null;
+    const [rows, unreadRes] = await Promise.all([
+      decoded && cursorIso
+        ? this.prisma.$queryRaw<InboxRow[]>`
+            SELECT "id", "category", "title", "body", "data", "createdAt", "readAt"
+            FROM "pos_user_notifications"
+            WHERE "businessId" = ${businessId}
+              AND "userId" = ${userId}
+              AND (
+                "createdAt" < ${cursorIso}::timestamp(3)
+                OR ("createdAt" = ${cursorIso}::timestamp(3) AND "id" < ${decoded.id})
+              )
+            ORDER BY "createdAt" DESC, "id" DESC
+            LIMIT ${safeTake + 1}
+          `
+        : this.prisma.$queryRaw<InboxRow[]>`
+            SELECT "id", "category", "title", "body", "data", "createdAt", "readAt"
+            FROM "pos_user_notifications"
+            WHERE "businessId" = ${businessId}
+              AND "userId" = ${userId}
+            ORDER BY "createdAt" DESC, "id" DESC
+            LIMIT ${safeTake + 1}
+          `,
+      this.getInboxUnreadCount(businessId, userId),
+    ]);
+
+    const hasMore = rows.length > safeTake;
+    const pageRows = hasMore ? rows.slice(0, safeTake) : rows;
+    const lastRow = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasMore && lastRow ? this.encodeInboxCursor(lastRow.createdAt, lastRow.id) : null;
+
+    return {
+      items: pageRows.map((r) => ({
+        id: r.id,
+        category: r.category,
+        title: r.title,
+        body: r.body,
+        data: r.data || {},
+        createdAt: r.createdAt.toISOString(),
+        readAt: r.readAt ? r.readAt.toISOString() : null,
+      })),
+      unreadCount: unreadRes.unreadCount,
+      nextCursor,
+    };
+  }
+
+  async getInboxUnreadCount(
+    businessId: string,
+    userId: string,
+  ): Promise<{ unreadCount: number }> {
+    const rows = await this.prisma.$queryRaw<{ cnt: number }[]>`
+      SELECT COUNT(*)::int AS cnt
+      FROM "pos_user_notifications"
+      WHERE "businessId" = ${businessId}
+        AND "userId" = ${userId}
+        AND "readAt" IS NULL
+    `;
+    return { unreadCount: rows[0]?.cnt || 0 };
+  }
+
+  async markInboxItemRead(
+    businessId: string,
+    userId: string,
+    notificationId: string,
+  ) {
+    const now = new Date();
+    const updated = await this.prisma.$queryRaw<{ id: string; readAt: Date }[]>`
+      UPDATE "pos_user_notifications"
+      SET "readAt" = COALESCE("readAt", ${now})
+      WHERE "id" = ${notificationId}
+        AND "businessId" = ${businessId}
+        AND "userId" = ${userId}
+      RETURNING "id", "readAt"
+    `;
+
+    if (updated.length === 0) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        code: 'NOTIFICATION_NOT_FOUND',
+        message: 'Aviso no encontrado.',
+      });
+    }
+
+    const { unreadCount } = await this.getInboxUnreadCount(businessId, userId);
+    return {
+      success: true,
+      id: updated[0].id,
+      readAt: updated[0].readAt.toISOString(),
+      unreadCount,
+    };
+  }
+
+  async markAllInboxRead(businessId: string, userId: string) {
+    const now = new Date();
+    const marked = await this.prisma.$executeRaw`
+      UPDATE "pos_user_notifications"
+      SET "readAt" = ${now}
+      WHERE "businessId" = ${businessId}
+        AND "userId" = ${userId}
+        AND "readAt" IS NULL
+    `;
+    return {
+      success: true,
+      markedCount: Number(marked) || 0,
+      unreadCount: 0,
+    };
+  }
+
+  async cleanupOldUserNotifications(): Promise<{ deleted: number }> {
+    try {
+      const deleted = await this.prisma.$executeRaw`
+        DELETE FROM "pos_user_notifications"
+        WHERE "createdAt" < NOW() - make_interval(days => ${PUSH_INBOX_RETENTION_DAYS}::int)
+      `;
+      const count = Number(deleted) || 0;
+      if (count > 0) {
+        this.logger.log(
+          `[PushService] Limpieza de pos_user_notifications: ${count} avisos antiguos (> ${PUSH_INBOX_RETENTION_DAYS} días) eliminados.`,
+        );
+      }
+      return { deleted: count };
+    } catch (err: any) {
+      this.logger.warn(
+        `[PushService] Error en limpieza de pos_user_notifications: ${err?.message || 'desconocido'}`,
+      );
+      return { deleted: 0 };
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
