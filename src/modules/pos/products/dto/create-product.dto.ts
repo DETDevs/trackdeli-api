@@ -1,6 +1,5 @@
 import { IsString, MinLength, IsOptional, IsNumber, Min, Max, IsBoolean, IsNotEmpty, IsIn, IsDateString, MaxLength } from 'class-validator';
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
-import { ALLOWED_PRODUCT_UNITS } from '../product-unit.util';
 
 export class CreateProductDto {
   @SanitizeText()
@@ -27,9 +26,7 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(ALLOWED_PRODUCT_UNITS as any, {
-    message: 'La unidad de medida debe ser una de: UND, LT, GAL, KG, LB',
-  })
+  @MaxLength(10, { message: 'El código de la unidad de medida no puede superar los 10 caracteres' })
   unit?: string;
 
   @IsNumber()

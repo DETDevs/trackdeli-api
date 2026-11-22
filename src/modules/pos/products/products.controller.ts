@@ -1,6 +1,7 @@
 import {
-  Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UseGuards,
+  BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UploadedFiles, UseGuards, UseInterceptors,
 } from "@nestjs/common";
+import { AnyFilesInterceptor } from "@nestjs/platform-express";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
 import { SkipMembershipCheck } from '../../../common/decorators/skip-membership.decorator';
@@ -15,12 +16,76 @@ import { UpdateProductDto } from "./dto/update-product.dto";
 import { AdjustStockDto } from "./dto/adjust-stock.dto";
 import { SetRecipeComponentsDto } from "./dto/set-recipe-components.dto";
 import { BulkUpdateProductsDto } from "./dto/bulk-update-products.dto";
+import { UploadService } from "../../upload/upload.service";
+
+const ALLOWED_PRODUCT_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+]);
+const MAX_PRODUCT_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard)
 @Controller("pos/products")
 export class ProductsController {
-  constructor(private readonly service: ProductsService) {}
+  constructor(
+    private readonly service: ProductsService,
+    private readonly uploadService: UploadService,
+  ) {}
+
+  @Post("upload-image")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @UseInterceptors(
+    AnyFilesInterceptor({
+      limits: {
+        fileSize: MAX_PRODUCT_IMAGE_SIZE_BYTES + 1024 * 1024, // Validamos tamaño exacto en el handler para dar mensaje 400 claro en español
+      },
+    }),
+  )
+  async uploadImage(
+    @UploadedFiles() files: Array<Express.Multer.File>,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    const file = files && files.length > 0 ? files[0] : null;
+    if (!file || !file.buffer || file.buffer.length === 0) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'IMAGE_FILE_REQUIRED',
+        message: 'Debés adjuntar una imagen para el producto.',
+      });
+    }
+
+    const mime = (file.mimetype || '').toLowerCase().trim();
+    if (!ALLOWED_PRODUCT_IMAGE_MIME_TYPES.has(mime)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'INVALID_IMAGE_TYPE',
+        message: 'Formato de archivo no válido. Solo se permiten imágenes JPG, PNG o WebP.',
+      });
+    }
+
+    if (file.size > MAX_PRODUCT_IMAGE_SIZE_BYTES || file.buffer.length > MAX_PRODUCT_IMAGE_SIZE_BYTES) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'IMAGE_TOO_LARGE',
+        message: 'La imagen supera el tamaño máximo permitido de 5 MB.',
+      });
+    }
+
+    const businessId = resolveBusinessId(user, qBid);
+    const imageUrl = await this.uploadService.uploadPhoto(
+      file,
+      `businesses/${businessId}/products`,
+    );
+
+    return { imageUrl };
+  }
 
   @Get()
   @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.SUPERADMIN, UserRole.WAITER, UserRole.VENDEDOR)

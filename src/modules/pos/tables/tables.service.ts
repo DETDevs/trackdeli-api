@@ -1276,6 +1276,14 @@ export class TablesService {
       await this.assertCanMutateEqualSplitOrder(order.id, order.splitMode);
     }
 
+    const businessUnits = await this.prisma.posUnit.findMany({
+      where: { businessId },
+      select: { code: true, allowsDecimals: true },
+    });
+    const unitDecimalsMap = new Map<string, boolean>(
+      businessUnits.map((u) => [u.code.toUpperCase(), u.allowsDecimals]),
+    );
+
     for (const item of dto.items) {
       const product = await this.prisma.product.findFirst({
         where: { id: item.productId, businessId, isActive: true },
@@ -1284,7 +1292,14 @@ export class TablesService {
         throw new NotFoundException(`Producto ${item.productId} no encontrado o inactivo`);
       }
 
-      const itemQty = validateProductQuantity(product.unit, item.quantity, product.name);
+      const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
+      const itemQty = validateProductQuantity(
+        prodUnitCode,
+        item.quantity,
+        product.name,
+        false,
+        unitDecimalsMap.get(prodUnitCode),
+      );
 
       const existingItem = await this.prisma.tableOrderItem.findFirst({
         where: {
@@ -1379,11 +1394,22 @@ export class TablesService {
     await this.assertCanMutateEqualSplitOrder(order.id, order.splitMode);
 
     const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
+    const prodUnitCode = (product?.unit || 'UND').trim().toUpperCase();
+    const unitRow = await this.prisma.posUnit.findUnique({
+      where: { businessId_code: { businessId, code: prodUnitCode } },
+      select: { allowsDecimals: true },
+    });
 
     // 170d: Si el renglón ya fue enviado a cocina y se aumenta la cantidad,
     // el renglón enviado conserva su cantidad original y la diferencia se convierte en un renglón nuevo sin enviar.
     if (isSent && dto.quantity !== undefined && dto.quantity > currentQty) {
-      const targetQty = validateProductQuantity(product?.unit, dto.quantity, product?.name || item.productName);
+      const targetQty = validateProductQuantity(
+        prodUnitCode,
+        dto.quantity,
+        product?.name || item.productName,
+        false,
+        unitRow?.allowsDecimals,
+      );
       const diffQty = round3(targetQty - currentQty);
 
       if (diffQty > 0) {
@@ -1428,7 +1454,13 @@ export class TablesService {
     }
 
     const validQty = dto.quantity !== undefined
-      ? validateProductQuantity(product?.unit, dto.quantity, product?.name || item.productName)
+      ? validateProductQuantity(
+          prodUnitCode,
+          dto.quantity,
+          product?.name || item.productName,
+          false,
+          unitRow?.allowsDecimals,
+        )
       : currentQty;
 
     await this.prisma.tableOrderItem.update({

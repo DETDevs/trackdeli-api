@@ -431,7 +431,18 @@ export class PosQuotesService {
         });
       }
 
-      const qty = validateProductQuantity(product.unit, Number(item.quantity), product.name, false);
+      const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
+      const unitRow = await this.prisma.posUnit.findUnique({
+        where: { businessId_code: { businessId, code: prodUnitCode } },
+        select: { allowsDecimals: true },
+      });
+      const qty = validateProductQuantity(
+        prodUnitCode,
+        Number(item.quantity),
+        product.name,
+        false,
+        unitRow?.allowsDecimals,
+      );
       const resolved = resolveLineUnitPrice(product, qty, business);
 
       let unitPrice = resolved.unitPrice;

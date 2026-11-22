@@ -83,12 +83,17 @@ export class SalesService {
           }
         : null,
       items: (sale.items || []).map((i: any) => {
+        const returnedQtyNum =
+          i.returnedQty != null
+            ? Number(new Prisma.Decimal(i.returnedQty.toString()).toDecimalPlaces(3))
+            : 0;
         const itemCopy = {
           ...i,
+          unit: i.unit || i.product?.unit || 'UND',
           priceTier: i.priceTier || 'RETAIL',
           price_tier: i.priceTier || 'RETAIL',
-          returnedQty: i.returnedQty != null ? Number(new Prisma.Decimal(i.returnedQty.toString()).toDecimalPlaces(2)) : 0,
-          returnableQty: Math.max(0, (i.quantity || 0) - (i.returnedQty || 0)),
+          returnedQty: returnedQtyNum,
+          returnableQty: round3(Math.max(0, (i.quantity || 0) - returnedQtyNum)),
           batches: (i.batchAllocations || []).map((ba: any) => ({
             batchNumber: ba.batch?.batchNumber,
             expiryDate: ba.batch?.expiryDate,
@@ -602,8 +607,16 @@ export class SalesService {
 
       let hasNegativeStock = false;
       const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
-      const lineCostData: Array<{ unitCost: number | null; costSource: string }> = [];
+      const lineCostData: Array<{ unitCost: number | null; costSource: string; unit: string }> = [];
       const batchAllocationsByIndex = new Map<number, { allocations: any[]; stockBefore: number }>();
+
+      const businessUnits = await tx.posUnit.findMany({
+        where: { businessId },
+        select: { code: true, allowsDecimals: true },
+      });
+      const unitDecimalsMap = new Map<string, boolean>(
+        businessUnits.map((u) => [u.code.toUpperCase(), u.allowsDecimals]),
+      );
 
       for (let itemIdx = 0; itemIdx < dto.items.length; itemIdx++) {
         const item = dto.items[itemIdx];
@@ -624,7 +637,14 @@ export class SalesService {
             },
           });
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
-          requestedQty = validateProductQuantity(product.unit, item.quantity, product.name, Boolean(dto.isSplitSale));
+          const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
+          requestedQty = validateProductQuantity(
+            prodUnitCode,
+            item.quantity,
+            product.name,
+            Boolean(dto.isSplitSale),
+            unitDecimalsMap.get(prodUnitCode),
+          );
 
           // 221a: Resolver precio unitario según regla de venta por mayor y canal de venta
           const resolved = resolveChannelUnitPrice(product, requestedQty, business, saleChannel);
@@ -865,7 +885,11 @@ export class SalesService {
           }
         }
 
-        lineCostData.push({ unitCost: itemUnitCost, costSource: itemCostSource });
+        lineCostData.push({
+          unitCost: itemUnitCost,
+          costSource: itemCostSource,
+          unit: product?.unit ? String(product.unit).trim().toUpperCase() : 'UND',
+        });
 
         rawItemsForCalc.push({
           productId: item.productId || null,
@@ -1003,6 +1027,7 @@ export class SalesService {
         productId: l.productId,
         productName: l.productName,
         barcode: l.barcode,
+        unit: lineCostData[idx]?.unit || 'UND',
         unitPrice: l.unitPrice,
         priceTier: l.priceTier,
         quantity: l.quantity,
@@ -1024,6 +1049,7 @@ export class SalesService {
           productId: null,
           productName: 'Envío a domicilio',
           barcode: null,
+          unit: 'UND',
           unitPrice: deliveryFeeAmount,
           priceTier: 'RETAIL',
           quantity: 1,
@@ -2216,7 +2242,16 @@ export class SalesService {
     const sales = await this.prisma.sale.findMany({
       where,
       include: {
-        items: true,
+        items: {
+          include: {
+            product: {
+              select: {
+                id: true,
+                unit: true,
+              },
+            },
+          },
+        },
         cashier: { select: { id: true, name: true } },
         seller: { select: { id: true, name: true, email: true } },
         cashRegister: { select: { id: true, openedAt: true } },
@@ -2257,6 +2292,7 @@ export class SalesService {
                 name: true,
                 price: true,
                 barcode: true,
+                unit: true,
               },
             },
             batchAllocations: {
@@ -2712,6 +2748,7 @@ export class SalesService {
                   name: true,
                   price: true,
                   barcode: true,
+                  unit: true,
                 },
               },
             },

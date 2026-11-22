@@ -249,9 +249,17 @@ export class OfflineService {
           });
 
           const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
-          const lineCostData: Array<{ unitCost: number | null; costSource: string }> = [];
+          const lineCostData: Array<{ unitCost: number | null; costSource: string; unit: string }> = [];
           const discrepancies: any[] = [];
           const pendingAllocations: Array<{ productId: string; allocations: any[] }> = [];
+
+          const businessUnits = await tx.posUnit.findMany({
+            where: { businessId },
+            select: { code: true, allowsDecimals: true },
+          });
+          const unitDecimalsMap = new Map<string, boolean>(
+            businessUnits.map((u) => [u.code.toUpperCase(), u.allowsDecimals]),
+          );
 
           for (const item of saleDto.items) {
             let itemAllocRes: any = null;
@@ -269,7 +277,14 @@ export class OfflineService {
               });
 
               if (product) {
-                validateProductQuantity(product.unit, item.quantity, product.name);
+                const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
+                validateProductQuantity(
+                  prodUnitCode,
+                  item.quantity,
+                  product.name,
+                  false,
+                  unitDecimalsMap.get(prodUnitCode),
+                );
               }
             }
 
@@ -586,7 +601,11 @@ export class OfflineService {
               }
             }
 
-            lineCostData.push({ unitCost: itemUnitCost, costSource: itemCostSource });
+            lineCostData.push({
+              unitCost: itemUnitCost,
+              costSource: itemCostSource,
+              unit: product?.unit ? String(product.unit).trim().toUpperCase() : 'UND',
+            });
 
             rawItemsForCalc.push({
               productId: item.productId || null,
@@ -622,10 +641,11 @@ export class OfflineService {
           const amountPaid = saleDto.amountPaid != null ? Number(saleDto.amountPaid) : total;
           const change = Math.max(0, amountPaid - total);
 
-          const processedItems = calcResult.lines.map((l) => ({
+          const processedItems = calcResult.lines.map((l, idx) => ({
             productId: l.productId,
             productName: l.productName,
             barcode: l.barcode,
+            unit: lineCostData[idx]?.unit || 'UND',
             unitPrice: l.unitPrice,
             priceTier: l.priceTier,
             quantity: l.quantity,

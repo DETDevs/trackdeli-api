@@ -260,7 +260,18 @@ export class PurchasesService {
           finalLotNumber = rawLot || null;
         }
 
-        const validQty = validateProductQuantity(product.unit, item.quantity, product.name);
+        const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
+        const unitRow = await tx.posUnit.findUnique({
+          where: { businessId_code: { businessId, code: prodUnitCode } },
+          select: { allowsDecimals: true },
+        });
+        const validQty = validateProductQuantity(
+          prodUnitCode,
+          item.quantity,
+          product.name,
+          false,
+          unitRow?.allowsDecimals,
+        );
         const unitCostDec = new Prisma.Decimal(item.unitCost);
         const itemSubtotal = new Prisma.Decimal(validQty).times(unitCostDec);
         const createdPurchaseItem = await tx.purchaseItem.create({

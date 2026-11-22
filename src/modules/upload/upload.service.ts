@@ -31,7 +31,8 @@ export class UploadService {
     this.logger.log(`[uploadPhoto] Iniciando: folder=${folder}, tamañoOriginal=${file.size} bytes`);
 
     try {
-      const compressed = await (sharp as any)(file.buffer)
+      const sharpFn: any = (sharp as any).default || sharp;
+      const compressed = await sharpFn(file.buffer)
         .resize({ width: 1200, withoutEnlargement: true })
         .jpeg({ quality: 80 })
         .toBuffer();

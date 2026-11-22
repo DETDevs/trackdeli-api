@@ -107,6 +107,12 @@ export class InventoryService {
       }
 
       const currentStock = Number(product.stock);
+      const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
+      const unitRow = await tx.posUnit.findUnique({
+        where: { businessId_code: { businessId, code: prodUnitCode } },
+        select: { allowsDecimals: true },
+      });
+
       let qtyDelta: number;
       if (dto.type === InventoryAdjustmentType.COUNT) {
         if (dto.countedQty === undefined || dto.countedQty === null) {
@@ -120,7 +126,13 @@ export class InventoryService {
             },
           });
         }
-        const validCounted = validateProductQuantity(product.unit, dto.countedQty, product.name);
+        const validCounted = validateProductQuantity(
+          prodUnitCode,
+          dto.countedQty,
+          product.name,
+          false,
+          unitRow?.allowsDecimals,
+        );
         qtyDelta = round3(validCounted - currentStock);
       } else {
         if (dto.qtyDelta === undefined || dto.qtyDelta === null) {
@@ -134,7 +146,13 @@ export class InventoryService {
             },
           });
         }
-        validateProductQuantity(product.unit, Math.abs(dto.qtyDelta), product.name);
+        validateProductQuantity(
+          prodUnitCode,
+          Math.abs(dto.qtyDelta),
+          product.name,
+          false,
+          unitRow?.allowsDecimals,
+        );
         qtyDelta = round3(dto.qtyDelta);
       }
 
@@ -338,7 +356,18 @@ export class InventoryService {
           continue; // Productos sin trackStock se omiten del conteo físico
         }
 
-        const validCounted = validateProductQuantity(product.unit, line.countedQty, product.name);
+        const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
+        const unitRow = await tx.posUnit.findUnique({
+          where: { businessId_code: { businessId, code: prodUnitCode } },
+          select: { allowsDecimals: true },
+        });
+        const validCounted = validateProductQuantity(
+          prodUnitCode,
+          line.countedQty,
+          product.name,
+          false,
+          unitRow?.allowsDecimals,
+        );
         const stockBefore = Number(product.stock);
         const qtyDelta = round3(validCounted - stockBefore);
         const stockAfter = validCounted;

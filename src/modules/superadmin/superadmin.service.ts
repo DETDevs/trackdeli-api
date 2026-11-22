@@ -1262,6 +1262,23 @@ export class SuperAdminService {
         }
       }
 
+      // 294a: Sembrar las 10 unidades de medida por defecto del sistema para el nuevo negocio
+      await tx.posUnit.createMany({
+        data: [
+          { businessId: business.id, code: 'UND', name: 'Unidad', allowsDecimals: false, isSystem: true, isActive: true, sortOrder: 1 },
+          { businessId: business.id, code: 'LB', name: 'Libra', allowsDecimals: true, isSystem: true, isActive: true, sortOrder: 2 },
+          { businessId: business.id, code: 'KG', name: 'Kilo', allowsDecimals: true, isSystem: true, isActive: true, sortOrder: 3 },
+          { businessId: business.id, code: 'ONZ', name: 'Onza', allowsDecimals: true, isSystem: true, isActive: true, sortOrder: 4 },
+          { businessId: business.id, code: 'GR', name: 'Gramo', allowsDecimals: true, isSystem: true, isActive: true, sortOrder: 5 },
+          { businessId: business.id, code: 'LT', name: 'Litro', allowsDecimals: true, isSystem: true, isActive: true, sortOrder: 6 },
+          { businessId: business.id, code: 'ML', name: 'Mililitro', allowsDecimals: true, isSystem: true, isActive: true, sortOrder: 7 },
+          { businessId: business.id, code: 'GAL', name: 'Galón', allowsDecimals: true, isSystem: true, isActive: true, sortOrder: 8 },
+          { businessId: business.id, code: 'MT', name: 'Metro', allowsDecimals: true, isSystem: true, isActive: true, sortOrder: 9 },
+          { businessId: business.id, code: 'YD', name: 'Yarda', allowsDecimals: true, isSystem: true, isActive: true, sortOrder: 10 },
+        ],
+        skipDuplicates: true,
+      });
+
       const encargado = await tx.user.create({
         data: {
           name: encargadoName,

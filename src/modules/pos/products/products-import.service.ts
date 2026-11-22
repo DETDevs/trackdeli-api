@@ -1,7 +1,9 @@
-import { Injectable, UnprocessableEntityException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, UnprocessableEntityException, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ProductsService } from './products.service';
 import { BatchesService } from '../batches/batches.service';
+import { UnitsService } from '../units/units.service';
+import { validateProductQuantity, DEFAULT_SYSTEM_UNITS } from './product-unit.util';
 import { ProductFieldDataType, StockMovementType, Prisma, UserRole } from '@prisma/client';
 import * as exceljs from 'exceljs';
 import { parse } from 'csv-parse/sync';
@@ -55,7 +57,7 @@ const CORE_TARGETS: ImportTarget[] = [
   { id: 'stock', label: 'Existencia (Stock)', kind: 'core', dataType: 'NUMBER', required: false },
   { id: 'minStock', label: 'Stock Mínimo', kind: 'core', dataType: 'NUMBER', required: false },
   { id: 'maxStock', label: 'Stock Máximo', kind: 'core', dataType: 'NUMBER', required: false },
-  { id: 'unit', label: 'Unidad de Medida', kind: 'core', dataType: 'SELECT', options: ['UND', 'LT', 'GAL', 'KG', 'LB'], required: false },
+  { id: 'unit', label: 'Unidad de Medida', kind: 'core', dataType: 'SELECT', options: DEFAULT_SYSTEM_UNITS.map((u) => u.code), required: false },
   { id: 'supplierId', label: 'Proveedor', kind: 'core', dataType: 'TEXT', required: false },
   { id: 'wholesalePrice', label: 'Precio por Mayor', kind: 'core', dataType: 'NUMBER', required: false },
   { id: 'wholesaleMinQty', label: 'Cantidad Mínima por Mayor', kind: 'core', dataType: 'NUMBER', required: false },
@@ -112,6 +114,7 @@ export class ProductsImportService {
     private readonly prisma: PrismaService,
     private readonly productsService: ProductsService,
     private readonly batchesService: BatchesService,
+    @Optional() private readonly unitsService?: UnitsService,
   ) { }
 
   private normalizeStr(str: any): string {
@@ -234,7 +237,7 @@ export class ProductsImportService {
    * devuelve todas las base, para que la importación siga aceptando archivos viejos.
    */
   async getTargets(businessId: string, opts?: { includeHidden?: boolean }): Promise<ImportTarget[]> {
-    const [fields, business] = await Promise.all([
+    const [fields, business, activeUnits] = await Promise.all([
       this.prisma.productFieldDefinition.findMany({
         where: { businessId, isActive: true },
         orderBy: { order: 'asc' },
@@ -249,6 +252,7 @@ export class ProductsImportService {
           industry: { select: { code: true } },
         },
       }),
+      this.unitsService ? this.unitsService.findAll(businessId, false) : Promise.resolve([]),
     ]);
 
     const dynamicTargets: ImportTarget[] = fields
@@ -273,7 +277,7 @@ export class ProductsImportService {
       (business as any)?.industry?.code?.toLowerCase() === 'farmacia' ||
       fields.some((f) => PHARMACY_FIELD_KEYS.includes((f.key || '').toLowerCase()));
 
-    const coreTargets = opts?.includeHidden
+    const rawCoreTargets = opts?.includeHidden
       ? CORE_TARGETS
       : filterCoreTargets({
         isPharmacy,
@@ -281,6 +285,14 @@ export class ProductsImportService {
         useListPrice: Boolean((business as any)?.useListPrice),
         wholesaleEnabled: Boolean((business as any)?.wholesaleEnabled),
       });
+
+    const activeUnitCodes = activeUnits.length > 0
+      ? activeUnits.map((u) => u.code)
+      : DEFAULT_SYSTEM_UNITS.map((u) => u.code);
+
+    const coreTargets = rawCoreTargets.map((t) =>
+      t.id === 'unit' ? { ...t, options: activeUnitCodes } : t,
+    );
 
     return [...coreTargets, ...batchTargets, ...dynamicTargets];
   }
@@ -730,14 +742,6 @@ export class ProductsImportService {
       const barcodeKey = payload.core.barcode ? String(payload.core.barcode).trim() : '';
       if (barcodeKey) payload.core.barcode = barcodeKey;
 
-      // Igual que el formulario: un SERVICIO no controla inventario.
-      if (payload.core.type === 'SERVICE') {
-        payload.core.trackStock = false;
-        delete payload.core.stock;
-        delete payload.core.minStock;
-        delete payload.core.maxStock;
-      }
-
       if (skuKey && processedSkus.has(skuKey)) {
         result.errors.push({
           row: rowNum,
@@ -765,6 +769,76 @@ export class ProductsImportService {
 
       let existing = skuKey ? productBySku.get(skuKey) : productByName.get(nameKey);
       if (!existing && !skuKey) existing = productByName.get(nameKey);
+
+      // 294a: Validar unidad de medida y cantidades según allowsDecimals de la unidad del negocio
+      const unitsMap = this.unitsService
+        ? await this.unitsService.getUnitsMap(businessId)
+        : new Map(DEFAULT_SYSTEM_UNITS.map((u) => [u.code, u]));
+      const existingUnitCode = existing?.unit ? String(existing.unit).trim().toUpperCase() : 'UND';
+      const resolvedUnitCode = payload.core.unit
+        ? String(payload.core.unit).trim().toUpperCase()
+        : existingUnitCode;
+      const unitDef = unitsMap.get(resolvedUnitCode);
+      if (!unitDef || (!unitDef.isActive && (!existing || resolvedUnitCode !== existingUnitCode))) {
+        result.errors.push({
+          row: rowNum,
+          column: 'unit',
+          message: `La unidad de medida '${resolvedUnitCode}' no existe o está desactivada en este negocio.`,
+        });
+        continue;
+      }
+      if (payload.core.unit !== undefined) {
+        payload.core.unit = unitDef.code;
+      }
+
+      // Igual que el formulario: un SERVICIO no controla inventario.
+      if (payload.core.type === 'SERVICE') {
+        payload.core.trackStock = false;
+        delete payload.core.stock;
+        delete payload.core.minStock;
+        delete payload.core.maxStock;
+      } else {
+        try {
+          if (payload.core.stock !== undefined && payload.core.stock !== null) {
+            payload.core.stock = validateProductQuantity(
+              unitDef.code,
+              payload.core.stock,
+              payload.core.name,
+              false,
+              unitDef.allowsDecimals,
+            );
+          }
+          if (payload.core.minStock !== undefined && payload.core.minStock !== null) {
+            payload.core.minStock = validateProductQuantity(
+              unitDef.code,
+              payload.core.minStock,
+              payload.core.name,
+              false,
+              unitDef.allowsDecimals,
+            );
+          }
+          if (payload.core.maxStock !== undefined && payload.core.maxStock !== null) {
+            payload.core.maxStock = validateProductQuantity(
+              unitDef.code,
+              payload.core.maxStock,
+              payload.core.name,
+              false,
+              unitDef.allowsDecimals,
+            );
+          }
+        } catch (qtyErr: any) {
+          const msg =
+            qtyErr?.response?.message ||
+            qtyErr?.message ||
+            `Cantidad inválida para la unidad ${unitDef.code}.`;
+          result.errors.push({
+            row: rowNum,
+            column: 'stock',
+            message: typeof msg === 'string' ? msg : JSON.stringify(msg),
+          });
+          continue;
+        }
+      }
 
       if (barcodeKey) {
         const existingByBarcode = productByBarcode.get(barcodeKey);

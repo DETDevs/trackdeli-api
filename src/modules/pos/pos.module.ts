@@ -38,12 +38,14 @@ import { BanksModule } from './banks/banks.module';
 import { ChannelsModule } from './channels/channels.module';
 import { PosQuotesModule } from './quotes/pos-quotes.module';
 import { PosNotificationsCenterModule } from './notifications-center/pos-notifications-center.module';
+import { UnitsModule } from './units/units.module';
 
 @Module({
   imports: [
     CategoriesModule,
     SuppliersModule,
     ProductsModule,
+    UnitsModule,
     ProductFieldsModule,
     SalesModule,
     CashRegisterModule,
@@ -79,7 +81,7 @@ import { PosNotificationsCenterModule } from './notifications-center/pos-notific
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
-  exports: [ProductFieldsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule, PrintAuditModule, BatchesModule, ReceiptLinksModule, PresaleTicketsModule, BanksModule, ChannelsModule, PosQuotesModule],
+  exports: [ProductFieldsModule, UnitsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule, PrintAuditModule, BatchesModule, ReceiptLinksModule, PresaleTicketsModule, BanksModule, ChannelsModule, PosQuotesModule],
 })
 export class PosModule {}
 

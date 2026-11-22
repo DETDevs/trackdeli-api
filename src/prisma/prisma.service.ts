@@ -2330,6 +2330,7 @@ WHERE a."customerId" = c."id"
       await this.ensureWebUserCashRegisterSchema();
       await this.ensureProductDiscountSchema();
       await this.ensureTableOrderBillsSchema();
+      await this.ensurePosUnitsAndSaleItemUnitSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -5920,6 +5921,126 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] Advertencia en ensureSalonZonesBackfilled: ${err.message}`);
+    }
+  }
+
+  /**
+   * 294a - Unidades de medida personalizables por negocio (pos_units) y unidad histórica en pos_sale_items (unit).
+   * DDL idempotente y backfill de las 10 unidades por defecto + unidades legacy en productos existentes.
+   * Advisory lock: 2940100.
+   */
+  private async ensurePosUnitsAndSaleItemUnitSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(2940100)`);
+
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_units" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "code" VARCHAR(10) NOT NULL,
+              "name" VARCHAR(100) NOT NULL,
+              "allowsDecimals" BOOLEAN NOT NULL DEFAULT true,
+              "isSystem" BOOLEAN NOT NULL DEFAULT false,
+              "isActive" BOOLEAN NOT NULL DEFAULT true,
+              "sortOrder" INTEGER NOT NULL DEFAULT 0,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_units_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_units_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_units_businessId_code_key" ON "pos_units"("businessId", "code");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_units_businessId_isActive_sortOrder_idx" ON "pos_units"("businessId", "isActive", "sortOrder");
+          `);
+
+          // Columna unit en pos_sale_items: las filas existentes quedan en NULL para caer al fallback product.unit,
+          // y las nuevas filas llevan la unidad guardada al momento de la venta (default 'UND').
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "unit" VARCHAR(10);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_sale_items" ALTER COLUMN "unit" SET DEFAULT 'UND';
+          `);
+
+          await tx.$executeRawUnsafe(`
+            INSERT INTO "pos_units" ("id", "businessId", "code", "name", "allowsDecimals", "isSystem", "isActive", "sortOrder", "createdAt", "updatedAt")
+            SELECT
+              md5(b."id" || ':' || v.code),
+              b."id",
+              v.code,
+              v.name,
+              v.allows_decimals,
+              true,
+              true,
+              v.sort_order,
+              NOW(),
+              NOW()
+            FROM "businesses" b
+            CROSS JOIN (
+              VALUES
+                ('UND', 'Unidad', false, 1),
+                ('LB', 'Libra', true, 2),
+                ('KG', 'Kilo', true, 3),
+                ('ONZ', 'Onza', true, 4),
+                ('GR', 'Gramo', true, 5),
+                ('LT', 'Litro', true, 6),
+                ('ML', 'Mililitro', true, 7),
+                ('GAL', 'Galón', true, 8),
+                ('MT', 'Metro', true, 9),
+                ('YD', 'Yarda', true, 10)
+            ) AS v(code, name, allows_decimals, sort_order)
+            ON CONFLICT ("businessId", "code") DO NOTHING;
+          `);
+
+          // Revisar si algún producto existente tiene una unidad distinta de las 10 sembradas
+          const customProductUnits = await tx.$queryRawUnsafe<Array<{ businessId: string; code: string }>>(`
+            SELECT DISTINCT p."businessId", UPPER(TRIM(p."unit")) AS "code"
+            FROM "pos_products" p
+            WHERE p."unit" IS NOT NULL
+              AND TRIM(p."unit") <> ''
+              AND NOT EXISTS (
+                SELECT 1 FROM "pos_units" u
+                WHERE u."businessId" = p."businessId"
+                  AND u."code" = UPPER(TRIM(p."unit"))
+              )
+          `);
+
+          if (customProductUnits.length > 0) {
+            for (const row of customProductUnits) {
+              const code = (row.code || '').slice(0, 10);
+              if (!code) continue;
+              const allowsDecimals = code !== 'UND';
+              await tx.$executeRawUnsafe(
+                `INSERT INTO "pos_units" ("id", "businessId", "code", "name", "allowsDecimals", "isSystem", "isActive", "sortOrder", "createdAt", "updatedAt")
+                 VALUES ($1, $2, $3, $4, $5, false, true, 99, NOW(), NOW())
+                 ON CONFLICT ("businessId", "code") DO NOTHING`,
+                randomUUID(),
+                row.businessId,
+                code,
+                code,
+                allowsDecimals,
+              );
+              this.logger.log(
+                `[PrismaService] 294a - Unidad legacy "${code}" creada automáticamente para el negocio ${row.businessId}.`,
+              );
+            }
+          }
+
+          this.logger.log(
+            `[PrismaService] ✓ 294a - Esquema pos_units y pos_sale_items.unit sincronizado y unidades base sembradas.`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 294a - Advertencia sincronizando pos_units y pos_sale_items.unit: ${err.message}`);
     }
   }
 }

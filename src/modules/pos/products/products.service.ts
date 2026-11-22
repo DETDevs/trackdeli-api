@@ -18,6 +18,7 @@ import { BulkUpdateProductsDto } from "./dto/bulk-update-products.dto";
 import { validateProductQuantity, round3 } from "./product-unit.util";
 
 import { BatchesService } from '../batches/batches.service';
+import { UnitsService } from '../units/units.service';
 import { buildBusinessDateRange, formatDateInTimezone } from '../../../common/utils/date.util';
 import { normalizeOptionLabel } from '../../../common/utils/field-key.util';
 import { resolveChannelUnitPrice } from '../sales/utils/pricing.util';
@@ -35,6 +36,7 @@ export class ProductsService {
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
     private readonly batchesService: BatchesService,
+    private readonly unitsService: UnitsService,
   ) { }
 
   public async ensurePharmacyFieldDefinitions(businessId: string): Promise<void> {
@@ -824,14 +826,24 @@ export class ProductsService {
     const validatedAttributes = await this.validateAttributes(businessId, dto.attributes);
 
     const unit = ((industryCode === 'farmacia' && !dto.unit) ? 'UND' : (dto.unit || 'UND')).trim().toUpperCase();
+    const unitDef = await this.unitsService.findByCode(businessId, unit);
+    if (!unitDef || !unitDef.isActive) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'INVALID_UNIT',
+        message: `La unidad de medida "${unit}" no existe o está desactivada en este negocio.`,
+      });
+    }
+
     if (dto.stock !== undefined && dto.stock !== null) {
-      dto.stock = validateProductQuantity(unit, dto.stock, dto.name);
+      dto.stock = validateProductQuantity(unit, dto.stock, dto.name, false, unitDef.allowsDecimals);
     }
     if (dto.minStock !== undefined && dto.minStock !== null) {
-      dto.minStock = validateProductQuantity(unit, dto.minStock, dto.name);
+      dto.minStock = validateProductQuantity(unit, dto.minStock, dto.name, false, unitDef.allowsDecimals);
     }
     if (dto.maxStock !== undefined && dto.maxStock !== null) {
-      dto.maxStock = validateProductQuantity(unit, dto.maxStock, dto.name);
+      dto.maxStock = validateProductQuantity(unit, dto.maxStock, dto.name, false, unitDef.allowsDecimals);
     }
 
     const rawWholesalePrice = dto.wholesalePrice !== undefined ? dto.wholesalePrice : dto.wholesale_price;
@@ -1180,20 +1192,32 @@ export class ProductsService {
       }
     }
 
-    const effectiveUnit = (dto.unit || product.unit || 'UND').trim().toUpperCase();
+    const currentUnit = (product.unit || 'UND').trim().toUpperCase();
+    const effectiveUnit = (dto.unit || currentUnit).trim().toUpperCase();
+    const unitDef = await this.unitsService.findByCode(businessId, effectiveUnit);
     if (dto.unit !== undefined) {
+      // Si se cambia de unidad (o se envía una unidad que no existe / está desactivada y no era la que ya tenía el producto), rechazar.
+      if (!unitDef || (!unitDef.isActive && effectiveUnit !== currentUnit)) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'INVALID_UNIT',
+          message: `La unidad de medida "${effectiveUnit}" no existe o está desactivada en este negocio.`,
+        });
+      }
       (updateData as any).unit = effectiveUnit;
     }
+    const unitAllowsDecimals = unitDef?.allowsDecimals;
     if (dto.stock !== undefined && dto.stock !== null) {
-      dto.stock = validateProductQuantity(effectiveUnit, dto.stock, dto.name || product.name);
+      dto.stock = validateProductQuantity(effectiveUnit, dto.stock, dto.name || product.name, false, unitAllowsDecimals);
       (updateData as any).stock = dto.stock;
     }
     if (dto.minStock !== undefined && dto.minStock !== null) {
-      dto.minStock = validateProductQuantity(effectiveUnit, dto.minStock, dto.name || product.name);
+      dto.minStock = validateProductQuantity(effectiveUnit, dto.minStock, dto.name || product.name, false, unitAllowsDecimals);
       (updateData as any).minStock = dto.minStock;
     }
     if (dto.maxStock !== undefined && dto.maxStock !== null) {
-      dto.maxStock = validateProductQuantity(effectiveUnit, dto.maxStock, dto.name || product.name);
+      dto.maxStock = validateProductQuantity(effectiveUnit, dto.maxStock, dto.name || product.name, false, unitAllowsDecimals);
       (updateData as any).maxStock = dto.maxStock;
     }
 
@@ -1400,7 +1424,8 @@ export class ProductsService {
       const product = await tx.product.findFirst({ where: { id: productId, businessId } });
       if (!product) throw new NotFoundException("Producto no encontrado");
 
-      const qty = validateProductQuantity(product.unit, Math.abs(dto.quantity), product.name);
+      const unitDef = await this.unitsService.findByCode(businessId, product.unit, tx);
+      const qty = validateProductQuantity(product.unit, Math.abs(dto.quantity), product.name, false, unitDef?.allowsDecimals);
       const signedQty = dto.quantity < 0 ? -qty : qty;
       const currentStock = Number(product.stock);
       const stockAfter = round3(currentStock + signedQty);
@@ -1707,7 +1732,8 @@ export class ProductsService {
         });
       }
 
-      const qty = validateProductQuantity(compProd.unit, comp.quantity, compProd.name);
+      const compUnitDef = await this.unitsService.findByCode(businessId, compProd.unit);
+      const qty = validateProductQuantity(compProd.unit, comp.quantity, compProd.name, false, compUnitDef?.allowsDecimals);
       if (qty <= 0) {
         throw new BadRequestException({
           statusCode: 400,

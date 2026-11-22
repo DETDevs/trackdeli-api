@@ -429,6 +429,9 @@ model Business {
   posQuoteCounters             PosQuoteCounter[]
   posQuotes                    PosQuote[]
 
+  // 294a - Unidades de medida personalizables por negocio
+  posUnits                     PosUnit[]
+
   @@map("businesses")
 }
 
@@ -1246,6 +1249,7 @@ model SaleItem {
 
   productName String   @db.VarChar(200)
   barcode     String?  @db.VarChar(50)
+  unit        String?  @default("UND") @db.VarChar(10)
   unitPrice   Float
   priceTier   String   @default("RETAIL") @map("price_tier") @db.VarChar(20)
   quantity    Float
@@ -1271,6 +1275,24 @@ model SaleItem {
 
   @@index([saleId])
   @@map("pos_sale_items")
+}
+
+model PosUnit {
+  id             String   @id @default(uuid())
+  businessId     String
+  business       Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  code           String   @db.VarChar(10)
+  name           String   @db.VarChar(100)
+  allowsDecimals Boolean  @default(true)
+  isSystem       Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  sortOrder      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([businessId, code])
+  @@index([businessId, isActive, sortOrder])
+  @@map("pos_units")
 }
 
 model SaleReturn {
