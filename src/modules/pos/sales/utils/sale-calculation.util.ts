@@ -321,30 +321,13 @@ export function calculateSaleTotals(
     }
   }
 
-  // 3. Cálculo de IVA por línea (respetando taxEnabled, taxIncluded y taxRate del negocio)
-  const isTaxEnabled =
-    business.taxEnabled !== undefined && business.taxEnabled !== null
-      ? Boolean(business.taxEnabled)
-      : true;
-  const isTaxIncluded = Boolean(business.taxIncluded);
-  const rawTaxRate =
-    business.taxRate !== undefined && business.taxRate !== null && Number(business.taxRate) > 0
-      ? Number(business.taxRate)
-      : 15;
-  const effectiveTaxRate = isTaxEnabled ? rawTaxRate : 0;
-  const rateDecimal = effectiveTaxRate / 100;
-
+  // 3. Cálculo de IVA por línea (15% sobre la base gravable neta)
   let totalTaxCents = 0;
 
   for (const line of tempLines) {
     const taxableBaseCents = Math.max(0, line.netCents - line.manualDiscountShareCents);
-    if (line.taxable && effectiveTaxRate > 0) {
-      if (isTaxIncluded) {
-        const baseCents = Math.round(taxableBaseCents / (1 + rateDecimal));
-        line.lineTaxCents = taxableBaseCents - baseCents;
-      } else {
-        line.lineTaxCents = Math.round(taxableBaseCents * rateDecimal);
-      }
+    if (line.taxable) {
+      line.lineTaxCents = Math.round(taxableBaseCents * 0.15);
       totalTaxCents += line.lineTaxCents;
     } else {
       line.lineTaxCents = 0;
@@ -353,9 +336,7 @@ export function calculateSaleTotals(
 
   // 4. Totales generales
   const subtotalBeforeTaxCents = subtotalNetCents - totalManualDiscountCents;
-  const totalCents = isTaxIncluded
-    ? subtotalBeforeTaxCents
-    : subtotalBeforeTaxCents + totalTaxCents;
+  const totalCents = subtotalBeforeTaxCents + totalTaxCents;
 
   const lines: CalculatedSaleLine[] = tempLines.map((tl) => ({
     productId: tl.raw.productId || null,
@@ -373,7 +354,7 @@ export function calculateSaleTotals(
     listPriceDiscount: tl.listPriceDiscountCents / 100,
     manualDiscountShare: tl.manualDiscountShareCents / 100,
     taxable: tl.taxable,
-    taxRate: tl.taxable && effectiveTaxRate > 0 ? effectiveTaxRate : 0,
+    taxRate: tl.taxable ? 15 : 0,
     taxAmount: tl.lineTaxCents / 100,
   }));
 
@@ -387,9 +368,9 @@ export function calculateSaleTotals(
     subtotalBeforeTax: subtotalBeforeTaxCents / 100,
     listPriceTotal: totalListPriceCents / 100,
     listDiscountTotal: totalListDiscountCents / 100,
-    taxEnabled: isTaxEnabled && totalTaxCents > 0,
-    taxIncluded: isTaxIncluded,
-    taxRate: effectiveTaxRate,
+    taxEnabled: totalTaxCents > 0,
+    taxIncluded: false, // En PER_LINE siempre suma sobre el subtotal antes de IVA
+    taxRate: 15,
     taxAmount: totalTaxCents / 100,
     total: totalCents / 100,
     lines,
