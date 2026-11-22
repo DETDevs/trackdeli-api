@@ -260,20 +260,70 @@ export class PurchasesService {
           finalLotNumber = rawLot || null;
         }
 
-        const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
-        const unitRow = await tx.posUnit.findUnique({
-          where: { businessId_code: { businessId, code: prodUnitCode } },
-          select: { allowsDecimals: true },
-        });
-        const validQty = validateProductQuantity(
-          prodUnitCode,
-          item.quantity,
-          product.name,
-          false,
-          unitRow?.allowsDecimals,
-        );
+        let presentationId: string | null = null;
+        let presentationName: string | null = null;
+        let conversionFactor = 1;
+        let validQty: number;
+
+        if (item.presentationId) {
+          const presentation = await tx.productPresentation.findFirst({
+            where: {
+              id: item.presentationId,
+              businessId,
+              productId: product.id,
+            },
+          });
+          if (!presentation) {
+            throw new NotFoundException({
+              statusCode: 404,
+              error: 'Not Found',
+              code: 'PRESENTATION_NOT_FOUND',
+              message: `La presentación seleccionada no existe para "${product.name}".`,
+            });
+          }
+          if (!presentation.isActive) {
+            throw new BadRequestException({
+              statusCode: 400,
+              error: 'Bad Request',
+              code: 'PRESENTATION_INACTIVE',
+              message: `La presentación "${presentation.name}" de "${product.name}" está desactivada.`,
+            });
+          }
+
+          validQty = validateProductQuantity(
+            presentation.name,
+            item.quantity,
+            product.name,
+            false,
+            false,
+          );
+          conversionFactor = Number(presentation.factor);
+          presentationId = presentation.id;
+          presentationName = presentation.name;
+        } else {
+          const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
+          const unitRow = await tx.posUnit.findUnique({
+            where: { businessId_code: { businessId, code: prodUnitCode } },
+            select: { allowsDecimals: true },
+          });
+          validQty = validateProductQuantity(
+            prodUnitCode,
+            item.quantity,
+            product.name,
+            false,
+            unitRow?.allowsDecimals,
+          );
+        }
+
+        const baseQty = round3(validQty * conversionFactor);
+        const factorDec = new Prisma.Decimal(conversionFactor);
         const unitCostDec = new Prisma.Decimal(item.unitCost);
+        const baseUnitCostDec =
+          conversionFactor !== 1
+            ? unitCostDec.dividedBy(factorDec).toDecimalPlaces(4)
+            : unitCostDec;
         const itemSubtotal = new Prisma.Decimal(validQty).times(unitCostDec);
+
         const createdPurchaseItem = await tx.purchaseItem.create({
           data: {
             purchaseId: purchase.id,
@@ -283,13 +333,16 @@ export class PurchasesService {
             subtotal: itemSubtotal,
             lotNumber: finalLotNumber,
             expiryDate: item.expiryDate ? new Date(item.expiryDate) : null,
+            presentationId,
+            presentationName,
+            conversionFactor: factorDec,
           },
         });
 
         const stockBefore = Number(product.stock);
-        const stockAfter = round3(stockBefore + validQty);
+        const stockAfter = round3(stockBefore + baseQty);
         const oldCostDec = product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null;
-        const newCostNum = Number(unitCostDec);
+        const newCostNum = Number(baseUnitCostDec);
 
         let createdBatchId: string | null = null;
         if (product.trackStock) {
@@ -304,7 +357,7 @@ export class PurchasesService {
                   productId: product.id,
                   batchNumber: currentLot,
                   expiryDate: item.expiryDate,
-                  qty: validQty,
+                  qty: baseQty,
                   cost: newCostNum,
                   purchaseItemId: createdPurchaseItem.id,
                 });
@@ -377,7 +430,7 @@ export class PurchasesService {
             await tx.product.update({
               where: { id: product.id },
               data: {
-                stock: { increment: validQty },
+                stock: { increment: baseQty },
                 cost: newCostNum,
                 ...(newCalculatedPrice != null && { price: newCalculatedPrice }),
               },
@@ -407,11 +460,13 @@ export class PurchasesService {
               productId: product.id,
               userId,
               type: StockMovementType.COMPRA,
-              quantity: validQty,
+              quantity: baseQty,
               stockBefore,
               stockAfter,
-              cost: unitCostDec,
-              concept: `Compra factura ${trimmedInvoice || 'S/N'}`,
+              cost: baseUnitCostDec,
+              concept: presentationName
+                ? `Compra factura ${trimmedInvoice || 'S/N'} (${validQty} × ${presentationName})`
+                : `Compra factura ${trimmedInvoice || 'S/N'}`,
               reference: purchase.id,
               batchId: createdBatchId,
             },
@@ -460,9 +515,11 @@ export class PurchasesService {
             businessId,
             productId: product.id,
             oldCost: oldCostDec,
-            newCost: unitCostDec,
+            newCost: baseUnitCostDec,
             purchaseId: purchase.id,
-            reason: `Compra factura ${trimmedInvoice || 'S/N'}`,
+            reason: presentationName
+              ? `Compra factura ${trimmedInvoice || 'S/N'} (${presentationName})`
+              : `Compra factura ${trimmedInvoice || 'S/N'}`,
           },
         });
       }
@@ -640,31 +697,41 @@ export class PurchasesService {
         });
       }
 
-      // Check negative stock constraints for tracked items
+      // Check negative stock constraints for tracked items (acumulando cantidad base por producto)
+      const voidRevertByProduct = new Map<string, { product: any; totalRevertBaseQty: number }>();
       for (const item of purchase.items) {
         await tx.$queryRaw`SELECT id FROM pos_products WHERE id = ${item.productId} FOR UPDATE`;
         const product = await tx.product.findUniqueOrThrow({ where: { id: item.productId } });
-
         if (product.trackStock) {
-          const qty = round3(Number(item.quantity));
-          const currentStock = Number(product.stock);
-          const resultingStock = round3(currentStock - qty);
-          if (resultingStock < 0 && !policies.allowNegativeStock) {
-            throw new UnprocessableEntityException({
-              statusCode: 422,
-              error: 'Unprocessable Entity',
-              code: 'PURCHASE_VOID_INSUFFICIENT_STOCK',
-              message: {
-                code: 'PURCHASE_VOID_INSUFFICIENT_STOCK',
-                message: `No se puede anular la compra: el stock de "${product.name}" quedaría en ${resultingStock} (disponible actual: ${currentStock}, a revertir: ${qty}).`,
-                productId: product.id,
-                productName: product.name,
-                currentStock,
-                revertQuantity: qty,
-                resultingStock,
-              },
-            });
+          const factor = (item as any).conversionFactor != null ? Number((item as any).conversionFactor) : 1;
+          const baseQty = round3(Number(item.quantity) * factor);
+          const existingEntry = voidRevertByProduct.get(product.id);
+          if (existingEntry) {
+            existingEntry.totalRevertBaseQty = round3(existingEntry.totalRevertBaseQty + baseQty);
+          } else {
+            voidRevertByProduct.set(product.id, { product, totalRevertBaseQty: baseQty });
           }
+        }
+      }
+
+      for (const { product, totalRevertBaseQty } of voidRevertByProduct.values()) {
+        const currentStock = Number(product.stock);
+        const resultingStock = round3(currentStock - totalRevertBaseQty);
+        if (resultingStock < 0 && !policies.allowNegativeStock) {
+          throw new UnprocessableEntityException({
+            statusCode: 422,
+            error: 'Unprocessable Entity',
+            code: 'PURCHASE_VOID_INSUFFICIENT_STOCK',
+            message: {
+              code: 'PURCHASE_VOID_INSUFFICIENT_STOCK',
+              message: `No se puede anular la compra: el stock de "${product.name}" quedaría en ${resultingStock} (disponible actual: ${currentStock}, a revertir: ${totalRevertBaseQty}).`,
+              productId: product.id,
+              productName: product.name,
+              currentStock,
+              revertQuantity: totalRevertBaseQty,
+              resultingStock,
+            },
+          });
         }
       }
 
@@ -673,10 +740,11 @@ export class PurchasesService {
         select: { id: true, tracksBatches: true },
       });
 
-      // Revert stock and handle cost history
+      // Revert stock and handle cost history (cantidad base)
       for (const item of purchase.items) {
         const product = await tx.product.findUniqueOrThrow({ where: { id: item.productId } });
-        const qty = round3(Number(item.quantity));
+        const factor = (item as any).conversionFactor != null ? Number((item as any).conversionFactor) : 1;
+        const qty = round3(Number(item.quantity) * factor);
         const stockBefore = Number(product.stock);
         const stockAfter = round3(stockBefore - qty);
         const isTracked = this.batchesService.isTracked(business, product);
@@ -727,7 +795,9 @@ export class PurchasesService {
               stockBefore,
               stockAfter,
               cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
-              concept: `Anulación compra ${purchase.invoiceNumber || purchase.id}: ${dto.reason.trim()}`,
+              concept: (item as any).presentationName
+                ? `Anulación compra ${purchase.invoiceNumber || purchase.id} (${item.quantity} × ${(item as any).presentationName}): ${dto.reason.trim()}`
+                : `Anulación compra ${purchase.invoiceNumber || purchase.id}: ${dto.reason.trim()}`,
               reference: purchase.id,
               batchId: batchIdForMovement,
             },
@@ -973,9 +1043,13 @@ export class PurchasesService {
       total: Number(new Prisma.Decimal(purchase.total != null ? purchase.total.toString() : 0).toDecimalPlaces(2)),
       items: (purchase.items || []).map((i: any) => ({
         ...i,
+        quantity: Number(i.quantity),
         unitCost: Number(new Prisma.Decimal(i.unitCost != null ? i.unitCost.toString() : 0).toDecimalPlaces(2)),
         subtotal: Number(new Prisma.Decimal(i.subtotal != null ? i.subtotal.toString() : 0).toDecimalPlaces(2)),
         batchNumber: i.lotNumber ?? null,
+        presentationId: i.presentationId ?? null,
+        presentationName: i.presentationName ?? null,
+        conversionFactor: i.conversionFactor != null ? Number(i.conversionFactor) : 1,
       })),
       payableAccount: purchase.payableAccount
         ? {
@@ -1036,7 +1110,8 @@ export class PurchasesService {
         if (requested?.newPrice != null && requested.newPrice >= 0) {
           newPrice = Number(requested.newPrice);
         } else if (effectiveMarkup != null) {
-          const cost = Number(item.unitCost);
+          const factor = (item as any).conversionFactor != null ? Number((item as any).conversionFactor) : 1;
+          const cost = Number(item.unitCost) / (factor || 1);
           newPrice = Math.round(cost * (1 + effectiveMarkup / 100) * 100) / 100;
         }
 
@@ -1049,6 +1124,9 @@ export class PurchasesService {
             },
           });
 
+          const factor = (item as any).conversionFactor != null ? Number((item as any).conversionFactor) : 1;
+          const baseItemCost = Number(item.unitCost) / (factor || 1);
+
           await this.auditService.record(
             {
               businessId,
@@ -1058,7 +1136,7 @@ export class PurchasesService {
               entityType: 'Product',
               entityId: product.id,
               before: { price: product.price, cost: product.cost },
-              after: { price: newPrice, cost: Number(item.unitCost), markupPct: effectiveMarkup },
+              after: { price: newPrice, cost: baseItemCost, markupPct: effectiveMarkup },
               reason: `Actualización de precio posterior a compra factura ${purchase.invoiceNumber || purchase.id}`,
             },
             tx,

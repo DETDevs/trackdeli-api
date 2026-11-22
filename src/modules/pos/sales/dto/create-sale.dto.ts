@@ -10,6 +10,10 @@ export class CreateSaleItemDto {
   @IsString()
   productId?: string;
 
+  @IsOptional()
+  @IsString()
+  presentationId?: string;
+
   @IsString()
   productName: string;
 

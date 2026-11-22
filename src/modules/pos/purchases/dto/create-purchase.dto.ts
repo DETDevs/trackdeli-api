@@ -17,6 +17,10 @@ export class PurchaseItemDto {
   @IsString()
   productId: string;
 
+  @IsOptional()
+  @IsString()
+  presentationId?: string;
+
   @IsNumber()
   @Min(0.001)
   quantity: number;

@@ -7,6 +7,10 @@ export class OrderItemInputDto {
   @IsNotEmpty()
   productId: string;
 
+  @IsOptional()
+  @IsString()
+  presentationId?: string;
+
   @IsNumber()
   @Min(0.001)
   quantity: number;

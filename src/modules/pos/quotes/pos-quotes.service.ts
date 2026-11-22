@@ -341,6 +341,14 @@ export class PosQuotesService {
 
     for (let idx = 0; idx < items.length; idx++) {
       const item = items[idx];
+      if ((item as any).presentationId) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'PRESENTATION_NOT_SUPPORTED',
+          message: 'Las presentaciones todavía no se pueden usar aquí.',
+        });
+      }
       const cleanProductId = item.productId ? item.productId.trim() : null;
 
       if (!cleanProductId) {

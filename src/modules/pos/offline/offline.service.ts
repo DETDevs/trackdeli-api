@@ -17,7 +17,7 @@ import { validateProductQuantity, round3 } from "../products/product-unit.util";
 
 import { BatchesService } from "../batches/batches.service";
 import { calculateSaleTotals, RawSaleItemCalculationInput } from "../sales/utils/sale-calculation.util";
-import { PosPaymentMethod, ProductFieldDataType, UserRole } from "@prisma/client";
+import { PosPaymentMethod, Prisma, ProductFieldDataType, UserRole } from "@prisma/client";
 
 @Injectable()
 export class OfflineService {
@@ -249,9 +249,21 @@ export class OfflineService {
           });
 
           const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
-          const lineCostData: Array<{ unitCost: number | null; costSource: string; unit: string }> = [];
+          const lineCostData: Array<{
+            unitCost: number | null;
+            costSource: string;
+            unit: string;
+            presentationId: string | null;
+            presentationName: string | null;
+            conversionFactor: number;
+          }> = [];
           const discrepancies: any[] = [];
-          const pendingAllocations: Array<{ productId: string; allocations: any[] }> = [];
+          const pendingAllocations: Array<{
+            productId: string;
+            presentationId: string | null;
+            quantity: number;
+            allocations: any[];
+          }> = [];
 
           const businessUnits = await tx.posUnit.findMany({
             where: { businessId },
@@ -264,6 +276,11 @@ export class OfflineService {
           for (const item of saleDto.items) {
             let itemAllocRes: any = null;
             let product: any = null;
+            let presentation: any = null;
+            let conversionFactor = 1;
+            let requestedQty = round3(item.quantity);
+            let baseQty = requestedQty;
+
             if (item.productId) {
               product = await tx.product.findFirst({
                 where: { id: item.productId, businessId },
@@ -277,14 +294,43 @@ export class OfflineService {
               });
 
               if (product) {
-                const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
-                validateProductQuantity(
-                  prodUnitCode,
-                  item.quantity,
-                  product.name,
-                  false,
-                  unitDecimalsMap.get(prodUnitCode),
-                );
+                if (item.presentationId) {
+                  presentation = await tx.productPresentation.findFirst({
+                    where: {
+                      id: item.presentationId,
+                      businessId,
+                      productId: product.id,
+                    },
+                  });
+                  if (!presentation) {
+                    throw new NotFoundException({
+                      statusCode: 404,
+                      error: 'Not Found',
+                      code: 'PRESENTATION_NOT_FOUND',
+                      message: `La presentación seleccionada no existe para "${product.name}".`,
+                    });
+                  }
+                  requestedQty = validateProductQuantity(
+                    presentation.name,
+                    item.quantity,
+                    product.name,
+                    false,
+                    false,
+                  );
+                  conversionFactor = Number(presentation.factor);
+                  baseQty = round3(requestedQty * conversionFactor);
+                } else {
+                  const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
+                  requestedQty = validateProductQuantity(
+                    prodUnitCode,
+                    item.quantity,
+                    product.name,
+                    false,
+                    unitDecimalsMap.get(prodUnitCode),
+                  );
+                  conversionFactor = 1;
+                  baseQty = requestedQty;
+                }
               }
             }
 
@@ -293,7 +339,7 @@ export class OfflineService {
               for (const comp of product.recipeComponents) {
                 const compProd = comp.componentProduct;
                 if (compProd && compProd.trackStock) {
-                  const deductQty = round3(Number(item.quantity) * Number(comp.quantity));
+                  const deductQty = round3(baseQty * Number(comp.quantity));
                   const expectedStock = Number(compProd.stock);
                   const resultingStock = round3(expectedStock - deductQty);
 
@@ -306,7 +352,12 @@ export class OfflineService {
                     });
 
                     if (allocRes.allocations.length > 0) {
-                      pendingAllocations.push({ productId: product.id, allocations: allocRes.allocations });
+                      pendingAllocations.push({
+                        productId: product.id,
+                        presentationId: presentation?.id ?? null,
+                        quantity: requestedQty,
+                        allocations: allocRes.allocations,
+                      });
                     }
 
                     for (const a of allocRes.allocations) {
@@ -406,27 +457,34 @@ export class OfflineService {
                 }
               }
             } else if (product && product.trackStock) {
-              const qty = round3(item.quantity);
               const expectedStock = Number(product.stock);
-              const resultingStock = round3(expectedStock - qty);
+              const resultingStock = round3(expectedStock - baseQty);
+              const presSuffix = presentation?.name
+                ? ` (${requestedQty} × ${presentation.name})`
+                : '';
 
               const isTracked = this.batchesService.isTracked(business, product);
               if (isTracked) {
                 const allocRes = await this.batchesService.allocateOffline(tx, {
                   businessId,
                   productId: product.id,
-                  qty,
+                  qty: baseQty,
                 });
                 itemAllocRes = allocRes;
 
                 if (allocRes.allocations.length > 0) {
-                  pendingAllocations.push({ productId: product.id, allocations: allocRes.allocations });
+                  pendingAllocations.push({
+                    productId: product.id,
+                    presentationId: presentation?.id ?? null,
+                    quantity: requestedQty,
+                    allocations: allocRes.allocations,
+                  });
                 }
 
                 for (const a of allocRes.allocations) {
                   const concept = a.isExpired
-                    ? `Venta offline ${invoiceNumber} (Lote vencido: ${a.batchNumber})`
-                    : `Venta offline ${invoiceNumber} (Lote: ${a.batchNumber})`;
+                    ? `Venta offline ${invoiceNumber}${presSuffix} (Lote vencido: ${a.batchNumber})`
+                    : `Venta offline ${invoiceNumber}${presSuffix} (Lote: ${a.batchNumber})`;
 
                   await tx.stockMovement.create({
                     data: {
@@ -454,7 +512,7 @@ export class OfflineService {
                       quantity: -allocRes.unallocatedQty,
                       stockBefore: expectedStock,
                       stockAfter: 0,
-                      concept: `Venta offline ${invoiceNumber} (Sin lote asignado por stock insuficiente)`,
+                      concept: `Venta offline ${invoiceNumber}${presSuffix} (Sin lote asignado por stock insuficiente)`,
                       reference: saleDto.clientGeneratedId,
                       batchId: null,
                     },
@@ -463,10 +521,10 @@ export class OfflineService {
                   discrepancies.push({
                     productId: product.id,
                     productName: product.name,
-                    expectedStock: round3(qty - allocRes.unallocatedQty),
+                    expectedStock: round3(baseQty - allocRes.unallocatedQty),
                     resultingStock: 0,
                     message: `Producto "${product.name}": ${allocRes.unallocatedQty} sin lote asignado por stock insuficiente`,
-                    notes: `Venta offline ${invoiceNumber}: ${allocRes.unallocatedQty} unidad(es) de "${product.name}" sin lote asignado por falta de stock`,
+                    notes: `Venta offline ${invoiceNumber}${presSuffix}: ${allocRes.unallocatedQty} unidad(es) de "${product.name}" sin lote asignado por falta de stock`,
                   });
                 }
 
@@ -481,23 +539,23 @@ export class OfflineService {
                     expectedStock,
                     resultingStock: Math.max(0, round3(expectedStock - allocRes.totalAllocated)),
                     message: `Producto "${product.name}": salida de lote(s) vencido(s): ${expiredList}`,
-                    notes: `Venta offline ${invoiceNumber}: salida de lote(s) vencido(s) para "${product.name}": ${expiredList}`,
+                    notes: `Venta offline ${invoiceNumber}${presSuffix}: salida de lote(s) vencido(s) para "${product.name}": ${expiredList}`,
                   });
                 }
               } else {
-                if (expectedStock < qty) {
+                if (expectedStock < baseQty) {
                   discrepancies.push({
                     productId: product.id,
                     productName: product.name,
                     expectedStock,
                     resultingStock,
-                    message: `Stock insuficiente para "${product.name}" (disponible: ${expectedStock}, solicitado: ${qty})`,
-                    notes: `Venta offline ${invoiceNumber}: stock insuficiente (disponible: ${expectedStock}, requerido: ${qty})`,
+                    message: `Stock insuficiente para "${product.name}" (disponible: ${expectedStock}, solicitado: ${baseQty})`,
+                    notes: `Venta offline ${invoiceNumber}${presSuffix}: stock insuficiente (disponible: ${expectedStock}, requerido: ${baseQty})`,
                   });
                 }
                 await tx.product.update({
                   where: { id: product.id },
-                  data: { stock: { decrement: qty } },
+                  data: { stock: { decrement: baseQty } },
                 });
 
                 await tx.stockMovement.create({
@@ -506,10 +564,10 @@ export class OfflineService {
                     productId: product.id,
                     userId: cashierId,
                     type: "VENTA",
-                    quantity: -qty,
+                    quantity: -baseQty,
                     stockBefore: expectedStock,
                     stockAfter: resultingStock,
-                    concept: `Venta offline ${invoiceNumber}`,
+                    concept: `Venta offline ${invoiceNumber}${presSuffix}`,
                     reference: saleDto.clientGeneratedId,
                   },
                 });
@@ -521,7 +579,9 @@ export class OfflineService {
             let listPrice: number | null = null;
             if (item.listPrice !== undefined && item.listPrice !== null) {
               listPrice = Number(item.listPrice);
-            } else if (business.useListPrice && product?.listPrice != null) {
+            } else if (business.useListPrice && presentation?.listPrice != null) {
+              listPrice = Number(presentation.listPrice);
+            } else if (!presentation && business.useListPrice && product?.listPrice != null) {
               listPrice = Number(product.listPrice);
             }
 
@@ -551,10 +611,10 @@ export class OfflineService {
                   }
                 }
                 if (hasCompCost) {
-                  itemUnitCost = Math.round(recipeCostSum * 10000) / 10000;
+                  itemUnitCost = Math.round(recipeCostSum * conversionFactor * 10000) / 10000;
                   itemCostSource = 'RECIPE';
                 } else if (product.cost != null && Number(product.cost) > 0) {
-                  itemUnitCost = Number(product.cost);
+                  itemUnitCost = Math.round(Number(product.cost) * conversionFactor * 10000) / 10000;
                   itemCostSource = 'PRODUCT';
                 } else {
                   itemUnitCost = null;
@@ -562,7 +622,7 @@ export class OfflineService {
                 }
               } else if (product.type === 'SERVICE') {
                 if (product.cost != null && Number(product.cost) > 0) {
-                  itemUnitCost = Number(product.cost);
+                  itemUnitCost = Math.round(Number(product.cost) * conversionFactor * 10000) / 10000;
                   itemCostSource = 'PRODUCT';
                 } else {
                   itemUnitCost = 0;
@@ -583,17 +643,18 @@ export class OfflineService {
                   }
                 }
                 if (hasAnyCost && allocQtySum > 0) {
-                  itemUnitCost = Math.round((allocCostSum / allocQtySum) * 10000) / 10000;
+                  const baseBatchCost = allocCostSum / allocQtySum;
+                  itemUnitCost = Math.round(baseBatchCost * conversionFactor * 10000) / 10000;
                   itemCostSource = 'BATCH';
                 } else if (product.cost != null) {
-                  itemUnitCost = Number(product.cost);
+                  itemUnitCost = Math.round(Number(product.cost) * conversionFactor * 10000) / 10000;
                   itemCostSource = 'PRODUCT';
                 } else {
                   itemUnitCost = null;
                   itemCostSource = 'NONE';
                 }
               } else if (product.cost != null) {
-                itemUnitCost = Number(product.cost);
+                itemUnitCost = Math.round(Number(product.cost) * conversionFactor * 10000) / 10000;
                 itemCostSource = 'PRODUCT';
               } else {
                 itemUnitCost = null;
@@ -605,14 +666,17 @@ export class OfflineService {
               unitCost: itemUnitCost,
               costSource: itemCostSource,
               unit: product?.unit ? String(product.unit).trim().toUpperCase() : 'UND',
+              presentationId: presentation?.id ?? null,
+              presentationName: presentation?.name ?? null,
+              conversionFactor,
             });
 
             rawItemsForCalc.push({
               productId: item.productId || null,
               productName: item.productName || product?.name || 'Producto',
-              barcode: item.barcode || product?.barcode || null,
+              barcode: item.barcode || presentation?.barcode || product?.barcode || null,
               unitPrice: item.unitPrice,
-              quantity: item.quantity,
+              quantity: requestedQty,
               discount: item.discount || 0,
               priceTier: (item as any).priceTier || 'RETAIL',
               allowDiscount: product ? (product as any).allowDiscount !== false : true,
@@ -960,6 +1024,10 @@ export class OfflineService {
                   productId: l.productId,
                   productName: l.productName,
                   barcode: l.barcode,
+                  unit: lineCostData[idx]?.unit || 'UND',
+                  presentationId: lineCostData[idx]?.presentationId ?? null,
+                  presentationName: lineCostData[idx]?.presentationName ?? null,
+                  conversionFactor: new Prisma.Decimal(lineCostData[idx]?.conversionFactor ?? 1),
                   unitPrice: l.unitPrice,
                   priceTier: l.priceTier,
                   quantity: l.quantity,
@@ -1015,9 +1083,17 @@ export class OfflineService {
             const createdItems = await tx.saleItem.findMany({
               where: { saleId: createdSale.id },
             });
+            const usedAllocSaleItemIds = new Set<string>();
             for (const pa of pendingAllocations) {
-              const lineItem = createdItems.find((ci) => ci.productId === pa.productId);
+              const lineItem = createdItems.find(
+                (ci) =>
+                  !usedAllocSaleItemIds.has(ci.id) &&
+                  ci.productId === pa.productId &&
+                  (ci.presentationId ?? null) === (pa.presentationId ?? null) &&
+                  Math.abs(Number(ci.quantity) - Number(pa.quantity)) <= 0.001,
+              );
               if (lineItem && pa.allocations.length > 0) {
+                usedAllocSaleItemIds.add(lineItem.id);
                 await tx.saleItemBatch.createMany({
                   data: pa.allocations.map((a: any) => ({
                     saleItemId: lineItem.id,

@@ -17,6 +17,10 @@ export class CreatePresaleTicketItemDto {
 
   @IsOptional()
   @IsString()
+  presentationId?: string;
+
+  @IsOptional()
+  @IsString()
   productName?: string;
 
   @IsOptional()

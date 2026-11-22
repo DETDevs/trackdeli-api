@@ -2331,6 +2331,7 @@ WHERE a."customerId" = c."id"
       await this.ensureProductDiscountSchema();
       await this.ensureTableOrderBillsSchema();
       await this.ensurePosUnitsAndSaleItemUnitSchema();
+      await this.ensureProductPresentationsSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -6041,6 +6042,122 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 294a - Advertencia sincronizando pos_units y pos_sale_items.unit: ${err.message}`);
+    }
+  }
+
+  /**
+   * 294b - Presentaciones de producto (pos_product_presentations) y trazabilidad en pos_sale_items y pos_purchase_items.
+   * DDL idempotente con advisory lock 2940200.
+   */
+  public async ensureProductPresentationsSchema(): Promise<void> {
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(2940200)`);
+
+          await tx.$executeRawUnsafe(`
+            CREATE TABLE IF NOT EXISTS "pos_product_presentations" (
+              "id" TEXT NOT NULL,
+              "businessId" TEXT NOT NULL,
+              "productId" TEXT NOT NULL,
+              "name" VARCHAR(100) NOT NULL,
+              "factor" DECIMAL(12, 3) NOT NULL CHECK ("factor" > 0),
+              "price" DECIMAL(12, 2) NOT NULL,
+              "listPrice" DECIMAL(12, 2),
+              "wholesalePrice" DECIMAL(12, 2),
+              "wholesaleMinQty" DECIMAL(12, 3),
+              "barcode" VARCHAR(50),
+              "sku" VARCHAR(50),
+              "cost" DECIMAL(12, 4),
+              "isDefaultPurchase" BOOLEAN NOT NULL DEFAULT false,
+              "sortOrder" INTEGER NOT NULL DEFAULT 0,
+              "isActive" BOOLEAN NOT NULL DEFAULT true,
+              "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CONSTRAINT "pos_product_presentations_pkey" PRIMARY KEY ("id"),
+              CONSTRAINT "pos_product_presentations_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+              CONSTRAINT "pos_product_presentations_productId_fkey" FOREIGN KEY ("productId") REFERENCES "pos_products"("id") ON DELETE CASCADE ON UPDATE CASCADE
+            );
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE UNIQUE INDEX IF NOT EXISTS "pos_product_presentations_businessId_barcode_key"
+            ON "pos_product_presentations"("businessId", "barcode");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_product_presentations_businessId_productId_isActive_sort_idx"
+            ON "pos_product_presentations"("businessId", "productId", "isActive", "sortOrder");
+          `);
+
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_product_presentations_productId_idx"
+            ON "pos_product_presentations"("productId");
+          `);
+
+          // Columnas nuevas en pos_sale_items
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "presentationId" TEXT;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "presentationName" VARCHAR(100);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_sale_items" ADD COLUMN IF NOT EXISTS "conversionFactor" DECIMAL(12, 3) NOT NULL DEFAULT 1;
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_sale_items_presentationId_idx"
+            ON "pos_sale_items"("presentationId");
+          `);
+          await tx.$executeRawUnsafe(`
+            DO $$ BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'pos_sale_items_presentationId_fkey'
+              ) THEN
+                ALTER TABLE "pos_sale_items"
+                  ADD CONSTRAINT "pos_sale_items_presentationId_fkey"
+                  FOREIGN KEY ("presentationId") REFERENCES "pos_product_presentations"("id")
+                  ON DELETE SET NULL ON UPDATE CASCADE;
+              END IF;
+            END $$;
+          `);
+
+          // Columnas nuevas en pos_purchase_items
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_purchase_items" ADD COLUMN IF NOT EXISTS "presentationId" TEXT;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_purchase_items" ADD COLUMN IF NOT EXISTS "presentationName" VARCHAR(100);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "pos_purchase_items" ADD COLUMN IF NOT EXISTS "conversionFactor" DECIMAL(12, 3) NOT NULL DEFAULT 1;
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "pos_purchase_items_presentationId_idx"
+            ON "pos_purchase_items"("presentationId");
+          `);
+          await tx.$executeRawUnsafe(`
+            DO $$ BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'pos_purchase_items_presentationId_fkey'
+              ) THEN
+                ALTER TABLE "pos_purchase_items"
+                  ADD CONSTRAINT "pos_purchase_items_presentationId_fkey"
+                  FOREIGN KEY ("presentationId") REFERENCES "pos_product_presentations"("id")
+                  ON DELETE SET NULL ON UPDATE CASCADE;
+              END IF;
+            END $$;
+          `);
+
+          this.logger.log(
+            `[PrismaService] ✓ 294b - Esquema de presentaciones (pos_product_presentations, pos_sale_items, pos_purchase_items) sincronizado.`,
+          );
+        },
+        { timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠ 294b - Advertencia sincronizando presentaciones: ${err.message}`);
+      throw err;
     }
   }
 }

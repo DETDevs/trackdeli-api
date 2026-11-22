@@ -1236,6 +1236,15 @@ export class TablesService {
   }
 
   async addOrderItems(businessId: string, tableId: string, dto: AddOrderItemsDto, user?: JwtPayload) {
+    if (dto.items.some((i) => i.presentationId)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'PRESENTATION_NOT_SUPPORTED',
+        message: 'Las presentaciones todavía no se pueden usar aquí.',
+      });
+    }
+
     const table = await this.prisma.restaurantTable.findFirst({
       where: { id: tableId, businessId, isActive: true },
     });
@@ -1347,6 +1356,15 @@ export class TablesService {
     dto: UpdateOrderItemDto,
     user?: JwtPayload,
   ) {
+    if (dto.presentationId) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'PRESENTATION_NOT_SUPPORTED',
+        message: 'Las presentaciones todavía no se pueden usar aquí.',
+      });
+    }
+
     const order = await this.prisma.tableOrder.findFirst({
       where: { tableId, businessId, status: TableOrderStatus.OPEN },
     });

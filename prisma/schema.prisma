@@ -432,6 +432,9 @@ model Business {
   // 294a - Unidades de medida personalizables por negocio
   posUnits                     PosUnit[]
 
+  // 294b - Presentaciones de producto
+  productPresentations         ProductPresentation[]
+
   @@map("businesses")
 }
 
@@ -1092,6 +1095,7 @@ model Product {
   batches                ProductBatch[]
   presaleTicketItems     PresaleTicketItem[]
   quoteItems             PosQuoteItem[]
+  presentations          ProductPresentation[]
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -1270,11 +1274,48 @@ model SaleItem {
   unitCost            Float?   @map("unit_cost")
   costSource          String?  @map("cost_source") @db.VarChar(20)
 
+  // 294b: Presentación vendida y factor de conversión a unidad base
+  presentationId      String?
+  presentation        ProductPresentation? @relation(fields: [presentationId], references: [id], onDelete: SetNull)
+  presentationName    String?              @db.VarChar(100)
+  conversionFactor    Decimal              @default(1) @db.Decimal(12, 3)
+
   returnItems      SaleReturnItem[]
   batchAllocations SaleItemBatch[]
 
   @@index([saleId])
+  @@index([presentationId])
   @@map("pos_sale_items")
+}
+
+model ProductPresentation {
+  id                String   @id @default(uuid())
+  businessId        String
+  business          Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name              String   @db.VarChar(100)
+  factor            Decimal  @db.Decimal(12, 3)
+  price             Decimal  @db.Decimal(12, 2)
+  listPrice         Decimal? @db.Decimal(12, 2)
+  wholesalePrice    Decimal? @db.Decimal(12, 2)
+  wholesaleMinQty   Decimal? @db.Decimal(12, 3)
+  barcode           String?  @db.VarChar(50)
+  sku               String?  @db.VarChar(50)
+  cost              Decimal? @db.Decimal(12, 4)
+  isDefaultPurchase Boolean  @default(false)
+  sortOrder         Int      @default(0)
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  saleItems     SaleItem[]
+  purchaseItems PurchaseItem[]
+
+  @@unique([businessId, barcode])
+  @@index([businessId, productId, isActive, sortOrder])
+  @@index([productId])
+  @@map("pos_product_presentations")
 }
 
 model PosUnit {
@@ -1726,13 +1767,18 @@ model PurchaseItem {
   quantity   Decimal   @db.Decimal(12, 3)
   unitCost   Decimal   @db.Decimal(12, 4)
   subtotal   Decimal   @db.Decimal(12, 2)
-  lotNumber  String?   @db.VarChar(100)
-  expiryDate DateTime? @db.Date
-  createdAt  DateTime  @default(now())
+  lotNumber        String?              @db.VarChar(100)
+  expiryDate       DateTime?            @db.Date
+  presentationId   String?
+  presentation     ProductPresentation? @relation(fields: [presentationId], references: [id], onDelete: SetNull)
+  presentationName String?              @db.VarChar(100)
+  conversionFactor Decimal              @default(1) @db.Decimal(12, 3)
+  createdAt        DateTime             @default(now())
 
   batches    ProductBatch[]
 
   @@index([purchaseId])
+  @@index([presentationId])
   @@map("pos_purchase_items")
 }
 

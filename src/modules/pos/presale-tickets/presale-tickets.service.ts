@@ -103,6 +103,15 @@ export class PresaleTicketsService {
       throw new BadRequestException('El ticket debe contener al menos un producto');
     }
 
+    if (dto.items.some((i) => i.presentationId)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'PRESENTATION_NOT_SUPPORTED',
+        message: 'Las presentaciones todavía no se pueden usar aquí.',
+      });
+    }
+
     // 2. Idempotencia por clientRequestId
     if (dto.clientRequestId) {
       const existing = await this.prisma.presaleTicket.findUnique({
@@ -677,6 +686,15 @@ export class PresaleTicketsService {
     const actions = dto.actions || dto.items || [];
     if (actions.length === 0) {
       throw new BadRequestException('Se requiere al menos una acción sobre los items');
+    }
+
+    if (actions.some((a) => a.presentationId)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'PRESENTATION_NOT_SUPPORTED',
+        message: 'Las presentaciones todavía no se pueden usar aquí.',
+      });
     }
 
     const business = await this.prisma.business.findUnique({

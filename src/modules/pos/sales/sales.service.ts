@@ -90,6 +90,9 @@ export class SalesService {
         const itemCopy = {
           ...i,
           unit: i.unit || i.product?.unit || 'UND',
+          presentationId: i.presentationId ?? null,
+          presentationName: i.presentationName ?? null,
+          conversionFactor: i.conversionFactor != null ? Number(i.conversionFactor) : 1,
           priceTier: i.priceTier || 'RETAIL',
           price_tier: i.priceTier || 'RETAIL',
           returnedQty: returnedQtyNum,
@@ -607,7 +610,16 @@ export class SalesService {
 
       let hasNegativeStock = false;
       const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
-      const lineCostData: Array<{ unitCost: number | null; costSource: string; unit: string }> = [];
+      const lineCostData: Array<{
+        unitCost: number | null;
+        costSource: string;
+        unit: string;
+        presentationId: string | null;
+        presentationName: string | null;
+        conversionFactor: number;
+        baseQty: number;
+        requestedQty: number;
+      }> = [];
       const batchAllocationsByIndex = new Map<number, { allocations: any[]; stockBefore: number }>();
 
       const businessUnits = await tx.posUnit.findMany({
@@ -618,12 +630,36 @@ export class SalesService {
         businessUnits.map((u) => [u.code.toUpperCase(), u.allowsDecimals]),
       );
 
+      // Pasada 1 (294b): Resolver productos/presentaciones, validar cantidades enteras/decimales y precios,
+      // y acumular la demanda total en unidad base por producto para validar stock agregado.
+      const resolvedLines: Array<{
+        itemIdx: number;
+        item: any;
+        product: any;
+        presentation: any;
+        requestedQty: number;
+        conversionFactor: number;
+        baseQty: number;
+        priceTier: string;
+        effectiveUnitPrice: number;
+        listPrice: number | null;
+        taxable: boolean | null | undefined;
+        itemAllowDiscount: boolean;
+        itemDiscountClamped: number;
+      }> = [];
+
+      const totalBaseDemandByProduct = new Map<string, { product: any; totalBaseQty: number }>();
+      const totalRecipeCompDemand = new Map<string, { compProd: any; parentName: string; totalQty: number }>();
+
       for (let itemIdx = 0; itemIdx < dto.items.length; itemIdx++) {
         const item = dto.items[itemIdx];
         let priceTier = 'RETAIL';
         let effectiveUnitPrice = item.unitPrice;
         let product: any = null;
+        let presentation: any = null;
         let requestedQty = round3(item.quantity);
+        let conversionFactor = 1;
+        let baseQty = requestedQty;
 
         if (item.productId) {
           product = await tx.product.findFirst({
@@ -637,116 +673,146 @@ export class SalesService {
             },
           });
           if (!product) throw new NotFoundException(`Producto ${item.productId} no encontrado`);
+
           const prodUnitCode = (product.unit || 'UND').trim().toUpperCase();
-          requestedQty = validateProductQuantity(
-            prodUnitCode,
-            item.quantity,
-            product.name,
-            Boolean(dto.isSplitSale),
-            unitDecimalsMap.get(prodUnitCode),
-          );
 
-          // 221a: Resolver precio unitario según regla de venta por mayor y canal de venta
-          const resolved = resolveChannelUnitPrice(product, requestedQty, business, saleChannel);
-          priceTier = resolved.priceTier;
-          const expectedPrice = resolved.unitPrice;
-
-          if (item.unitPrice !== undefined && item.unitPrice !== null) {
-            const diff = Math.abs(item.unitPrice - expectedPrice);
-            const isPresaleSellerLine = Boolean(dto.presaleTicketId && (item as any).origin === 'SELLER');
-            const isQuotedPriceMatch =
-              Boolean(lockedQuote && !isQuoteExpired) &&
-              quotedItems.some(
-                (qi) =>
-                  qi.productId === item.productId &&
-                  Math.abs(Number(qi.unitPrice) - Number(item.unitPrice)) <= 0.01,
-              );
-            if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale && !isPresaleSellerLine && !isQuotedPriceMatch) {
+          if (item.presentationId) {
+            presentation = await tx.productPresentation.findFirst({
+              where: {
+                id: item.presentationId,
+                businessId,
+                productId: product.id,
+              },
+            });
+            if (!presentation) {
+              throw new NotFoundException({
+                statusCode: 404,
+                error: 'Not Found',
+                code: 'PRESENTATION_NOT_FOUND',
+                message: `La presentación seleccionada no existe para "${product.name}".`,
+              });
+            }
+            if (!presentation.isActive) {
               throw new BadRequestException({
                 statusCode: 400,
                 error: 'Bad Request',
-                code: 'PRICE_MISMATCH',
-                message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${expectedPrice}) para "${product.name}"`,
+                code: 'PRESENTATION_INACTIVE',
+                message: `La presentación "${presentation.name}" de "${product.name}" está desactivada.`,
               });
             }
-            effectiveUnitPrice = item.unitPrice;
+
+            // Las presentaciones siempre se venden en cantidades enteras (salvo split sale)
+            requestedQty = validateProductQuantity(
+              presentation.name,
+              item.quantity,
+              product.name,
+              Boolean(dto.isSplitSale),
+              false,
+            );
+            conversionFactor = Number(presentation.factor);
+            baseQty = round3(requestedQty * conversionFactor);
+
+            // 294b: La promo porcentual del producto (promoDiscountPct) NO aplica a presentaciones
+            const resolved = resolveChannelUnitPrice(
+              {
+                price: Number(presentation.price),
+                wholesalePrice: presentation.wholesalePrice,
+                wholesaleMinQty: presentation.wholesaleMinQty,
+                listPrice: presentation.listPrice,
+                promoDiscountPct: null,
+              },
+              requestedQty,
+              business,
+              saleChannel,
+            );
+            priceTier = resolved.priceTier;
+            const expectedPrice = resolved.unitPrice;
+
+            if (item.unitPrice !== undefined && item.unitPrice !== null) {
+              const diff = Math.abs(item.unitPrice - expectedPrice);
+              const isPresaleSellerLine = Boolean(dto.presaleTicketId && (item as any).origin === 'SELLER');
+              const isQuotedPriceMatch =
+                Boolean(lockedQuote && !isQuoteExpired) &&
+                quotedItems.some(
+                  (qi) =>
+                    qi.productId === item.productId &&
+                    Math.abs(Number(qi.unitPrice) - Number(item.unitPrice)) <= 0.01,
+                );
+              if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale && !isPresaleSellerLine && !isQuotedPriceMatch) {
+                throw new BadRequestException({
+                  statusCode: 400,
+                  error: 'Bad Request',
+                  code: 'PRICE_MISMATCH',
+                  message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${expectedPrice}) para "${product.name} (${presentation.name})"`,
+                });
+              }
+              effectiveUnitPrice = item.unitPrice;
+            } else {
+              effectiveUnitPrice = expectedPrice;
+            }
           } else {
-            effectiveUnitPrice = expectedPrice;
+            requestedQty = validateProductQuantity(
+              prodUnitCode,
+              item.quantity,
+              product.name,
+              Boolean(dto.isSplitSale),
+              unitDecimalsMap.get(prodUnitCode),
+            );
+            conversionFactor = 1;
+            baseQty = requestedQty;
+
+            // 221a: Resolver precio unitario según regla de venta por mayor y canal de venta
+            const resolved = resolveChannelUnitPrice(product, requestedQty, business, saleChannel);
+            priceTier = resolved.priceTier;
+            const expectedPrice = resolved.unitPrice;
+
+            if (item.unitPrice !== undefined && item.unitPrice !== null) {
+              const diff = Math.abs(item.unitPrice - expectedPrice);
+              const isPresaleSellerLine = Boolean(dto.presaleTicketId && (item as any).origin === 'SELLER');
+              const isQuotedPriceMatch =
+                Boolean(lockedQuote && !isQuoteExpired) &&
+                quotedItems.some(
+                  (qi) =>
+                    qi.productId === item.productId &&
+                    Math.abs(Number(qi.unitPrice) - Number(item.unitPrice)) <= 0.01,
+                );
+              if (diff > 0.01 && !policies.priceOverrideEnabled && !dto.isSplitSale && !isPresaleSellerLine && !isQuotedPriceMatch) {
+                throw new BadRequestException({
+                  statusCode: 400,
+                  error: 'Bad Request',
+                  code: 'PRICE_MISMATCH',
+                  message: `El precio unitario enviado (${item.unitPrice}) no coincide con el precio correspondiente (${expectedPrice}) para "${product.name}"`,
+                });
+              }
+              effectiveUnitPrice = item.unitPrice;
+            } else {
+              effectiveUnitPrice = expectedPrice;
+            }
           }
 
           if (product.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
             for (const comp of product.recipeComponents) {
               const compProd = comp.componentProduct;
               if (compProd && compProd.trackStock === true) {
-                const compRequestedQty = round3(requestedQty * Number(comp.quantity));
-                const compCurrentStock = Number(compProd.stock);
-                const compReservedStock = Number(compProd.reservedStock || 0);
-                const compAvailableStock = business.twoStepSaleEnabled && !dto.presaleTicketId
-                  ? compCurrentStock - compReservedStock
-                  : compCurrentStock;
-                if (compAvailableStock < compRequestedQty) {
-                  if (!policies.allowNegativeStock && !dto.isOfflineSync) {
-                    throw new UnprocessableEntityException({
-                      statusCode: 422,
-                      error: 'Unprocessable Entity',
-                      code: 'INSUFFICIENT_STOCK',
-                      message: {
-                        code: 'INSUFFICIENT_STOCK',
-                        message: `Stock insuficiente para "${compProd.name}" (insumo de "${product.name}"). Disponible: ${compAvailableStock}, solicitado: ${compRequestedQty}`,
-                        details: {
-                          productId: compProd.id,
-                          productName: compProd.name,
-                          recipeProductId: product.id,
-                          recipeProductName: product.name,
-                          available: compCurrentStock,
-                          requested: compRequestedQty,
-                        },
-                      },
-                      details: {
-                        productId: compProd.id,
-                        productName: compProd.name,
-                        recipeProductId: product.id,
-                        recipeProductName: product.name,
-                        available: compCurrentStock,
-                        requested: compRequestedQty,
-                      },
-                    });
-                  }
-                  hasNegativeStock = true;
+                const compRequestedQty = round3(baseQty * Number(comp.quantity));
+                const entry = totalRecipeCompDemand.get(compProd.id);
+                if (entry) {
+                  entry.totalQty = round3(entry.totalQty + compRequestedQty);
+                } else {
+                  totalRecipeCompDemand.set(compProd.id, {
+                    compProd,
+                    parentName: product.name,
+                    totalQty: compRequestedQty,
+                  });
                 }
               }
             }
           } else if (product.trackStock === true) {
-            const currentStock = Number(product.stock);
-            const reservedStock = Number(product.reservedStock || 0);
-            const availableStock = business.twoStepSaleEnabled && !dto.presaleTicketId
-              ? currentStock - reservedStock
-              : currentStock;
-            if (availableStock < requestedQty) {
-              if (!policies.allowNegativeStock && !dto.isOfflineSync) {
-                throw new UnprocessableEntityException({
-                  statusCode: 422,
-                  error: 'Unprocessable Entity',
-                  code: 'INSUFFICIENT_STOCK',
-                  message: {
-                    code: 'INSUFFICIENT_STOCK',
-                    message: `Stock insuficiente para "${product.name}". Disponible: ${availableStock}, solicitado: ${requestedQty}`,
-                    details: {
-                      productId: product.id,
-                      productName: product.name,
-                      available: availableStock,
-                      requested: requestedQty,
-                    },
-                  },
-                  details: {
-                    productId: product.id,
-                    productName: product.name,
-                    available: currentStock,
-                    requested: requestedQty,
-                  },
-                });
-              }
-              hasNegativeStock = true;
+            const entry = totalBaseDemandByProduct.get(product.id);
+            if (entry) {
+              entry.totalBaseQty = round3(entry.totalBaseQty + baseQty);
+            } else {
+              totalBaseDemandByProduct.set(product.id, { product, totalBaseQty: baseQty });
             }
           }
         }
@@ -754,7 +820,9 @@ export class SalesService {
         let listPrice: number | null = null;
         if (item.listPrice !== undefined && item.listPrice !== null) {
           listPrice = Number(item.listPrice);
-        } else if (business.useListPrice && product?.listPrice != null) {
+        } else if (business.useListPrice && presentation?.listPrice != null) {
+          listPrice = Number(presentation.listPrice);
+        } else if (!presentation && business.useListPrice && product?.listPrice != null) {
           listPrice = Number(product.listPrice);
         }
 
@@ -802,7 +870,112 @@ export class SalesService {
           });
         }
 
-        // 247c: Determinar costo histórico y origen para la línea
+        resolvedLines.push({
+          itemIdx,
+          item,
+          product,
+          presentation,
+          requestedQty,
+          conversionFactor,
+          baseQty,
+          priceTier,
+          effectiveUnitPrice,
+          listPrice,
+          taxable,
+          itemAllowDiscount,
+          itemDiscountClamped,
+        });
+      }
+
+      // Chequeo agregado de stock en unidad base por producto (soporta carrito mixto presentación + unidad base)
+      for (const { product, totalBaseQty } of totalBaseDemandByProduct.values()) {
+        const currentStock = Number(product.stock);
+        const reservedStock = Number(product.reservedStock || 0);
+        const availableStock = business.twoStepSaleEnabled && !dto.presaleTicketId
+          ? currentStock - reservedStock
+          : currentStock;
+        if (availableStock < totalBaseQty) {
+          if (!policies.allowNegativeStock && !dto.isOfflineSync) {
+            throw new UnprocessableEntityException({
+              statusCode: 422,
+              error: 'Unprocessable Entity',
+              code: 'INSUFFICIENT_STOCK',
+              message: {
+                code: 'INSUFFICIENT_STOCK',
+                message: `Existencia insuficiente para "${product.name}". Disponible: ${availableStock} ${product.unit || 'UND'}, solicitado: ${totalBaseQty} ${product.unit || 'UND'}.`,
+                details: {
+                  productId: product.id,
+                  productName: product.name,
+                  available: availableStock,
+                  requested: totalBaseQty,
+                },
+              },
+              details: {
+                productId: product.id,
+                productName: product.name,
+                available: currentStock,
+                requested: totalBaseQty,
+              },
+            });
+          }
+          hasNegativeStock = true;
+        }
+      }
+
+      for (const { compProd, parentName, totalQty } of totalRecipeCompDemand.values()) {
+        const compCurrentStock = Number(compProd.stock);
+        const compReservedStock = Number(compProd.reservedStock || 0);
+        const compAvailableStock = business.twoStepSaleEnabled && !dto.presaleTicketId
+          ? compCurrentStock - compReservedStock
+          : compCurrentStock;
+        if (compAvailableStock < totalQty) {
+          if (!policies.allowNegativeStock && !dto.isOfflineSync) {
+            throw new UnprocessableEntityException({
+              statusCode: 422,
+              error: 'Unprocessable Entity',
+              code: 'INSUFFICIENT_STOCK',
+              message: {
+                code: 'INSUFFICIENT_STOCK',
+                message: `Existencia insuficiente para "${compProd.name}" (insumo de "${parentName}"). Disponible: ${compAvailableStock}, solicitado: ${totalQty}.`,
+                details: {
+                  productId: compProd.id,
+                  productName: compProd.name,
+                  recipeProductName: parentName,
+                  available: compCurrentStock,
+                  requested: totalQty,
+                },
+              },
+              details: {
+                productId: compProd.id,
+                productName: compProd.name,
+                recipeProductName: parentName,
+                available: compCurrentStock,
+                requested: totalQty,
+              },
+            });
+          }
+          hasNegativeStock = true;
+        }
+      }
+
+      // Pasada 2: Asignación FEFO en unidad base y cálculo de unitCost
+      for (const line of resolvedLines) {
+        const {
+          itemIdx,
+          item,
+          product,
+          presentation,
+          requestedQty,
+          conversionFactor,
+          baseQty,
+          priceTier,
+          effectiveUnitPrice,
+          listPrice,
+          taxable,
+          itemAllowDiscount,
+          itemDiscountClamped,
+        } = line;
+
         let itemUnitCost: number | null = null;
         let itemCostSource = 'NONE';
 
@@ -823,10 +996,10 @@ export class SalesService {
               }
             }
             if (hasCompCost) {
-              itemUnitCost = Math.round(recipeCostSum * 10000) / 10000;
+              itemUnitCost = Math.round(recipeCostSum * conversionFactor * 10000) / 10000;
               itemCostSource = 'RECIPE';
             } else if (product.cost != null && Number(product.cost) > 0) {
-              itemUnitCost = Number(product.cost);
+              itemUnitCost = Math.round(Number(product.cost) * conversionFactor * 10000) / 10000;
               itemCostSource = 'PRODUCT';
             } else {
               itemUnitCost = null;
@@ -834,7 +1007,7 @@ export class SalesService {
             }
           } else if (product.type === 'SERVICE') {
             if (product.cost != null && Number(product.cost) > 0) {
-              itemUnitCost = Number(product.cost);
+              itemUnitCost = Math.round(Number(product.cost) * conversionFactor * 10000) / 10000;
               itemCostSource = 'PRODUCT';
             } else {
               itemUnitCost = 0;
@@ -843,11 +1016,15 @@ export class SalesService {
           } else {
             const isTracked = this.batchesService.isTracked(business, product);
             if (isTracked) {
-              const stockBefore = Number(product.stock);
+              const freshProd = await tx.product.findUnique({
+                where: { id: product.id },
+                select: { stock: true },
+              });
+              const stockBefore = freshProd ? Number(freshProd.stock) : Number(product.stock);
               const allocations = await this.batchesService.allocateFefo(tx, {
                 businessId,
                 productId: item.productId!,
-                qty: requestedQty,
+                qty: baseQty,
               });
               batchAllocationsByIndex.set(itemIdx, { allocations, stockBefore });
 
@@ -866,17 +1043,18 @@ export class SalesService {
               }
 
               if (hasAnyCost && allocQtySum > 0) {
-                itemUnitCost = Math.round((allocCostSum / allocQtySum) * 10000) / 10000;
+                const baseBatchCost = allocCostSum / allocQtySum;
+                itemUnitCost = Math.round(baseBatchCost * conversionFactor * 10000) / 10000;
                 itemCostSource = 'BATCH';
               } else if (product.cost != null) {
-                itemUnitCost = Number(product.cost);
+                itemUnitCost = Math.round(Number(product.cost) * conversionFactor * 10000) / 10000;
                 itemCostSource = 'PRODUCT';
               } else {
                 itemUnitCost = null;
                 itemCostSource = 'NONE';
               }
             } else if (product.cost != null) {
-              itemUnitCost = Number(product.cost);
+              itemUnitCost = Math.round(Number(product.cost) * conversionFactor * 10000) / 10000;
               itemCostSource = 'PRODUCT';
             } else {
               itemUnitCost = null;
@@ -889,15 +1067,20 @@ export class SalesService {
           unitCost: itemUnitCost,
           costSource: itemCostSource,
           unit: product?.unit ? String(product.unit).trim().toUpperCase() : 'UND',
+          presentationId: presentation?.id ?? null,
+          presentationName: presentation?.name ?? null,
+          conversionFactor,
+          baseQty,
+          requestedQty,
         });
 
         rawItemsForCalc.push({
           productId: item.productId || null,
           productName: item.productName || product?.name || 'Producto',
-          barcode: item.barcode || product?.barcode || null,
+          barcode: item.barcode || presentation?.barcode || product?.barcode || null,
           unitPrice: effectiveUnitPrice,
           priceTier,
-          quantity: item.quantity,
+          quantity: requestedQty,
           discount: itemDiscountClamped,
           subtotal: (dto.isSplitSale && item.subtotal !== undefined) ? item.subtotal : undefined,
           listPrice,
@@ -1028,6 +1211,9 @@ export class SalesService {
         productName: l.productName,
         barcode: l.barcode,
         unit: lineCostData[idx]?.unit || 'UND',
+        presentationId: lineCostData[idx]?.presentationId ?? null,
+        presentationName: lineCostData[idx]?.presentationName ?? null,
+        conversionFactor: new Prisma.Decimal(lineCostData[idx]?.conversionFactor ?? 1),
         unitPrice: l.unitPrice,
         priceTier: l.priceTier,
         quantity: l.quantity,
@@ -1050,6 +1236,9 @@ export class SalesService {
           productName: 'Envío a domicilio',
           barcode: null,
           unit: 'UND',
+          presentationId: null,
+          presentationName: null,
+          conversionFactor: new Prisma.Decimal(1),
           unitPrice: deliveryFeeAmount,
           priceTier: 'RETAIL',
           quantity: 1,
@@ -2016,8 +2205,10 @@ export class SalesService {
         (sale as any).creditAccount = createdCreditAccount;
       }
 
+      const consumedSaleItemIds = new Set<string>();
       for (let itemIdx = 0; itemIdx < dto.items.length; itemIdx++) {
         const item = dto.items[itemIdx];
+        const lineMeta = lineCostData[itemIdx];
         if (item.productId) {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
@@ -2029,14 +2220,27 @@ export class SalesService {
               },
             },
           });
-          const lineSaleItem = sale.items.find((si) => si.productId === item.productId);
+          const lineSaleItem = sale.items.find(
+            (si) =>
+              !consumedSaleItemIds.has(si.id) &&
+              si.productId === item.productId &&
+              (si.presentationId ?? null) === (lineMeta?.presentationId ?? null) &&
+              Math.abs(Number(si.quantity) - Number(lineMeta?.requestedQty ?? item.quantity)) <= 0.001,
+          );
+          if (lineSaleItem) {
+            consumedSaleItemIds.add(lineSaleItem.id);
+          }
+
+          const baseQty = lineMeta?.baseQty ?? round3(item.quantity);
+          const presSuffix = lineMeta?.presentationName
+            ? ` (${lineMeta.requestedQty} × ${lineMeta.presentationName})`
+            : '';
 
           if (product?.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {
-            const lineQty = round3(item.quantity);
             for (const comp of product.recipeComponents) {
               const compProd = comp.componentProduct;
               if (compProd?.trackStock) {
-                const deductQty = round3(lineQty * Number(comp.quantity));
+                const deductQty = round3(baseQty * Number(comp.quantity));
                 const currentComp = await tx.product.findUnique({ where: { id: compProd.id } });
                 const stockBefore = currentComp ? Number(currentComp.stock) : 0;
                 const stockAfter = round3(stockBefore - deductQty);
@@ -2069,7 +2273,7 @@ export class SalesService {
                         quantity: -a.quantity,
                         stockBefore,
                         stockAfter,
-                        concept: `Consumo receta: ${product.name} (Lote: ${a.batchNumber})`,
+                        concept: `Consumo receta: ${product.name}${presSuffix} (Lote: ${a.batchNumber})`,
                         reference: sale.id,
                         batchId: a.batchId,
                       },
@@ -2090,7 +2294,7 @@ export class SalesService {
                       quantity: -deductQty,
                       stockBefore,
                       stockAfter,
-                      concept: `Consumo receta: ${product.name}`,
+                      concept: `Consumo receta: ${product.name}${presSuffix}`,
                       reference: sale.id,
                     },
                   });
@@ -2098,15 +2302,15 @@ export class SalesService {
               }
             }
           } else if (product?.trackStock) {
-            const qty = round3(item.quantity);
             const stockBefore = Number(product.stock);
-            const stockAfter = round3(stockBefore - qty);
+            const stockAfter = round3(stockBefore - baseQty);
             const isTracked = this.batchesService.isTracked(business, product);
 
             if (isTracked) {
               const batchEntry = batchAllocationsByIndex.get(itemIdx);
               const allocations = batchEntry?.allocations || [];
               const effectiveStockBefore = batchEntry?.stockBefore ?? stockBefore;
+              const trackedStockAfter = round3(effectiveStockBefore - baseQty);
 
               if (lineSaleItem && allocations.length > 0) {
                 await tx.saleItemBatch.createMany({
@@ -2127,8 +2331,8 @@ export class SalesService {
                     type: 'VENTA',
                     quantity: -a.quantity,
                     stockBefore: effectiveStockBefore,
-                    stockAfter,
-                    concept: `Venta ${invoiceNumber} (Lote: ${a.batchNumber})`,
+                    stockAfter: trackedStockAfter,
+                    concept: `Venta ${invoiceNumber}${presSuffix} (Lote: ${a.batchNumber})`,
                     reference: sale.id,
                     batchId: a.batchId,
                   },
@@ -2137,7 +2341,7 @@ export class SalesService {
             } else {
               await tx.product.update({
                 where: { id: item.productId },
-                data: { stock: { decrement: qty } },
+                data: { stock: { decrement: baseQty } },
               });
 
               await tx.stockMovement.create({
@@ -2146,10 +2350,12 @@ export class SalesService {
                   productId: item.productId,
                   userId: cashierId,
                   type: 'VENTA',
-                  quantity: -qty,
+                  quantity: -baseQty,
                   stockBefore,
                   stockAfter,
-                  concept: stockAfter < 0 ? `Venta ${invoiceNumber} (Stock Negativo)` : `Venta ${invoiceNumber}`,
+                  concept: stockAfter < 0
+                    ? `Venta ${invoiceNumber}${presSuffix} (Stock Negativo)`
+                    : `Venta ${invoiceNumber}${presSuffix}`,
                   reference: sale.id,
                 },
               });
@@ -2503,14 +2709,15 @@ export class SalesService {
         select: { id: true, tracksBatches: true },
       });
 
-      // 2. Stock replenishment
+      // 2. Stock replenishment (en unidad base según conversionFactor)
       for (const item of sale.items) {
+        const factor = item.conversionFactor != null ? Number(item.conversionFactor) : 1;
+        const baseQty = round3(Number(item.quantity) * factor);
         if (item.productId && item.product?.isRecipe && item.product.recipeComponents && item.product.recipeComponents.length > 0) {
-          const lineQty = round3(item.quantity);
           for (const comp of item.product.recipeComponents) {
             const compProd = comp.componentProduct;
             if (compProd?.trackStock) {
-              const returnQty = round3(lineQty * Number(comp.quantity));
+              const returnQty = round3(baseQty * Number(comp.quantity));
               const currentComp = await tx.product.findUnique({ where: { id: compProd.id } });
               const stockBefore = currentComp ? Number(currentComp.stock) : 0;
               const stockAfter = round3(stockBefore + returnQty);
@@ -2541,18 +2748,17 @@ export class SalesService {
             }
           }
         } else if (item.productId && item.product?.trackStock) {
-          const qty = round3(item.quantity);
           const currentProd = await tx.product.findUnique({ where: { id: item.productId } });
           const stockBefore = currentProd ? Number(currentProd.stock) : 0;
-          const stockAfter = round3(stockBefore + qty);
+          const stockAfter = round3(stockBefore + baseQty);
           const isTracked = this.batchesService.isTracked(business, item.product);
 
           if (isTracked) {
-            await this.batchesService.returnToBatches(tx, item.id, qty);
+            await this.batchesService.returnToBatches(tx, item.id, baseQty);
           } else {
             await tx.product.update({
               where: { id: item.productId },
-              data: { stock: { increment: qty } },
+              data: { stock: { increment: baseQty } },
             });
           }
 
@@ -2562,10 +2768,12 @@ export class SalesService {
               productId: item.productId,
               userId,
               type: 'DEVOLUCION',
-              quantity: qty,
+              quantity: baseQty,
               stockBefore,
               stockAfter,
-              concept: `Anulación venta ${sale.invoiceNumber}`,
+              concept: item.presentationName
+                ? `Anulación venta ${sale.invoiceNumber} (${item.quantity} × ${item.presentationName})`
+                : `Anulación venta ${sale.invoiceNumber}`,
               reference: sale.id,
             },
           });
@@ -2997,6 +3205,14 @@ export class SalesService {
             },
           });
         }
+        if (saleItem.presentationId && !Number.isInteger(Number(itemInput.qty))) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'QUANTITY_MUST_BE_INTEGER',
+            message: `La cantidad a devolver de la presentación "${saleItem.presentationName || saleItem.productName}" debe ser un número entero.`,
+          });
+        }
 
         // Calculation of line refund with proration and tax snapshot
         const returningQtyDec = new Prisma.Decimal(itemInput.qty.toString());
@@ -3300,20 +3516,22 @@ export class SalesService {
         select: { id: true, tracksBatches: true },
       });
 
-      // Restock and Stock Movements
+      // Restock and Stock Movements (reposición en unidad base según conversionFactor)
       for (const line of returnLinesData) {
         const saleItem = line.saleItem;
+        const factor = saleItem.conversionFactor != null ? Number(saleItem.conversionFactor) : 1;
+        const baseRestockQty = round3(line.qty * factor);
+
         await tx.saleItem.update({
           where: { id: saleItem.id },
           data: { returnedQty: { increment: line.qty } },
         });
 
         if (saleItem.productId && saleItem.product?.isRecipe && saleItem.product.recipeComponents && saleItem.product.recipeComponents.length > 0) {
-          const lineQty = round3(line.qty);
           for (const comp of saleItem.product.recipeComponents) {
             const compProd = comp.componentProduct;
             if (compProd?.trackStock) {
-              const compQty = round3(lineQty * Number(comp.quantity));
+              const compQty = round3(baseRestockQty * Number(comp.quantity));
               const currentProd = await tx.product.findUnique({ where: { id: compProd.id } });
               const stockBefore = currentProd ? Number(currentProd.stock) : 0;
 
@@ -3361,20 +3579,19 @@ export class SalesService {
             }
           }
         } else if (saleItem.productId && saleItem.product?.trackStock) {
-          const qty = round3(line.qty);
           const currentProd = await tx.product.findUnique({ where: { id: saleItem.productId } });
           const stockBefore = currentProd ? Number(currentProd.stock) : 0;
 
           if (line.restock) {
-            const stockAfter = round3(stockBefore + qty);
+            const stockAfter = round3(stockBefore + baseRestockQty);
             const isTracked = this.batchesService.isTracked(business, saleItem.product);
 
             if (isTracked) {
-              await this.batchesService.returnToBatches(tx, saleItem.id, qty);
+              await this.batchesService.returnToBatches(tx, saleItem.id, baseRestockQty);
             } else {
               await tx.product.update({
                 where: { id: saleItem.productId },
-                data: { stock: { increment: qty } },
+                data: { stock: { increment: baseRestockQty } },
               });
             }
 
@@ -3384,10 +3601,12 @@ export class SalesService {
                 productId: saleItem.productId,
                 userId,
                 type: 'DEVOLUCION',
-                quantity: qty,
+                quantity: baseRestockQty,
                 stockBefore,
                 stockAfter,
-                concept: `Devolución venta ${sale.invoiceNumber}`,
+                concept: saleItem.presentationName
+                  ? `Devolución venta ${sale.invoiceNumber} (${line.qty} × ${saleItem.presentationName})`
+                  : `Devolución venta ${sale.invoiceNumber}`,
                 reference: sale.id,
               },
             });

@@ -9,4 +9,8 @@ export class UpdateOrderItemDto {
   @IsString()
   @MaxLength(200)
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  presentationId?: string;
 }

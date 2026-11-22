@@ -20,6 +20,10 @@ export class UpdatePresaleItemActionDto {
 
   @IsOptional()
   @IsString()
+  presentationId?: string;
+
+  @IsOptional()
+  @IsString()
   ticketItemId?: string;
 
   @IsOptional()

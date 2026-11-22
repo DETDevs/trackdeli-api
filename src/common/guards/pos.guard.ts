@@ -160,6 +160,7 @@ export class PosGuard implements CanActivate {
         (method === 'POST' && /^\/pos\/tables\/[^/]+\/order\/send-to-kitchen$/.test(normalizedPath)) ||
         (method === 'POST' && normalizedPath === '/pos/tables/receive') ||
         (method === 'GET' && normalizedPath === '/pos/products') ||
+        (method === 'GET' && /^\/pos\/products\/[^/]+\/presentations$/.test(normalizedPath)) ||
         (method === 'GET' && normalizedPath === '/pos/categories') ||
         (method === 'GET' && (normalizedPath === '/pos/product-fields' || /^\/pos\/product-fields\/[^/]+$/.test(normalizedPath))) ||
         (method === 'POST' && /^\/pos\/tables\/[^/]+\/order\/items$/.test(normalizedPath)) ||

@@ -16,6 +16,7 @@ import { AdjustStockDto } from "./dto/adjust-stock.dto";
 import { SetRecipeComponentsDto } from "./dto/set-recipe-components.dto";
 import { BulkUpdateProductsDto } from "./dto/bulk-update-products.dto";
 import { validateProductQuantity, round3 } from "./product-unit.util";
+import { formatPresentation } from './product-presentations.service';
 
 import { BatchesService } from '../batches/batches.service';
 import { UnitsService } from '../units/units.service';
@@ -151,6 +152,9 @@ export class ProductsService {
     const mapped = {
       ...this.mapProductWithInventory(product, isTwoStepEnabled),
       attributes: filteredAttrs,
+      presentations: Array.isArray(product.presentations)
+        ? product.presentations.map((pr: any) => formatPresentation(pr, userRole))
+        : [],
       wholesalePrice: wholesale_price,
       wholesaleMinQty: wholesale_min_qty,
       wholesale_price,
@@ -476,6 +480,7 @@ export class ProductsService {
         { name: { contains: filters.search, mode: "insensitive" } },
         { barcode: { contains: filters.search, mode: "insensitive" } },
         { sku: { contains: filters.search, mode: "insensitive" } },
+        { presentations: { some: { isActive: true, barcode: { contains: filters.search, mode: "insensitive" } } } },
         ...(matchingIds.length > 0 ? [{ id: { in: matchingIds } }] : []),
       ];
     }
@@ -486,6 +491,10 @@ export class ProductsService {
         include: {
           category: true,
           supplier: { select: { id: true, name: true } },
+          presentations: {
+            where: { isActive: true },
+            orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          },
           recipeComponents: {
             include: {
               componentProduct: { select: { id: true, name: true, unit: true, stock: true } },
@@ -643,6 +652,10 @@ export class ProductsService {
       include: {
         category: true,
         supplier: true,
+        presentations: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        },
         recipeComponents: {
           include: {
             componentProduct: { select: { id: true, name: true, unit: true, stock: true } },
@@ -700,10 +713,15 @@ export class ProductsService {
 
   async findByBarcode(businessId: string, barcode: string, userRole?: string) {
     this.logger.log(`[findByBarcode] barcode=${barcode} businessId=${businessId}`);
+    const trimmedBarcode = (barcode || '').trim();
     const product = await this.prisma.product.findFirst({
-      where: { businessId, barcode, isActive: true },
+      where: { businessId, barcode: trimmedBarcode, isActive: true },
       include: {
         category: true,
+        presentations: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        },
         recipeComponents: {
           include: {
             componentProduct: { select: { id: true, name: true, unit: true, stock: true } },
@@ -711,7 +729,39 @@ export class ProductsService {
         },
       },
     });
-    if (!product) throw new NotFoundException("Producto no encontrado");
+
+    let matchedPresentation: any = null;
+    let resolvedProduct: any = product;
+
+    if (!resolvedProduct) {
+      matchedPresentation = await this.prisma.productPresentation.findFirst({
+        where: {
+          businessId,
+          barcode: trimmedBarcode,
+          isActive: true,
+          product: { isActive: true },
+        },
+        include: {
+          product: {
+            include: {
+              category: true,
+              presentations: {
+                where: { isActive: true },
+                orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+              },
+              recipeComponents: {
+                include: {
+                  componentProduct: { select: { id: true, name: true, unit: true, stock: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+      resolvedProduct = matchedPresentation?.product ?? null;
+    }
+
+    if (!resolvedProduct) throw new NotFoundException("Producto no encontrado");
 
     const activeFields = await this.prisma.productFieldDefinition.findMany({
       where: { businessId, isActive: true },
@@ -734,20 +784,50 @@ export class ProductsService {
       },
     });
 
-    return this.filterActiveAttributes(product, activeKeys, userRole, business?.wholesaleEnabled, business?.twoStepSaleEnabled, business);
+    const formattedProduct = this.filterActiveAttributes(
+      resolvedProduct,
+      activeKeys,
+      userRole,
+      business?.wholesaleEnabled,
+      business?.twoStepSaleEnabled,
+      business,
+    );
+
+    if (matchedPresentation) {
+      return {
+        ...formattedProduct,
+        presentation: formatPresentation(matchedPresentation, userRole),
+      };
+    }
+
+    return formattedProduct;
   }
 
   async create(dto: CreateProductDto, businessId: string, userId?: string) {
     this.logger.log(`[create] producto="${dto.name}" businessId=${businessId}`);
 
     if (dto.barcode) {
-      const existing = await this.prisma.product.findFirst({
-        where: { businessId, barcode: dto.barcode },
-      });
-      if (existing) {
-        this.logger.warn(`[create] barcode duplicado: ${dto.barcode} businessId=${businessId}`);
-        throw new ConflictException(`El código de barras "${dto.barcode}" ya está registrado`);
+      const trimmedBarcode = dto.barcode.trim();
+      const [existingProd, existingPres] = await Promise.all([
+        this.prisma.product.findFirst({
+          where: { businessId, barcode: trimmedBarcode },
+          select: { id: true },
+        }),
+        this.prisma.productPresentation.findFirst({
+          where: { businessId, barcode: trimmedBarcode },
+          select: { id: true },
+        }),
+      ]);
+      if (existingProd || existingPres) {
+        this.logger.warn(`[create] barcode duplicado: ${trimmedBarcode} businessId=${businessId}`);
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'BARCODE_TAKEN',
+          message: `El código de barras "${trimmedBarcode}" ya está registrado`,
+        });
       }
+      dto.barcode = trimmedBarcode;
     }
 
     if (dto.sku) {
@@ -1034,11 +1114,27 @@ export class ProductsService {
       await this.ensurePharmacyFieldDefinitions(businessId);
     }
 
-    if (dto.barcode && dto.barcode !== product.barcode) {
-      const existing = await this.prisma.product.findFirst({
-        where: { businessId, barcode: dto.barcode, NOT: { id } },
-      });
-      if (existing) throw new ConflictException(`El código de barras "${dto.barcode}" ya está registrado`);
+    if (dto.barcode && dto.barcode.trim() !== product.barcode) {
+      const trimmedBarcode = dto.barcode.trim();
+      const [existingProd, existingPres] = await Promise.all([
+        this.prisma.product.findFirst({
+          where: { businessId, barcode: trimmedBarcode, NOT: { id } },
+          select: { id: true },
+        }),
+        this.prisma.productPresentation.findFirst({
+          where: { businessId, barcode: trimmedBarcode },
+          select: { id: true },
+        }),
+      ]);
+      if (existingProd || existingPres) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'BARCODE_TAKEN',
+          message: `El código de barras "${trimmedBarcode}" ya está registrado`,
+        });
+      }
+      dto.barcode = trimmedBarcode;
     }
 
     if (dto.categoryId !== undefined) {
@@ -1240,7 +1336,14 @@ export class ProductsService {
     const updated = await this.prisma.product.update({
       where: { id },
       data: updateData,
-      include: { category: true, supplier: { select: { id: true, name: true } } },
+      include: {
+        category: true,
+        supplier: { select: { id: true, name: true } },
+        presentations: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        },
+      },
     });
 
     const currentStock = Number(product.stock);

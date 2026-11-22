@@ -25,6 +25,10 @@ export class CreateQuoteItemDto {
   productId?: string | null;
 
   @IsOptional()
+  @IsString()
+  presentationId?: string;
+
+  @IsOptional()
   @SanitizeText()
   @IsString()
   @MaxLength(200)
