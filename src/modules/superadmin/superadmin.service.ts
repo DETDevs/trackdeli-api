@@ -3258,7 +3258,7 @@ export class SuperAdminService {
     return this.userQuotaService.getUsage(id);
   }
 
-  async getBusinessDevices(businessId: string) {
+  async getBusinessDevices(businessId: string, includeArchived = false) {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
       select: { id: true },
@@ -3266,11 +3266,42 @@ export class SuperAdminService {
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
     }
+
+    const where: Prisma.PosDeviceWhereInput = { businessId };
+    if (!includeArchived) {
+      where.archivedAt = null;
+    }
+
     const devices = await this.prisma.posDevice.findMany({
-      where: { businessId },
+      where,
       orderBy: [{ lastSeenAt: 'desc' }, { createdAt: 'desc' }],
     });
+
     return devices.map(({ secretHash, ...d }) => d);
+  }
+
+  async getBusinessDevicesSummary(businessId: string) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    const [active, revoked, archived] = await Promise.all([
+      this.prisma.posDevice.count({
+        where: { businessId, status: PosDeviceStatus.ACTIVE, archivedAt: null },
+      }),
+      this.prisma.posDevice.count({
+        where: { businessId, status: PosDeviceStatus.REVOKED, archivedAt: null },
+      }),
+      this.prisma.posDevice.count({
+        where: { businessId, archivedAt: { not: null } },
+      }),
+    ]);
+
+    return { active, revoked, archived };
   }
 
   async updateBusinessDevice(
@@ -3307,6 +3338,7 @@ export class SuperAdminService {
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.name !== undefined && { name: dto.name.trim() }),
         ...(isRevokingMobile && { secretHash: null }),
+        ...(dto.status === PosDeviceStatus.ACTIVE && { archivedAt: null }),
       },
     });
 
@@ -3343,7 +3375,7 @@ export class SuperAdminService {
       throw new NotFoundException('Negocio no encontrado');
     }
     const devices = await this.prisma.posDevice.findMany({
-      where: { businessId, category: 'WEB' },
+      where: { businessId, category: 'WEB', archivedAt: null },
       orderBy: [{ lastSeenAt: 'desc' }, { createdAt: 'desc' }],
     });
     const userIds = Array.from(new Set(devices.map((d) => d.userId).filter(Boolean))) as string[];
@@ -3394,6 +3426,7 @@ export class SuperAdminService {
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.name !== undefined && { name: dto.name.trim() }),
         ...(isRevokingMobile && { secretHash: null }),
+        ...(dto.status === PosDeviceStatus.ACTIVE && { archivedAt: null }),
       },
     });
 
@@ -3419,6 +3452,48 @@ export class SuperAdminService {
 
     const { secretHash, ...safe } = updated;
     return safe;
+  }
+
+  /**
+   * 297a - Archivar todos los dispositivos revocados de un negocio (solo SUPERADMIN).
+   */
+  async archiveRevokedDevices(businessId: string, actorUser?: JwtPayload) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true },
+    });
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    const now = new Date();
+    const result = await this.prisma.posDevice.updateMany({
+      where: {
+        businessId,
+        status: PosDeviceStatus.REVOKED,
+        archivedAt: null,
+      },
+      data: {
+        archivedAt: now,
+      },
+    });
+
+    if (result.count > 0) {
+      await this.auditService.record({
+        businessId,
+        userId: actorUser?.sub || 'system-superadmin',
+        userRole: actorUser?.role || 'SUPERADMIN',
+        action: 'DEVICES_BULK_ARCHIVED',
+        entityType: 'PosDevice',
+        reason: `Se archivaron ${result.count} equipos revocados`,
+      });
+    }
+
+    this.logger.log(
+      `[archiveRevokedDevices] ${result.count} dispositivos revocados archivados para businessId=${businessId}`,
+    );
+
+    return { archived: result.count };
   }
 
   async updatePosSubscription(

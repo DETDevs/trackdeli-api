@@ -50,4 +50,22 @@ export class PosDevicesController {
       user,
     );
   }
+
+  @Patch(':id/archive')
+  @Roles(UserRole.SUPERADMIN)
+  archiveDevice(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.archiveDevice(id, user);
+  }
+
+  @Patch(':id/unarchive')
+  @Roles(UserRole.SUPERADMIN)
+  unarchiveDevice(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.service.unarchiveDevice(id, user);
+  }
 }

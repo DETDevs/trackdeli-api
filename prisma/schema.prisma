@@ -2206,6 +2206,7 @@ model PosDevice {
   userAgent   String?         @db.VarChar(500)
   ipAddress   String?         @db.VarChar(100)
   secretHash  String?         @db.VarChar(100)
+  archivedAt  DateTime?
   firstSeenAt DateTime        @default(now())
   lastSeenAt  DateTime        @default(now())
   lastUserId  String?         @db.VarChar(100)
@@ -2215,6 +2216,7 @@ model PosDevice {
   @@unique([businessId, deviceId])
   @@index([businessId, status])
   @@index([businessId, category, status])
+  @@index([businessId, archivedAt])
   @@map("pos_devices")
 }
 

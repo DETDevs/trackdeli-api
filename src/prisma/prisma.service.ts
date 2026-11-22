@@ -2335,6 +2335,7 @@ WHERE a."customerId" = c."id"
       await this.ensureProductVariantsSchema();
       await this.ensurePromotionsSchema();
       await this.ensureMobileDevicesSchema();
+      await this.ensureDeviceArchiveSchema();
 
       await this.ensureBusinessProductsBackfilled();
 
@@ -4947,6 +4948,37 @@ WHERE a."customerId" = c."id"
     } catch (err: any) {
       this.logger.warn(
         `[PrismaService] ⚠ 277a - Advertencia sincronizando esquema de app móvil: ${err.message}`,
+      );
+    }
+  }
+
+  /**
+   * 297a - Archivar equipos revocados (pos_devices.archivedAt).
+   * DDL idempotente con advisory lock 2970100.
+   */
+  private async ensureDeviceArchiveSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(2970100)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_devices"
+            ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3);
+        `);
+
+        await this.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "pos_devices_businessId_archivedAt_idx"
+            ON "pos_devices"("businessId", "archivedAt");
+        `);
+
+        this.logger.log(
+          '[PrismaService] ✓ 297a - Columna archivedAt e índice de pos_devices sincronizados.',
+        );
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(2970100)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[PrismaService] ⚠ 297a - Advertencia sincronizando esquema de archivado de equipos: ${err.message}`,
       );
     }
   }

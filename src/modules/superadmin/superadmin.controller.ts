@@ -321,8 +321,24 @@ export class SuperAdminController {
   }
 
   @Get('businesses/:id/devices')
-  async getBusinessDevices(@Param('id') id: string) {
-    return this.superAdminService.getBusinessDevices(id);
+  async getBusinessDevices(
+    @Param('id') id: string,
+    @Query('includeArchived') includeArchived?: string,
+  ) {
+    return this.superAdminService.getBusinessDevices(id, includeArchived === 'true');
+  }
+
+  @Get('businesses/:id/devices/summary')
+  async getBusinessDevicesSummary(@Param('id') id: string) {
+    return this.superAdminService.getBusinessDevicesSummary(id);
+  }
+
+  @Post('businesses/:id/devices/archive-revoked')
+  async archiveRevokedDevices(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.archiveRevokedDevices(id, user);
   }
 
   @Patch('businesses/:id/devices/:deviceId')

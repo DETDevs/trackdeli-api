@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -314,7 +315,7 @@ export class PosDevicesService {
 
   async getBusinessDevices(businessId: string) {
     const devices = await this.prisma.posDevice.findMany({
-      where: { businessId },
+      where: { businessId, archivedAt: null },
       orderBy: [{ lastSeenAt: 'desc' }, { createdAt: 'desc' }],
     });
     return devices.map(({ secretHash, ...d }) => d);
@@ -346,6 +347,7 @@ export class PosDevicesService {
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.name !== undefined && { name: dto.name.trim() }),
         ...(isRevokingMobile && { secretHash: null }),
+        ...(dto.status === PosDeviceStatus.ACTIVE && { archivedAt: null }),
       },
     });
 
@@ -367,6 +369,95 @@ export class PosDevicesService {
 
     this.logger.log(
       `[updateDevice] Dispositivo ${device.id} (${device.deviceId}) actualizado: status=${updated.status}, name="${updated.name}" por ${actorUser?.sub || 'system'}`,
+    );
+
+    const { secretHash, ...safe } = updated;
+    return safe;
+  }
+
+  /**
+   * 297a - Archivar equipo revocado (solo SUPERADMIN).
+   * Solo para equipos con estado REVOKED. Si está activo -> 409 DEVICE_NOT_REVOKED.
+   * Idempotente.
+   */
+  async archiveDevice(id: string, actorUser?: JwtPayload) {
+    const device = await this.prisma.posDevice.findUnique({
+      where: { id },
+    });
+
+    if (!device) {
+      throw new NotFoundException('Dispositivo no encontrado');
+    }
+
+    if (device.status !== PosDeviceStatus.REVOKED) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'DEVICE_NOT_REVOKED',
+        message: 'Revocá el equipo antes de archivarlo.',
+      });
+    }
+
+    const updated = await this.prisma.posDevice.update({
+      where: { id: device.id },
+      data: {
+        archivedAt: device.archivedAt || new Date(),
+      },
+    });
+
+    await this.auditService.record({
+      businessId: device.businessId,
+      userId: actorUser?.sub || 'system-superadmin',
+      userRole: actorUser?.role || 'SUPERADMIN',
+      action: 'DEVICE_ARCHIVED',
+      entityType: 'PosDevice',
+      entityId: device.id,
+      before: { archivedAt: device.archivedAt },
+      after: { archivedAt: updated.archivedAt },
+    });
+
+    this.logger.log(
+      `[archiveDevice] Dispositivo ${device.id} (${device.deviceId}) archivado en ${updated.archivedAt}`,
+    );
+
+    const { secretHash, ...safe } = updated;
+    return safe;
+  }
+
+  /**
+   * 297a - Desarchivar equipo (solo SUPERADMIN).
+   * Vuelve a dejarlo visible con status REVOKED y archivedAt = null.
+   * Idempotente.
+   */
+  async unarchiveDevice(id: string, actorUser?: JwtPayload) {
+    const device = await this.prisma.posDevice.findUnique({
+      where: { id },
+    });
+
+    if (!device) {
+      throw new NotFoundException('Dispositivo no encontrado');
+    }
+
+    const updated = await this.prisma.posDevice.update({
+      where: { id: device.id },
+      data: {
+        archivedAt: null,
+      },
+    });
+
+    await this.auditService.record({
+      businessId: device.businessId,
+      userId: actorUser?.sub || 'system-superadmin',
+      userRole: actorUser?.role || 'SUPERADMIN',
+      action: 'DEVICE_UNARCHIVED',
+      entityType: 'PosDevice',
+      entityId: device.id,
+      before: { archivedAt: device.archivedAt },
+      after: { archivedAt: null },
+    });
+
+    this.logger.log(
+      `[unarchiveDevice] Dispositivo ${device.id} (${device.deviceId}) desarchivado`,
     );
 
     const { secretHash, ...safe } = updated;
@@ -621,6 +712,7 @@ export class PosDevicesService {
       where: {
         businessId,
         category: 'WEB',
+        archivedAt: null,
       },
       orderBy: [{ lastSeenAt: 'desc' }, { createdAt: 'desc' }],
     });
@@ -1010,6 +1102,7 @@ export class PosDevicesService {
             status: PosDeviceStatus.ACTIVE,
             secretHash,
             lastSeenAt: new Date(),
+            archivedAt: null,
           },
           create: {
             businessId,
