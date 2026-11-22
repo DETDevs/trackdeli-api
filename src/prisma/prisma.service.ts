@@ -4052,17 +4052,22 @@ WHERE a."customerId" = c."id"
           `ALTER TABLE "pos_cash_registers" ADD COLUMN IF NOT EXISTS "discrepancyAuthorizedAt" TIMESTAMP(3)`,
         );
 
-        // 3. FK a users si no existe
+        // 3. FK a users si no existe (limpiando primero referencias huérfanas de bases existentes)
         await this.$executeRawUnsafe(`
-          DO $ BEGIN
+          DO $$ BEGIN
             IF NOT EXISTS (
               SELECT 1 FROM pg_constraint WHERE conname = 'pos_cash_registers_discrepancyAuthorizedById_fkey'
             ) THEN
+              UPDATE "pos_cash_registers" r
+              SET "discrepancyAuthorizedById" = NULL
+              WHERE r."discrepancyAuthorizedById" IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM "users" u WHERE u."id" = r."discrepancyAuthorizedById");
+
               ALTER TABLE "pos_cash_registers"
                 ADD CONSTRAINT "pos_cash_registers_discrepancyAuthorizedById_fkey"
                 FOREIGN KEY ("discrepancyAuthorizedById") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
             END IF;
-          END $;
+          END $$;
         `);
 
         // 4. Índice
