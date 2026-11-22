@@ -10,6 +10,8 @@ import { PoliciesService } from '../policies/policies.service';
 import { AuditService } from '../audit/audit.service';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { ALLOWED_DISCREPANCY_REASONS } from './constants/discrepancy-reasons.constant';
+import { PushService } from '../push/push.service';
+import { PushCategory } from '../push/push.constants';
 
 @Injectable()
 export class CashRegisterService {
@@ -20,6 +22,7 @@ export class CashRegisterService {
     private readonly policiesService: PoliciesService,
     private readonly auditService: AuditService,
     private readonly exchangeRateService: ExchangeRateService,
+    private readonly pushService: PushService,
   ) {}
 
   /**
@@ -1376,6 +1379,35 @@ export class CashRegisterService {
       `;
     } catch (err: any) {
       this.logger.warn(`[close] Error en barrido de preventa al cerrar turno: ${err.message}`);
+    }
+
+    // 300b (#3 CAJA_DESCUADRE): efecto secundario después del commit, nunca bloquea ni rompe el cierre
+    if (isAboveTolerance) {
+      try {
+        const absDiff = Math.abs(Number(differenceDec.toDecimalPlaces(2)));
+        const diffFormatted = absDiff.toLocaleString('en-US', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+        const cashierName = updated?.cashier?.name || 'un cajero';
+        void Promise.resolve(
+          this.pushService.sendFireAndForget({
+            businessId,
+            roles: [UserRole.ENCARGADO, UserRole.SUPERADMIN],
+            category: PushCategory.CAJA_DESCUADRE,
+            title: 'Descuadre en cierre de caja',
+            body: `Cierre con diferencia de C$ ${diffFormatted} en la caja de ${cashierName}`,
+            data: {
+              category: PushCategory.CAJA_DESCUADRE,
+              screen: 'cash_register_detail',
+              id: register.id,
+            },
+            dedupeKey: `caja_descuadre:${register.id}`,
+          }),
+        ).catch(() => {});
+      } catch (pushErr: any) {
+        this.logger.warn(`[close] Error disparando push CAJA_DESCUADRE: ${pushErr?.message || 'desconocido'}`);
+      }
     }
 
     const formatted = this.formatRegister(updated);

@@ -15,8 +15,15 @@ import {
   DispatchStatus,
   MembershipStatus,
   Prisma,
+  UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PushService } from '../pos/push/push.service';
+import { PushCategory } from '../pos/push/push.constants';
+import {
+  DEFAULT_BUSINESS_TIMEZONE,
+  formatDateInTimezone,
+} from '../../common/utils/date.util';
 import { ACTIVE_ORDER_STATUSES } from '../../common/constants/orders.constants';
 import { ActivateProductDto } from './dto/activate-product.dto';
 import { DeactivateProductDto } from './dto/deactivate-product.dto';
@@ -34,7 +41,10 @@ import {
 export class BusinessProductsService {
   private readonly logger = new Logger(BusinessProductsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly pushService: PushService,
+  ) {}
 
   isMembershipProduct(productType: BusinessProductType, businessType?: BusinessType): boolean {
     if (productType === BusinessProductType.DELIVERY) {
@@ -800,6 +810,27 @@ export class BusinessProductsService {
       `[BusinessProductsService] [deactivateNow] CORTE INMEDIATO businessId=${businessId} productType=${productType} by=${superAdminId} reason="${dto.reason}"`,
     );
 
+    // 300b (#11 CUENTA_DISPOSITIVO): aviso después del commit, sin bloquear
+    try {
+      const todayManagua = formatDateInTimezone(new Date(), DEFAULT_BUSINESS_TIMEZONE);
+      void Promise.resolve(
+        this.pushService.sendFireAndForget({
+          businessId,
+          roles: [UserRole.ENCARGADO, UserRole.SUPERADMIN],
+          category: PushCategory.CUENTA_DISPOSITIVO,
+          title: 'Módulo suspendido',
+          body: `El módulo ${productType} fue suspendido. Contactá a NEXOL para más información.`,
+          data: {
+            category: PushCategory.CUENTA_DISPOSITIVO,
+            screen: 'subscription',
+            id: productType,
+          },
+          dedupeKey: `module_suspended:${businessId}:${productType}:${todayManagua}`,
+          dedupeWindowMinutes: 1440,
+        }),
+      ).catch(() => {});
+    } catch {}
+
     return {
       status: 'INACTIVE',
       message: `Producto ${productType} desactivado de forma inmediata.`,
@@ -814,7 +845,7 @@ export class BusinessProductsService {
     force: boolean,
     superAdminId: string,
   ) {
-    return this.runWithSerializableRetry(
+    const res = await this.runWithSerializableRetry(
       'deactivate',
       businessId,
       productType,
@@ -1020,6 +1051,31 @@ export class BusinessProductsService {
         };
       },
     );
+
+    // 300b (#11 CUENTA_DISPOSITIVO): aviso después del commit, sin bloquear
+    if (res?.status === 'INACTIVE') {
+      try {
+        const todayManagua = formatDateInTimezone(new Date(), DEFAULT_BUSINESS_TIMEZONE);
+        void Promise.resolve(
+          this.pushService.sendFireAndForget({
+            businessId,
+            roles: [UserRole.ENCARGADO, UserRole.SUPERADMIN],
+            category: PushCategory.CUENTA_DISPOSITIVO,
+            title: 'Módulo suspendido',
+            body: `El módulo ${productType} fue suspendido. Contactá a NEXOL para más información.`,
+            data: {
+              category: PushCategory.CUENTA_DISPOSITIVO,
+              screen: 'subscription',
+              id: productType,
+            },
+            dedupeKey: `module_suspended:${businessId}:${productType}:${todayManagua}`,
+            dedupeWindowMinutes: 1440,
+          }),
+        ).catch(() => {});
+      } catch {}
+    }
+
+    return res;
   }
 
   private async runWithSerializableRetry<T>(

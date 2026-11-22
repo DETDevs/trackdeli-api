@@ -13,6 +13,8 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { TrackingGateway } from '../../tracking/tracking.gateway';
 import { BusinessProductsService } from '../../business-products/business-products.service';
 import { AuditService } from '../audit/audit.service';
+import { PushService } from '../push/push.service';
+import { PushCategory } from '../push/push.constants';
 import { PosAction } from '../permissions/permissions.service';
 import { RegisterCreditPaymentDto } from './dto/register-payment.dto';
 import { CreateCreditGroupDto } from './dto/create-credit-group.dto';
@@ -41,6 +43,7 @@ export class CreditService {
     private readonly trackingGateway: TrackingGateway,
     private readonly businessProductsService: BusinessProductsService,
     private readonly auditService: AuditService,
+    private readonly pushService: PushService,
   ) {}
 
   private async ensureCarteraActive(businessId: string) {
@@ -103,7 +106,7 @@ export class CreditService {
     businessId: string,
   ) {
     await this.ensureCarteraActive(businessId);
-    return this.prisma.$transaction(async (tx) => {
+    const txResult = await this.prisma.$transaction(async (tx) => {
       const account = await tx.creditAccount.findFirst({
         where: { id: creditAccountId, businessId },
         include: { customer: true, sale: true },
@@ -318,6 +321,32 @@ export class CreditService {
         account: formattedAccount,
       };
     });
+
+    // 300b (#8 ABONO_RECIBIDO): después del commit, sin bloquear, nunca avisar al que registró el abono ni incluir PII
+    try {
+      const amtFormatted = Number(txResult.payment.amount || 0).toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+      void Promise.resolve(
+        this.pushService.sendFireAndForget({
+          businessId,
+          roles: [UserRole.ENCARGADO, UserRole.SUPERADMIN],
+          excludeUserIds: userId ? [userId] : undefined,
+          category: PushCategory.ABONO_RECIBIDO,
+          title: 'Abono recibido',
+          body: `Abono de C$ ${amtFormatted} registrado`,
+          data: {
+            category: PushCategory.ABONO_RECIBIDO,
+            screen: 'credit_account',
+            id: creditAccountId,
+          },
+          dedupeKey: `abono_recibido:${txResult.payment.id}`,
+        }),
+      ).catch(() => {});
+    } catch {}
+
+    return txResult;
   }
 
   async getCustomerCreditAccounts(customerId: string, businessId: string) {

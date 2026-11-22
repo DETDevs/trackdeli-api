@@ -10,11 +10,20 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { UserRole } from '@prisma/client';
+import {
+  BusinessProductStatus,
+  BusinessProductType,
+  UserRole,
+} from '@prisma/client';
 import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import { getManaguaDateParts } from '../../superadmin/utils/membership-billing.util';
+import {
+  DEFAULT_BUSINESS_TIMEZONE,
+  formatDateInTimezone,
+} from '../../../common/utils/date.util';
 import {
   ALL_PUSH_CATEGORIES,
   DEFAULT_DEDUPE_WINDOW_MINUTES,
@@ -23,6 +32,8 @@ import {
   HIGH_PRIORITY_CATEGORIES,
   INVALID_FCM_TOKEN_ERRORS,
   MANDATORY_PUSH_CATEGORIES,
+  PUSH_BATCH_BUSINESSES_SIZE,
+  PUSH_BROADCAST_COOLDOWN_MS,
   PUSH_DEDUPE_LOCK_NAMESPACE,
   PUSH_FIREBASE_APP_NAME,
   PUSH_LOG_RETENTION_DAYS,
@@ -72,7 +83,9 @@ export interface SendPushInput {
   businessId: string;
   roles?: UserRole[];
   userIds?: string[];
+  excludeUserIds?: string[];
   deviceId?: string;
+  allowRevokedDevice?: boolean;
   category: PushCategory;
   title: string;
   body: string;
@@ -119,9 +132,13 @@ export class PushService implements OnModuleInit {
   /** Rate limit en memoria para POST /pos/push/test (1 por minuto por dispositivo). */
   private readonly testCooldownMap = new Map<string, number>();
 
+  /** Rate limit en memoria para POST /superadmin/push/broadcast (1 cada 5 min). */
+  private lastBroadcastAtMs = 0;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly auditService: AuditService,
   ) {}
 
   onModuleInit(): void {
@@ -627,6 +644,247 @@ export class PushService implements OnModuleInit {
   // ═══════════════════════════════════════════════════════════════
 
   /**
+   * Dispara un envío push sin bloquear la respuesta HTTP y sin lanzar ni rechazar promesas.
+   */
+  sendFireAndForget(input: SendPushInput): Promise<void> {
+    try {
+      if (!this.isEnabled()) {
+        return Promise.resolve();
+      }
+      return Promise.resolve()
+        .then(async () => {
+          try {
+            await this.send(input);
+          } catch (err: any) {
+            try {
+              this.logger.warn(
+                `[PushService.sendFireAndForget] Error silencioso (category=${input?.category}): ${err?.message || 'desconocido'}`,
+              );
+            } catch {}
+          }
+        })
+        .catch(() => {});
+    } catch {
+      return Promise.resolve();
+    }
+  }
+
+  /**
+   * 300b (#1 STOCK_BAJO): agrupa productos que acaban de cruzar minStock en la misma operación
+   * en un solo aviso, con dedupe diario (hora Managua) por producto. Fire-and-forget.
+   * Toda la lógica asíncrona corre dentro de try/catch interno: la promesa nunca se rechaza.
+   */
+  notifyLowStockCrossed(businessId: string, productIds: string[]): Promise<void> {
+    try {
+      if (!this.isEnabled() || !businessId || !productIds || productIds.length === 0) {
+        return Promise.resolve();
+      }
+      const uniqueIds = Array.from(new Set(productIds.filter(Boolean)));
+      if (uniqueIds.length === 0) return Promise.resolve();
+
+      return Promise.resolve()
+        .then(async () => {
+          try {
+            const todayManagua = formatDateInTimezone(new Date(), DEFAULT_BUSINESS_TIMEZONE);
+            const candidateKeys = uniqueIds.map((pid) => `stock_bajo:${todayManagua}:${pid}`);
+
+            const alreadySentRows = await this.prisma.$queryRaw<{ dedupeKey: string }[]>`
+              SELECT DISTINCT "dedupeKey"
+              FROM "pos_push_log"
+              WHERE "businessId" = ${businessId}
+                AND "status" = 'SENT'
+                AND "dedupeKey" = ANY(${candidateKeys}::text[])
+                AND "createdAt" >= NOW() - INTERVAL '24 hours'
+            `;
+            const sentSet = new Set(alreadySentRows.map((r) => r.dedupeKey));
+            const freshIds = uniqueIds.filter(
+              (pid) => !sentSet.has(`stock_bajo:${todayManagua}:${pid}`),
+            );
+
+            if (freshIds.length === 0) return;
+
+            const count = freshIds.length;
+            const body =
+              count === 1
+                ? '1 producto quedó con stock bajo. Revisá tu inventario.'
+                : `${count} productos con stock bajo. Revisá tu inventario.`;
+
+            const primaryDedupeKey = `stock_bajo:${todayManagua}:${freshIds[0]}`;
+            const res = await this.send({
+              businessId,
+              roles: [UserRole.ENCARGADO, UserRole.SUPERADMIN],
+              category: PushCategory.STOCK_BAJO,
+              title: 'Stock bajo',
+              body,
+              data: {
+                category: PushCategory.STOCK_BAJO,
+                screen: 'inventory_alerts',
+                id: freshIds[0],
+              },
+              dedupeKey: primaryDedupeKey,
+              dedupeWindowMinutes: 1440,
+            });
+
+            // Si hubo más de 1 producto en el lote y se envió, registrar clave dedupe por cada producto restante
+            if (res.sent > 0 && freshIds.length > 1) {
+              for (const pid of freshIds.slice(1)) {
+                await this.writePushLog({
+                  businessId,
+                  userId: null,
+                  deviceId: null,
+                  category: PushCategory.STOCK_BAJO,
+                  dedupeKey: `stock_bajo:${todayManagua}:${pid}`,
+                  status: 'SENT',
+                  errorCode: null,
+                }).catch(() => {});
+              }
+            }
+          } catch (err: any) {
+            try {
+              this.logger.warn(
+                `[PushService.notifyLowStockCrossed] Error silencioso: ${err?.message || 'desconocido'}`,
+              );
+            } catch {}
+          }
+        })
+        .catch(() => {});
+    } catch {
+      return Promise.resolve();
+    }
+  }
+
+  /**
+   * 300b (#12 AVISO_NEXOL): broadcast solo para SUPERADMIN.
+   * Incluye límite de frecuencia (1 cada 5 minutos), recorrido en lotes de 50 negocios
+   * con tolerancia a fallos y registro de auditoría de quién lo envió (sin PII).
+   */
+  async broadcast(params: {
+    title: string;
+    body: string;
+    businessIds?: string[];
+    actorUserId: string;
+    actorRole: string;
+  }) {
+    const nowMs = Date.now();
+    if (nowMs - this.lastBroadcastAtMs < PUSH_BROADCAST_COOLDOWN_MS) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          error: 'Too Many Requests',
+          code: 'BROADCAST_RATE_LIMITED',
+          message:
+            'Solo podés enviar un aviso masivo cada 5 minutos. Esperá un momento e intentá de nuevo.',
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    this.lastBroadcastAtMs = nowMs;
+
+    const broadcastId = crypto.randomUUID();
+    const cleanTitle = params.title.trim().slice(0, 100);
+    const cleanBody = params.body.trim().slice(0, 200);
+
+    let businessesTargeted = 0;
+    let totalSent = 0;
+    let totalFailed = 0;
+    let totalSkipped = 0;
+
+    const processBusiness = async (businessId: string) => {
+      businessesTargeted++;
+      if (!this.isEnabled()) {
+        totalSkipped++;
+        return;
+      }
+      try {
+        const res = await this.send({
+          businessId,
+          roles: [UserRole.ENCARGADO, UserRole.SUPERADMIN],
+          category: PushCategory.AVISO_NEXOL,
+          title: cleanTitle,
+          body: cleanBody,
+          data: {
+            category: PushCategory.AVISO_NEXOL,
+            screen: 'notifications',
+            id: broadcastId,
+          },
+          dedupeKey: `broadcast:${broadcastId}:${businessId}`,
+          dedupeWindowMinutes: 1440,
+        });
+        totalSent += res.sent || 0;
+        totalFailed += res.failed || 0;
+        totalSkipped +=
+          typeof res.skipped === 'number' ? res.skipped : res.skipped ? 1 : 0;
+      } catch (err: any) {
+        totalFailed++;
+        this.logger.warn(
+          `[PushService.broadcast] Fallo enviando a negocio ${businessId}: ${err?.message || 'desconocido'}`,
+        );
+      }
+    };
+
+    if (params.businessIds && params.businessIds.length > 0) {
+      const uniqueIds = Array.from(new Set(params.businessIds.filter(Boolean)));
+      for (let i = 0; i < uniqueIds.length; i += PUSH_BATCH_BUSINESSES_SIZE) {
+        const chunk = uniqueIds.slice(i, i + PUSH_BATCH_BUSINESSES_SIZE);
+        for (const bid of chunk) {
+          await processBusiness(bid);
+        }
+      }
+    } else {
+      let cursorId: string | undefined = undefined;
+      while (true) {
+        const subs = await this.prisma.businessProductSubscription.findMany({
+          where: {
+            productType: BusinessProductType.POS,
+            status: BusinessProductStatus.ACTIVE,
+            business: { isActive: true },
+          },
+          select: { id: true, businessId: true },
+          orderBy: { id: 'asc' },
+          take: PUSH_BATCH_BUSINESSES_SIZE,
+          ...(cursorId ? { skip: 1, cursor: { id: cursorId } } : {}),
+        });
+        if (subs.length === 0) break;
+        for (const sub of subs) {
+          await processBusiness(sub.businessId);
+        }
+        if (subs.length < PUSH_BATCH_BUSINESSES_SIZE) break;
+        cursorId = subs[subs.length - 1].id;
+      }
+    }
+
+    // Registrar auditoría de quién envió el broadcast (sin contenido de texto en pos_push_log)
+    try {
+      await this.auditService.record({
+        businessId: params.businessIds?.[0] || 'system',
+        userId: params.actorUserId,
+        userRole: params.actorRole,
+        action: 'PUSH_BROADCAST_SENT',
+        entityType: 'PushBroadcast',
+        entityId: broadcastId,
+        after: {
+          broadcastId,
+          businessesTargeted,
+          sent: totalSent,
+          failed: totalFailed,
+          skipped: totalSkipped,
+          pushEnabled: this.isEnabled(),
+        },
+      });
+    } catch {}
+
+    return {
+      broadcastId,
+      businessesTargeted,
+      sent: totalSent,
+      failed: totalFailed,
+      skipped: totalSkipped,
+      pushEnabled: this.isEnabled(),
+    };
+  }
+
+  /**
    * Envía notificaciones push por FCM HTTP v1.
    * NUNCA lanza excepciones hacia afuera: cualquier fallo se captura y se registra.
    */
@@ -852,24 +1110,38 @@ export class PushService implements OnModuleInit {
   }
 
   private async resolveTargets(input: SendPushInput): Promise<ActiveTokenRow[]> {
-    if (input.deviceId) {
-      return this.prisma.$queryRaw<ActiveTokenRow[]>`
-        SELECT t."id", t."businessId", t."userId", t."deviceId", t."token", t."platform"
-        FROM "pos_push_tokens" t
-        INNER JOIN "users" u ON u."id" = t."userId" AND u."isActive" = true
-        INNER JOIN "pos_devices" d
-          ON d."businessId" = t."businessId"
-         AND d."deviceId" = t."deviceId"
-         AND d."category" = 'MOBILE'
-         AND d."status" = 'ACTIVE'
-        WHERE t."businessId" = ${input.businessId}
-          AND t."deviceId" = ${input.deviceId}
-          AND t."isActive" = true
-      `;
-    }
+    let rows: ActiveTokenRow[] = [];
 
-    if (input.userIds && input.userIds.length > 0) {
-      return this.prisma.$queryRaw<ActiveTokenRow[]>`
+    if (input.deviceId) {
+      if (input.allowRevokedDevice) {
+        rows = await this.prisma.$queryRaw<ActiveTokenRow[]>`
+          SELECT t."id", t."businessId", t."userId", t."deviceId", t."token", t."platform"
+          FROM "pos_push_tokens" t
+          INNER JOIN "pos_devices" d
+            ON d."businessId" = t."businessId"
+           AND d."deviceId" = t."deviceId"
+           AND d."category" = 'MOBILE'
+          WHERE t."businessId" = ${input.businessId}
+            AND t."deviceId" = ${input.deviceId}
+            AND t."isActive" = true
+        `;
+      } else {
+        rows = await this.prisma.$queryRaw<ActiveTokenRow[]>`
+          SELECT t."id", t."businessId", t."userId", t."deviceId", t."token", t."platform"
+          FROM "pos_push_tokens" t
+          INNER JOIN "users" u ON u."id" = t."userId" AND u."isActive" = true
+          INNER JOIN "pos_devices" d
+            ON d."businessId" = t."businessId"
+           AND d."deviceId" = t."deviceId"
+           AND d."category" = 'MOBILE'
+           AND d."status" = 'ACTIVE'
+          WHERE t."businessId" = ${input.businessId}
+            AND t."deviceId" = ${input.deviceId}
+            AND t."isActive" = true
+        `;
+      }
+    } else if (input.userIds && input.userIds.length > 0) {
+      rows = await this.prisma.$queryRaw<ActiveTokenRow[]>`
         SELECT t."id", t."businessId", t."userId", t."deviceId", t."token", t."platform"
         FROM "pos_push_tokens" t
         INNER JOIN "users" u ON u."id" = t."userId" AND u."isActive" = true
@@ -882,11 +1154,9 @@ export class PushService implements OnModuleInit {
           AND t."userId" = ANY(${input.userIds}::text[])
           AND t."isActive" = true
       `;
-    }
-
-    if (input.roles && input.roles.length > 0) {
+    } else if (input.roles && input.roles.length > 0) {
       const roleStrings = input.roles.map((r) => String(r));
-      return this.prisma.$queryRaw<ActiveTokenRow[]>`
+      rows = await this.prisma.$queryRaw<ActiveTokenRow[]>`
         SELECT t."id", t."businessId", t."userId", t."deviceId", t."token", t."platform"
         FROM "pos_push_tokens" t
         INNER JOIN "users" u
@@ -903,7 +1173,12 @@ export class PushService implements OnModuleInit {
       `;
     }
 
-    return [];
+    if (input.excludeUserIds && input.excludeUserIds.length > 0 && rows.length > 0) {
+      const excluded = new Set(input.excludeUserIds);
+      rows = rows.filter((r) => !excluded.has(r.userId));
+    }
+
+    return rows;
   }
 
   private async hasRecentDedupeSent(

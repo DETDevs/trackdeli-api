@@ -4,6 +4,7 @@ import {
   HttpException,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Request } from 'express';
@@ -15,6 +16,8 @@ import {
 } from './client-version.constants';
 import { ClientVersionService } from './client-version.service';
 import { compareSemver } from './utils/semver.util';
+import { PushService } from '../pos/push/push.service';
+import { PushCategory } from '../pos/push/push.constants';
 
 @Injectable()
 export class ClientVersionGuard implements CanActivate {
@@ -23,6 +26,7 @@ export class ClientVersionGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly clientVersionService: ClientVersionService,
+    @Optional() private readonly pushService?: PushService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -134,6 +138,33 @@ export class ClientVersionGuard implements CanActivate {
       const appName = platform.startsWith('mobile')
         ? 'la aplicación móvil'
         : 'la aplicación de escritorio';
+
+      // 300b (#10 CUENTA_DISPOSITIVO): un solo aviso por versión al dispositivo móvil
+      if (platform.startsWith('mobile') && this.pushService && businessId) {
+        try {
+          const deviceIdRaw =
+            req.headers['x-device-id'] || (req.headers as any)['X-Device-Id'];
+          const deviceId = deviceIdRaw ? String(deviceIdRaw).trim() : '';
+          if (deviceId) {
+            void Promise.resolve(
+              this.pushService.sendFireAndForget({
+                businessId,
+                deviceId,
+                category: PushCategory.CUENTA_DISPOSITIVO,
+                title: 'Actualización requerida',
+                body: `Actualizá la app móvil a la versión ${minVersion} para seguir operando.`,
+                data: {
+                  category: PushCategory.CUENTA_DISPOSITIVO,
+                  screen: 'update_required',
+                  id: minVersion,
+                },
+                dedupeKey: `update_required:${deviceId}:${minVersion}`,
+                dedupeWindowMinutes: 60 * 24 * 30,
+              }),
+            ).catch(() => {});
+          }
+        } catch {}
+      }
 
       throw new HttpException(
         {

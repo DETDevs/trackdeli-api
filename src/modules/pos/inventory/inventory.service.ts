@@ -19,6 +19,7 @@ import { assertNotVariantParent } from '../products/variant.utils';
 
 import { BatchesService } from '../batches/batches.service';
 import { buildBusinessDateRange } from '../../../common/utils/date.util';
+import { PushService } from '../push/push.service';
 
 @Injectable()
 export class InventoryService {
@@ -30,6 +31,7 @@ export class InventoryService {
     private readonly approvalsService: ApprovalsService,
     private readonly auditService: AuditService,
     private readonly batchesService: BatchesService,
+    private readonly pushService: PushService,
   ) {}
 
   async createAdjustment(
@@ -66,6 +68,8 @@ export class InventoryService {
         },
       });
     }
+
+    let crossedMinStock = false;
 
     const result = await this.prisma.$transaction(async (tx) => {
       if (dto.approvalToken) {
@@ -160,6 +164,10 @@ export class InventoryService {
 
       const stockBefore = currentStock;
       const stockAfter = round3(stockBefore + qtyDelta);
+      const minStockNum = Number((product as any).minStock || 0);
+      if (product.trackStock && minStockNum > 0 && stockBefore > minStockNum && stockAfter <= minStockNum) {
+        crossedMinStock = true;
+      }
 
       if (stockAfter < 0 && !policies.allowNegativeStock) {
         throw new UnprocessableEntityException({
@@ -294,6 +302,16 @@ export class InventoryService {
     });
 
     this.logger.log(`[createAdjustment] Ajuste creado: id=${result.id} producto=${dto.productId} delta=${result.qtyDelta}`);
+
+    // 300b (#1 STOCK_BAJO): efecto secundario después del commit, sin bloquear
+    if (crossedMinStock) {
+      try {
+        void Promise.resolve(
+          this.pushService.notifyLowStockCrossed(businessId, [dto.productId]),
+        ).catch(() => {});
+      } catch {}
+    }
+
     return result;
   }
 
@@ -331,6 +349,8 @@ export class InventoryService {
 
     // Sort product IDs to prevent deadlock across concurrent transactions
     const sortedLines = [...dto.lines].sort((a, b) => a.productId.localeCompare(b.productId));
+
+    const crossedMinStockIds = new Set<string>();
 
     const result = await this.prisma.$transaction(async (tx) => {
       const processedAdjustments: any[] = [];
@@ -459,6 +479,11 @@ export class InventoryService {
 
         const costImpact = Number(costImpactDec.toDecimalPlaces(2));
 
+        const minStockNum = Number((product as any).minStock || 0);
+        if (product.trackStock && minStockNum > 0 && stockBefore > minStockNum && stockAfter <= minStockNum) {
+          crossedMinStockIds.add(product.id);
+        }
+
         processedAdjustments.push({
           adjustmentId: adjustment.id,
           productId: product.id,
@@ -497,6 +522,16 @@ export class InventoryService {
     });
 
     this.logger.log(`[batchCount] Conteo por lotes procesado: ${result.processedCount} líneas`);
+
+    // 300b (#1 STOCK_BAJO): efecto secundario después del commit, sin bloquear
+    if (crossedMinStockIds.size > 0) {
+      try {
+        void Promise.resolve(
+          this.pushService.notifyLowStockCrossed(businessId, Array.from(crossedMinStockIds)),
+        ).catch(() => {});
+      } catch {}
+    }
+
     return result;
   }
 

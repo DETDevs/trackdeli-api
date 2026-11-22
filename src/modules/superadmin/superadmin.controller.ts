@@ -42,6 +42,7 @@ import { GetClientVersionQueryDto } from '../client-version/dto/get-client-versi
 import { DEFAULT_PLATFORM } from '../client-version/client-version.constants';
 import { UpdateDeviceDto } from '../pos/devices/dto/update-device.dto';
 import { UpdatePosSubscriptionDto } from '../pos/devices/dto/update-pos-subscription.dto';
+import { BroadcastPushDto } from '../pos/push/dto/broadcast-push.dto';
 
 import { BusinessesQueryDto } from './dto/businesses-query.dto';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
@@ -339,6 +340,14 @@ export class SuperAdminController {
     @CurrentUser() user: JwtPayload,
   ) {
     return this.superAdminService.archiveRevokedDevices(id, user);
+  }
+
+  @Post('push/broadcast')
+  async broadcastPush(
+    @Body() dto: BroadcastPushDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.superAdminService.broadcastPush(dto, user);
   }
 
   @Patch('businesses/:id/devices/:deviceId')

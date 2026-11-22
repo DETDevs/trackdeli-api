@@ -23,6 +23,7 @@ import { UpdatePosSubscriptionDto } from './dto/update-pos-subscription.dto';
 import { RegisterWebDeviceDto } from './dto/register-web-device.dto';
 import { PairMobileDeviceDto } from './dto/pair-mobile-device.dto';
 import { PushService } from '../push/push.service';
+import { PushCategory } from '../push/push.constants';
 
 @Injectable()
 export class PosDevicesService {
@@ -355,7 +356,35 @@ export class PosDevicesService {
 
     if (dto.status === PosDeviceStatus.REVOKED) {
       try {
-        await this.pushService.deactivateTokensByDevice(businessId, device.deviceId);
+        void Promise.resolve()
+          .then(async () => {
+            try {
+              if (device.category === 'MOBILE') {
+                await this.pushService.send({
+                  businessId,
+                  deviceId: device.deviceId,
+                  allowRevokedDevice: true,
+                  category: PushCategory.CUENTA_DISPOSITIVO,
+                  title: 'Dispositivo revocado',
+                  body: 'Este equipo fue desconectado de tu negocio. Contactá al encargado.',
+                  data: {
+                    category: PushCategory.CUENTA_DISPOSITIVO,
+                    screen: 'device_revoked',
+                    id: device.id,
+                  },
+                  dedupeKey: `device_revoked:${device.id}:${Math.floor(Date.now() / 60000)}`,
+                });
+              }
+              await this.pushService.deactivateTokensByDevice(businessId, device.deviceId);
+            } catch (err: any) {
+              try {
+                this.logger.warn(
+                  `[updateDevice] No se pudo notificar/desactivar tokens push del dispositivo ${device.deviceId}: ${err?.message || 'desconocido'}`,
+                );
+              } catch {}
+            }
+          })
+          .catch(() => {});
       } catch (err: any) {
         this.logger.warn(
           `[updateDevice] No se pudieron desactivar tokens push del dispositivo ${device.deviceId}: ${err?.message || 'desconocido'}`,

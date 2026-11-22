@@ -75,6 +75,12 @@ const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
 import { UserQuotaService, BASE_USER_LIMIT } from '../users/user-quota.service';
 import { ClientVersionService } from '../client-version/client-version.service';
 import { PushService } from '../pos/push/push.service';
+import { PushCategory } from '../pos/push/push.constants';
+import { BroadcastPushDto } from '../pos/push/dto/broadcast-push.dto';
+import {
+  DEFAULT_BUSINESS_TIMEZONE,
+  formatDateInTimezone,
+} from '../../common/utils/date.util';
 
 @Injectable()
 export class SuperAdminService {
@@ -3236,6 +3242,27 @@ export class SuperAdminService {
           await this.prisma.business.update({ where: { id: sub.businessId }, data: { hasTrackDeli: false } });
         }
 
+        // 300b (#11 CUENTA_DISPOSITIVO): aviso por módulo vencido después del commit
+        try {
+          const todayManagua = formatDateInTimezone(targetDate, DEFAULT_BUSINESS_TIMEZONE);
+          void Promise.resolve(
+            this.pushService.sendFireAndForget({
+              businessId: sub.businessId,
+              roles: [UserRole.ENCARGADO, UserRole.SUPERADMIN],
+              category: PushCategory.CUENTA_DISPOSITIVO,
+              title: 'Módulo vencido',
+              body: `Tu módulo ${sub.productType} venció. Contactá a NEXOL para renovarlo.`,
+              data: {
+                category: PushCategory.CUENTA_DISPOSITIVO,
+                screen: 'subscription',
+                id: sub.productType,
+              },
+              dedupeKey: `module_expired:${sub.businessId}:${sub.productType}:${todayManagua}`,
+              dedupeWindowMinutes: 1440,
+            }),
+          ).catch(() => {});
+        } catch {}
+
         deactivatedProductsCount++;
       }
     }
@@ -3345,8 +3372,37 @@ export class SuperAdminService {
     });
 
     if (dto.status === PosDeviceStatus.REVOKED) {
+      // 300b (#10 CUENTA_DISPOSITIVO): enviar aviso al propio dispositivo revocado y luego desactivar su token (después del commit, sin bloquear)
       try {
-        await this.pushService.deactivateTokensByDevice(businessId, device.deviceId);
+        void Promise.resolve()
+          .then(async () => {
+            try {
+              if (device.category === 'MOBILE') {
+                await this.pushService.send({
+                  businessId,
+                  deviceId: device.deviceId,
+                  allowRevokedDevice: true,
+                  category: PushCategory.CUENTA_DISPOSITIVO,
+                  title: 'Dispositivo revocado',
+                  body: 'Este equipo fue desconectado de tu negocio. Contactá al encargado.',
+                  data: {
+                    category: PushCategory.CUENTA_DISPOSITIVO,
+                    screen: 'device_revoked',
+                    id: device.id,
+                  },
+                  dedupeKey: `device_revoked:${device.id}:${Math.floor(Date.now() / 60000)}`,
+                });
+              }
+              await this.pushService.deactivateTokensByDevice(businessId, device.deviceId);
+            } catch (err: any) {
+              try {
+                this.logger.warn(
+                  `[updateBusinessDevice] No se pudo notificar/desactivar tokens push del dispositivo ${device.deviceId}: ${err?.message || 'desconocido'}`,
+                );
+              } catch {}
+            }
+          })
+          .catch(() => {});
       } catch (err: any) {
         this.logger.warn(
           `[updateBusinessDevice] No se pudieron desactivar tokens push del dispositivo ${device.deviceId}: ${err?.message || 'desconocido'}`,
@@ -3506,6 +3562,19 @@ export class SuperAdminService {
     );
 
     return { archived: result.count };
+  }
+
+  /**
+   * 300b (#12 AVISO_NEXOL): Broadcast push solo para SUPERADMIN.
+   */
+  async broadcastPush(dto: BroadcastPushDto, actorUser: JwtPayload) {
+    return this.pushService.broadcast({
+      title: dto.title,
+      body: dto.body,
+      businessIds: dto.businessIds,
+      actorUserId: actorUser.sub,
+      actorRole: actorUser.role,
+    });
   }
 
   async updatePosSubscription(

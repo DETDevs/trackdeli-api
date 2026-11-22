@@ -32,6 +32,8 @@ import {
   isPromotionActiveAt,
   PromotionRule,
 } from '../promotions/promotions-engine.util';
+import { PushService } from '../push/push.service';
+import { PushCategory } from '../push/push.constants';
 
 @Injectable()
 export class SalesService {
@@ -45,6 +47,7 @@ export class SalesService {
     private readonly auditService: AuditService,
     private readonly approvalsService: ApprovalsService,
     private readonly batchesService: BatchesService,
+    private readonly pushService: PushService,
   ) { }
 
   private formatSale(sale: any, userRole?: string) {
@@ -852,6 +855,16 @@ export class SalesService {
     clientInfo?: { channel?: string; deviceId?: string; platform?: string },
     externalTx?: Prisma.TransactionClient,
   ) {
+    const stockChanges = new Map<string, { before: number; after: number; minStock: number }>();
+    const trackStockChange = (productId: string, before: number, after: number, minStock: number) => {
+      const existing = stockChanges.get(productId);
+      if (!existing) {
+        stockChanges.set(productId, { before, after, minStock });
+      } else {
+        existing.after = after;
+      }
+    };
+
     const runInTx = async (tx: Prisma.TransactionClient) => {
       const policies = await this.policiesService.get(businessId, tx);
       const requireOpenShift = policies.requireOpenShiftToSell !== false;
@@ -2689,6 +2702,12 @@ export class SalesService {
                     },
                   });
                 }
+                trackStockChange(
+                  compProd.id,
+                  stockBefore,
+                  stockAfter,
+                  Number((compProd as any).minStock || 0),
+                );
               }
             }
           } else if (product?.trackStock) {
@@ -2728,6 +2747,12 @@ export class SalesService {
                   },
                 });
               }
+              trackStockChange(
+                item.productId,
+                effectiveStockBefore,
+                trackedStockAfter,
+                Number((product as any).minStock || 0),
+              );
             } else {
               await tx.product.update({
                 where: { id: item.productId },
@@ -2749,6 +2774,12 @@ export class SalesService {
                   reference: sale.id,
                 },
               });
+              trackStockChange(
+                item.productId,
+                stockBefore,
+                stockAfter,
+                Number((product as any).minStock || 0),
+              );
             }
           }
         }
@@ -2783,7 +2814,25 @@ export class SalesService {
     if (externalTx) {
       return runInTx(externalTx);
     }
-    return this.prisma.$transaction((tx) => runInTx(tx));
+
+    const result = await this.prisma.$transaction((tx) => runInTx(tx));
+
+    // 300b (#1 STOCK_BAJO): efecto secundario después del commit, sin bloquear la venta
+    try {
+      const crossedIds: string[] = [];
+      for (const [prodId, info] of stockChanges.entries()) {
+        if (info.minStock > 0 && info.before > info.minStock && info.after <= info.minStock) {
+          crossedIds.push(prodId);
+        }
+      }
+      if (crossedIds.length > 0) {
+        void Promise.resolve(
+          this.pushService.notifyLowStockCrossed(businessId, crossedIds),
+        ).catch(() => {});
+      }
+    } catch {}
+
+    return result;
   }
 
   async findAll(
@@ -2985,7 +3034,9 @@ export class SalesService {
       });
     }
 
-    return await this.prisma.$transaction(async (tx) => {
+    let voidPushInfo: { invoiceNumber: string; total: number; saleId: string } | null = null;
+
+    const result = await this.prisma.$transaction(async (tx) => {
       // 1. Lock sale row
       await tx.$queryRaw`SELECT id FROM pos_sales WHERE id = ${id} FOR UPDATE`;
 
@@ -3399,8 +3450,46 @@ export class SalesService {
           concept: creditRefundMovement.concept,
         };
       }
+      voidPushInfo = {
+        invoiceNumber: sale.invoiceNumber,
+        total: Number(sale.total || 0),
+        saleId: sale.id,
+      };
       return formatted;
     });
+
+    // 300b (#4 VENTA_ANULADA): después del commit, solo si no la hizo ENCARGADO/SUPERADMIN, nunca al actor
+    if (
+      voidPushInfo &&
+      userRole !== UserRole.ENCARGADO &&
+      userRole !== UserRole.SUPERADMIN
+    ) {
+      try {
+        const info: { invoiceNumber: string; total: number; saleId: string } = voidPushInfo;
+        const amtFormatted = info.total.toLocaleString('en-US', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+        void Promise.resolve(
+          this.pushService.sendFireAndForget({
+            businessId,
+            roles: [UserRole.ENCARGADO, UserRole.SUPERADMIN],
+            excludeUserIds: userId ? [userId] : undefined,
+            category: PushCategory.VENTA_ANULADA,
+            title: 'Venta anulada',
+            body: `Se anuló el comprobante ${info.invoiceNumber} (C$ ${amtFormatted})`,
+            data: {
+              category: PushCategory.VENTA_ANULADA,
+              screen: 'sales_detail',
+              id: info.saleId,
+            },
+            dedupeKey: `venta_anulada:${info.saleId}`,
+          }),
+        ).catch(() => {});
+      } catch {}
+    }
+
+    return result;
   }
 
   async cancel(id: string, businessId: string, dto: CancelSaleDto) {
@@ -3438,7 +3527,9 @@ export class SalesService {
       });
     }
 
-    return await this.prisma.$transaction(async (tx) => {
+    let returnPushInfo: { invoiceNumber: string; refundAmount: number; returnId: string; saleId: string } | null = null;
+
+    const result = await this.prisma.$transaction(async (tx) => {
       // 1. Lock sale row and items
       await tx.$queryRaw`SELECT id FROM pos_sales WHERE id = ${id} FOR UPDATE`;
       await tx.$queryRaw`SELECT id, "returnedQty" FROM pos_sale_items WHERE "saleId" = ${id} FOR UPDATE`;
@@ -4083,6 +4174,12 @@ export class SalesService {
       );
 
       this.logger.log(`[createReturn] Devolución ${returnNumber} registrada para venta ${sale.invoiceNumber} (monto: ${totalReturnRefundDec.toFixed(2)})`);
+      returnPushInfo = {
+        invoiceNumber: sale.invoiceNumber,
+        refundAmount: Number(totalReturnRefundDec),
+        returnId: returnRecord.id,
+        saleId: sale.id,
+      };
       return {
         ...returnRecord,
         ...(returnCashMovement ? {
@@ -4107,6 +4204,39 @@ export class SalesService {
         } : {}),
       };
     });
+
+    // 300b (#4 VENTA_ANULADA): después del commit, solo si no la hizo ENCARGADO/SUPERADMIN, nunca al actor
+    if (
+      returnPushInfo &&
+      userRole !== UserRole.ENCARGADO &&
+      userRole !== UserRole.SUPERADMIN
+    ) {
+      try {
+        const info: { invoiceNumber: string; refundAmount: number; returnId: string; saleId: string } = returnPushInfo;
+        const amtFormatted = info.refundAmount.toLocaleString('en-US', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+        void Promise.resolve(
+          this.pushService.sendFireAndForget({
+            businessId,
+            roles: [UserRole.ENCARGADO, UserRole.SUPERADMIN],
+            excludeUserIds: userId ? [userId] : undefined,
+            category: PushCategory.VENTA_ANULADA,
+            title: 'Devolución registrada',
+            body: `Se registró devolución en ${info.invoiceNumber} (C$ ${amtFormatted})`,
+            data: {
+              category: PushCategory.VENTA_ANULADA,
+              screen: 'sales_detail',
+              id: info.saleId,
+            },
+            dedupeKey: `venta_devolucion:${info.returnId}`,
+          }),
+        ).catch(() => {});
+      } catch {}
+    }
+
+    return result;
   }
 
   async findReturns(
