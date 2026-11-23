@@ -1276,6 +1276,7 @@ export class SuperAdminService {
               dataType: tmpl.dataType,
               required: tmpl.required,
               options: tmpl.options as any,
+              helpText: tmpl.helpText ?? null,
               order: tmpl.order,
               searchable: tmpl.searchable,
               showInPos: tmpl.showInPos,

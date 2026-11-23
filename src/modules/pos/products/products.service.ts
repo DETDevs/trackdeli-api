@@ -488,13 +488,23 @@ export class ProductsService {
     if (filters?.search) {
       let matchingIds: string[] = [];
       if (searchableKeys.length > 0) {
-        const orSql = searchableKeys.map((k) => `"attributes"->>'${k}' ILIKE $2`).join(' OR ');
-        const matches: any[] = await this.prisma.$queryRawUnsafe(
-          `SELECT id FROM "pos_products" WHERE "businessId" = $1 AND (${orSql})`,
-          businessId,
-          `%${filters.search}%`,
-        );
-        matchingIds = matches.map((m) => m.id);
+        const safeKeys = searchableKeys.filter((k) => /^[a-z0-9_]+$/i.test(k));
+        if (safeKeys.length > 0) {
+          const accentSrc = 'áéíóúüñÁÉÍÓÚÜÑàèìòùÀÈÌÒÙâêîôûÂÊÎÔÛäëïöÄËÏÖ';
+          const accentDst = 'aeiouunaeiouunaeiouaeiouaeiouaeiouaeioaeio';
+          const orSql = safeKeys
+            .map(
+              (k) =>
+                `translate(lower(COALESCE("attributes"->>'${k}', '')), '${accentSrc}', '${accentDst}') LIKE translate(lower($2), '${accentSrc}', '${accentDst}')`,
+            )
+            .join(' OR ');
+          const matches: any[] = await this.prisma.$queryRawUnsafe(
+            `SELECT id FROM "pos_products" WHERE "businessId" = $1 AND (${orSql})`,
+            businessId,
+            `%${filters.search}%`,
+          );
+          matchingIds = matches.map((m) => m.id);
+        }
       }
 
       where.OR = [
@@ -1588,13 +1598,23 @@ export class ProductsService {
           const searchableKeys = activeFields.filter((f) => f.searchable).map((f) => f.key);
           let matchingIds: string[] = [];
           if (searchableKeys.length > 0) {
-            const orSql = searchableKeys.map((k) => `"attributes"->>'${k}' ILIKE $2`).join(' OR ');
-            const matches: any[] = await tx.$queryRawUnsafe(
-              `SELECT id FROM "pos_products" WHERE "businessId" = $1 AND (${orSql})`,
-              businessId,
-              `%${dto.filters.search}%`,
-            );
-            matchingIds = matches.map((m) => m.id);
+            const safeKeys = searchableKeys.filter((k) => /^[a-z0-9_]+$/i.test(k));
+            if (safeKeys.length > 0) {
+              const accentSrc = 'áéíóúüñÁÉÍÓÚÜÑàèìòùÀÈÌÒÙâêîôûÂÊÎÔÛäëïöÄËÏÖ';
+              const accentDst = 'aeiouunaeiouunaeiouaeiouaeiouaeiouaeioaeio';
+              const orSql = safeKeys
+                .map(
+                  (k) =>
+                    `translate(lower(COALESCE("attributes"->>'${k}', '')), '${accentSrc}', '${accentDst}') LIKE translate(lower($2), '${accentSrc}', '${accentDst}')`,
+                )
+                .join(' OR ');
+              const matches: any[] = await tx.$queryRawUnsafe(
+                `SELECT id FROM "pos_products" WHERE "businessId" = $1 AND (${orSql})`,
+                businessId,
+                `%${dto.filters.search}%`,
+              );
+              matchingIds = matches.map((m) => m.id);
+            }
           }
 
           where.OR = [

@@ -2585,6 +2585,7 @@ model IndustryFieldTemplate {
   dataType          ProductFieldDataType
   required          Boolean              @default(false)
   options           Json?
+  helpText          String?              @db.VarChar(255)
   order             Int                  @default(0)
   searchable        Boolean              @default(false)
   showInPos         Boolean              @default(false)
@@ -2605,6 +2606,7 @@ model ProductFieldDefinition {
   dataType          ProductFieldDataType
   required          Boolean                @default(false)
   options           Json?
+  helpText          String?                @db.VarChar(255)
   order             Int                    @default(0)
   searchable        Boolean                @default(false)
   showInPos         Boolean                @default(false)

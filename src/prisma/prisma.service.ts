@@ -2348,7 +2348,11 @@ WHERE a."customerId" = c."id"
 
       await this.ensureProfessionsMigrated();
 
+      await this.ensureFieldHelpTextColumn();
+
       await this.ensureIndustriesAndFieldTemplatesSeeded();
+
+      await this.ensureRepuestosMotosIndustrySeeded();
 
       await this.ensureBusinessesMigratedToIndustries();
       await this.ensureTaxConfigurationBackfilled();
@@ -5909,6 +5913,187 @@ WHERE a."customerId" = c."id"
       this.logger.log('[103a Seed] ✓ Seed de Industrias y Plantillas de Campos verificado y sincronizado.');
     } catch (err: any) {
       this.logger.warn(`[103a Seed] ⚠ Advertencia en seed de industrias: ${err.message}`);
+    }
+  }
+
+  /**
+   * 301a - Columna opcional helpText en plantillas y definiciones de campos dinámicos.
+   * DDL idempotente con advisory lock 3010100; no modifica datos existentes.
+   */
+  private async ensureFieldHelpTextColumn(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(3010100)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "industry_field_templates"
+            ADD COLUMN IF NOT EXISTS "helpText" VARCHAR(255);
+        `);
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "product_field_definitions"
+            ADD COLUMN IF NOT EXISTS "helpText" VARCHAR(255);
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(3010100)`).catch(() => undefined);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[301a DDL] ⚠ Advertencia al verificar columna helpText: ${err.message}`);
+    }
+  }
+
+  /**
+   * 301a - Seed idempotente del tipo de negocio "Repuestos de motos" (Retail) y sus 6 campos.
+   * Usa advisory lock 3010101. No modifica industrias ni negocios existentes.
+   */
+  private async ensureRepuestosMotosIndustrySeeded(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(3010101)`);
+      try {
+        const industry = await (this as any).industry.upsert({
+          where: { code: 'repuestos_motos' },
+          update: {
+            name: 'Repuestos de motos',
+            posVertical: PosVertical.RETAIL,
+            order: 7,
+            tracksBatches: false,
+            usesVariants: false,
+          },
+          create: {
+            code: 'repuestos_motos',
+            name: 'Repuestos de motos',
+            posVertical: PosVertical.RETAIL,
+            order: 7,
+            tracksBatches: false,
+            usesVariants: false,
+          },
+        });
+
+        const motoPartsFields = [
+          {
+            key: 'marca_moto',
+            label: 'Marca de moto',
+            dataType: ProductFieldDataType.SELECT,
+            required: false,
+            options: [
+              'Honda',
+              'Yamaha',
+              'Suzuki',
+              'Bajaj',
+              'Genesis',
+              'Serpento',
+              'Italika',
+              'TVS',
+              'Kawasaki',
+              'Otra',
+            ],
+            helpText: null,
+            order: 1,
+            searchable: false,
+            showInPos: true,
+            allowCreateInline: false,
+          },
+          {
+            key: 'modelo_compatible',
+            label: 'Modelo compatible',
+            dataType: ProductFieldDataType.TEXT,
+            required: false,
+            options: null,
+            helpText: 'Ej. CG 125, XR150. Separá varios con coma.',
+            order: 2,
+            searchable: true,
+            showInPos: true,
+            allowCreateInline: true,
+          },
+          {
+            key: 'anio',
+            label: 'Año',
+            dataType: ProductFieldDataType.TEXT,
+            required: false,
+            options: null,
+            helpText: 'Ej. 2015–2020',
+            order: 3,
+            searchable: false,
+            showInPos: false,
+            allowCreateInline: true,
+          },
+          {
+            key: 'numero_parte',
+            label: 'Número de parte',
+            dataType: ProductFieldDataType.TEXT,
+            required: false,
+            options: null,
+            helpText: null,
+            order: 4,
+            searchable: true,
+            showInPos: false,
+            allowCreateInline: true,
+          },
+          {
+            key: 'calidad',
+            label: 'Calidad',
+            dataType: ProductFieldDataType.SELECT,
+            required: false,
+            options: ['Original', 'Genérico', 'Alternativo'],
+            helpText: null,
+            order: 5,
+            searchable: false,
+            showInPos: false,
+            allowCreateInline: false,
+          },
+          {
+            key: 'ubicacion',
+            label: 'Ubicación',
+            dataType: ProductFieldDataType.TEXT,
+            required: false,
+            options: null,
+            helpText: 'Ej. Estante 3, gaveta B',
+            order: 6,
+            searchable: false,
+            showInPos: false,
+            allowCreateInline: true,
+          },
+        ];
+
+        for (const field of motoPartsFields) {
+          await (this as any).industryFieldTemplate.upsert({
+            where: {
+              industryId_key: {
+                industryId: industry.id,
+                key: field.key,
+              },
+            },
+            update: {
+              label: field.label,
+              dataType: field.dataType,
+              required: field.required,
+              options: field.options,
+              helpText: field.helpText,
+              order: field.order,
+              searchable: field.searchable,
+              showInPos: field.showInPos,
+              allowCreateInline: field.allowCreateInline,
+            },
+            create: {
+              industryId: industry.id,
+              key: field.key,
+              label: field.label,
+              dataType: field.dataType,
+              required: field.required,
+              options: field.options,
+              helpText: field.helpText,
+              order: field.order,
+              searchable: field.searchable,
+              showInPos: field.showInPos,
+              allowCreateInline: field.allowCreateInline,
+            },
+          });
+        }
+
+        this.logger.log('[301a Seed] ✓ Industria "Repuestos de motos" y sus 6 campos verificados.');
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(3010101)`).catch(() => undefined);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[301a Seed] ⚠ Advertencia en seed de Repuestos de motos: ${err.message}`);
     }
   }
 

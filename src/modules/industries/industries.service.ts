@@ -19,7 +19,7 @@ export class IndustriesService {
   async findAllActive() {
     return this.prisma.industry.findMany({
       where: { isActive: true },
-      orderBy: { order: 'asc' },
+      orderBy: [{ order: 'asc' }, { name: 'asc' }],
       include: {
         fieldTemplates: {
           orderBy: { order: 'asc' },
@@ -30,7 +30,7 @@ export class IndustriesService {
 
   async findAllForSuperAdmin() {
     return this.prisma.industry.findMany({
-      orderBy: { order: 'asc' },
+      orderBy: [{ order: 'asc' }, { name: 'asc' }],
       include: {
         _count: {
           select: { businesses: true },
