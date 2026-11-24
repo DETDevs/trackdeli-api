@@ -1,23 +1,36 @@
 import {
+  IsArray,
   IsEnum,
+  IsIn,
   IsInt,
-  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   Max,
   Min,
+  ValidateNested,
 } from 'class-validator';
-import {
-  CommercialPaymentType,
-  CommercialSaleModality,
-} from '@prisma/client';
+import { Type } from 'class-transformer';
+import { CommercialPaymentType } from '@prisma/client';
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
+import { CreateCommercialEquipmentDto } from './create-commercial-equipment.dto';
+import { CreateCommercialPaymentDto } from './create-commercial-payment.dto';
+
+export const ALLOWED_SALE_MODALITIES = [
+  'MEMBRESIA',
+  'MEMBRESIA_MENSUAL',
+  'SOLO_SISTEMA',
+  'PAGO_UNICO_SISTEMA',
+  'COMBO_COMPLETO',
+  'COMBO_PARCIAL',
+] as const;
+
+export type SaleModalityInput = (typeof ALLOWED_SALE_MODALITIES)[number];
 
 export class UpsertCommercialAgreementDto {
-  @IsEnum(CommercialSaleModality)
+  @IsIn(ALLOWED_SALE_MODALITIES)
   @IsOptional()
-  saleModality?: CommercialSaleModality;
+  saleModality?: SaleModalityInput;
 
   @IsEnum(CommercialPaymentType)
   @IsOptional()
@@ -33,9 +46,9 @@ export class UpsertCommercialAgreementDto {
   @IsOptional()
   downPayment?: number;
 
-  @IsString()
+  @IsIn(['USD', 'NIO'])
   @IsOptional()
-  currency?: string;
+  currency?: 'USD' | 'NIO';
 
   @IsInt()
   @Min(0)
@@ -56,6 +69,10 @@ export class UpsertCommercialAgreementDto {
   @IsString()
   @IsOptional()
   activatedAt?: string;
+
+  @IsString()
+  @IsOptional()
+  saleDate?: string;
 
   @IsInt()
   @Min(0)
@@ -80,4 +97,15 @@ export class UpsertCommercialAgreementDto {
   @SanitizeText()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateCommercialEquipmentDto)
+  equipment?: CreateCommercialEquipmentDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CreateCommercialPaymentDto)
+  initialPayment?: CreateCommercialPaymentDto;
 }

@@ -19,7 +19,8 @@ import { DeleteBusinessDto } from './dto/delete-business.dto';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateBusinessOrganizationDto } from './dto/update-business-organization.dto';
 import { GrantBranchAccessDto } from './dto/grant-branch-access.dto';
-import { BusinessType, MembershipStatus, MembershipType, OrderStatus, Prisma, UserRole, BusinessProductType, BusinessProductStatus, BusinessProductAction, PosVertical, PaymentMethod, PosDeviceStatus } from '@prisma/client';
+import { BusinessType, CommercialSaleModality, MembershipStatus, MembershipType, OrderStatus, Prisma, UserRole, BusinessProductType, BusinessProductStatus, BusinessProductAction, PosVertical, PaymentMethod, PosDeviceStatus } from '@prisma/client';
+import { CommercialService, normalizeSaleModality } from './commercial/commercial.service';
 import { AuditService } from '../pos/audit/audit.service';
 import { UpdateDeviceDto } from '../pos/devices/dto/update-device.dto';
 import { UpdatePosSubscriptionDto } from '../pos/devices/dto/update-pos-subscription.dto';
@@ -93,6 +94,7 @@ export class SuperAdminService {
     private readonly auditService: AuditService,
     private readonly clientVersionService: ClientVersionService,
     private readonly pushService: PushService,
+    private readonly commercialService: CommercialService,
   ) { }
 
   private async fetchEnrichedBusinesses(now: Date = new Date()) {
@@ -1517,9 +1519,28 @@ export class SuperAdminService {
         }
       }
 
-      // 2. Registro de Membresía inicial (PAID vs TRIAL)
+      // 2. Acuerdo comercial (302a) o Membresía mensual inicial (PAID vs TRIAL)
+      const rawSaleModality = dto.commercial?.saleModality || dto.saleModality;
+      const normalizedSaleModality = normalizeSaleModality(rawSaleModality);
+      const isOneTimeCommercialSale =
+        normalizedSaleModality !== CommercialSaleModality.MEMBRESIA_MENSUAL;
+
       let membership = null;
-      if (membershipPaymentProducts.length > 0) {
+      let commercialAgreementCreated = null;
+
+      if (isOneTimeCommercialSale) {
+        commercialAgreementCreated =
+          await this.commercialService.createAgreementInTransaction(
+            tx,
+            business.id,
+            business.billingAnchorDay,
+            {
+              ...(dto.commercial || {}),
+              saleModality: normalizedSaleModality,
+            },
+            { sub: createdBy, role: UserRole.SUPERADMIN },
+          );
+      } else if (membershipPaymentProducts.length > 0) {
         const totalAmount = membershipPaymentProducts.reduce(
           (acc, p) => acc + (p.amountAttributed || 0),
           0,
@@ -1625,12 +1646,19 @@ export class SuperAdminService {
         }
       }
 
-      return { business, encargado, membership };
+      return { business, encargado, membership, commercialAgreementCreated };
     });
 
     this.logger.log(
       `[createBusiness] OK negocio creado id=${result.business.id}, encargado=${result.encargado.id} (email=${email})`,
     );
+
+    const commercialAgreement = result.commercialAgreementCreated
+      ? await this.commercialService.getCommercialAgreement(result.business.id)
+      : null;
+    const accountStatement = result.commercialAgreementCreated
+      ? await this.commercialService.getAccountStatement(result.business.id)
+      : null;
 
     return {
       business: {
@@ -1661,6 +1689,7 @@ export class SuperAdminService {
         isActive: result.encargado.isActive,
       },
       membership: result.membership ? this.formatMembershipWithProducts(result.membership, result.business.billingAnchorDay ?? undefined) : null,
+      ...(commercialAgreement ? { commercialAgreement, accountStatement } : {}),
     };
   }
 

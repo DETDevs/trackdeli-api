@@ -62,6 +62,10 @@ export class BusinessProductsService {
     const db = tx || this.prisma;
     const coverage = await resolveBusinessCoverage(db, businessId, now);
 
+    if (coverage.isCommercialBlocked) {
+      return false;
+    }
+
     if (coverage.isCovered) {
       return true;
     }

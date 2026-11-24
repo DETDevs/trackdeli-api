@@ -23,12 +23,39 @@ import { CreateCommercialPaymentDto } from './dto/create-commercial-payment.dto'
 import { VoidCommercialPaymentDto } from './dto/void-commercial-payment.dto';
 import { CreateCommercialEquipmentDto } from './dto/create-commercial-equipment.dto';
 import { UpdateCommercialEquipmentDto } from './dto/update-commercial-equipment.dto';
+import { UpdateCommercialPricingConfigDto } from './dto/update-commercial-pricing-config.dto';
 
 @Controller('superadmin')
 @UseGuards(SuperAdminGuard)
 @Roles(UserRole.SUPERADMIN)
 export class CommercialController {
   constructor(private readonly commercialService: CommercialService) {}
+
+  @Get('commercial/pricing-config')
+  async getPricingConfig() {
+    return this.commercialService.getPricingConfig();
+  }
+
+  @Patch('commercial/pricing-config')
+  async updatePricingConfig(
+    @Body() dto: UpdateCommercialPricingConfigDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.commercialService.updatePricingConfig(dto, user);
+  }
+
+  @Put('commercial/pricing-config')
+  async putPricingConfig(
+    @Body() dto: UpdateCommercialPricingConfigDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.commercialService.updatePricingConfig(dto, user);
+  }
+
+  @Get('businesses/:id/account-statement')
+  async getAccountStatement(@Param('id') businessId: string) {
+    return this.commercialService.getAccountStatement(businessId);
+  }
 
   @Get('businesses/:id/commercial')
   async getCommercialAgreement(@Param('id') businessId: string) {

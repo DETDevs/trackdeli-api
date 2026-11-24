@@ -55,7 +55,10 @@ export class PosGuard implements CanActivate {
         {
           statusCode: HttpStatus.PAYMENT_REQUIRED,
           error: 'COMMERCIAL_PAYMENT_OVERDUE',
-          message: 'Tenés una cuota vencida. Contactá a NEXOL para regularizar.',
+          code: 'COMMERCIAL_PAYMENT_OVERDUE',
+          message:
+            coverage.blockMessage ||
+            'Tenés una cuota vencida. Contactá a NEXOL para regularizar.',
         },
         HttpStatus.PAYMENT_REQUIRED,
       );
@@ -65,8 +68,12 @@ export class PosGuard implements CanActivate {
       throw new HttpException(
         {
           statusCode: HttpStatus.PAYMENT_REQUIRED,
-          error: 'MEMBERSHIP_EXPIRED',
-          message: 'Mantenimiento o membresía vencida. Contactá a NEXOL para regularizar.',
+          error: coverage.isMaintenancePlan ? 'MAINTENANCE_EXPIRED' : 'MEMBERSHIP_EXPIRED',
+          ...(coverage.isMaintenancePlan ? { code: 'MAINTENANCE_OVERDUE' } : {}),
+          message:
+            coverage.isMaintenancePlan && coverage.blockMessage
+              ? coverage.blockMessage
+              : 'Mantenimiento o membresía vencida. Contactá a NEXOL para regularizar.',
         },
         HttpStatus.PAYMENT_REQUIRED,
       );

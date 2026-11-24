@@ -364,6 +364,18 @@ export function computeBusinessMembershipBilling(
 
 export type CoverageSource = 'MAINTENANCE_FREE' | 'MEMBERSHIP' | null;
 
+export type BillingBlockReason =
+  | 'INSTALLMENT_OVERDUE'
+  | 'MAINTENANCE_OVERDUE'
+  | 'MEMBERSHIP_OVERDUE'
+  | null;
+
+export function formatManaguaDdMmYyyy(ymd: string): string {
+  const parts = String(ymd || '').split('-');
+  if (parts.length !== 3) return ymd;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
+
 export interface BusinessCoverageResolution {
   source: CoverageSource;
   coveredUntil: Date | null;
@@ -378,13 +390,18 @@ export interface BusinessCoverageResolution {
   overdueInstallmentsCount: number;
   daysUntilDue: number | null;
   status: DerivedMembershipStatus;
+  oldestOverdueInstallmentDueDate: string | null;
+  oldestOverdueInstallmentNumber: number | null;
+  isMaintenancePlan: boolean;
+  blockReason: BillingBlockReason;
+  blockMessage: string | null;
 }
 
 /**
  * Calcula la cobertura unificada de un negocio evaluando:
  * 1. Bloqueo comercial por cuotas de crédito vencidas fuera de su período de gracia.
  * 2. Mantenimiento gratis (12 meses o configurable) según el acuerdo comercial.
- * 3. Membresía mensual regular pagada.
+ * 3. Membresía mensual regular pagada (o mantenimiento mensual desde el mes 13).
  * Regla: Vale la cobertura que llegue más lejos.
  * Si hay bloqueo comercial por cuota vencida, isCovered es false.
  */
@@ -395,6 +412,7 @@ export function computeBusinessCoverage(
     billingAnchorDay?: number | null;
   },
   agreement: {
+    saleModality?: string | null;
     paymentType?: string | null;
     status?: string | null;
     graceDays?: number | null;
@@ -423,6 +441,15 @@ export function computeBusinessCoverage(
   let commercialOverdue = false;
   let overdueAmount = 0;
   let overdueInstallmentsCount = 0;
+  let oldestOverdueInstallmentDueDate: string | null = null;
+  let oldestOverdueInstallmentNumber: number | null = null;
+
+  const isMaintenancePlan = Boolean(
+    agreement &&
+      agreement.status !== 'CANCELADO' &&
+      agreement.saleModality &&
+      agreement.saleModality !== 'MEMBRESIA_MENSUAL',
+  );
 
   // 1. Evaluación de crédito comercial
   if (agreement && agreement.paymentType === 'CREDITO' && agreement.status !== 'CANCELADO') {
@@ -445,6 +472,11 @@ export function computeBusinessCoverage(
           isCommercialBlocked = true;
           overdueAmount += (amt - paid);
           overdueInstallmentsCount++;
+          const dueYmd = toManaguaDateString(dueDate);
+          if (!oldestOverdueInstallmentDueDate || dueYmd < oldestOverdueInstallmentDueDate) {
+            oldestOverdueInstallmentDueDate = dueYmd;
+            oldestOverdueInstallmentNumber = inst.installmentNumber;
+          }
         }
       }
     }
@@ -514,16 +546,33 @@ export function computeBusinessCoverage(
     chosenDays = memDays;
   }
 
-  // 5. Cobertura final
+  // 5. Cobertura final y motivo de bloqueo
   const isTimeCovered = chosenGrace !== null && now < chosenGrace;
   const isCovered = isTimeCovered && !isCommercialBlocked;
   const isInGrace = chosenDue !== null && chosenGrace !== null && now >= chosenDue && now < chosenGrace;
   const status = chosenDays !== null ? calculateMembershipStatus(chosenDays) : 'NOT_CONTRACTED';
+  const coveredUntilStr = chosenDue ? toManaguaDateString(chosenDue) : null;
+
+  let blockReason: BillingBlockReason = null;
+  let blockMessage: string | null = null;
+
+  if (isCommercialBlocked) {
+    blockReason = 'INSTALLMENT_OVERDUE';
+    blockMessage = oldestOverdueInstallmentDueDate
+      ? `Tenés una cuota vencida desde el ${formatManaguaDdMmYyyy(oldestOverdueInstallmentDueDate)}. Contactá a NEXOL para regularizar.`
+      : 'Tenés una cuota vencida. Contactá a NEXOL para regularizar.';
+  } else if (!isCovered && coveredUntilStr && isMaintenancePlan) {
+    blockReason = 'MAINTENANCE_OVERDUE';
+    blockMessage = `Tu mantenimiento venció el ${formatManaguaDdMmYyyy(coveredUntilStr)}. Contactá a NEXOL para regularizar.`;
+  } else if (!isCovered && chosenSource) {
+    blockReason = 'MEMBERSHIP_OVERDUE';
+    blockMessage = 'Membresía vencida o inactiva. Contactá a TrackDeli para renovar.';
+  }
 
   return {
     source: chosenSource,
     coveredUntil: chosenDue,
-    coveredUntilStr: chosenDue ? toManaguaDateString(chosenDue) : null,
+    coveredUntilStr,
     graceEndsAt: chosenGrace,
     graceEndsAtStr: chosenGrace ? chosenGrace.toISOString() : null,
     isCovered,
@@ -534,6 +583,11 @@ export function computeBusinessCoverage(
     overdueInstallmentsCount,
     daysUntilDue: chosenDays,
     status,
+    oldestOverdueInstallmentDueDate,
+    oldestOverdueInstallmentNumber,
+    isMaintenancePlan,
+    blockReason,
+    blockMessage,
   };
 }
 
@@ -582,6 +636,11 @@ export async function resolveBusinessCoverage(
       overdueInstallmentsCount: 0,
       daysUntilDue: null,
       status: 'NOT_CONTRACTED',
+      oldestOverdueInstallmentDueDate: null,
+      oldestOverdueInstallmentNumber: null,
+      isMaintenancePlan: false,
+      blockReason: null,
+      blockMessage: null,
     };
   }
 

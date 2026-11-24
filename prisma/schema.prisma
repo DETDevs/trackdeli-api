@@ -3111,7 +3111,7 @@ model BusinessCommercialAgreement {
   activatedAt           DateTime                  @default(now()) @map("activated_at")
   maintenanceFreeMonths Int                       @default(12) @map("maintenance_free_months")
   maintenanceFreeEndsAt DateTime?                 @map("maintenance_free_ends_at")
-  maintenanceFeeNio     Decimal                   @default(550) @db.Decimal(10, 2) @map("maintenance_fee_nio")
+  maintenanceFeeNio     Decimal                   @default(555) @db.Decimal(10, 2) @map("maintenance_fee_nio")
   installationDoneAt    DateTime?                 @map("installation_done_at")
   trainingDoneAt        DateTime?                 @map("training_done_at")
   notes                 String?                   @db.Text
@@ -3136,6 +3136,8 @@ model CommercialInstallment {
   amount            Decimal                     @db.Decimal(12, 2)
   paidAmount        Decimal                     @default(0) @db.Decimal(12, 2) @map("paid_amount")
   paidAt            DateTime?                   @map("paid_at")
+  paymentId         String?                     @map("payment_id")
+  payment           CommercialPayment?          @relation(fields: [paymentId], references: [id], onDelete: SetNull)
   createdAt         DateTime                    @default(now()) @map("created_at")
   updatedAt         DateTime                    @updatedAt @map("updated_at")
 
@@ -3151,6 +3153,7 @@ model CommercialPayment {
 
   kind            CommercialPaymentKind
   amount          Decimal                     @db.Decimal(12, 2)
+  currency        String                      @default("USD") @db.VarChar(10)
   paymentMethod   PaymentMethod               @default(TRANSFERENCIA) @map("payment_method")
   referenceNumber String?                     @map("reference_number") @db.VarChar(100)
   paymentProofUrl String?                     @map("payment_proof_url") @db.VarChar(500)
@@ -3164,6 +3167,8 @@ model CommercialPayment {
   voidReason      String?                     @map("void_reason") @db.VarChar(500)
   createdAt       DateTime                    @default(now()) @map("created_at")
 
+  installments    CommercialInstallment[]
+
   @@index([agreementId])
   @@map("commercial_payments")
 }
@@ -3175,6 +3180,7 @@ model CommercialEquipment {
   businessId     String                      @map("business_id")
   business       Business                    @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
+  name           String?                     @db.VarChar(150)
   equipmentType  CommercialEquipmentType     @map("equipment_type")
   description    String?                     @db.VarChar(255)
   brand          String                      @db.VarChar(100)

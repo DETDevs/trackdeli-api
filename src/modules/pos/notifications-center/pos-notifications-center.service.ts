@@ -343,10 +343,20 @@ export class PosNotificationsCenterService {
         ? Math.max(1, 4 + coverage.daysUntilDue)
         : null;
 
+    const isMaintPlan = coverage.isMaintenancePlan;
+    const planLabel = isMaintPlan ? 'mantenimiento' : 'membresía';
+    const planLabelCap = isMaintPlan ? 'Mantenimiento' : 'Membresía';
+    const maintFeeNio =
+      isMaintPlan && business.commercialAgreement?.maintenanceFeeNio != null
+        ? this.round2(Number(business.commercialAgreement.maintenanceFeeNio))
+        : null;
+    const displayAmount = isMaintPlan && maintFeeNio !== null ? maintFeeNio : lastAmount;
+    const displayCurrency = isMaintPlan && maintFeeNio !== null ? 'NIO' : lastCurrency;
+
     if (hasRecurringOrMaintPlan && coverage.isInGrace && coverage.coveredUntilStr) {
       const dueFormatted = this.fmtCalendarYmd(coverage.coveredUntilStr);
       const graceLabel = `${graceDaysRemaining} ${graceDaysRemaining === 1 ? 'día' : 'días'} de gracia`;
-      const body = `Tu membresía venció el ${dueFormatted}. Tenés ${graceLabel} para realizar tu pago y evitar interrupciones en el sistema.`;
+      const body = `Tu ${planLabel} venció el ${dueFormatted}. Tenés ${graceLabel} para realizar tu pago y evitar interrupciones en el sistema.`;
 
       shouldShowTopBanner = true;
       bannerSeverity = 'CRITICAL';
@@ -357,12 +367,12 @@ export class PosNotificationsCenterService {
         fingerprint: `MEMBERSHIP_IN_GRACE:${coverage.coveredUntilStr}:${graceDaysRemaining}`,
         category: 'MEMBERSHIP',
         severity: 'CRITICAL',
-        title: `Membresía vencida · Quedan ${graceLabel}`,
+        title: `${planLabelCap} vencid${isMaintPlan ? 'o' : 'a'} · Quedan ${graceLabel}`,
         body,
-        ...(lastAmount !== null ? { amount: lastAmount, currency: lastCurrency || 'USD' } : {}),
+        ...(displayAmount !== null ? { amount: displayAmount, currency: displayCurrency || 'USD' } : {}),
         redirect: {
           route: '#membership-modal',
-          actionLabel: 'Ver estado de membresía',
+          actionLabel: isMaintPlan ? 'Ver estado de mantenimiento' : 'Ver estado de membresía',
         },
       });
     } else if (
@@ -377,13 +387,13 @@ export class PosNotificationsCenterService {
       const severity: SystemNotificationSeverity = days <= 2 ? 'CRITICAL' : 'WARNING';
       const title =
         days === 0
-          ? 'Hoy vence tu membresía'
+          ? `Hoy vence tu ${planLabel}`
           : days === 1
-            ? 'Mañana vence tu membresía'
-            : `Quedan ${days} días para el pago de tu membresía`;
+            ? `Mañana vence tu ${planLabel}`
+            : `Quedan ${days} días para el pago de tu ${planLabel}`;
       const amountSuffix =
-        lastAmount !== null && lastAmount > 0
-          ? ` (${this.fmtMoney(lastAmount, lastCurrency)})`
+        displayAmount !== null && displayAmount > 0
+          ? ` (${this.fmtMoney(displayAmount, displayCurrency)})`
           : '';
       const body = `Tu fecha de renovación es el ${dueFormatted}${amountSuffix}. Estate listo con tu pago para mantener el sistema activo sin interrupciones.`;
 
@@ -391,8 +401,8 @@ export class PosNotificationsCenterService {
       bannerSeverity = severity;
       bannerMessage =
         days === 0
-          ? `Hoy vence tu membresía (${dueFormatted})${amountSuffix}. Estate listo con tu pago.`
-          : `Quedan ${days} ${days === 1 ? 'día' : 'días'} para tu membresía (vence el ${dueFormatted})${amountSuffix}. Estate listo con tu pago.`;
+          ? `Hoy vence tu ${planLabel} (${dueFormatted})${amountSuffix}. Estate listo con tu pago.`
+          : `Quedan ${days} ${days === 1 ? 'día' : 'días'} para tu ${planLabel} (vence el ${dueFormatted})${amountSuffix}. Estate listo con tu pago.`;
 
       items.push({
         id: 'MEMBERSHIP_DUE_SOON',
@@ -401,10 +411,10 @@ export class PosNotificationsCenterService {
         severity,
         title,
         body,
-        ...(lastAmount !== null ? { amount: lastAmount, currency: lastCurrency || 'USD' } : {}),
+        ...(displayAmount !== null ? { amount: displayAmount, currency: displayCurrency || 'USD' } : {}),
         redirect: {
           route: '#membership-modal',
-          actionLabel: 'Ver detalle de membresía',
+          actionLabel: isMaintPlan ? 'Ver detalle de mantenimiento' : 'Ver detalle de membresía',
         },
       });
     }
@@ -443,7 +453,9 @@ export class PosNotificationsCenterService {
             : instDays === 0
               ? `Hoy vence tu cuota comercial #${nextUnpaid.installmentNumber}`
               : `Quedan ${instDays} ${instDays === 1 ? 'día' : 'días'} para tu cuota comercial #${nextUnpaid.installmentNumber}`;
-          const body = `Saldo pendiente: ${this.fmtMoney(remaining, agreement.currency)} (fecha límite ${dueFmt}).`;
+          const body = isOverdue
+            ? `Tenés una cuota vencida desde el ${dueFmt}. Saldo pendiente: ${this.fmtMoney(remaining, agreement.currency)}.`
+            : `Saldo pendiente: ${this.fmtMoney(remaining, agreement.currency)} (fecha límite ${dueFmt}).`;
 
           items.push({
             id: 'COMMERCIAL_INSTALLMENT_DUE',

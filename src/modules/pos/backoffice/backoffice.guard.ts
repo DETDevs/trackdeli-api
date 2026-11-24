@@ -105,7 +105,23 @@ export class BackofficeGuard implements CanActivate {
             statusCode: 402,
             error: 'Payment Required',
             code: 'COMMERCIAL_PAYMENT_OVERDUE',
-            message: 'Tenés una cuota vencida. Contactá a NEXOL para regularizar.',
+            message:
+              coverage.blockMessage ||
+              'Tenés una cuota vencida. Contactá a NEXOL para regularizar.',
+          },
+          HttpStatus.PAYMENT_REQUIRED,
+        );
+      }
+
+      if (coverage.source && !coverage.isCovered && coverage.isMaintenancePlan) {
+        throw new HttpException(
+          {
+            statusCode: 402,
+            error: 'Payment Required',
+            code: 'MAINTENANCE_OVERDUE',
+            message:
+              coverage.blockMessage ||
+              'Tu mantenimiento venció. Contactá a NEXOL para regularizar.',
           },
           HttpStatus.PAYMENT_REQUIRED,
         );

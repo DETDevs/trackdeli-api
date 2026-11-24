@@ -2320,6 +2320,7 @@ WHERE a."customerId" = c."id"
       await this.ensureDeviceCashRegisterSchema();
       await this.ensureMultiBranchSchema();
       await this.ensureCommercialAgreementsSchema();
+      await this.ensureCommercial302aSchema();
       await this.ensureSaleItemCostSchema();
       await this.ensurePosPoliciesRequireShiftSchema();
       await this.ensureMembershipTypeSchema();
@@ -6094,6 +6095,83 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[301a Seed] ⚠ Advertencia en seed de Repuestos de motos: ${err.message}`);
+    }
+  }
+
+  /**
+   * 302a - Extensiones comerciales:
+   * - Columna payment_id (opcional) en commercial_installments con FK ON DELETE SET NULL
+   * - Columna currency (default USD) en commercial_payments
+   * - Columna name (opcional) en commercial_equipment
+   * - Default maintenance_fee_nio = 555 en business_commercial_agreements (solo nuevos registros)
+   * - Configuración centralizada commercial_pricing_config en platform_settings (ON CONFLICT DO NOTHING)
+   * DDL idempotente con advisory lock 3020100; no toca negocios ni registros existentes.
+   */
+  private async ensureCommercial302aSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(3020100)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "business_commercial_agreements"
+            ALTER COLUMN "maintenance_fee_nio" SET DEFAULT 555;
+        `);
+
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "commercial_installments"
+            ADD COLUMN IF NOT EXISTS "payment_id" TEXT;
+        `);
+
+        await this.$executeRawUnsafe(`
+          DO $$ BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint
+              WHERE conname = 'commercial_installments_payment_id_fkey'
+            ) THEN
+              ALTER TABLE "commercial_installments"
+                ADD CONSTRAINT "commercial_installments_payment_id_fkey"
+                FOREIGN KEY ("payment_id") REFERENCES "commercial_payments"("id")
+                ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
+          END $$;
+        `);
+
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "commercial_payments"
+            ADD COLUMN IF NOT EXISTS "currency" VARCHAR(10) NOT NULL DEFAULT 'USD';
+        `);
+
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "commercial_equipment"
+            ADD COLUMN IF NOT EXISTS "name" VARCHAR(150);
+        `);
+
+        const defaultPricingJson = JSON.stringify({
+          soloSistemaPriceUsd: 380,
+          comboCompletoPriceUsd: 800,
+          maintenanceMonthlyNio: 555,
+          maintenanceFreeMonths: 12,
+          defaultCreditDownPaymentPct: 50,
+          maxCreditInstallments: 4,
+          defaultGraceDays: 3,
+        });
+
+        await this.$executeRawUnsafe(
+          `
+          INSERT INTO "platform_settings" ("key", "value", "description", "updatedAt")
+          VALUES ($1, $2, $3, NOW())
+          ON CONFLICT ("key") DO NOTHING;
+          `,
+          'commercial_pricing_config',
+          defaultPricingJson,
+          'Precios de referencia comerciales y mantenimiento mensual (302a)',
+        );
+
+        this.logger.log('[302a Schema] ✓ Esquema comercial 302a y precios de referencia verificados.');
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(3020100)`).catch(() => undefined);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[302a Schema] ⚠ Advertencia al verificar esquema comercial 302a: ${err.message}`);
     }
   }
 

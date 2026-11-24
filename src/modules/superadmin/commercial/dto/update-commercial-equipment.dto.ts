@@ -3,6 +3,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
   Min,
 } from 'class-validator';
 import {
@@ -12,6 +13,12 @@ import {
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
 
 export class UpdateCommercialEquipmentDto {
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(150)
+  name?: string;
+
   @IsEnum(CommercialEquipmentType)
   @IsOptional()
   equipmentType?: CommercialEquipmentType;
@@ -39,7 +46,7 @@ export class UpdateCommercialEquipmentDto {
   @IsNumber()
   @Min(0)
   @IsOptional()
-  price?: number;
+  price?: number | null;
 
   @IsEnum(CommercialEquipmentStatus)
   @IsOptional()
@@ -58,4 +65,3 @@ export class UpdateCommercialEquipmentDto {
   @IsString()
   notes?: string;
 }
-

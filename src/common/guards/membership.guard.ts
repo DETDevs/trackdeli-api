@@ -89,7 +89,9 @@ export class MembershipGuard implements CanActivate {
               statusCode: 402,
               error: 'Payment Required',
               code: 'COMMERCIAL_PAYMENT_OVERDUE',
-              message: 'Tenés una cuota vencida. Contactá a NEXOL para regularizar.',
+              message:
+                coverage.blockMessage ||
+                'Tenés una cuota vencida. Contactá a NEXOL para regularizar.',
             },
             HttpStatus.PAYMENT_REQUIRED,
           );
@@ -99,7 +101,11 @@ export class MembershipGuard implements CanActivate {
           throw new HttpException(
             {
               statusCode: 402,
-              message: 'Membresía vencida o inactiva. Contactá a TrackDeli para renovar.',
+              ...(coverage.isMaintenancePlan ? { code: 'MAINTENANCE_OVERDUE' } : {}),
+              message:
+                coverage.isMaintenancePlan && coverage.blockMessage
+                  ? coverage.blockMessage
+                  : 'Membresía vencida o inactiva. Contactá a TrackDeli para renovar.',
               error: 'Payment Required',
             },
             HttpStatus.PAYMENT_REQUIRED,

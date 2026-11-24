@@ -2,6 +2,11 @@ import { IsBoolean, IsDateString, IsEmail, IsEnum, IsIn, IsInt, IsNotEmpty, IsNu
 import { Type } from 'class-transformer';
 import { BusinessType, PosVertical, PaymentMethod } from '@prisma/client';
 import { SanitizeText } from '../../../common/decorators/sanitize-text.decorator';
+import {
+  ALLOWED_SALE_MODALITIES,
+  SaleModalityInput,
+  UpsertCommercialAgreementDto,
+} from '../commercial/dto/upsert-commercial-agreement.dto';
 
 export class FirstPaymentDto {
   @IsOptional()
@@ -225,4 +230,14 @@ export class CreateBusinessSuperAdminDto {
   @ValidateNested()
   @Type(() => FirstPaymentDto)
   firstPayment?: FirstPaymentDto;
+
+  @IsOptional()
+  @IsIn(ALLOWED_SALE_MODALITIES)
+  saleModality?: SaleModalityInput;
+
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => UpsertCommercialAgreementDto)
+  commercial?: UpsertCommercialAgreementDto;
 }

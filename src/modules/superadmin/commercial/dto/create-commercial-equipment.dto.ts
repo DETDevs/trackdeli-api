@@ -1,9 +1,9 @@
 import {
   IsEnum,
-  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
   Min,
 } from 'class-validator';
 import {
@@ -13,24 +13,30 @@ import {
 import { SanitizeText } from '../../../../common/decorators/sanitize-text.decorator';
 
 export class CreateCommercialEquipmentDto {
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(150)
+  name?: string;
+
   @IsEnum(CommercialEquipmentType)
-  @IsNotEmpty()
-  equipmentType: CommercialEquipmentType;
+  @IsOptional()
+  equipmentType?: CommercialEquipmentType;
 
   @IsOptional()
   @SanitizeText()
   @IsString()
   description?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @SanitizeText()
-  brand: string;
+  brand?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @SanitizeText()
-  model: string;
+  model?: string;
 
   @IsOptional()
   @IsString()
@@ -40,7 +46,7 @@ export class CreateCommercialEquipmentDto {
   @IsNumber()
   @Min(0)
   @IsOptional()
-  price?: number;
+  price?: number | null;
 
   @IsEnum(CommercialEquipmentStatus)
   @IsOptional()
@@ -59,4 +65,3 @@ export class CreateCommercialEquipmentDto {
   @IsString()
   notes?: string;
 }
-
