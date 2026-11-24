@@ -2321,6 +2321,7 @@ WHERE a."customerId" = c."id"
       await this.ensureMultiBranchSchema();
       await this.ensureCommercialAgreementsSchema();
       await this.ensureCommercial302aSchema();
+      await this.ensureBarcodeSequenceSchema();
       await this.ensureSaleItemCostSchema();
       await this.ensurePosPoliciesRequireShiftSchema();
       await this.ensureMembershipTypeSchema();
@@ -6172,6 +6173,35 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[302a Schema] ⚠ Advertencia al verificar esquema comercial 302a: ${err.message}`);
+    }
+  }
+
+  /**
+   * 303a - Tabla pos_barcode_sequences para contador concurrente de códigos EAN-13 internos por negocio.
+   * DDL idempotente con advisory lock 3030100; no modifica datos existentes.
+   */
+  private async ensureBarcodeSequenceSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(3030100)`);
+      try {
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_barcode_sequences" (
+            "business_id" TEXT NOT NULL,
+            "last_number" BIGINT NOT NULL DEFAULT 0,
+            "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_barcode_sequences_pkey" PRIMARY KEY ("business_id"),
+            CONSTRAINT "pos_barcode_sequences_business_id_fkey"
+              FOREIGN KEY ("business_id") REFERENCES "businesses"("id")
+              ON DELETE CASCADE ON UPDATE CASCADE
+          );
+        `);
+
+        this.logger.log('[303a Schema] ✓ Tabla pos_barcode_sequences verificada.');
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(3030100)`).catch(() => undefined);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[303a Schema] ⚠ Advertencia al verificar pos_barcode_sequences: ${err.message}`);
     }
   }
 

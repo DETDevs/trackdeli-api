@@ -11,11 +11,13 @@ import { Roles } from "../../../common/decorators/roles.decorator";
 import { UserRole } from "@prisma/client";
 import { resolveBusinessId } from "../pos.utils";
 import { ProductsService } from "./products.service";
+import { ProductBarcodesService } from "./product-barcodes.service";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
 import { AdjustStockDto } from "./dto/adjust-stock.dto";
 import { SetRecipeComponentsDto } from "./dto/set-recipe-components.dto";
 import { BulkUpdateProductsDto } from "./dto/bulk-update-products.dto";
+import { GenerateMissingBarcodesDto } from "./dto/generate-missing-barcodes.dto";
 import { UploadService } from "../../upload/upload.service";
 
 const ALLOWED_PRODUCT_IMAGE_MIME_TYPES = new Set([
@@ -32,8 +34,28 @@ const MAX_PRODUCT_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 export class ProductsController {
   constructor(
     private readonly service: ProductsService,
+    private readonly barcodesService: ProductBarcodesService,
     private readonly uploadService: UploadService,
   ) {}
+
+  @Post("barcodes/next")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  nextBarcode(
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.barcodesService.nextBarcode(resolveBusinessId(user, qBid));
+  }
+
+  @Post("barcodes/generate-missing")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  generateMissingBarcodes(
+    @Body() dto: GenerateMissingBarcodesDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.barcodesService.generateMissingBarcodes(resolveBusinessId(user, qBid), dto);
+  }
 
   @Post("upload-image")
   @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)

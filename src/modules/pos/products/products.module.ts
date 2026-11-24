@@ -3,6 +3,7 @@ import { ProductsController } from './products.controller';
 import { ProductPresentationsController } from './product-presentations.controller';
 import { ProductVariantsController } from './product-variants.controller';
 import { ProductsService } from './products.service';
+import { ProductBarcodesService } from './product-barcodes.service';
 import { ProductPresentationsService } from './product-presentations.service';
 import { ProductVariantsService } from './product-variants.service';
 import { PrismaModule } from '../../../prisma/prisma.module';
@@ -24,12 +25,14 @@ import { UploadModule } from '../../upload/upload.module';
   ],
   providers: [
     ProductsService,
+    ProductBarcodesService,
     ProductPresentationsService,
     ProductVariantsService,
     ProductsImportService,
   ],
   exports: [
     ProductsService,
+    ProductBarcodesService,
     ProductPresentationsService,
     ProductVariantsService,
     ProductsImportService,

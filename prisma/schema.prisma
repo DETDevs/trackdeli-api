@@ -439,6 +439,9 @@ model Business {
   // 294d - Promociones dinámicas con vigencia
   promotions                   PosPromotion[]
 
+  // 303a - Contador de códigos de barras internos EAN-13 por negocio
+  barcodeSequence              PosBarcodeSequence?
+
   @@map("businesses")
 }
 
@@ -1335,6 +1338,16 @@ model ProductPresentation {
   @@index([businessId, productId, isActive, sortOrder])
   @@index([productId])
   @@map("pos_product_presentations")
+}
+
+// 303a - Contador por negocio para generación concurrente de códigos EAN-13 internos (prefijo 20)
+model PosBarcodeSequence {
+  businessId String   @id @map("business_id")
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  lastNumber BigInt   @default(0) @map("last_number")
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("pos_barcode_sequences")
 }
 
 model PosPromotion {
