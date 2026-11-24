@@ -77,7 +77,7 @@ export interface TargetVisibilityConfig {
  * Filtra las columnas base según el negocio, replicando las reglas del formulario
  * "Nuevo producto" (pos-desktop ProductModal.tsx):
  * - Descripción e Impuesto Incluido no se editan por producto en el formulario → fuera.
- * - Precio Etiqueta solo si el negocio usa precio etiqueta o es farmacia.
+ * - Precio Etiqueta solo si el negocio tiene activo useListPrice.
  * - Unidad de Medida y Stock Máximo se ocultan en farmacia.
  * - Precio/Cantidad por Mayor solo si la venta por mayor está habilitada.
  * - Enviar a Cocina solo en restaurante.
@@ -89,7 +89,7 @@ export function filterCoreTargets(cfg: TargetVisibilityConfig): ImportTarget[] {
       case 'taxIncluded':
         return false;
       case 'listPrice':
-        return cfg.useListPrice || cfg.isPharmacy;
+        return cfg.useListPrice;
       case 'unit':
       case 'maxStock':
         return !cfg.isPharmacy;
@@ -491,7 +491,7 @@ export class ProductsImportService {
       this.getTargets(businessId, { includeHidden: true }),
       this.prisma.business.findUnique({
         where: { id: businessId },
-        select: { id: true, wholesaleEnabled: true, tracksBatches: true, industry: { select: { code: true } } },
+        select: { id: true, wholesaleEnabled: true, tracksBatches: true, useListPrice: true, industry: { select: { code: true } } },
       }),
     ]);
     const targetMap = new Map(targets.map(t => [t.id, t]));
@@ -991,7 +991,10 @@ export class ProductsImportService {
               if (!mergedAttrs?.principio_activo || !String(mergedAttrs.principio_activo).trim()) {
                 missingInRow.push({ column: 'principio_activo', label: 'Principio activo' });
               }
-              if (payload.core.listPrice == null || Number(payload.core.listPrice) <= 0 || isNaN(Number(payload.core.listPrice))) {
+              if (
+                business?.useListPrice &&
+                (payload.core.listPrice == null || Number(payload.core.listPrice) <= 0 || isNaN(Number(payload.core.listPrice)))
+              ) {
                 missingInRow.push({ column: 'listPrice', label: 'Precio de etiqueta' });
               }
               if (payload.core.cost == null || Number(payload.core.cost) <= 0 || isNaN(Number(payload.core.cost))) {

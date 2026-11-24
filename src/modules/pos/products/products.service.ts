@@ -921,11 +921,13 @@ export class ProductsService {
       where: { id: businessId },
       select: {
         wholesaleEnabled: true,
+        useListPrice: true,
         posVertical: true,
         industry: { select: { code: true } },
       },
     });
     const industryCode = business?.industry?.code;
+    const useListPrice = Boolean(business?.useListPrice);
 
     // Normalizar atributos y alias en dto
     normalizePharmacyAttributes(dto);
@@ -951,7 +953,9 @@ export class ProductsService {
       }
     }
 
-    validateProductCreationForIndustry(industryCode, dto.type, dto, supplierBelongsToBiz);
+    validateProductCreationForIndustry(industryCode, dto.type, dto, supplierBelongsToBiz, {
+      useListPrice,
+    });
 
     if (industryCode === 'farmacia') {
       await this.ensurePharmacyFieldDefinitions(businessId);
@@ -1147,10 +1151,12 @@ export class ProductsService {
       where: { id: businessId },
       select: {
         wholesaleEnabled: true,
+        useListPrice: true,
         industry: { select: { code: true } },
       },
     });
     const industryCode = business?.industry?.code;
+    const useListPrice = Boolean(business?.useListPrice);
 
     // Normalizar atributos y alias en dto
     normalizePharmacyAttributes(dto);
@@ -1177,7 +1183,9 @@ export class ProductsService {
     }
 
     const effectiveType = dto.type ?? (product as any).type ?? 'PRODUCT';
-    validateProductUpdateForIndustry(industryCode, effectiveType, dto, supplierBelongsToBiz);
+    validateProductUpdateForIndustry(industryCode, effectiveType, dto, supplierBelongsToBiz, {
+      useListPrice,
+    });
 
     if (industryCode === 'farmacia') {
       await this.ensurePharmacyFieldDefinitions(businessId);

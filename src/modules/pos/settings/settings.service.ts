@@ -17,7 +17,7 @@ export class SettingsService {
         id: true, name: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true, hasCitas: true,
         posVertical: true, salonProfile: true, gridColumns: true, gridRows: true,
         taxRate: true, taxEnabled: true, taxIncluded: true, currency: true, invoicePrefix: true, invoiceCounter: true,
-        posAddress: true, posPhone: true, posFooter: true, wholesaleEnabled: true,
+        posAddress: true, posPhone: true, posFooter: true, wholesaleEnabled: true, useListPrice: true,
         deliveryChannelEnabled: true, pedidosYaChannelEnabled: true,
         deliveryDefaultFee: true, deliveryTaxable: true, deliveryRequireDriver: true,
         pedidosYaCommissionPct: true, pedidosYaTaxPct: true,
@@ -53,6 +53,8 @@ export class SettingsService {
       salonLabels: getSalonLabels(resolvedSalonProfile),
       wholesale_enabled: Boolean(business.wholesaleEnabled),
       wholesaleEnabled: Boolean(business.wholesaleEnabled),
+      use_list_price: Boolean(business.useListPrice),
+      useListPrice: Boolean(business.useListPrice),
       channels: {
         delivery: {
           enabled: Boolean(business.deliveryChannelEnabled),

@@ -124,8 +124,17 @@ describe('ProductsImportService', () => {
       expect(l).toContain('Enviar a Cocina (SI/NO)');
     });
 
-    it('farmacia: precio etiqueta sí, unidad y stock máximo no', async () => {
-      prismaMock.business.findUnique.mockResolvedValue({ id: 'b1', tracksBatches: true, industry: { code: 'farmacia' } });
+    it('farmacia con useListPrice=false: sin precio etiqueta, unidad ni stock máximo', async () => {
+      prismaMock.business.findUnique.mockResolvedValue({ id: 'b1', tracksBatches: true, useListPrice: false, industry: { code: 'farmacia' } });
+      const l = await labels();
+      expect(l).not.toContain('Precio Etiqueta');
+      expect(l).toContain('Lote');
+      expect(l).not.toContain('Unidad de Medida');
+      expect(l).not.toContain('Stock Máximo');
+    });
+
+    it('farmacia con useListPrice=true: precio etiqueta sí, unidad y stock máximo no', async () => {
+      prismaMock.business.findUnique.mockResolvedValue({ id: 'b1', tracksBatches: true, useListPrice: true, industry: { code: 'farmacia' } });
       const l = await labels();
       expect(l).toContain('Precio Etiqueta');
       expect(l).toContain('Lote');

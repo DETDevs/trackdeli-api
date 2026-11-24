@@ -113,6 +113,10 @@ export function isFieldValueValid(val: any, rule: RequiredFieldDef, supplierVali
   }
 }
 
+export interface IndustryValidationOptions {
+  useListPrice?: boolean;
+}
+
 /**
  * Valida creación de producto según rubro de negocio.
  * Arroja BadRequestException con { code: 'PRODUCT_REQUIRED_FIELDS', fields: [...] } si falta alguno.
@@ -122,6 +126,7 @@ export function validateProductCreationForIndustry(
   productType: string | undefined | null,
   dto: any,
   supplierValid = true,
+  options?: IndustryValidationOptions,
 ): void {
   const normIndustry = (industryCode || '').trim().toLowerCase();
   const rules = REQUIRED_PRODUCT_FIELDS_BY_INDUSTRY[normIndustry];
@@ -135,9 +140,13 @@ export function validateProductCreationForIndustry(
 
   normalizePharmacyAttributes(dto);
 
+  const useListPrice = Boolean(options?.useListPrice);
   const missingFields: string[] = [];
 
   for (const rule of rules) {
+    if (rule.key === 'listPrice' && !useListPrice) {
+      continue;
+    }
     const val = getFieldValue(dto, rule);
     const isValid = isFieldValueValid(val, rule, supplierValid);
     if (!isValid) {
@@ -165,6 +174,7 @@ export function validateProductUpdateForIndustry(
   productType: string | undefined | null,
   dto: any,
   supplierValid = true,
+  options?: IndustryValidationOptions,
 ): void {
   const normIndustry = (industryCode || '').trim().toLowerCase();
   const rules = REQUIRED_PRODUCT_FIELDS_BY_INDUSTRY[normIndustry];
@@ -175,9 +185,13 @@ export function validateProductUpdateForIndustry(
 
   normalizePharmacyAttributes(dto);
 
+  const useListPrice = Boolean(options?.useListPrice);
   const invalidFields: string[] = [];
 
   for (const rule of rules) {
+    if (rule.key === 'listPrice' && !useListPrice) {
+      continue;
+    }
     // Verificar si el campo fue enviado en la petición
     let isProvided = false;
     let val: any = undefined;
