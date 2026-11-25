@@ -1152,7 +1152,14 @@ export class ProductsService {
       ? { activeBatchCount: 0, nextExpiryDate: null }
       : undefined;
 
-    return this.filterActiveAttributes(product, activeKeys, batchInfo, business?.wholesaleEnabled);
+    const formatted = this.filterActiveAttributes(
+      product,
+      activeKeys,
+      undefined,
+      business?.wholesaleEnabled,
+    );
+
+    return batchInfo ? { ...formatted, ...batchInfo } : formatted;
   }
 
   async update(id: string, dto: UpdateProductDto, businessId: string, userId?: string) {
