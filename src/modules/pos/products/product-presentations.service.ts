@@ -10,18 +10,21 @@ import { CreatePresentationDto } from './dto/create-presentation.dto';
 import { UpdatePresentationDto } from './dto/update-presentation.dto';
 import { round3 } from './product-unit.util';
 
+export const MAX_ACTIVE_PRESENTATIONS_PER_PRODUCT = 5;
+
 export function canSeePresentationCost(userRole?: string): boolean {
   return !userRole || userRole === UserRole.ENCARGADO || userRole === UserRole.SUPERADMIN;
 }
 
-export function formatPresentation(p: any, userRole?: string) {
+export function formatPresentation(p: any, userRole?: string, productStock?: number | null) {
   if (!p) return null;
+  const factorNum = p.factor != null ? Number(p.factor) : 1;
   const formatted: Record<string, any> = {
     id: p.id,
     businessId: p.businessId,
     productId: p.productId,
     name: p.name,
-    factor: p.factor != null ? Number(p.factor) : 1,
+    factor: factorNum,
     price: p.price != null ? Number(p.price) : 0,
     listPrice: p.listPrice != null ? Number(p.listPrice) : null,
     wholesalePrice: p.wholesalePrice != null ? Number(p.wholesalePrice) : null,
@@ -34,6 +37,14 @@ export function formatPresentation(p: any, userRole?: string) {
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
   };
+
+  if (productStock !== undefined && productStock !== null) {
+    const stockNum = Number(productStock);
+    formatted.availableUnits =
+      Number.isFinite(stockNum) && factorNum > 0
+        ? Math.floor(Math.max(0, stockNum) / factorNum)
+        : 0;
+  }
 
   if (canSeePresentationCost(userRole)) {
     formatted.cost = p.cost != null ? Number(p.cost) : null;
@@ -136,7 +147,7 @@ export class ProductPresentationsService {
   ) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, businessId },
-      select: { id: true },
+      select: { id: true, stock: true },
     });
     if (!product) {
       throw new NotFoundException('Producto no encontrado.');
@@ -155,16 +166,27 @@ export class ProductPresentationsService {
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
 
-    return rows.map((p) => formatPresentation(p, userRole));
+    const productStock = Number(product.stock ?? 0);
+    return rows.map((p) => formatPresentation(p, userRole, productStock));
   }
 
   async create(businessId: string, productId: string, dto: CreatePresentationDto) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, businessId },
-      select: { id: true },
+      select: { id: true, isVariantParent: true, parentProductId: true, stock: true },
     });
     if (!product) {
       throw new NotFoundException('Producto no encontrado.');
+    }
+
+    if (product.isVariantParent || product.parentProductId) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'PRODUCT_HAS_VARIANTS',
+        message:
+          'Un producto con variantes no puede tener presentaciones. Usá variantes o presentaciones, pero no ambas.',
+      });
     }
 
     const name = (dto.name || '').trim();
@@ -188,6 +210,35 @@ export class ProductPresentationsService {
     const sku = dto.sku?.trim() || null;
 
     const created = await this.prisma.$transaction(async (tx) => {
+      const activeCount = await tx.productPresentation.count({
+        where: { businessId, productId, isActive: true },
+      });
+      if (activeCount >= MAX_ACTIVE_PRESENTATIONS_PER_PRODUCT) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'PRESENTATION_LIMIT_EXCEEDED',
+          message: `Solo podés tener hasta ${MAX_ACTIVE_PRESENTATIONS_PER_PRODUCT} presentaciones activas por producto.`,
+        });
+      }
+
+      const duplicateName = await tx.productPresentation.findFirst({
+        where: {
+          businessId,
+          productId,
+          name: { equals: name, mode: 'insensitive' },
+        },
+        select: { id: true },
+      });
+      if (duplicateName) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'PRESENTATION_NAME_TAKEN',
+          message: `Ya existe una presentación llamada "${name}" en este producto.`,
+        });
+      }
+
       if (barcode) {
         await this.assertBarcodeAvailable(tx, businessId, barcode);
       }
@@ -221,7 +272,7 @@ export class ProductPresentationsService {
       });
     });
 
-    return formatPresentation(created, UserRole.ENCARGADO);
+    return formatPresentation(created, UserRole.ENCARGADO, Number(product.stock ?? 0));
   }
 
   async update(
@@ -232,6 +283,7 @@ export class ProductPresentationsService {
   ) {
     const existing = await this.prisma.productPresentation.findFirst({
       where: { id: presentationId, productId, businessId },
+      include: { product: { select: { stock: true } } },
     });
     if (!existing) {
       throw new NotFoundException('Presentación no encontrada.');
@@ -286,6 +338,40 @@ export class ProductPresentationsService {
     const nextSku = dto.sku !== undefined ? (dto.sku ? dto.sku.trim() : null) : undefined;
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      if (nextName !== undefined && nextName.toLowerCase() !== existing.name.toLowerCase()) {
+        const duplicateName = await tx.productPresentation.findFirst({
+          where: {
+            businessId,
+            productId,
+            name: { equals: nextName, mode: 'insensitive' },
+            NOT: { id: presentationId },
+          },
+          select: { id: true },
+        });
+        if (duplicateName) {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            code: 'PRESENTATION_NAME_TAKEN',
+            message: `Ya existe una presentación llamada "${nextName}" en este producto.`,
+          });
+        }
+      }
+
+      if (!existing.isActive && dto.isActive === true) {
+        const activeCount = await tx.productPresentation.count({
+          where: { businessId, productId, isActive: true },
+        });
+        if (activeCount >= MAX_ACTIVE_PRESENTATIONS_PER_PRODUCT) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'PRESENTATION_LIMIT_EXCEEDED',
+            message: `Solo podés tener hasta ${MAX_ACTIVE_PRESENTATIONS_PER_PRODUCT} presentaciones activas por producto.`,
+          });
+        }
+      }
+
       if (nextBarcode && nextBarcode !== existing.barcode) {
         await this.assertBarcodeAvailable(tx, businessId, nextBarcode, presentationId);
       }
@@ -328,7 +414,7 @@ export class ProductPresentationsService {
       });
     });
 
-    return formatPresentation(updated, UserRole.ENCARGADO);
+    return formatPresentation(updated, UserRole.ENCARGADO, Number(existing.product?.stock ?? 0));
   }
 
   async remove(businessId: string, productId: string, presentationId: string) {
@@ -354,8 +440,14 @@ export class ProductPresentationsService {
       });
     }
 
-    await this.prisma.productPresentation.delete({
-      where: { id: presentationId },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.productPresentation.delete({
+        where: { id: presentationId },
+      });
+      await tx.product.update({
+        where: { id: productId },
+        data: { updatedAt: new Date() },
+      });
     });
 
     return { deleted: true, id: presentationId };

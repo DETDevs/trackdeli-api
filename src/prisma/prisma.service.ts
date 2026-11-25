@@ -2322,6 +2322,7 @@ WHERE a."customerId" = c."id"
       await this.ensureCommercialAgreementsSchema();
       await this.ensureCommercial302aSchema();
       await this.ensureBarcodeSequenceSchema();
+      await this.ensureProductBaseUnitNameSchema();
       await this.ensureSaleItemCostSchema();
       await this.ensurePosPoliciesRequireShiftSchema();
       await this.ensureMembershipTypeSchema();
@@ -6202,6 +6203,27 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[303a Schema] ⚠ Advertencia al verificar pos_barcode_sequences: ${err.message}`);
+    }
+  }
+
+  /**
+   * 306a - Columna opcional base_unit_name en pos_products (ej. "Tableta"; sin valor = "Unidad").
+   * DDL idempotente con advisory lock 3060100; no modifica productos existentes.
+   */
+  private async ensureProductBaseUnitNameSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(3060100)`);
+      try {
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "pos_products"
+            ADD COLUMN IF NOT EXISTS "base_unit_name" VARCHAR(50);
+        `);
+        this.logger.log('[306a Schema] ✓ Columna pos_products.base_unit_name verificada.');
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(3060100)`).catch(() => undefined);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[306a Schema] ⚠ Advertencia al verificar base_unit_name: ${err.message}`);
     }
   }
 

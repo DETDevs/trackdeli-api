@@ -15,6 +15,7 @@ import {
 } from "./dto/offline.dto";
 import { validateProductQuantity, round3 } from "../products/product-unit.util";
 import { assertNotVariantParent } from "../products/variant.utils";
+import { formatPresentation } from "../products/product-presentations.service";
 
 import { BatchesService } from "../batches/batches.service";
 import { calculateSaleTotals, RawSaleItemCalculationInput } from "../sales/utils/sale-calculation.util";
@@ -461,8 +462,9 @@ export class OfflineService {
             } else if (product && product.trackStock) {
               const expectedStock = Number(product.stock);
               const resultingStock = round3(expectedStock - baseQty);
+              const baseUnitLabel = (product as any)?.baseUnitName?.trim() || 'Unidad';
               const presSuffix = presentation?.name
-                ? ` (${requestedQty} × ${presentation.name})`
+                ? ` (${requestedQty} ${presentation.name} x${conversionFactor} = ${baseQty} ${baseUnitLabel})`
                 : '';
 
               const isTracked = this.batchesService.isTracked(business, product);
@@ -1206,7 +1208,7 @@ export class OfflineService {
   }
 
   async getCatalogSnapshot(businessId: string, since?: string) {
-    const [categories, products, business, listFieldsWithOptions] = await Promise.all([
+    const [categories, products, business, listFieldsWithOptions, presentationAgg] = await Promise.all([
       this.prisma.category.findMany({
         where: { businessId, isActive: true },
         orderBy: { name: "asc" },
@@ -1215,6 +1217,10 @@ export class OfflineService {
         where: { businessId, isActive: true, isVariantParent: false },
         include: {
           category: true,
+          presentations: {
+            where: { isActive: true },
+            orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          },
           recipeComponents: {
             select: {
               componentProductId: true,
@@ -1250,6 +1256,10 @@ export class OfflineService {
         },
         orderBy: { order: 'asc' },
       }),
+      this.prisma.productPresentation.aggregate({
+        where: { businessId },
+        _max: { updatedAt: true },
+      }),
     ]);
 
     let batchMap = new Map<string, { activeBatchCount: number; nextExpiryDate: string | null }>();
@@ -1283,6 +1293,9 @@ export class OfflineService {
       for (const opt of f.fieldOptions) {
         if (opt.updatedAt > latestUpdate) latestUpdate = opt.updatedAt;
       }
+    }
+    if (presentationAgg?._max?.updatedAt && presentationAgg._max.updatedAt > latestUpdate) {
+      latestUpdate = presentationAgg._max.updatedAt;
     }
 
     const fieldOptions = listFieldsWithOptions.flatMap((f) =>
@@ -1345,10 +1358,11 @@ export class OfflineService {
       field_options: fieldOptions,
       products: products.map((p) => {
         const isRecipe = Boolean(p.isRecipe);
-        const { recipeComponents, reservedStock: _rStock, ...rest } = p;
+        const { recipeComponents, reservedStock: _rStock, presentations: rawPresentations, ...rest } = p as any;
+        const stockNum = Number(p.stock);
         return {
           ...rest,
-          stock: Number(p.stock),
+          stock: stockNum,
           minStock: Number(p.minStock),
           maxStock: p.maxStock != null ? Number(p.maxStock) : null,
           wholesale_price: p.wholesalePrice != null ? Number(p.wholesalePrice) : null,
@@ -1365,6 +1379,10 @@ export class OfflineService {
           markupPct: p.markupPct != null ? Number(p.markupPct) : null,
           taxable: Boolean(p.taxable),
           unit: p.unit || 'UND',
+          baseUnitName: (p as any).baseUnitName?.trim() || 'Unidad',
+          presentations: Array.isArray(rawPresentations)
+            ? rawPresentations.map((pr: any) => formatPresentation(pr, undefined, stockNum))
+            : [],
           trackInventory: p.trackStock,
           isRecipe,
           ...(business?.tracksBatches

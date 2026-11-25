@@ -74,12 +74,14 @@ export class SalesService {
         i.promoDiscount != null
           ? Number(new Prisma.Decimal(i.promoDiscount.toString()).toDecimalPlaces(2))
           : 0;
+      const conversionFactorNum = i.conversionFactor != null ? Number(i.conversionFactor) : 1;
       const itemCopy = {
         ...i,
         unit: i.unit || i.product?.unit || 'UND',
         presentationId: i.presentationId ?? null,
         presentationName: i.presentationName ?? null,
-        conversionFactor: i.conversionFactor != null ? Number(i.conversionFactor) : 1,
+        conversionFactor: conversionFactorNum,
+        baseQty: round3(Number(i.quantity || 0) * conversionFactorNum),
         promotionId: i.promotionId ?? null,
         promotionName: i.promotionName ?? null,
         promoDiscount: promoDiscountNum,
@@ -831,6 +833,7 @@ export class SalesService {
           presentationId: meta?.presentation?.id ?? null,
           presentationName: meta?.presentation?.name ?? null,
           conversionFactor: meta?.conversionFactor ?? 1,
+          baseQty: meta?.baseQty ?? round3(Number(l.quantity || 0) * (meta?.conversionFactor ?? 1)),
           allowManualDiscount: !isLineBlockedFromManualDiscount(
             {
               allowDiscount: meta?.itemAllowDiscount ?? true,
@@ -1347,18 +1350,40 @@ export class SalesService {
           : currentStock;
         if (availableStock < totalBaseQty) {
           if (!policies.allowNegativeStock && !dto.isOfflineSync) {
+            const productPresLine = resolvedLines.find(
+              (rl) => rl.product?.id === product.id && rl.presentation,
+            );
+            const baseUnitLabel = (product as any).baseUnitName?.trim() || product.unit || 'UND';
+            let insufficientMsg = `Existencia insuficiente para "${product.name}". Disponible: ${availableStock} ${baseUnitLabel}, solicitado: ${totalBaseQty} ${baseUnitLabel}.`;
+            let presDetails: Record<string, any> = {};
+            if (productPresLine?.presentation) {
+              const presFactor = Number(
+                productPresLine.conversionFactor || productPresLine.presentation.factor || 1,
+              );
+              const maxForms =
+                presFactor > 0 ? Math.floor(Math.max(0, availableStock) / presFactor) : 0;
+              const presName = productPresLine.presentation.name;
+              insufficientMsg = `Existencia insuficiente para "${product.name}". Solo alcanzan ${maxForms} ${presName} (disponible: ${availableStock} ${baseUnitLabel}, solicitado: ${totalBaseQty} ${baseUnitLabel}).`;
+              presDetails = {
+                presentationId: productPresLine.presentation.id,
+                presentationName: presName,
+                conversionFactor: presFactor,
+                availableUnits: maxForms,
+              };
+            }
             throw new UnprocessableEntityException({
               statusCode: 422,
               error: 'Unprocessable Entity',
               code: 'INSUFFICIENT_STOCK',
               message: {
                 code: 'INSUFFICIENT_STOCK',
-                message: `Existencia insuficiente para "${product.name}". Disponible: ${availableStock} ${product.unit || 'UND'}, solicitado: ${totalBaseQty} ${product.unit || 'UND'}.`,
+                message: insufficientMsg,
                 details: {
                   productId: product.id,
                   productName: product.name,
                   available: availableStock,
                   requested: totalBaseQty,
+                  ...presDetails,
                 },
               },
               details: {
@@ -1366,6 +1391,7 @@ export class SalesService {
                 productName: product.name,
                 available: currentStock,
                 requested: totalBaseQty,
+                ...presDetails,
               },
             });
           }
@@ -2635,8 +2661,9 @@ export class SalesService {
           }
 
           const baseQty = lineMeta?.baseQty ?? round3(item.quantity);
+          const baseUnitLabel = (product as any)?.baseUnitName?.trim() || 'Unidad';
           const presSuffix = lineMeta?.presentationName
-            ? ` (${lineMeta.requestedQty} × ${lineMeta.presentationName})`
+            ? ` (${lineMeta.requestedQty} ${lineMeta.presentationName} x${lineMeta.conversionFactor} = ${baseQty} ${baseUnitLabel})`
             : '';
 
           if (product?.isRecipe && product.recipeComponents && product.recipeComponents.length > 0) {

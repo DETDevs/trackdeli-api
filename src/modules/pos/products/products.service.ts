@@ -107,6 +107,7 @@ export class ProductsService {
       minStock: product.minStock != null ? Number(product.minStock) : 0,
       maxStock: product.maxStock != null ? Number(product.maxStock) : null,
       unit: product.unit || 'UND',
+      baseUnitName: product.baseUnitName?.trim() || 'Unidad',
       trackInventory: product.trackStock,
       isRecipe,
       parentProductId: product.parentProductId ?? null,
@@ -167,7 +168,9 @@ export class ProductsService {
       ...this.mapProductWithInventory(product, isTwoStepEnabled),
       attributes: filteredAttrs,
       presentations: Array.isArray(product.presentations)
-        ? product.presentations.map((pr: any) => formatPresentation(pr, userRole))
+        ? product.presentations.map((pr: any) =>
+            formatPresentation(pr, userRole, product.stock != null ? Number(product.stock) : 0),
+          )
         : [],
       wholesalePrice: wholesale_price,
       wholesaleMinQty: wholesale_min_qty,
@@ -865,7 +868,11 @@ export class ProductsService {
     if (matchedPresentation) {
       return {
         ...formattedProduct,
-        presentation: formatPresentation(matchedPresentation, userRole),
+        presentation: formatPresentation(
+          matchedPresentation,
+          userRole,
+          resolvedProduct.stock != null ? Number(resolvedProduct.stock) : 0,
+        ),
       };
     }
 
@@ -1074,6 +1081,9 @@ export class ProductsService {
         allowDiscount: rawAllowDiscount !== undefined ? Boolean(rawAllowDiscount) : true,
         promoDiscountPct: normalizedPromoDiscountPct,
         unit,
+        ...(dto.baseUnitName !== undefined && {
+          baseUnitName: dto.baseUnitName ? dto.baseUnitName.trim() : null,
+        }),
         type,
         trackStock,
         attributes: validatedAttributes,
@@ -1342,6 +1352,9 @@ export class ProductsService {
     }
 
     if (dto.listPrice !== undefined) (updateData as any).listPrice = dto.listPrice;
+    if (dto.baseUnitName !== undefined) {
+      (updateData as any).baseUnitName = dto.baseUnitName ? dto.baseUnitName.trim() : null;
+    }
     if (dto.minStock !== undefined) (updateData as any).minStock = dto.minStock;
     if (dto.supplierId !== undefined) (updateData as any).supplierId = dto.supplierId;
 

@@ -29,6 +29,12 @@ export class CreateProductDto {
   @MaxLength(10, { message: 'El código de la unidad de medida no puede superar los 10 caracteres' })
   unit?: string;
 
+  @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(50, { message: 'El nombre de la unidad base no puede superar los 50 caracteres' })
+  baseUnitName?: string | null;
+
   @IsNumber()
   @Min(0)
   price: number;

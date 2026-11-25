@@ -211,6 +211,19 @@ export class ProductVariantsService {
         throw new NotFoundException('Producto no encontrado.');
       }
 
+      const activePresentationsCount = await tx.productPresentation.count({
+        where: { businessId, productId: freshParent.id, isActive: true },
+      });
+      if (activePresentationsCount > 0) {
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          code: 'PRODUCT_HAS_PRESENTATIONS',
+          message:
+            'Este producto ya tiene presentaciones activas. Desactivalas antes de generar variantes.',
+        });
+      }
+
       const existingChildren = await tx.product.findMany({
         where: { businessId, parentProductId: freshParent.id },
         orderBy: { name: 'asc' },

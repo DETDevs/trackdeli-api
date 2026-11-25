@@ -30,6 +30,12 @@ export class UpdateProductDto {
   unit?: string;
 
   @IsOptional()
+  @SanitizeText()
+  @IsString()
+  @MaxLength(50, { message: 'El nombre de la unidad base no puede superar los 50 caracteres' })
+  baseUnitName?: string | null;
+
+  @IsOptional()
   @IsNumber()
   @Min(0)
   price?: number;
