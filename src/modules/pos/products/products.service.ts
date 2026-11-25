@@ -1087,12 +1087,13 @@ export class ProductsService {
 
     if (product.trackStock && initialStock > 0) {
       if (dto.tracksBatches) {
-        const customBatch = dto.initialLotNumber
-          ? {
-              batchNumber: dto.initialLotNumber.trim(),
-              expiryDate: dto.initialExpiryDate ? new Date(dto.initialExpiryDate) : null,
-            }
-          : undefined;
+        const customBatch =
+          dto.initialLotNumber || dto.initialExpiryDate
+            ? {
+                batchNumber: dto.initialLotNumber?.trim() || 'INICIAL',
+                expiryDate: dto.initialExpiryDate ? new Date(dto.initialExpiryDate) : null,
+              }
+            : undefined;
 
         const batch = await this.batchesService.ensureInitialBatch(
           this.prisma,
@@ -1140,7 +1141,18 @@ export class ProductsService {
     });
     const activeKeys = new Set(activeFields.map((f) => f.key));
 
-    return this.filterActiveAttributes(product, activeKeys, undefined, business?.wholesaleEnabled);
+    const batchInfo = initialBatchId
+      ? {
+          activeBatchCount: 1,
+          nextExpiryDate: dto.initialExpiryDate
+            ? new Date(dto.initialExpiryDate).toISOString().split('T')[0]
+            : null,
+        }
+      : dto.tracksBatches
+      ? { activeBatchCount: 0, nextExpiryDate: null }
+      : undefined;
+
+    return this.filterActiveAttributes(product, activeKeys, batchInfo, business?.wholesaleEnabled);
   }
 
   async update(id: string, dto: UpdateProductDto, businessId: string, userId?: string) {
