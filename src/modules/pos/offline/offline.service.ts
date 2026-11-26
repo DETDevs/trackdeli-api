@@ -16,6 +16,7 @@ import {
 import { validateProductQuantity, round3 } from "../products/product-unit.util";
 import { assertNotVariantParent } from "../products/variant.utils";
 import { formatPresentation } from "../products/product-presentations.service";
+import { resolveFieldIsFilterable } from "../product-fields/product-fields.service";
 
 import { BatchesService } from "../batches/batches.service";
 import { calculateSaleTotals, RawSaleItemCalculationInput } from "../sales/utils/sale-calculation.util";
@@ -1208,7 +1209,7 @@ export class OfflineService {
   }
 
   async getCatalogSnapshot(businessId: string, since?: string) {
-    const [categories, products, business, listFieldsWithOptions, presentationAgg] = await Promise.all([
+    const [categories, products, business, activeFieldsWithOptions, presentationAgg, soldAggs] = await Promise.all([
       this.prisma.category.findMany({
         where: { businessId, isActive: true },
         orderBy: { name: "asc" },
@@ -1246,7 +1247,6 @@ export class OfflineService {
         where: {
           businessId,
           isActive: true,
-          dataType: ProductFieldDataType.LIST,
         },
         include: {
           fieldOptions: {
@@ -1254,13 +1254,38 @@ export class OfflineService {
             orderBy: { sortOrder: 'asc' },
           },
         },
-        orderBy: { order: 'asc' },
+        orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
       }),
       this.prisma.productPresentation.aggregate({
         where: { businessId },
         _max: { updatedAt: true },
       }),
+      this.prisma.$queryRaw<Array<{ productId: string; soldQty30d: number }>>`
+        SELECT
+          si."productId" AS "productId",
+          COALESCE(
+            SUM(GREATEST(0, si."quantity" - COALESCE(si."returnedQty", 0)) * COALESCE(si."conversionFactor", 1)),
+            0
+          )::float AS "soldQty30d"
+        FROM "pos_sale_items" si
+        INNER JOIN "pos_sales" s ON s."id" = si."saleId"
+        WHERE s."businessId" = ${businessId}
+          AND s."status" IN ('COMPLETED', 'PARTIALLY_RETURNED')
+          AND s."createdAt" >= NOW() - INTERVAL '30 days'
+          AND si."productId" IS NOT NULL
+        GROUP BY si."productId";
+      `,
     ]);
+
+    const soldMap = new Map<string, number>();
+    for (const row of soldAggs || []) {
+      if (row.productId) {
+        soldMap.set(row.productId, Math.round(Number(row.soldQty30d || 0) * 1000) / 1000);
+      }
+    }
+    const listFieldsWithOptions = activeFieldsWithOptions.filter(
+      (f) => f.dataType === ProductFieldDataType.LIST,
+    );
 
     let batchMap = new Map<string, { activeBatchCount: number; nextExpiryDate: string | null }>();
     if (business?.tracksBatches) {
@@ -1288,7 +1313,7 @@ export class OfflineService {
     for (const c of categories) {
       if (c.createdAt > latestUpdate) latestUpdate = c.createdAt;
     }
-    for (const f of listFieldsWithOptions) {
+    for (const f of activeFieldsWithOptions) {
       if (f.updatedAt > latestUpdate) latestUpdate = f.updatedAt;
       for (const opt of f.fieldOptions) {
         if (opt.updatedAt > latestUpdate) latestUpdate = opt.updatedAt;
@@ -1310,6 +1335,34 @@ export class OfflineService {
         isActive: opt.isActive,
       }))
     );
+
+    const productFields = activeFieldsWithOptions.map((f) => ({
+      id: f.id,
+      key: f.key,
+      label: f.label,
+      dataType: f.dataType,
+      order: f.order,
+      required: f.required,
+      searchable: f.searchable,
+      showInPos: f.showInPos,
+      allowCreateInline: f.allowCreateInline,
+      isFilterable: resolveFieldIsFilterable(f),
+      showOnCard: Boolean((f as any).showOnCard),
+      options:
+        f.dataType === ProductFieldDataType.LIST
+          ? f.fieldOptions.map((opt) => ({
+              id: opt.id,
+              label: opt.label,
+              sortOrder: opt.sortOrder,
+            }))
+          : Array.isArray(f.options)
+            ? (f.options as any[]).map((label, idx) => ({
+                id: null,
+                label: String(label),
+                sortOrder: idx,
+              }))
+            : [],
+    }));
 
     const snapshotVersion = latestUpdate.toISOString();
 
@@ -1356,6 +1409,8 @@ export class OfflineService {
       categories,
       fieldOptions,
       field_options: fieldOptions,
+      productFields,
+      product_fields: productFields,
       products: products.map((p) => {
         const isRecipe = Boolean(p.isRecipe);
         const { recipeComponents, reservedStock: _rStock, presentations: rawPresentations, ...rest } = p as any;
@@ -1385,10 +1440,12 @@ export class OfflineService {
             : [],
           trackInventory: p.trackStock,
           isRecipe,
+          soldQty30d: soldMap.get(p.id) ?? 0,
           ...(business?.tracksBatches
             ? {
                 nextExpiryDate: batchMap.get(p.id)?.nextExpiryDate ?? null,
                 next_expiry_date: batchMap.get(p.id)?.nextExpiryDate ?? null,
+                nearestExpiry: batchMap.get(p.id)?.nextExpiryDate ?? null,
                 activeBatchCount: batchMap.get(p.id)?.activeBatchCount ?? 0,
                 active_batch_count: batchMap.get(p.id)?.activeBatchCount ?? 0,
               }

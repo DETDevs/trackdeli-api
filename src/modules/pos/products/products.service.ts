@@ -534,7 +534,7 @@ export class ProductsService {
       ];
     }
 
-    const [products, business] = await Promise.all([
+    const [products, business, soldAggs] = await Promise.all([
       this.prisma.product.findMany({
         where,
         include: {
@@ -574,7 +574,30 @@ export class ProductsService {
           pedidosYaCapAtListPrice: true,
         },
       }),
+      // 309a: Unidades vendidas últimos 30 días en una sola consulta agregada (usa índice [businessId, status, createdAt] + [saleId])
+      this.prisma.$queryRaw<Array<{ productId: string; soldQty30d: number }>>`
+        SELECT
+          si."productId" AS "productId",
+          COALESCE(
+            SUM(GREATEST(0, si."quantity" - COALESCE(si."returnedQty", 0)) * COALESCE(si."conversionFactor", 1)),
+            0
+          )::float AS "soldQty30d"
+        FROM "pos_sale_items" si
+        INNER JOIN "pos_sales" s ON s."id" = si."saleId"
+        WHERE s."businessId" = ${businessId}
+          AND s."status" IN ('COMPLETED', 'PARTIALLY_RETURNED')
+          AND s."createdAt" >= NOW() - INTERVAL '30 days'
+          AND si."productId" IS NOT NULL
+        GROUP BY si."productId";
+      `,
     ]);
+
+    const soldMap = new Map<string, number>();
+    for (const row of soldAggs || []) {
+      if (row.productId) {
+        soldMap.set(row.productId, Math.round(Number(row.soldQty30d || 0) * 1000) / 1000);
+      }
+    }
 
     // 210a: Agregado de lotes por producto (una sola consulta, solo si el negocio tiene tracksBatches = true)
     let batchMap = new Map<string, {
@@ -635,12 +658,26 @@ export class ProductsService {
       if (filters?.groupVariants) {
         item.variants =
           p.isVariantParent && Array.isArray((p as any).variants)
-            ? (p as any).variants.map((v: any) => formatVariantSummary(v, userRole))
+            ? (p as any).variants.map((v: any) => ({
+                ...formatVariantSummary(v, userRole),
+                soldQty30d: soldMap.get(v.id) ?? 0,
+              }))
             : [];
+      }
+      if (p.isVariantParent && Array.isArray((p as any).variants)) {
+        const variantsSold = (p as any).variants.reduce(
+          (acc: number, v: any) => acc + (soldMap.get(v.id) ?? 0),
+          0,
+        );
+        item.soldQty30d =
+          Math.round(((soldMap.get(p.id) ?? 0) + variantsSold) * 1000) / 1000;
+      } else {
+        item.soldQty30d = soldMap.get(p.id) ?? 0;
       }
       if (business?.tracksBatches) {
         const b = batchMap.get(p.id);
         item.nextExpiryDate = b?.nextExpiryDate ?? null;
+        item.nearestExpiry = b?.nextExpiryDate ?? null;
         item.nextExpiryBatchCode = b?.nextExpiryBatchCode ?? null;
         item.activeBatchCount = b?.activeBatchCount ?? 0;
         item.expiredQty = b?.expiredQty ?? 0;

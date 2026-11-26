@@ -2324,6 +2324,7 @@ WHERE a."customerId" = c."id"
       await this.ensureBarcodeSequenceSchema();
       await this.ensureProductBaseUnitNameSchema();
       await this.ensureBusinessAccountAndContactSchema();
+      await this.ensureProductFieldCatalogFlagsSchema();
       await this.ensureSaleItemCostSchema();
       await this.ensurePosPoliciesRequireShiftSchema();
       await this.ensureMembershipTypeSchema();
@@ -6920,6 +6921,38 @@ WHERE a."customerId" = c."id"
     } catch (err: any) {
       this.logger.warn(
         `[PrismaService] ⚠ 307a - Advertencia sincronizando account_type y contacto: ${err?.message || err}`,
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * 309a — Banderas de catálogo en product_field_definitions: is_filterable (nullable) y show_on_card (default false).
+   * Idempotente con advisory lock, sin carpeta de migraciones.
+   */
+  private async ensureProductFieldCatalogFlagsSchema(): Promise<void> {
+    const lockId = 3090100;
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${lockId});`);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "product_field_definitions"
+            ADD COLUMN IF NOT EXISTS "is_filterable" BOOLEAN;
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "product_field_definitions"
+            ADD COLUMN IF NOT EXISTS "show_on_card" BOOLEAN NOT NULL DEFAULT false;
+          `);
+          this.logger.log(
+            '[PrismaService] ✓ 309a - Columnas is_filterable y show_on_card verificadas en product_field_definitions.',
+          );
+        },
+        { maxWait: 10000, timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(
+        `[PrismaService] ⚠ 309a - Advertencia sincronizando banderas de campos del catálogo: ${err?.message || err}`,
       );
       throw err;
     }

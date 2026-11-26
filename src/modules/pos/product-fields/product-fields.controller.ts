@@ -32,7 +32,7 @@ export class ProductFieldsController {
   constructor(private readonly service: ProductFieldsService) {}
 
   @Get()
-  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.WAITER, UserRole.SUPERADMIN)
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.WAITER, UserRole.VENDEDOR, UserRole.SUPERADMIN)
   findAll(
     @CurrentUser() user: JwtPayload,
     @Query('businessId') qBid?: string,
@@ -48,7 +48,7 @@ export class ProductFieldsController {
   }
 
   @Get(':id')
-  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.WAITER, UserRole.SUPERADMIN)
+  @Roles(UserRole.ENCARGADO, UserRole.CAJERO, UserRole.WAITER, UserRole.VENDEDOR, UserRole.SUPERADMIN)
   findOne(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,

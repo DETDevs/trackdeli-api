@@ -14,12 +14,65 @@ import { ProductFieldDataType } from '@prisma/client';
 
 export const MAX_ACTIVE_PRODUCT_FIELDS = 15;
 
+export const SHOW_ON_CARD_ALLOWED_TYPES = new Set<ProductFieldDataType>([
+  ProductFieldDataType.LIST,
+  ProductFieldDataType.SELECT,
+  ProductFieldDataType.TEXT,
+  ProductFieldDataType.NUMBER,
+]);
+
+/**
+ * 309a: Resuelve isFilterable cuando la columna es NULL (por defecto sí para campos activos
+ * de tipo lista/select o sí/no; no para texto, número y fecha).
+ */
+export function resolveFieldIsFilterable(field: {
+  isActive?: boolean;
+  dataType: ProductFieldDataType;
+  isFilterable?: boolean | null;
+}): boolean {
+  if (field.isFilterable !== null && field.isFilterable !== undefined) {
+    return Boolean(field.isFilterable);
+  }
+  if (field.isActive === false) {
+    return false;
+  }
+  return (
+    field.dataType === ProductFieldDataType.LIST ||
+    field.dataType === ProductFieldDataType.SELECT ||
+    field.dataType === ProductFieldDataType.BOOLEAN
+  );
+}
+
+export function formatProductFieldDefinition<T extends {
+  isActive?: boolean;
+  dataType: ProductFieldDataType;
+  isFilterable?: boolean | null;
+  showOnCard?: boolean | null;
+}>(field: T) {
+  return {
+    ...field,
+    isFilterable: resolveFieldIsFilterable(field),
+    showOnCard: Boolean(field.showOnCard),
+  };
+}
+
 @Injectable()
 export class ProductFieldsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private assertValidShowOnCardType(dataType: ProductFieldDataType) {
+    if (!SHOW_ON_CARD_ALLOWED_TYPES.has(dataType)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'INVALID_SHOW_ON_CARD_TYPE',
+        message: 'Solo campos de tipo lista, texto o número pueden mostrarse en la tarjeta.',
+      });
+    }
+  }
+
   async findAll(businessId: string, onlyActive: boolean = false) {
-    return this.prisma.productFieldDefinition.findMany({
+    const fields = await this.prisma.productFieldDefinition.findMany({
       where: {
         businessId,
         ...(onlyActive ? { isActive: true } : {}),
@@ -31,6 +84,7 @@ export class ProductFieldsService {
       },
       orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
     });
+    return fields.map((f) => formatProductFieldDefinition(f));
   }
 
   async findOne(businessId: string, id: string) {
@@ -45,7 +99,7 @@ export class ProductFieldsService {
     if (!field || field.businessId !== businessId) {
       throw new NotFoundException(`Campo de producto con ID '${id}' no encontrado`);
     }
-    return field;
+    return formatProductFieldDefinition(field);
   }
 
   async create(businessId: string, dto: CreateProductFieldDto) {
@@ -99,21 +153,43 @@ export class ProductFieldsService {
       nextOrder = (lastField?.order ?? -1) + 1;
     }
 
-    return this.prisma.productFieldDefinition.create({
-      data: {
-        businessId,
-        key,
-        label: dto.label.trim(),
-        dataType: dto.dataType,
-        required: dto.required ?? false,
-        options: dto.dataType === ProductFieldDataType.SELECT ? dto.options : null,
-        order: nextOrder,
-        searchable: dto.searchable ?? false,
-        showInPos: dto.showInPos ?? false,
-        allowCreateInline: dto.allowCreateInline !== undefined ? dto.allowCreateInline : true,
-        isActive: true,
-      },
+    if (dto.showOnCard === true) {
+      this.assertValidShowOnCardType(dto.dataType);
+    }
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      if (dto.showOnCard === true) {
+        await tx.productFieldDefinition.updateMany({
+          where: { businessId, showOnCard: true },
+          data: { showOnCard: false },
+        });
+      }
+
+      return tx.productFieldDefinition.create({
+        data: {
+          businessId,
+          key,
+          label: dto.label.trim(),
+          dataType: dto.dataType,
+          required: dto.required ?? false,
+          options: dto.dataType === ProductFieldDataType.SELECT ? dto.options : null,
+          order: nextOrder,
+          searchable: dto.searchable ?? false,
+          showInPos: dto.showInPos ?? false,
+          allowCreateInline: dto.allowCreateInline !== undefined ? dto.allowCreateInline : true,
+          isFilterable: dto.isFilterable !== undefined ? dto.isFilterable : null,
+          showOnCard: dto.showOnCard ?? false,
+          isActive: true,
+        },
+        include: {
+          fieldOptions: {
+            orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
+          },
+        },
+      });
     });
+
+    return formatProductFieldDefinition(created);
   }
 
   async update(businessId: string, id: string, dto: UpdateProductFieldDto) {
@@ -157,20 +233,41 @@ export class ProductFieldsService {
       }
     }
 
-    const updated = await this.prisma.productFieldDefinition.update({
-      where: { id },
-      data: {
-        ...(dto.label !== undefined && { label: dto.label.trim() }),
-        ...(dto.dataType !== undefined && { dataType: dto.dataType }),
-        ...(dto.required !== undefined && { required: dto.required }),
-        ...(dto.options !== undefined && {
-          options: targetDataType === ProductFieldDataType.SELECT ? dto.options : null,
-        }),
-        ...(dto.order !== undefined && { order: dto.order }),
-        ...(dto.searchable !== undefined && { searchable: dto.searchable }),
-        ...(dto.showInPos !== undefined && { showInPos: dto.showInPos }),
-        ...(dto.allowCreateInline !== undefined && { allowCreateInline: dto.allowCreateInline }),
-      },
+    const nextShowOnCard = dto.showOnCard !== undefined ? dto.showOnCard : field.showOnCard;
+    if (nextShowOnCard === true) {
+      this.assertValidShowOnCardType(targetDataType);
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (dto.showOnCard === true) {
+        await tx.productFieldDefinition.updateMany({
+          where: { businessId, showOnCard: true, NOT: { id } },
+          data: { showOnCard: false },
+        });
+      }
+
+      return tx.productFieldDefinition.update({
+        where: { id },
+        data: {
+          ...(dto.label !== undefined && { label: dto.label.trim() }),
+          ...(dto.dataType !== undefined && { dataType: dto.dataType }),
+          ...(dto.required !== undefined && { required: dto.required }),
+          ...(dto.options !== undefined && {
+            options: targetDataType === ProductFieldDataType.SELECT ? dto.options : null,
+          }),
+          ...(dto.order !== undefined && { order: dto.order }),
+          ...(dto.searchable !== undefined && { searchable: dto.searchable }),
+          ...(dto.showInPos !== undefined && { showInPos: dto.showInPos }),
+          ...(dto.allowCreateInline !== undefined && { allowCreateInline: dto.allowCreateInline }),
+          ...(dto.isFilterable !== undefined && { isFilterable: dto.isFilterable }),
+          ...(dto.showOnCard !== undefined && { showOnCard: dto.showOnCard }),
+        },
+        include: {
+          fieldOptions: {
+            orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
+          },
+        },
+      });
     });
 
     // Si se actualizó de TEXT a LIST, migrar automáticamente textos libres a opciones
@@ -178,16 +275,22 @@ export class ProductFieldsService {
       await this.migrateExistingTextValuesToOptions(businessId, id);
     }
 
-    return updated;
+    return formatProductFieldDefinition(updated);
   }
 
   async deactivate(businessId: string, id: string) {
     await this.findOne(businessId, id);
 
-    return this.prisma.productFieldDefinition.update({
+    const updated = await this.prisma.productFieldDefinition.update({
       where: { id },
-      data: { isActive: false },
+      data: { isActive: false, showOnCard: false },
+      include: {
+        fieldOptions: {
+          orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
+        },
+      },
     });
+    return formatProductFieldDefinition(updated);
   }
 
   async activate(businessId: string, id: string) {
@@ -206,10 +309,16 @@ export class ProductFieldsService {
       );
     }
 
-    return this.prisma.productFieldDefinition.update({
+    const updated = await this.prisma.productFieldDefinition.update({
       where: { id },
       data: { isActive: true },
+      include: {
+        fieldOptions: {
+          orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
+        },
+      },
     });
+    return formatProductFieldDefinition(updated);
   }
 
   async reorder(businessId: string, fieldIds: string[]) {

@@ -37,4 +37,12 @@ export class UpdateProductFieldDto {
   @IsOptional()
   @IsBoolean()
   allowCreateInline?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isFilterable?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  showOnCard?: boolean;
 }

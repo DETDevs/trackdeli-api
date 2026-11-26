@@ -2639,6 +2639,8 @@ model ProductFieldDefinition {
   searchable        Boolean                @default(false)
   showInPos         Boolean                @default(false)
   allowCreateInline Boolean                @default(true)
+  isFilterable      Boolean?               @map("is_filterable")
+  showOnCard        Boolean                @default(false) @map("show_on_card")
   isActive          Boolean                @default(true)
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt

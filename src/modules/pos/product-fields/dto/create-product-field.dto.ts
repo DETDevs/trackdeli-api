@@ -42,4 +42,12 @@ export class CreateProductFieldDto {
   @IsOptional()
   @IsBoolean()
   allowCreateInline?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isFilterable?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  showOnCard?: boolean;
 }
