@@ -1,3 +1,89 @@
+export type BusinessAccountType = 'CLIENTE' | 'DEMO' | 'INTERNO';
+
+export const ALLOWED_ACCOUNT_TYPES: BusinessAccountType[] = [
+  'CLIENTE',
+  'DEMO',
+  'INTERNO',
+];
+
+export function normalizeAccountType(value?: string | null): BusinessAccountType {
+  const upper = String(value || 'CLIENTE').trim().toUpperCase();
+  if (upper === 'DEMO' || upper === 'INTERNO') return upper;
+  return 'CLIENTE';
+}
+
+export function isNonBillingAccountType(value?: string | null): boolean {
+  const normalized = normalizeAccountType(value);
+  return normalized === 'DEMO' || normalized === 'INTERNO';
+}
+
+/**
+ * Normaliza un teléfono de contacto con código de país (+505 por defecto si trae 8 dígitos).
+ */
+export function normalizeContactPhone(raw?: string | null): string | null {
+  if (raw === undefined || raw === null) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  const cleaned = trimmed.replace(/[\s\-().]/g, '');
+  if (!cleaned) return null;
+  if (/^\d{8}$/.test(cleaned)) {
+    return `+505${cleaned}`;
+  }
+  if (/^505\d{8}$/.test(cleaned)) {
+    return `+${cleaned}`;
+  }
+  if (/^\+\d{8,15}$/.test(cleaned)) {
+    return cleaned;
+  }
+  if (/^\d{10,15}$/.test(cleaned)) {
+    return `+${cleaned}`;
+  }
+  return trimmed;
+}
+
+export interface FormattedBusinessContact {
+  name: string | null;
+  role: string | null;
+  phone: string | null;
+  whatsapp: string | null;
+  customWhatsapp: string | null;
+  email: string | null;
+  address: string | null;
+  municipality: string | null;
+  department: string | null;
+  taxId: string | null;
+  notes: string | null;
+}
+
+export function formatBusinessContact(b: {
+  contactName?: string | null;
+  contactRole?: string | null;
+  contactPhone?: string | null;
+  contactWhatsapp?: string | null;
+  contactEmail?: string | null;
+  contactAddress?: string | null;
+  contactMunicipality?: string | null;
+  contactDepartment?: string | null;
+  contactTaxId?: string | null;
+  contactNotes?: string | null;
+}): FormattedBusinessContact {
+  const phone = b.contactPhone?.trim() || null;
+  const customWhatsapp = b.contactWhatsapp?.trim() || null;
+  return {
+    name: b.contactName?.trim() || null,
+    role: b.contactRole?.trim() || null,
+    phone,
+    whatsapp: customWhatsapp || phone,
+    customWhatsapp,
+    email: b.contactEmail?.trim() || null,
+    address: b.contactAddress?.trim() || null,
+    municipality: b.contactMunicipality?.trim() || null,
+    department: b.contactDepartment?.trim() || null,
+    taxId: b.contactTaxId?.trim() || null,
+    notes: b.contactNotes?.trim() || null,
+  };
+}
+
 export const MANAGUA_TIMEZONE = 'America/Managua';
 
 export interface ManaguaDateParts {
@@ -395,10 +481,13 @@ export interface BusinessCoverageResolution {
   isMaintenancePlan: boolean;
   blockReason: BillingBlockReason;
   blockMessage: string | null;
+  accountType?: BusinessAccountType;
+  exemptFromBilling?: boolean;
 }
 
 /**
  * Calcula la cobertura unificada de un negocio evaluando:
+ * 0. Cuentas DEMO e INTERNO nunca se bloquean por membresía, cuotas ni mantenimiento.
  * 1. Bloqueo comercial por cuotas de crédito vencidas fuera de su período de gracia.
  * 2. Mantenimiento gratis (12 meses o configurable) según el acuerdo comercial.
  * 3. Membresía mensual regular pagada (o mantenimiento mensual desde el mes 13).
@@ -410,6 +499,7 @@ export function computeBusinessCoverage(
     id: string;
     createdAt: Date;
     billingAnchorDay?: number | null;
+    accountType?: string | null;
   },
   agreement: {
     saleModality?: string | null;
@@ -437,6 +527,32 @@ export function computeBusinessCoverage(
   }> | null | undefined,
   now: Date = new Date(),
 ): BusinessCoverageResolution {
+  const accountType = normalizeAccountType(business?.accountType);
+  if (isNonBillingAccountType(accountType)) {
+    return {
+      source: null,
+      coveredUntil: null,
+      coveredUntilStr: null,
+      graceEndsAt: null,
+      graceEndsAtStr: null,
+      isCovered: true,
+      isInGrace: false,
+      isCommercialBlocked: false,
+      commercialOverdue: false,
+      overdueAmount: 0,
+      overdueInstallmentsCount: 0,
+      daysUntilDue: null,
+      status: 'VIGENTE',
+      oldestOverdueInstallmentDueDate: null,
+      oldestOverdueInstallmentNumber: null,
+      isMaintenancePlan: false,
+      blockReason: null,
+      blockMessage: null,
+      accountType,
+      exemptFromBilling: true,
+    };
+  }
+
   let isCommercialBlocked = false;
   let commercialOverdue = false;
   let overdueAmount = 0;
@@ -588,6 +704,8 @@ export function computeBusinessCoverage(
     isMaintenancePlan,
     blockReason,
     blockMessage,
+    accountType,
+    exemptFromBilling: false,
   };
 }
 
@@ -605,6 +723,7 @@ export async function resolveBusinessCoverage(
       id: true,
       createdAt: true,
       billingAnchorDay: true,
+      accountType: true,
       commercialAgreement: {
         include: {
           installments: {

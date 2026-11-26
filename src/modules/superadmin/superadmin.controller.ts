@@ -33,7 +33,7 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { DeleteBusinessDto } from './dto/delete-business.dto';
 import { CommissionsService } from '../commissions/commissions.service';
 import { BusinessesService } from '../businesses/businesses.service';
-import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
+import { SuperAdminUpdateBusinessDto } from './dto/update-business-superadmin.dto';
 
 import { LatencyDiagnosticsService } from './latency-diagnostics.service';
 import { ClientVersionService } from '../client-version/client-version.service';
@@ -71,9 +71,19 @@ export class SuperAdminController {
     return this.superAdminService.getSummary();
   }
 
+  @Get('businesses/summary')
+  async getBusinessesSummary() {
+    return this.superAdminService.getBusinessesSummary();
+  }
+
   @Get('businesses')
   async getBusinesses(@Query() query: BusinessesQueryDto) {
     return this.superAdminService.getBusinesses(query);
+  }
+
+  @Get('businesses/:id/payments')
+  async getBusinessUnifiedPayments(@Param('id') id: string) {
+    return this.superAdminService.getBusinessUnifiedPayments(id);
   }
 
   @Get('businesses/:id/memberships/preview')
@@ -111,17 +121,19 @@ export class SuperAdminController {
   @Patch('businesses/:id')
   async updateBusiness(
     @Param('id') id: string,
-    @Body() dto: UpdateBusinessDto,
+    @Body() dto: SuperAdminUpdateBusinessDto,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.superAdminService.updateBusiness(id, dto);
+    return this.superAdminService.updateBusiness(id, dto, user?.sub);
   }
 
   @Put('businesses/:id')
   async updateBusinessPut(
     @Param('id') id: string,
-    @Body() dto: UpdateBusinessDto,
+    @Body() dto: SuperAdminUpdateBusinessDto,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.superAdminService.updateBusiness(id, dto);
+    return this.superAdminService.updateBusiness(id, dto, user?.sub);
   }
 
   @Patch('businesses/:id/toggle')

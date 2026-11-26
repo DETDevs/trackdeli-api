@@ -459,6 +459,9 @@ export class PushSchedulerService {
     summary: SchedulerRunSummary,
   ): Promise<void> {
     const coverage = await resolveBusinessCoverage(this.prisma, businessId, referenceDate);
+    if (coverage.exemptFromBilling) {
+      return;
+    }
     if (coverage.daysUntilDue === 3 && coverage.coveredUntilStr) {
       const res = await this.pushService.send({
         businessId,

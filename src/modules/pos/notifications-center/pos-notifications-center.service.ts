@@ -157,6 +157,7 @@ export class PosNotificationsCenterService {
         id: true,
         name: true,
         isActive: true,
+        accountType: true,
         createdAt: true,
         billingAnchorDay: true,
         tracksBatches: true,
@@ -296,6 +297,7 @@ export class PosNotificationsCenterService {
   private async detectMembershipAlerts(
     business: {
       id: string;
+      accountType?: string | null;
       createdAt: Date;
       billingAnchorDay: number | null;
       commercialAgreement: any;
@@ -319,6 +321,10 @@ export class PosNotificationsCenterService {
       business.memberships,
       now,
     );
+
+    if (coverage.exemptFromBilling) {
+      return { membership: null, items: [] };
+    }
 
     const hasPaidMembership = (business.memberships || []).some(
       (m) => m.status !== 'CANCELLED' && m.type !== 'TRIAL',

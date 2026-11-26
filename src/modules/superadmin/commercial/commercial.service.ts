@@ -1321,6 +1321,18 @@ export class CommercialService {
       throw new NotFoundException('Acuerdo comercial no encontrado');
     }
 
+    if (
+      agreement.business?.accountType === 'DEMO' ||
+      agreement.business?.accountType === 'INTERNO'
+    ) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'ACCOUNT_TYPE_NO_BILLING',
+        message: 'Las cuentas demo e internas no reciben pagos.',
+      });
+    }
+
     const payAmount = Math.round(Number(dto.amount) * 100) / 100;
     if (payAmount <= 0) {
       throw new BadRequestException('El monto debe ser mayor a 0');

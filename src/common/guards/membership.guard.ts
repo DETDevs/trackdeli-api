@@ -14,6 +14,7 @@ import {
   calculateDueDate,
   calculateGraceEndsAt,
   getManaguaDateParts,
+  isNonBillingAccountType,
   resolveBusinessCoverage,
 } from '../../modules/superadmin/utils/membership-billing.util';
 
@@ -58,8 +59,12 @@ export class MembershipGuard implements CanActivate {
 
       const business = await this.prisma.business.findUnique({
         where: { id: user.businessId },
-        select: { businessType: true },
+        select: { businessType: true, accountType: true },
       });
+
+      if (isNonBillingAccountType(business?.accountType)) {
+        return true;
+      }
 
       if (business?.businessType === BusinessType.EMPRESA_RIDERS) {
         const overdueStatement = await this.prisma.monthlyStatement.findFirst({

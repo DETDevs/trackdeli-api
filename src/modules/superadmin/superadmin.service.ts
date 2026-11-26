@@ -14,7 +14,7 @@ import { CreateMembershipDto } from './dto/create-membership.dto';
 import { UpdateMembershipDto } from './dto/update-membership.dto';
 import { VoidMembershipDto } from './dto/void-membership.dto';
 import { MembershipsQueryDto } from './dto/memberships-query.dto';
-import { UpdateBusinessDto } from '../businesses/dto/update-business.dto';
+import { SuperAdminUpdateBusinessDto } from './dto/update-business-superadmin.dto';
 import { DeleteBusinessDto } from './dto/delete-business.dto';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateBusinessOrganizationDto } from './dto/update-business-organization.dto';
@@ -39,6 +39,11 @@ import {
   toManaguaDateString,
   isOperationallyActive,
   DerivedMembershipStatus,
+  BusinessAccountType,
+  normalizeAccountType,
+  isNonBillingAccountType,
+  normalizeContactPhone,
+  formatBusinessContact,
 } from './utils/membership-billing.util';
 import { BusinessesQueryDto } from './dto/businesses-query.dto';
 
@@ -210,12 +215,24 @@ export class SuperAdminService {
         ACTIVE_ORDER_STATUSES.includes(o.status),
       ).length;
 
+      const accountType = normalizeAccountType((b as any).accountType);
+      const isNonBilling = isNonBillingAccountType(accountType);
+      const contact = formatBusinessContact(b as any);
+
       const agreement = (b as any).commercialAgreement;
       const coverage = computeBusinessCoverage(b, agreement, b.memberships, now);
 
       const billing = computeBusinessMembershipBilling(b, b.memberships, now);
 
-      if (coverage.source === 'MAINTENANCE_FREE') {
+      if (isNonBilling) {
+        billing.membership_status = 'VIGENTE';
+        billing.due_date = null;
+        billing.grace_ends_at = null;
+        billing.days_until_due = null;
+        billing.due_date_date = null;
+        billing.is_active = true;
+        billing.is_in_grace = false;
+      } else if (coverage.source === 'MAINTENANCE_FREE') {
         billing.membership_status = coverage.status;
         billing.due_date = coverage.coveredUntilStr;
         billing.grace_ends_at = coverage.graceEndsAtStr;
@@ -248,16 +265,18 @@ export class SuperAdminService {
           ),
       );
 
-      const isTrial = Boolean(
-        !(agreement && coverage.isCovered) &&
-        !hasActivePaidMembership &&
-        (hasActiveTrialMembership || isPosInTrial),
-      );
+      const isTrial = isNonBilling
+        ? false
+        : Boolean(
+            !(agreement && coverage.isCovered) &&
+            !hasActivePaidMembership &&
+            (hasActiveTrialMembership || isPosInTrial),
+          );
 
       let monthlyAmount = 0;
       let monthlyAmountNio = 0;
 
-      if (coverage.source === 'MAINTENANCE_FREE' && coverage.isCovered) {
+      if (isNonBilling || (coverage.source === 'MAINTENANCE_FREE' && coverage.isCovered)) {
         monthlyAmount = 0;
         monthlyAmountNio = 0;
       } else {
@@ -357,6 +376,11 @@ export class SuperAdminService {
         id: b.id,
         name: b.name,
         slug: b.slug,
+        accountType,
+        contactName: contact.name,
+        contactPhone: contact.phone,
+        contactWhatsapp: contact.whatsapp,
+        contact,
         type: b.type,
         logoUrl: b.logoUrl,
         latitude: b.latitude,
@@ -449,8 +473,115 @@ export class SuperAdminService {
     });
   }
 
+  private computeClientsSummary(enriched: Array<any>) {
+    const clients = enriched.filter((b) => b.accountType === 'CLIENTE');
+    const demosCount = enriched.filter((b) => b.accountType === 'DEMO').length;
+    const internosCount = enriched.filter((b) => b.accountType === 'INTERNO').length;
+
+    let monthlyRevenueUsd = 0;
+    let maintenanceMonthlyNio = 0;
+    let payingClientsCount = 0;
+
+    for (const b of clients) {
+      const isPayingStatus =
+        b.isActive &&
+        !b.is_trial &&
+        b.membership_status !== 'VENCIDO' &&
+        b.membership_status !== 'NOT_CONTRACTED';
+
+      if (isPayingStatus) {
+        monthlyRevenueUsd += b.monthly_amount;
+        maintenanceMonthlyNio += b.monthly_amount_nio || 0;
+        if (b.monthly_amount > 0 || (b.monthly_amount_nio || 0) > 0) {
+          payingClientsCount++;
+        }
+      }
+    }
+
+    monthlyRevenueUsd = Math.round(monthlyRevenueUsd * 100) / 100;
+    maintenanceMonthlyNio = Math.round(maintenanceMonthlyNio * 100) / 100;
+
+    // Próximo cobro entre clientes activos con vencimiento futuro o hoy
+    const upcomingClients = clients
+      .filter(
+        (b) =>
+          b.isActive &&
+          !b.is_trial &&
+          b.due_date &&
+          b.days_until_due !== null &&
+          b.days_until_due >= 0 &&
+          (b.monthly_amount > 0 || (b.monthly_amount_nio || 0) > 0),
+      )
+      .sort((a, b) => {
+        const diff = (a.days_until_due ?? 9999) - (b.days_until_due ?? 9999);
+        if (diff !== 0) return diff;
+        return (a.name || '').localeCompare(b.name || '');
+      });
+
+    const nextBiz = upcomingClients[0] || null;
+    const nextCollection = nextBiz
+      ? {
+          businessId: nextBiz.id,
+          businessName: nextBiz.name,
+          dueDate: nextBiz.due_date,
+          daysUntilDue: nextBiz.days_until_due,
+          amount:
+            nextBiz.monthly_amount > 0
+              ? nextBiz.monthly_amount
+              : nextBiz.monthly_amount_nio || 0,
+          currency: nextBiz.monthly_amount > 0 ? ('USD' as const) : ('NIO' as const),
+        }
+      : null;
+
+    const counts = {
+      clientes: clients.length,
+      activos: clients.filter(
+        (b) => b.isActive && (isOperationallyActive(b.membership_status) || b.is_trial),
+      ).length,
+      porVencer: clients.filter((b) => b.isActive && b.membership_status === 'POR_VENCER').length,
+      enGracia: clients.filter((b) => b.isActive && b.membership_status === 'EN_GRACIA').length,
+      vencidos: clients.filter((b) => b.isActive && b.membership_status === 'VENCIDO').length,
+      enPrueba: clients.filter((b) => b.isActive && b.is_trial).length,
+      inactivos: clients.filter((b) => !b.isActive).length,
+      demos: demosCount,
+      internos: internosCount,
+    };
+
+    return {
+      clients,
+      monthlyRevenueUsd,
+      maintenanceMonthlyNio,
+      payingClientsCount,
+      nextCollection,
+      counts,
+    };
+  }
+
+  async getBusinessesSummary() {
+    this.logger.log('[getBusinessesSummary] Calculando resumen de clientes reales para Superadmin');
+    const now = new Date();
+    const enriched = await this.fetchEnrichedBusinesses(now);
+    const {
+      monthlyRevenueUsd,
+      maintenanceMonthlyNio,
+      payingClientsCount,
+      nextCollection,
+      counts,
+    } = this.computeClientsSummary(enriched);
+
+    return {
+      monthlyRevenueUsd,
+      maintenanceMonthlyNio,
+      payingClientsCount,
+      nextCollection,
+      counts,
+      mrr: monthlyRevenueUsd,
+      mrr_nio: maintenanceMonthlyNio,
+    };
+  }
+
   async getSummary() {
-    this.logger.log('[getSummary] Calculando resumen de cobros y negocios');
+    this.logger.log('[getSummary] Calculando resumen de cobros y negocios (solo clientes)');
 
     const now = new Date();
     const nowParts = getManaguaDateParts(now);
@@ -465,28 +596,19 @@ export class SuperAdminService {
     );
 
     const enriched = await this.fetchEnrichedBusinesses(now);
+    const {
+      clients,
+      monthlyRevenueUsd: mrr,
+      maintenanceMonthlyNio: mrrNio,
+      payingClientsCount,
+      nextCollection,
+      counts,
+    } = this.computeClientsSummary(enriched);
 
-    // MRR: suma de tarifa mensual de negocios activos no en prueba cuyo estado no sea VENCIDO ni NOT_CONTRACTED
-    let mrr = 0;
-    let mrrNio = 0;
-    for (const b of enriched) {
-      if (
-        b.isActive &&
-        !b.is_trial &&
-        b.membership_status !== 'VENCIDO' &&
-        b.membership_status !== 'NOT_CONTRACTED'
-      ) {
-        mrr += b.monthly_amount;
-        mrrNio += ((b as any).monthly_amount_nio || 0);
-      }
-    }
-    mrr = Math.round(mrr * 100) / 100;
-    mrrNio = Math.round(mrrNio * 100) / 100;
-
-    // due_next_7_days: membresías que vencen en los próximos 7 días (incluye hoy: days_until_due >= 0 && <= 7)
+    // due_next_7_days: membresías de clientes que vencen en los próximos 7 días (incluye hoy: days_until_due >= 0 && <= 7)
     let dueNext7DaysCount = 0;
     let dueNext7DaysAmount = 0;
-    for (const b of enriched) {
+    for (const b of clients) {
       if (
         b.isActive &&
         !b.is_trial &&
@@ -500,10 +622,10 @@ export class SuperAdminService {
     }
     dueNext7DaysAmount = Math.round(dueNext7DaysAmount * 100) / 100;
 
-    // in_grace: cantidad y monto de negocios EN_GRACIA
+    // in_grace: cantidad y monto de clientes EN_GRACIA
     let inGraceCount = 0;
     let inGraceAmount = 0;
-    for (const b of enriched) {
+    for (const b of clients) {
       if (b.isActive && b.membership_status === 'EN_GRACIA') {
         inGraceCount++;
         inGraceAmount += b.monthly_amount;
@@ -511,10 +633,10 @@ export class SuperAdminService {
     }
     inGraceAmount = Math.round(inGraceAmount * 100) / 100;
 
-    // overdue: cantidad y monto de negocios VENCIDO
+    // overdue: cantidad y monto de clientes VENCIDO
     let overdueCount = 0;
     let overdueAmount = 0;
-    for (const b of enriched) {
+    for (const b of clients) {
       if (b.isActive && b.membership_status === 'VENCIDO') {
         overdueCount++;
         overdueAmount += b.monthly_amount;
@@ -522,21 +644,21 @@ export class SuperAdminService {
     }
     overdueAmount = Math.round(overdueAmount * 100) / 100;
 
-    // active_businesses: total activos y new_this_month
-    const activeBiz = enriched.filter((b) => b.isActive);
+    // active_businesses: total clientes activos y new_this_month
+    const activeBiz = clients.filter((b) => b.isActive);
     const newThisMonth = activeBiz.filter((b) => b.createdAt >= startOfMonthManagua).length;
 
-    // trials: cantidad de negocios en prueba
-    const trialsCount = enriched.filter((b) => b.isActive && b.is_trial).length;
+    // trials: cantidad de clientes en prueba
+    const trialsCount = clients.filter((b) => b.isActive && b.is_trial).length;
 
-    // by_type: cantidad de negocios por tipo de negocio/vertical
+    // by_type: cantidad de clientes activos por tipo de negocio/vertical
     const byType: Record<string, number> = {};
     for (const b of activeBiz) {
       const key = b.posVertical || b.type || (b.industry as any)?.name || 'OTROS';
       byType[key] = (byType[key] || 0) + 1;
     }
 
-    // pending_collections: lista ordenada por urgencia (VENCIDO, EN_GRACIA, POR_VENCER, luego los demás)
+    // pending_collections: lista ordenada por urgencia (solo clientes)
     const priorityMap: Record<string, number> = {
       VENCIDO: 1,
       EN_GRACIA: 2,
@@ -544,7 +666,7 @@ export class SuperAdminService {
       NOT_CONTRACTED: 4,
       VIGENTE: 5,
     };
-    const pendingCollections = enriched
+    const pendingCollections = clients
       .filter((b) =>
         b.isActive &&
         ['VENCIDO', 'EN_GRACIA', 'POR_VENCER'].includes(b.membership_status),
@@ -563,11 +685,12 @@ export class SuperAdminService {
         amount: b.monthly_amount,
       }));
 
-    // recent_payments: últimos 10 pagos registrados (excluye TRIAL y CANCELLED)
+    // recent_payments: últimos 10 pagos registrados de clientes (excluye TRIAL, CANCELLED, DEMO e INTERNO)
     const recentMemberships = await this.prisma.membership.findMany({
       where: {
         status: { not: MembershipStatus.CANCELLED },
         type: { not: MembershipType.TRIAL },
+        business: { accountType: 'CLIENTE' },
       },
       orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }],
       take: 10,
@@ -665,6 +788,11 @@ export class SuperAdminService {
     return {
       mrr,
       mrr_nio: mrrNio,
+      monthlyRevenueUsd: mrr,
+      maintenanceMonthlyNio: mrrNio,
+      payingClientsCount,
+      nextCollection,
+      counts,
       due_next_7_days: {
         count: dueNext7DaysCount,
         amount: dueNext7DaysAmount,
@@ -707,56 +835,101 @@ export class SuperAdminService {
     const now = simulatedDate ? new Date(simulatedDate) : new Date();
     const all = await this.fetchEnrichedBusinesses(now);
 
+    const clientsOnly = all.filter((b) => b.accountType === 'CLIENTE');
     const counters = {
       all: all.length,
-      activo: all.filter(
+      clientes: clientsOnly.length,
+      demos: all.filter((b) => b.accountType === 'DEMO').length,
+      internos: all.filter((b) => b.accountType === 'INTERNO').length,
+      activo: clientsOnly.filter(
         (b) => b.isActive && (isOperationallyActive(b.membership_status) || b.is_trial),
       ).length,
-      por_vencer: all.filter((b) => b.isActive && b.membership_status === 'POR_VENCER').length,
-      en_gracia: all.filter((b) => b.isActive && b.membership_status === 'EN_GRACIA').length,
-      vencido: all.filter((b) => b.isActive && b.membership_status === 'VENCIDO').length,
-      prueba: all.filter((b) => b.isActive && b.is_trial).length,
-      inactivo: all.filter((b) => !b.isActive).length,
+      por_vencer: clientsOnly.filter((b) => b.isActive && b.membership_status === 'POR_VENCER').length,
+      en_gracia: clientsOnly.filter((b) => b.isActive && b.membership_status === 'EN_GRACIA').length,
+      vencido: clientsOnly.filter((b) => b.isActive && b.membership_status === 'VENCIDO').length,
+      prueba: clientsOnly.filter((b) => b.isActive && b.is_trial).length,
+      inactivo: clientsOnly.filter((b) => !b.isActive).length,
     };
 
     let filtered = [...all];
 
-    // Filtro por status
+    // Filtro por tipo de cuenta (CLIENTE | DEMO | INTERNO)
+    if (query?.accountType) {
+      const acct = query.accountType.trim().toUpperCase();
+      if (acct === 'CLIENTE' || acct === 'DEMO' || acct === 'INTERNO') {
+        filtered = filtered.filter((b) => b.accountType === acct);
+      }
+    }
+
+    // Filtro por status (aplica a clientes; demos e internos no se mezclan con estados de cobro)
     if (query?.status) {
       const s = query.status.toLowerCase().trim();
       if (s === 'por_vencer') {
-        filtered = filtered.filter((b) => b.isActive && b.membership_status === 'POR_VENCER');
+        filtered = filtered.filter(
+          (b) => b.accountType === 'CLIENTE' && b.isActive && b.membership_status === 'POR_VENCER',
+        );
       } else if (s === 'en_gracia') {
-        filtered = filtered.filter((b) => b.isActive && b.membership_status === 'EN_GRACIA');
+        filtered = filtered.filter(
+          (b) => b.accountType === 'CLIENTE' && b.isActive && b.membership_status === 'EN_GRACIA',
+        );
       } else if (s === 'vencido') {
-        filtered = filtered.filter((b) => b.isActive && b.membership_status === 'VENCIDO');
+        filtered = filtered.filter(
+          (b) => b.accountType === 'CLIENTE' && b.isActive && b.membership_status === 'VENCIDO',
+        );
       } else if (s === 'prueba') {
-        filtered = filtered.filter((b) => b.isActive && b.is_trial);
+        filtered = filtered.filter((b) => b.accountType === 'CLIENTE' && b.isActive && b.is_trial);
       } else if (s === 'inactivo') {
-        filtered = filtered.filter((b) => !b.isActive);
+        filtered = filtered.filter((b) => b.accountType === 'CLIENTE' && !b.isActive);
       } else if (s === 'activo') {
         filtered = filtered.filter(
-          (b) => b.isActive && (isOperationallyActive(b.membership_status) || b.is_trial),
+          (b) =>
+            b.accountType === 'CLIENTE' &&
+            b.isActive &&
+            (isOperationallyActive(b.membership_status) || b.is_trial),
         );
       }
     }
 
-    // Filtro por búsqueda
+    // Filtro por búsqueda (incluye datos de contacto y búsqueda flexible por teléfono)
     if (query?.search) {
       const q = query.search.toLowerCase().trim();
+      const qDigits = q.replace(/\D/g, '');
       filtered = filtered.filter((b) => {
         const name = (b.name || '').toLowerCase();
         const slug = (b.slug || '').toLowerCase();
         const phone = (b.posPhone || '').toLowerCase();
         const address = (b.posAddress || '').toLowerCase();
         const id = (b.id || '').toLowerCase();
-        return (
+        const cName = (b.contactName || '').toLowerCase();
+        const cPhone = (b.contactPhone || '').toLowerCase();
+        const cWa = (b.contactWhatsapp || '').toLowerCase();
+        const cEmail = (b.contact?.email || '').toLowerCase();
+        const cTax = (b.contact?.taxId || '').toLowerCase();
+
+        if (
           name.includes(q) ||
           slug.includes(q) ||
           phone.includes(q) ||
           address.includes(q) ||
-          id.includes(q)
-        );
+          id.includes(q) ||
+          cName.includes(q) ||
+          cPhone.includes(q) ||
+          cWa.includes(q) ||
+          cEmail.includes(q) ||
+          cTax.includes(q)
+        ) {
+          return true;
+        }
+
+        if (qDigits.length >= 4) {
+          const digitsPool = [b.posPhone, b.contactPhone, b.contactWhatsapp]
+            .filter(Boolean)
+            .map((v) => String(v).replace(/\D/g, ''));
+          if (digitsPool.some((d) => d.includes(qDigits))) {
+            return true;
+          }
+        }
+        return false;
       });
     }
 
@@ -944,6 +1117,22 @@ export class SuperAdminService {
       }
     }
 
+    const accountType = normalizeAccountType((business as any).accountType);
+    const isNonBilling = isNonBillingAccountType(accountType);
+    const contact = formatBusinessContact(business as any);
+    const primaryEncargado = (business.users || [])[0] || null;
+    const suggestedContact = {
+      name: primaryEncargado?.name || null,
+      role: primaryEncargado ? 'Encargado' : null,
+      phone: normalizeContactPhone(business.posPhone || primaryEncargado?.phone || null),
+      whatsapp: normalizeContactPhone(
+        (business as any).whatsappNumber || business.posPhone || primaryEncargado?.phone || null,
+      ),
+      email: primaryEncargado?.email || null,
+      address: business.posAddress || null,
+      taxId: (business as any).taxId || null,
+    };
+
     const agreement = (business as any).commercialAgreement;
     const coverage = computeBusinessCoverage(
       business,
@@ -952,7 +1141,7 @@ export class SuperAdminService {
       now,
     );
 
-    if (coverage.source === 'MAINTENANCE_FREE' && coverage.isCovered) {
+    if (isNonBilling || (coverage.source === 'MAINTENANCE_FREE' && coverage.isCovered)) {
       for (const sub of business.productSubscriptions) {
         activeCoveredSubIds.add(sub.id);
       }
@@ -967,7 +1156,16 @@ export class SuperAdminService {
     (billing as any).coverage_source = coverage.source;
     (billing as any).commercial_overdue = coverage.commercialOverdue;
     (billing as any).is_commercial_blocked = coverage.isCommercialBlocked;
-    if (coverage.source === 'MAINTENANCE_FREE') {
+    if (isNonBilling) {
+      billing.membership_status = 'VIGENTE';
+      billing.due_date = null;
+      billing.grace_ends_at = null;
+      billing.days_until_due = null;
+      billing.due_date_date = null;
+      billing.is_active = true;
+      billing.is_in_grace = false;
+      billing.monthly_amount = 0;
+    } else if (coverage.source === 'MAINTENANCE_FREE') {
       billing.membership_status = coverage.status;
       billing.due_date = coverage.coveredUntilStr;
       billing.grace_ends_at = coverage.graceEndsAtStr;
@@ -1020,6 +1218,19 @@ export class SuperAdminService {
     return {
       id: business.id,
       name: business.name,
+      accountType,
+      contact,
+      suggestedContact,
+      contactName: contact.name,
+      contactRole: contact.role,
+      contactPhone: contact.phone,
+      contactWhatsapp: contact.whatsapp,
+      contactEmail: contact.email,
+      contactAddress: contact.address,
+      contactMunicipality: contact.municipality,
+      contactDepartment: contact.department,
+      contactTaxId: contact.taxId,
+      contactNotes: contact.notes,
       type: business.type,
       logoUrl: business.logoUrl,
       latitude: business.latitude,
@@ -1693,7 +1904,11 @@ export class SuperAdminService {
     };
   }
 
-  async updateBusiness(id: string, dto: UpdateBusinessDto) {
+  async updateBusiness(
+    id: string,
+    dto: SuperAdminUpdateBusinessDto,
+    performedBy?: string,
+  ) {
     this.logger.log(`[updateBusiness] Actualizando negocio id=${id}`);
     const business = await this.prisma.business.findUnique({
       where: { id },
@@ -1701,6 +1916,35 @@ export class SuperAdminService {
     if (!business) {
       throw new NotFoundException('Negocio no encontrado');
     }
+
+    const previousAccountType = normalizeAccountType((business as any).accountType);
+    const nextAccountType =
+      dto.accountType !== undefined ? normalizeAccountType(dto.accountType) : undefined;
+
+    const pickContactField = <T>(nested: T | undefined, flat: T | undefined) =>
+      nested !== undefined ? nested : flat;
+
+    const rawContactName = pickContactField(dto.contact?.name, dto.contactName);
+    const rawContactRole = pickContactField(dto.contact?.role, dto.contactRole);
+    const rawContactPhone = pickContactField(dto.contact?.phone, dto.contactPhone);
+    const rawContactWhatsapp = pickContactField(dto.contact?.whatsapp, dto.contactWhatsapp);
+    const rawContactEmail = pickContactField(dto.contact?.email, dto.contactEmail);
+    const rawContactAddress = pickContactField(dto.contact?.address, dto.contactAddress);
+    const rawContactMunicipality = pickContactField(
+      dto.contact?.municipality,
+      dto.contactMunicipality,
+    );
+    const rawContactDepartment = pickContactField(
+      dto.contact?.department,
+      dto.contactDepartment,
+    );
+    const rawContactTaxId = pickContactField(dto.contact?.taxId, dto.contactTaxId);
+    const rawContactNotes = pickContactField(dto.contact?.notes, dto.contactNotes);
+
+    const normalizedContactPhone =
+      rawContactPhone !== undefined ? normalizeContactPhone(rawContactPhone) : undefined;
+    const normalizedContactWhatsapp =
+      rawContactWhatsapp !== undefined ? normalizeContactPhone(rawContactWhatsapp) : undefined;
 
     let targetIndustry: any = null;
     let updatePosVertical = dto.posVertical;
@@ -1844,8 +2088,41 @@ export class SuperAdminService {
         ...(phoneToUpdate !== undefined && { posPhone: phoneToUpdate }),
         ...(dto.currency !== undefined && { currency: dto.currency }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+        ...(nextAccountType !== undefined && { accountType: nextAccountType }),
+        ...(rawContactName !== undefined && { contactName: rawContactName }),
+        ...(rawContactRole !== undefined && { contactRole: rawContactRole }),
+        ...(normalizedContactPhone !== undefined && { contactPhone: normalizedContactPhone }),
+        ...(normalizedContactWhatsapp !== undefined && {
+          contactWhatsapp: normalizedContactWhatsapp,
+        }),
+        ...(rawContactEmail !== undefined && { contactEmail: rawContactEmail }),
+        ...(rawContactAddress !== undefined && { contactAddress: rawContactAddress }),
+        ...(rawContactMunicipality !== undefined && {
+          contactMunicipality: rawContactMunicipality,
+        }),
+        ...(rawContactDepartment !== undefined && {
+          contactDepartment: rawContactDepartment,
+        }),
+        ...(rawContactTaxId !== undefined && { contactTaxId: rawContactTaxId }),
+        ...(rawContactNotes !== undefined && { contactNotes: rawContactNotes }),
       },
     });
+
+    if (nextAccountType !== undefined && nextAccountType !== previousAccountType) {
+      await this.auditService.record({
+        businessId: id,
+        userId: performedBy || 'system-superadmin',
+        userRole: UserRole.SUPERADMIN,
+        action: 'BUSINESS_ACCOUNT_TYPE_CHANGED',
+        entityType: 'Business',
+        entityId: id,
+        before: { accountType: previousAccountType },
+        after: { accountType: nextAccountType },
+        reason:
+          dto.accountTypeReason ||
+          `Cambio de tipo de cuenta: ${previousAccountType} → ${nextAccountType}`,
+      });
+    }
 
     if (updatePosVertical !== undefined) {
       await this.prisma.businessProductSubscription.updateMany({
@@ -1861,10 +2138,16 @@ export class SuperAdminService {
       });
     }
 
-    this.logger.log(`[updateBusiness] OK negocio actualizado id=${id}, businessType=${updated.businessType}`);
+    const updatedContact = formatBusinessContact(updated as any);
+    this.logger.log(
+      `[updateBusiness] OK negocio actualizado id=${id}, businessType=${updated.businessType}, accountType=${(updated as any).accountType}`,
+    );
     const twoStepMinVersion = (await this.clientVersionService.getTwoStepMinVersion()) || null;
     return {
       ...updated,
+      accountType: normalizeAccountType((updated as any).accountType),
+      contact: updatedContact,
+      contactWhatsapp: updatedContact.whatsapp,
       twoStepMinVersion,
     };
   }
@@ -2681,6 +2964,15 @@ export class SuperAdminService {
       throw new NotFoundException('Negocio no encontrado');
     }
 
+    if (isNonBillingAccountType((business as any).accountType)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'ACCOUNT_TYPE_NO_BILLING',
+        message: 'Las cuentas demo e internas no reciben pagos.',
+      });
+    }
+
     const isTrial = (dto.type || 'PAID') === 'TRIAL';
 
     const validMemberships = await this.prisma.membership.findMany({
@@ -2950,6 +3242,7 @@ export class SuperAdminService {
     const expiring = await this.prisma.membership.findMany({
       where: {
         status: MembershipStatus.ACTIVE,
+        business: { accountType: 'CLIENTE' },
         endDate: {
           gte: now,
           lte: inSevenDays,
@@ -3160,6 +3453,232 @@ export class SuperAdminService {
     );
   }
 
+  /**
+   * 307a — Lista unificada de pagos del negocio (membresías, prima, cuotas, mantenimiento, pagos únicos)
+   * sin duplicados, con los IDs para editar, anular y adjuntar comprobante en los endpoints existentes.
+   */
+  async getBusinessUnifiedPayments(businessId: string) {
+    this.logger.log(`[getBusinessUnifiedPayments] businessId=${businessId}`);
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      include: {
+        memberships: {
+          where: { type: { not: MembershipType.TRIAL } },
+          include: {
+            paymentProducts: {
+              include: {
+                businessProductSubscription: {
+                  select: { id: true, productType: true, status: true },
+                },
+              },
+            },
+          },
+          orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }],
+        },
+        commercialAgreement: {
+          include: {
+            payments: {
+              orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }],
+            },
+          },
+        },
+      },
+    });
+
+    if (!business) {
+      throw new NotFoundException('Negocio no encontrado');
+    }
+
+    const agreement = (business as any).commercialAgreement;
+    const isOneTimePlan = Boolean(
+      agreement && agreement.saleModality !== CommercialSaleModality.MEMBRESIA_MENSUAL,
+    );
+
+    const seenKeys = new Set<string>();
+    const payments: Array<{
+      id: string;
+      source: 'MEMBERSHIP' | 'COMMERCIAL';
+      paidAt: string;
+      paidAtIso: string;
+      type: 'MEMBRESIA' | 'MANTENIMIENTO' | 'PRIMA' | 'CUOTA' | 'PAGO_UNICO';
+      concept: string;
+      period: { start: string; end: string } | null;
+      products: Array<{
+        id: string;
+        subscriptionId: string;
+        productType: string;
+        name: string;
+        amountAttributed: number | null;
+      }>;
+      paymentMethod: string;
+      referenceNumber: string | null;
+      amount: number;
+      currency: string;
+      paymentProofUrl: string | null;
+      status: 'VIGENTE' | 'VENCIDO' | 'ANULADO';
+      notes: string | null;
+      voidedAt: string | null;
+      voidReason: string | null;
+      createdAt: string;
+      actions: {
+        membershipId: string | null;
+        commercialPaymentId: string | null;
+        agreementId: string | null;
+        canEdit: boolean;
+        canVoid: boolean;
+        canAttachProof: boolean;
+      };
+    }> = [];
+
+    for (const m of business.memberships || []) {
+      const key = `MEMBERSHIP:${m.id}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+
+      const isMaintenance = isOneTimePlan && (m.currency || '').toUpperCase() === 'NIO';
+      const paidDateObj = new Date(m.paidAt || m.startDate || m.createdAt);
+      const isCancelled = m.status === MembershipStatus.CANCELLED;
+      const status: 'VIGENTE' | 'VENCIDO' | 'ANULADO' = isCancelled
+        ? 'ANULADO'
+        : m.status === MembershipStatus.EXPIRED
+          ? 'VENCIDO'
+          : 'VIGENTE';
+
+      const products = (m.paymentProducts || []).map((pp: any) => {
+        const pType = pp.businessProductSubscription?.productType || 'DESCONOCIDO';
+        const pName =
+          pType === 'DELIVERY'
+            ? 'Delivery'
+            : pType === 'POS'
+              ? 'POS'
+              : pType === 'CARTERA_COBRO'
+                ? 'Cartera de Cobro'
+                : pType === 'CITAS'
+                  ? 'Citas'
+                  : pType;
+        return {
+          id: pp.id,
+          subscriptionId: pp.businessProductSubscriptionId,
+          productType: pType,
+          name: pName,
+          amountAttributed:
+            pp.amountAttributed !== null && pp.amountAttributed !== undefined
+              ? Number(pp.amountAttributed)
+              : null,
+        };
+      });
+
+      payments.push({
+        id: m.id,
+        source: 'MEMBERSHIP',
+        paidAt: toManaguaDateString(paidDateObj),
+        paidAtIso: paidDateObj.toISOString(),
+        type: isMaintenance ? 'MANTENIMIENTO' : 'MEMBRESIA',
+        concept: isMaintenance ? 'Mantenimiento mensual' : 'Membresía mensual',
+        period: {
+          start: toManaguaDateString(new Date(m.startDate)),
+          end: toManaguaDateString(new Date(m.endDate)),
+        },
+        products,
+        paymentMethod: m.paymentMethod,
+        referenceNumber: null,
+        amount: Math.round(Number(m.amount) * 100) / 100,
+        currency: (m.currency || 'USD').toUpperCase(),
+        paymentProofUrl: m.paymentProofUrl || null,
+        status,
+        notes: m.notes || null,
+        voidedAt: isCancelled && (m as any).voidedAt ? new Date((m as any).voidedAt).toISOString() : null,
+        voidReason: (m as any).voidReason || null,
+        createdAt: m.createdAt.toISOString(),
+        actions: {
+          membershipId: m.id,
+          commercialPaymentId: null,
+          agreementId: null,
+          canEdit: !isCancelled,
+          canVoid: !isCancelled,
+          canAttachProof: true,
+        },
+      });
+    }
+
+    if (agreement && Array.isArray(agreement.payments)) {
+      for (const p of agreement.payments) {
+        const key = `COMMERCIAL:${p.id}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+
+        const rawKind = String(p.kind || 'PAGO').toUpperCase();
+        const type: 'PRIMA' | 'CUOTA' | 'PAGO_UNICO' =
+          rawKind === 'ADELANTO' || rawKind === 'PRIMA'
+            ? 'PRIMA'
+            : rawKind === 'CUOTA'
+              ? 'CUOTA'
+              : 'PAGO_UNICO';
+        const concept =
+          type === 'PRIMA'
+            ? 'Prima / adelanto'
+            : type === 'CUOTA'
+              ? 'Cuota de crédito'
+              : 'Pago único';
+
+        const paidDateObj = new Date(p.paidAt || p.createdAt);
+        const isVoided = Boolean(p.voidedAt);
+
+        payments.push({
+          id: p.id,
+          source: 'COMMERCIAL',
+          paidAt: toManaguaDateString(paidDateObj),
+          paidAtIso: paidDateObj.toISOString(),
+          type,
+          concept,
+          period: null,
+          products: [],
+          paymentMethod: p.paymentMethod,
+          referenceNumber: p.referenceNumber || null,
+          amount: Math.round(Number(p.amount) * 100) / 100,
+          currency: (p.currency || agreement.currency || 'USD').toUpperCase(),
+          paymentProofUrl: p.paymentProofUrl || null,
+          status: isVoided ? 'ANULADO' : 'VIGENTE',
+          notes: p.notes || null,
+          voidedAt: p.voidedAt ? new Date(p.voidedAt).toISOString() : null,
+          voidReason: p.voidReason || null,
+          createdAt: p.createdAt.toISOString(),
+          actions: {
+            membershipId: null,
+            commercialPaymentId: p.id,
+            agreementId: agreement.id,
+            canEdit: false,
+            canVoid: !isVoided,
+            canAttachProof: true,
+          },
+        });
+      }
+    }
+
+    payments.sort((a, b) => {
+      const diff = new Date(b.paidAtIso).getTime() - new Date(a.paidAtIso).getTime();
+      if (diff !== 0) return diff;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+
+    const totalsByCurrency: Record<string, number> = { USD: 0, NIO: 0 };
+    for (const p of payments) {
+      if (p.status === 'ANULADO') continue;
+      const cur = p.currency || 'USD';
+      totalsByCurrency[cur] = Math.round(((totalsByCurrency[cur] || 0) + p.amount) * 100) / 100;
+    }
+
+    return {
+      businessId: business.id,
+      businessName: business.name,
+      accountType: normalizeAccountType((business as any).accountType),
+      totalCount: payments.length,
+      totalsByCurrency,
+      payments,
+    };
+  }
+
   @Cron(CronExpression.EVERY_HOUR)
   async handleExpiredMembershipsCron() {
     await this.reconcileExpiredMemberships();
@@ -3171,12 +3690,14 @@ export class SuperAdminService {
     const activeMemberships = await this.prisma.membership.findMany({
       where: {
         status: MembershipStatus.ACTIVE,
+        business: { accountType: 'CLIENTE' },
       },
       include: {
         paymentProducts: true,
         business: {
           select: {
             id: true,
+            accountType: true,
             createdAt: true,
             billingAnchorDay: true,
           },

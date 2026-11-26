@@ -24,4 +24,8 @@ export class BusinessesQueryDto {
   @IsString()
   @IsOptional()
   format?: 'object' | 'array';
+
+  @IsString()
+  @IsOptional()
+  accountType?: string;
 }

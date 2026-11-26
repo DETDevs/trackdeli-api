@@ -2323,6 +2323,7 @@ WHERE a."customerId" = c."id"
       await this.ensureCommercial302aSchema();
       await this.ensureBarcodeSequenceSchema();
       await this.ensureProductBaseUnitNameSchema();
+      await this.ensureBusinessAccountAndContactSchema();
       await this.ensureSaleItemCostSchema();
       await this.ensurePosPoliciesRequireShiftSchema();
       await this.ensureMembershipTypeSchema();
@@ -6848,6 +6849,78 @@ WHERE a."customerId" = c."id"
       );
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠ 294d - Advertencia sincronizando promociones: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  /**
+   * 307a — Tipo de cuenta del negocio (CLIENTE | DEMO | INTERNO) y datos de contacto del cliente para NEXOL.
+   * Idempotente con advisory lock, sin carpeta de migraciones.
+   */
+  private async ensureBusinessAccountAndContactSchema(): Promise<void> {
+    const lockId = 3070100;
+    try {
+      await this.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${lockId});`);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "account_type" VARCHAR(20) NOT NULL DEFAULT 'CLIENTE';
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "contact_name" VARCHAR(150);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "contact_role" VARCHAR(80);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "contact_phone" VARCHAR(30);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "contact_whatsapp" VARCHAR(30);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "contact_email" VARCHAR(150);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "contact_address" VARCHAR(300);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "contact_municipality" VARCHAR(100);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "contact_department" VARCHAR(100);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "contact_tax_id" VARCHAR(40);
+          `);
+          await tx.$executeRawUnsafe(`
+            ALTER TABLE "businesses"
+            ADD COLUMN IF NOT EXISTS "contact_notes" TEXT;
+          `);
+          await tx.$executeRawUnsafe(`
+            CREATE INDEX IF NOT EXISTS "idx_businesses_account_type"
+            ON "businesses" ("account_type");
+          `);
+          this.logger.log(
+            '[PrismaService] ✓ 307a - Columnas account_type y datos de contacto verificadas en businesses.',
+          );
+        },
+        { maxWait: 10000, timeout: 60000 },
+      );
+    } catch (err: any) {
+      this.logger.warn(
+        `[PrismaService] ⚠ 307a - Advertencia sincronizando account_type y contacto: ${err?.message || err}`,
+      );
       throw err;
     }
   }

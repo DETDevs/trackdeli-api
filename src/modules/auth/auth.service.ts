@@ -173,7 +173,15 @@ export class AuthService {
     const salonLabels = getSalonLabels(salonProfile);
     const billing = computeBusinessMembershipBilling(b, b.memberships);
     const coverage = await resolveBusinessCoverage(this.prisma, b.id);
-    if (coverage.source === 'MAINTENANCE_FREE') {
+    if (coverage.exemptFromBilling) {
+      billing.membership_status = 'VIGENTE';
+      billing.due_date = null;
+      billing.grace_ends_at = null;
+      billing.days_until_due = null;
+      billing.due_date_date = null;
+      billing.is_active = true;
+      billing.is_in_grace = false;
+    } else if (coverage.source === 'MAINTENANCE_FREE') {
       billing.membership_status = coverage.status;
       billing.due_date = coverage.coveredUntilStr;
       billing.grace_ends_at = coverage.graceEndsAtStr;

@@ -442,6 +442,20 @@ model Business {
   // 303a - Contador de códigos de barras internos EAN-13 por negocio
   barcodeSequence              PosBarcodeSequence?
 
+  // 307a - Tipo de cuenta (CLIENTE | DEMO | INTERNO) y datos de contacto del cliente para NEXOL
+  accountType                  String                  @default("CLIENTE") @map("account_type") @db.VarChar(20)
+  contactName                  String?                 @map("contact_name") @db.VarChar(150)
+  contactRole                  String?                 @map("contact_role") @db.VarChar(80)
+  contactPhone                 String?                 @map("contact_phone") @db.VarChar(30)
+  contactWhatsapp              String?                 @map("contact_whatsapp") @db.VarChar(30)
+  contactEmail                 String?                 @map("contact_email") @db.VarChar(150)
+  contactAddress               String?                 @map("contact_address") @db.VarChar(300)
+  contactMunicipality          String?                 @map("contact_municipality") @db.VarChar(100)
+  contactDepartment            String?                 @map("contact_department") @db.VarChar(100)
+  contactTaxId                 String?                 @map("contact_tax_id") @db.VarChar(40)
+  contactNotes                 String?                 @map("contact_notes") @db.Text
+
+  @@index([accountType])
   @@map("businesses")
 }
 
