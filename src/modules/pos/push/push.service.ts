@@ -152,52 +152,104 @@ export class PushService implements OnModuleInit {
   }
 
   /**
-   * Inicializa Firebase Admin SDK con FIREBASE_SERVICE_ACCOUNT_JSON.
-   * Nunca imprime ni expone la credencial en logs ni errores.
-   * Si no existe o es inválida, el servicio queda apagado y el API arranca normal.
+   * Inicializa Firebase Admin SDK con FIREBASE_SERVICE_ACCOUNT_JSON o, como respaldo,
+   * con FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY.
+   * Nunca imprime ni expone credenciales en logs ni errores.
+   * Si faltan o son inválidas, el servicio queda apagado y el API arranca normal.
    */
   private initializeFirebase(): void {
-    const rawJson =
+    const rawJson = (
       this.config.get<string>('FIREBASE_SERVICE_ACCOUNT_JSON') ||
       process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
-      '';
+      ''
+    ).trim();
 
-    if (!rawJson || !rawJson.trim()) {
+    let serviceAccount: {
+      projectId: string;
+      clientEmail: string;
+      privateKey: string;
+    } | null = null;
+    let sourceLabel = '';
+
+    if (rawJson) {
+      try {
+        const parsed = JSON.parse(rawJson);
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          typeof parsed.project_id === 'string' &&
+          typeof parsed.client_email === 'string' &&
+          typeof parsed.private_key === 'string' &&
+          parsed.project_id.trim() &&
+          parsed.client_email.trim() &&
+          parsed.private_key.trim()
+        ) {
+          serviceAccount = {
+            projectId: parsed.project_id.trim(),
+            clientEmail: parsed.client_email.trim(),
+            privateKey: parsed.private_key.replace(/\\n/g, '\n'),
+          };
+          sourceLabel = 'FIREBASE_SERVICE_ACCOUNT_JSON';
+        } else {
+          this.logger.warn(
+            '[PushService] FIREBASE_SERVICE_ACCOUNT_JSON incompleto o con formato inválido; verificando variables individuales FIREBASE_*.',
+          );
+        }
+      } catch (err: any) {
+        this.logger.warn(
+          `[PushService] No se pudo parsear FIREBASE_SERVICE_ACCOUNT_JSON (${err?.name || 'Error'}); verificando variables individuales FIREBASE_*.`,
+        );
+      }
+    }
+
+    if (!serviceAccount) {
+      const projectId = (
+        this.config.get<string>('FIREBASE_PROJECT_ID') ||
+        process.env.FIREBASE_PROJECT_ID ||
+        ''
+      ).trim();
+      const clientEmail = (
+        this.config.get<string>('FIREBASE_CLIENT_EMAIL') ||
+        process.env.FIREBASE_CLIENT_EMAIL ||
+        ''
+      ).trim();
+      let privateKey = (
+        this.config.get<string>('FIREBASE_PRIVATE_KEY') ||
+        process.env.FIREBASE_PRIVATE_KEY ||
+        ''
+      ).trim();
+
+      if (
+        (privateKey.startsWith('"') && privateKey.endsWith('"')) ||
+        (privateKey.startsWith("'") && privateKey.endsWith("'"))
+      ) {
+        privateKey = privateKey.slice(1, -1);
+      }
+      privateKey = privateKey.replace(/\\n/g, '\n');
+
+      if (projectId && clientEmail && privateKey) {
+        serviceAccount = { projectId, clientEmail, privateKey };
+        sourceLabel = 'FIREBASE_PROJECT_ID/CLIENT_EMAIL/PRIVATE_KEY';
+      }
+    }
+
+    if (!serviceAccount) {
       this.enabled = false;
       this.messagingClient = null;
       this.logger.warn(
-        '[PushService] Notificaciones push desactivadas: variable FIREBASE_SERVICE_ACCOUNT_JSON no configurada.',
+        '[PushService] Notificaciones push desactivadas: faltan FIREBASE_SERVICE_ACCOUNT_JSON o FIREBASE_PROJECT_ID/FIREBASE_CLIENT_EMAIL/FIREBASE_PRIVATE_KEY.',
       );
       return;
     }
 
     try {
-      const parsed = JSON.parse(rawJson.trim());
-      if (
-        !parsed ||
-        typeof parsed !== 'object' ||
-        typeof parsed.project_id !== 'string' ||
-        typeof parsed.client_email !== 'string' ||
-        typeof parsed.private_key !== 'string' ||
-        !parsed.project_id.trim() ||
-        !parsed.client_email.trim() ||
-        !parsed.private_key.trim()
-      ) {
-        this.enabled = false;
-        this.messagingClient = null;
-        this.logger.warn(
-          '[PushService] Notificaciones push desactivadas: FIREBASE_SERVICE_ACCOUNT_JSON incompleto o con formato inválido.',
-        );
-        return;
-      }
-
       const existing = admin.apps.find((a) => a?.name === PUSH_FIREBASE_APP_NAME);
       if (existing) {
         this.firebaseApp = existing;
       } else {
         this.firebaseApp = admin.initializeApp(
           {
-            credential: admin.credential.cert(parsed),
+            credential: admin.credential.cert(serviceAccount),
           },
           PUSH_FIREBASE_APP_NAME,
         );
@@ -206,13 +258,13 @@ export class PushService implements OnModuleInit {
       this.messagingClient = this.firebaseApp.messaging() as unknown as FcmMessagingClient;
       this.enabled = true;
       this.logger.log(
-        '[PushService] Servicio de notificaciones push inicializado correctamente (FCM HTTP v1).',
+        `[PushService] Servicio de notificaciones push inicializado correctamente (FCM HTTP v1, project=${serviceAccount.projectId}, source=${sourceLabel}).`,
       );
-    } catch {
+    } catch (err: any) {
       this.enabled = false;
       this.messagingClient = null;
       this.logger.warn(
-        '[PushService] Notificaciones push desactivadas: no se pudo parsear o inicializar FIREBASE_SERVICE_ACCOUNT_JSON.',
+        `[PushService] Notificaciones push desactivadas: error inicializando Firebase Admin (${err?.code || err?.name || 'INIT_ERROR'}).`,
       );
     }
   }
@@ -947,7 +999,7 @@ export class PushService implements OnModuleInit {
       return await this.executeSend(input, null);
     } catch (err: any) {
       this.logger.error(
-        `[PushService.send] Error inesperado al enviar push (category=${input?.category}): ${err?.message || 'desconocido'}`,
+        `[PushService.send] Error inesperado al enviar push (category=${input?.category}, code=${err?.code || 'UNKNOWN'}): ${err?.message || 'desconocido'}`,
       );
       return {
         sent: 0,
@@ -1104,6 +1156,11 @@ export class PushService implements OnModuleInit {
         } else {
           failedCount++;
           const errorCode = this.extractErrorCode(res?.error);
+          const tokenTail = target.token ? target.token.slice(-6) : '??????';
+          const willDeactivate = this.isInvalidTokenError(errorCode);
+          this.logger.warn(
+            `[PushService] Fallo FCM (category=${input.category}, deviceId=${target.deviceId}, token=...${tokenTail}, code=${errorCode}, deactivated=${willDeactivate})`,
+          );
           await this.handleTokenSendError(target.id, errorCode);
           await this.writePushLog({
             businessId: input.businessId,
