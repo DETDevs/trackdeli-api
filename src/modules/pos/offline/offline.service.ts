@@ -17,6 +17,7 @@ import { validateProductQuantity, round3 } from "../products/product-unit.util";
 import { assertNotVariantParent } from "../products/variant.utils";
 import { formatPresentation } from "../products/product-presentations.service";
 import { resolveFieldIsFilterable } from "../product-fields/product-fields.service";
+import { resolveSaleUnitsForBusiness } from "../products/sale-units-by-industry.constants";
 
 import { BatchesService } from "../batches/batches.service";
 import { calculateSaleTotals, RawSaleItemCalculationInput } from "../sales/utils/sale-calculation.util";
@@ -1234,6 +1235,9 @@ export class OfflineService {
       this.prisma.business.findUnique({
         where: { id: businessId },
         select: {
+          type: true,
+          posVertical: true,
+          industry: { select: { code: true, name: true } },
           wholesaleEnabled: true,
           tracksBatches: true,
           useListPrice: true,
@@ -1365,12 +1369,19 @@ export class OfflineService {
     }));
 
     const snapshotVersion = latestUpdate.toISOString();
+    const saleUnits = resolveSaleUnitsForBusiness({
+      industryCode: business?.industry?.code,
+      industryName: business?.industry?.name,
+      businessType: business?.type,
+      posVertical: business?.posVertical,
+    });
 
     if (since && new Date(since).getTime() >= latestUpdate.getTime()) {
       return {
         notModified: true,
         snapshotVersion,
         businessId,
+        saleUnits,
         wholesale_enabled: business?.wholesaleEnabled ?? false,
         wholesaleEnabled: business?.wholesaleEnabled ?? false,
         tracks_batches: business?.tracksBatches ?? false,
@@ -1392,6 +1403,7 @@ export class OfflineService {
       notModified: false,
       snapshotVersion,
       businessId,
+      saleUnits,
       wholesale_enabled: business?.wholesaleEnabled ?? false,
       wholesaleEnabled: business?.wholesaleEnabled ?? false,
       tracks_batches: business?.tracksBatches ?? false,

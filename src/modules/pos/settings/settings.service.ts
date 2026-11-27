@@ -3,6 +3,7 @@ import { PrismaService } from "../../../prisma/prisma.service";
 import { UpdatePosSettingsDto } from "./dto/update-pos-settings.dto";
 import { UserRole } from "@prisma/client";
 import { getSalonLabels, resolveSalonProfile } from "../salon/salon-profile.util";
+import { resolveSaleUnitsForBusiness } from "../products/sale-units-by-industry.constants";
 
 @Injectable()
 export class SettingsService {
@@ -14,8 +15,9 @@ export class SettingsService {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
       select: {
-        id: true, name: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true, hasCitas: true,
+        id: true, name: true, type: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true, hasCitas: true,
         posVertical: true, salonProfile: true, gridColumns: true, gridRows: true,
+        industry: { select: { code: true, name: true } },
         taxRate: true, taxEnabled: true, taxIncluded: true, currency: true, invoicePrefix: true, invoiceCounter: true,
         posAddress: true, posPhone: true, posFooter: true, wholesaleEnabled: true, useListPrice: true,
         deliveryChannelEnabled: true, pedidosYaChannelEnabled: true,
@@ -43,7 +45,13 @@ export class SettingsService {
       ? business.deliveryTaxable
       : Boolean(business.taxEnabled);
 
-    const { productSubscriptions, ...businessData } = business;
+    const { productSubscriptions, type: businessLegacyType, industry: businessIndustry, ...businessData } = business;
+    const saleUnits = resolveSaleUnitsForBusiness({
+      industryCode: businessIndustry?.code,
+      industryName: businessIndustry?.name,
+      businessType: businessLegacyType,
+      posVertical: resolvedPosVertical,
+    });
     return {
       ...businessData,
       hasCarteraCobro: isCarteraCobroActive,
@@ -55,6 +63,7 @@ export class SettingsService {
       wholesaleEnabled: Boolean(business.wholesaleEnabled),
       use_list_price: Boolean(business.useListPrice),
       useListPrice: Boolean(business.useListPrice),
+      saleUnits,
       channels: {
         delivery: {
           enabled: Boolean(business.deliveryChannelEnabled),
