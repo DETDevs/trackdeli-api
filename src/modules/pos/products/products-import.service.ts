@@ -1,4 +1,4 @@
-import { Injectable, UnprocessableEntityException, BadRequestException, Logger, Optional } from '@nestjs/common';
+import { Injectable, UnprocessableEntityException, BadRequestException, HttpException, Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ProductsService } from './products.service';
 import { BatchesService } from '../batches/batches.service';
@@ -1028,7 +1028,23 @@ export class ProductsImportService {
           toCreate.push({ rowNum, data: { ...payload.core, attributes: mergedAttrs, businessId }, lotNumber, expiryDate });
         }
       } catch (e: any) {
-        result.errors.push({ row: rowNum, column: '', message: e.message || 'Error validando atributos.' });
+        let safeMsg = 'No se pudieron validar los atributos de esta fila.';
+        if (e instanceof HttpException) {
+          const res = e.getResponse() as any;
+          if (typeof res === 'string') {
+            safeMsg = res;
+          } else if (typeof res?.message === 'string') {
+            safeMsg = res.message;
+          } else if (Array.isArray(res?.message) && res.message.length > 0) {
+            safeMsg = res.message.join(', ');
+          }
+        } else {
+          this.logger.error(
+            `[importProducts] Error técnico validando fila ${rowNum} en businessId=${businessId}: ${e?.message || e}`,
+            e instanceof Error ? e.stack : undefined,
+          );
+        }
+        result.errors.push({ row: rowNum, column: '', message: safeMsg });
       }
     }
 

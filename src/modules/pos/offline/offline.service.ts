@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  HttpException,
   Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../../../prisma/prisma.service";
@@ -303,6 +304,16 @@ export class OfflineService {
                   },
                 },
               });
+
+              if (!product) {
+                throw new NotFoundException({
+                  statusCode: 404,
+                  error: 'Not Found',
+                  code: 'PRODUCT_NOT_FOUND',
+                  message: 'Uno de los productos de esta venta ya no existe o cambió en el sistema.',
+                  productId: item.productId,
+                });
+              }
 
               if (product) {
                 assertNotVariantParent(product);
@@ -1187,17 +1198,23 @@ export class OfflineService {
           discrepancies: syncResult.discrepancies,
         });
       } catch (err: any) {
-        const errorMsg =
-          typeof err?.response?.message === 'string'
-            ? err.response.message
-            : Array.isArray(err?.response?.message)
-            ? err.response.message.join(', ')
-            : err.message || 'Error al sincronizar venta';
-        this.logger.error(`[syncOfflineSales] Error sincronizando venta ${saleDto.clientGeneratedId}: ${errorMsg}`);
+        const mapped = this.mapOfflineSaleError(err);
+        const rawDetail =
+          err instanceof HttpException
+            ? JSON.stringify(err.getResponse())
+            : err instanceof Error
+            ? err.message
+            : String(err);
+        this.logger.error(
+          `[syncOfflineSales] Error sincronizando venta businessId=${businessId} clientGeneratedId=${saleDto.clientGeneratedId} code=${mapped.code}: ${rawDetail}`,
+          err instanceof Error ? err.stack : undefined,
+        );
         results.push({
           clientGeneratedId: saleDto.clientGeneratedId,
           status: "ERROR",
-          error: errorMsg,
+          code: mapped.code,
+          message: mapped.message,
+          error: mapped.message,
         });
       }
     }
@@ -1215,6 +1232,114 @@ export class OfflineService {
     }
 
     return { results };
+  }
+
+  private looksTechnicalMessage(msg: string): boolean {
+    return /invalid\s+`|\bprisma\b|[a-z]:\\|\/app\/|\.(js|ts):\d+|constraint\s+violated|\bfkey\b|cannot\s+read\s+propert|undefined\s+is\s+not|syntax\s+error|econnrefused|stack\s*:/i.test(
+      msg,
+    );
+  }
+
+  private mapOfflineSaleError(err: unknown): { code: string; message: string } {
+    if (err instanceof Prisma.PrismaClientKnownRequestError) {
+      if (err.code === 'P2003') {
+        const target = `${JSON.stringify(err.meta ?? {})} ${err.message}`.toLowerCase();
+        if (target.includes('presentation')) {
+          return {
+            code: 'PRESENTATION_NOT_FOUND',
+            message: 'Una de las formas de venta seleccionadas ya no existe en el sistema.',
+          };
+        }
+        if (target.includes('product')) {
+          return {
+            code: 'PRODUCT_NOT_FOUND',
+            message: 'Uno de los productos de esta venta ya no existe o cambió en el sistema.',
+          };
+        }
+        if (target.includes('cashregister') || target.includes('cash_register') || target.includes('shift')) {
+          return {
+            code: 'CASH_REGISTER_NOT_FOUND',
+            message: 'El turno de caja asociado a esta venta ya no existe.',
+          };
+        }
+        if (target.includes('customer')) {
+          return {
+            code: 'CUSTOMER_NOT_FOUND',
+            message: 'El cliente asociado a esta venta ya no existe.',
+          };
+        }
+        return {
+          code: 'INVALID_SALE',
+          message: 'Uno de los datos relacionados con esta venta ya no existe.',
+        };
+      }
+      if (err.code === 'P2002') {
+        return {
+          code: 'INVALID_SALE',
+          message: 'Esta venta tiene un dato duplicado que ya fue registrado.',
+        };
+      }
+      if (err.code === 'P2025') {
+        return {
+          code: 'INVALID_SALE',
+          message: 'Uno de los datos necesarios para guardar esta venta ya no existe.',
+        };
+      }
+      return {
+        code: 'UNKNOWN_ERROR',
+        message: 'El servidor no pudo guardar esta venta.',
+      };
+    }
+
+    if (
+      err instanceof Prisma.PrismaClientValidationError ||
+      err instanceof Prisma.PrismaClientUnknownRequestError ||
+      err instanceof Prisma.PrismaClientRustPanicError ||
+      err instanceof Prisma.PrismaClientInitializationError
+    ) {
+      return {
+        code: 'UNKNOWN_ERROR',
+        message: 'El servidor no pudo guardar esta venta.',
+      };
+    }
+
+    if (err instanceof HttpException) {
+      const status = err.getStatus();
+      const res = err.getResponse() as any;
+      const resCode = typeof res === 'object' && res !== null && typeof res.code === 'string'
+        ? res.code
+        : undefined;
+      const rawMsg =
+        typeof res === 'string'
+          ? res
+          : typeof res?.message === 'string'
+          ? res.message
+          : Array.isArray(res?.message)
+          ? res.message.join(', ')
+          : '';
+
+      if (status >= 500) {
+        return {
+          code: resCode || 'UNKNOWN_ERROR',
+          message: 'El servidor no pudo guardar esta venta.',
+        };
+      }
+
+      const safeMsg =
+        rawMsg && !this.looksTechnicalMessage(rawMsg)
+          ? rawMsg
+          : 'Esta venta tiene datos inválidos y no se pudo guardar.';
+
+      return {
+        code: resCode || 'INVALID_SALE',
+        message: safeMsg,
+      };
+    }
+
+    return {
+      code: 'UNKNOWN_ERROR',
+      message: 'El servidor no pudo guardar esta venta.',
+    };
   }
 
   async getCatalogSnapshot(businessId: string, since?: string) {
