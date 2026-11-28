@@ -8,6 +8,10 @@ import { Reflector } from '@nestjs/core';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BusinessProductType, BusinessProductStatus, UserRole } from '@prisma/client';
 import { SKIP_WEB_ADMIN_ACCESS_KEY } from '../decorators/skip-web-admin-access.decorator';
+import {
+  isNonBillingAccountType,
+  isSubscriptionActiveForNonBilling,
+} from '../../modules/superadmin/utils/membership-billing.util';
 
 @Injectable()
 export class WebAdminAccessGuard implements CanActivate {
@@ -89,11 +93,18 @@ export class WebAdminAccessGuard implements CanActivate {
       select: {
         status: true,
         webAdminEnabled: true,
+        deactivatedAt: true,
+        deactivatedBy: true,
+        business: { select: { accountType: true } },
       },
     });
 
+    const isPosSubActive = isNonBillingAccountType(posSub?.business?.accountType)
+      ? isSubscriptionActiveForNonBilling(posSub)
+      : posSub?.status === BusinessProductStatus.ACTIVE;
+
     // Negocios sin suscripción POS activa no se ven afectados por esta regla POS
-    if (!posSub || posSub.status !== BusinessProductStatus.ACTIVE) {
+    if (!posSub || !isPosSubActive) {
       return true;
     }
 

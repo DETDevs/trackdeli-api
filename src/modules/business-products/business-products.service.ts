@@ -35,6 +35,8 @@ import {
   computeBusinessMembershipBilling,
   resolveBusinessCoverage,
   getManaguaDateParts,
+  isNonBillingAccountType,
+  isSubscriptionActiveForNonBilling,
 } from '../superadmin/utils/membership-billing.util';
 
 @Injectable()
@@ -134,11 +136,17 @@ export class BusinessProductsService {
       select: {
         status: true,
         trialEndsAt: true,
+        deactivatedAt: true,
+        deactivatedBy: true,
         business: {
-          select: { businessType: true },
+          select: { businessType: true, accountType: true },
         },
       },
     });
+
+    if (isNonBillingAccountType(subscription?.business?.accountType)) {
+      return isSubscriptionActiveForNonBilling(subscription);
+    }
 
     if (subscription?.status !== BusinessProductStatus.ACTIVE) {
       return false;
@@ -231,6 +239,8 @@ export class BusinessProductsService {
     }
 
     const coverage = await resolveBusinessCoverage(this.prisma, businessId, now);
+    const isNonBilling = isNonBillingAccountType((business as any).accountType);
+
     if (coverage.isCovered && coverage.source === 'MAINTENANCE_FREE') {
       coveredProductTypes.add(BusinessProductType.POS);
       coveredProductTypes.add(BusinessProductType.DELIVERY);
@@ -239,14 +249,22 @@ export class BusinessProductsService {
     }
 
     const isDeliveryMembership = business.businessType === BusinessType.NEGOCIO;
-    const isDeliveryActive = deliverySub?.status === BusinessProductStatus.ACTIVE &&
-      (!isDeliveryMembership || coveredProductTypes.has(BusinessProductType.DELIVERY));
-    const isPosActive = posSub?.status === BusinessProductStatus.ACTIVE &&
-      coveredProductTypes.has(BusinessProductType.POS);
-    const isCarteraActive = carteraSub?.status === BusinessProductStatus.ACTIVE &&
-      coveredProductTypes.has(BusinessProductType.CARTERA_COBRO);
-    const isCitasActive = citasSub?.status === BusinessProductStatus.ACTIVE &&
-      coveredProductTypes.has(BusinessProductType.CITAS);
+    const isDeliveryActive = isNonBilling
+      ? isSubscriptionActiveForNonBilling(deliverySub)
+      : deliverySub?.status === BusinessProductStatus.ACTIVE &&
+        (!isDeliveryMembership || coveredProductTypes.has(BusinessProductType.DELIVERY));
+    const isPosActive = isNonBilling
+      ? isSubscriptionActiveForNonBilling(posSub)
+      : posSub?.status === BusinessProductStatus.ACTIVE &&
+        coveredProductTypes.has(BusinessProductType.POS);
+    const isCarteraActive = isNonBilling
+      ? isSubscriptionActiveForNonBilling(carteraSub)
+      : carteraSub?.status === BusinessProductStatus.ACTIVE &&
+        coveredProductTypes.has(BusinessProductType.CARTERA_COBRO);
+    const isCitasActive = isNonBilling
+      ? isSubscriptionActiveForNonBilling(citasSub)
+      : citasSub?.status === BusinessProductStatus.ACTIVE &&
+        coveredProductTypes.has(BusinessProductType.CITAS);
 
     const allMemberships = await this.prisma.membership.findMany({
       where: {
@@ -258,7 +276,15 @@ export class BusinessProductsService {
     });
     const billing = computeBusinessMembershipBilling(business, allMemberships, now);
 
-    if (coverage.source === 'MAINTENANCE_FREE') {
+    if (isNonBilling) {
+      billing.membership_status = 'VIGENTE';
+      billing.due_date = null;
+      billing.grace_ends_at = null;
+      billing.days_until_due = null;
+      billing.due_date_date = null;
+      billing.is_active = true;
+      billing.is_in_grace = false;
+    } else if (coverage.source === 'MAINTENANCE_FREE') {
       billing.membership_status = coverage.status;
       billing.due_date = coverage.coveredUntilStr;
       billing.grace_ends_at = coverage.graceEndsAtStr;
@@ -775,7 +801,11 @@ export class BusinessProductsService {
       where: { businessId_productType: { businessId, productType } },
     });
 
-    if (!sub || sub.status !== BusinessProductStatus.ACTIVE) {
+    const subIsEffectivelyActive = isNonBillingAccountType((business as any).accountType)
+      ? isSubscriptionActiveForNonBilling(sub)
+      : sub?.status === BusinessProductStatus.ACTIVE;
+
+    if (!sub || !subIsEffectivelyActive) {
       throw new BadRequestException(`El producto ${productType} ya se encuentra inactivo.`);
     }
 
@@ -867,7 +897,11 @@ export class BusinessProductsService {
           },
         });
 
-        if (!existingSub || existingSub.status === BusinessProductStatus.INACTIVE) {
+        const existingIsEffectivelyActive = isNonBillingAccountType((business as any).accountType)
+          ? isSubscriptionActiveForNonBilling(existingSub)
+          : existingSub?.status === BusinessProductStatus.ACTIVE;
+
+        if (!existingSub || !existingIsEffectivelyActive) {
           return {
             status: 'INACTIVE',
             isIdempotent: true,

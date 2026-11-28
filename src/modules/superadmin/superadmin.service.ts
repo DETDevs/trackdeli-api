@@ -42,6 +42,7 @@ import {
   BusinessAccountType,
   normalizeAccountType,
   isNonBillingAccountType,
+  isSubscriptionActiveForNonBilling,
   normalizeContactPhone,
   formatBusinessContact,
 } from './utils/membership-billing.util';
@@ -157,6 +158,8 @@ export class SuperAdminService {
               trialEndsAt: true,
               webBillingEnabled: true,
               webBillingMonthlyUsd: true,
+              deactivatedAt: true,
+              deactivatedBy: true,
             },
           },
           industry: {
@@ -344,10 +347,16 @@ export class SuperAdminService {
             ? 'Citas'
             : s.productType;
 
+        const resolvedStatus = isNonBilling
+          ? isSubscriptionActiveForNonBilling(s)
+            ? BusinessProductStatus.ACTIVE
+            : BusinessProductStatus.INACTIVE
+          : s.status;
+
         return {
           id: s.id,
           type: s.productType,
-          status: s.status,
+          status: resolvedStatus,
           name,
           fee,
         };
@@ -1177,6 +1186,14 @@ export class SuperAdminService {
     }
 
     const resolvedProductSubscriptions = business.productSubscriptions.map((sub) => {
+      if (isNonBilling) {
+        return {
+          ...sub,
+          status: isSubscriptionActiveForNonBilling(sub)
+            ? BusinessProductStatus.ACTIVE
+            : BusinessProductStatus.INACTIVE,
+        };
+      }
       const isRiders = business.businessType === BusinessType.EMPRESA_RIDERS;
       const isMembership = sub.productType !== BusinessProductType.DELIVERY || !isRiders;
       if (isMembership && sub.status === BusinessProductStatus.ACTIVE && !activeCoveredSubIds.has(sub.id)) {

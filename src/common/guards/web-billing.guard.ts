@@ -8,6 +8,10 @@ import * as crypto from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BusinessProductStatus, BusinessProductType, PosDeviceStatus } from '@prisma/client';
 import { resolveBusinessId } from '../../modules/pos/pos.utils';
+import {
+  isNonBillingAccountType,
+  isSubscriptionActiveForNonBilling,
+} from '../../modules/superadmin/utils/membership-billing.util';
 
 @Injectable()
 export class WebBillingGuard implements CanActivate {
@@ -50,11 +54,18 @@ export class WebBillingGuard implements CanActivate {
           productType: BusinessProductType.POS,
         },
       },
+      include: {
+        business: { select: { accountType: true } },
+      },
     });
+
+    const isPosSubActive = isNonBillingAccountType(posSub?.business?.accountType)
+      ? isSubscriptionActiveForNonBilling(posSub)
+      : posSub?.status === BusinessProductStatus.ACTIVE;
 
     if (
       !posSub ||
-      posSub.status !== BusinessProductStatus.ACTIVE ||
+      !isPosSubActive ||
       !posSub.webBillingEnabled ||
       (posSub as any).webAdminEnabled === false
     ) {

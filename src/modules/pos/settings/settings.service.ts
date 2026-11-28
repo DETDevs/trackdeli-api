@@ -4,6 +4,10 @@ import { UpdatePosSettingsDto } from "./dto/update-pos-settings.dto";
 import { UserRole } from "@prisma/client";
 import { getSalonLabels, resolveSalonProfile } from "../salon/salon-profile.util";
 import { resolveSaleUnitsForBusiness } from "../products/sale-units-by-industry.constants";
+import {
+  isNonBillingAccountType,
+  isSubscriptionActiveForNonBilling,
+} from "../../superadmin/utils/membership-billing.util";
 
 @Injectable()
 export class SettingsService {
@@ -15,7 +19,7 @@ export class SettingsService {
     const business = await this.prisma.business.findUnique({
       where: { id: businessId },
       select: {
-        id: true, name: true, type: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true, hasCitas: true,
+        id: true, name: true, type: true, accountType: true, hasPOS: true, hasTrackDeli: true, hasCarteraCobro: true, hasCitas: true,
         posVertical: true, salonProfile: true, gridColumns: true, gridRows: true,
         industry: { select: { code: true, name: true } },
         taxRate: true, taxEnabled: true, taxIncluded: true, currency: true, invoicePrefix: true, invoiceCounter: true,
@@ -27,25 +31,43 @@ export class SettingsService {
         pedidosYaCapAtListPrice: true, pedidosYaRequireOrderNumber: true,
         productSubscriptions: {
           where: { productType: { in: ['POS', 'CARTERA_COBRO', 'CITAS'] } },
-          select: { productType: true, posVertical: true, status: true },
+          select: { productType: true, posVertical: true, status: true, deactivatedAt: true, deactivatedBy: true },
         },
       },
     });
     if (!business) throw new NotFoundException("Negocio no encontrado");
 
+    const isNonBilling = isNonBillingAccountType((business as any).accountType);
     const posSub = business.productSubscriptions?.find((s) => s.productType === 'POS');
     const carteraSub = business.productSubscriptions?.find((s) => s.productType === 'CARTERA_COBRO');
     const resolvedPosVertical = posSub?.posVertical ?? business.posVertical;
-    const isCarteraCobroActive = carteraSub ? carteraSub.status === 'ACTIVE' : Boolean(business.hasCarteraCobro);
+    const isPosActive = isNonBilling
+      ? posSub
+        ? isSubscriptionActiveForNonBilling(posSub)
+        : Boolean(business.hasPOS)
+      : Boolean(business.hasPOS);
+    const isCarteraCobroActive = isNonBilling
+      ? carteraSub
+        ? isSubscriptionActiveForNonBilling(carteraSub)
+        : Boolean(business.hasCarteraCobro)
+      : carteraSub
+        ? carteraSub.status === 'ACTIVE'
+        : Boolean(business.hasCarteraCobro);
     const citasSub = business.productSubscriptions?.find((s) => s.productType === 'CITAS');
-    const isCitasActive = citasSub ? citasSub.status === 'ACTIVE' : Boolean((business as any).hasCitas);
+    const isCitasActive = isNonBilling
+      ? citasSub
+        ? isSubscriptionActiveForNonBilling(citasSub)
+        : Boolean((business as any).hasCitas)
+      : citasSub
+        ? citasSub.status === 'ACTIVE'
+        : Boolean((business as any).hasCitas);
     const resolvedSalonProfile = resolveSalonProfile(business.salonProfile);
 
     const deliveryTaxable = business.deliveryTaxable !== null && business.deliveryTaxable !== undefined
       ? business.deliveryTaxable
       : Boolean(business.taxEnabled);
 
-    const { productSubscriptions, type: businessLegacyType, industry: businessIndustry, ...businessData } = business;
+    const { productSubscriptions, type: businessLegacyType, accountType: _accountType, industry: businessIndustry, ...businessData } = business;
     const saleUnits = resolveSaleUnitsForBusiness({
       industryCode: businessIndustry?.code,
       industryName: businessIndustry?.name,
@@ -54,6 +76,7 @@ export class SettingsService {
     });
     return {
       ...businessData,
+      hasPOS: isPosActive,
       hasCarteraCobro: isCarteraCobroActive,
       hasCitas: isCitasActive,
       posVertical: resolvedPosVertical,

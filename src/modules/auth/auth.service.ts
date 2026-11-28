@@ -12,7 +12,7 @@ import { User, AuthProvider, BusinessProductType, UserRole } from '@prisma/clien
 import { FirebaseService } from '../notifications/firebase.service';
 import { PosDevicesService } from '../pos/devices/pos-devices.service';
 import { getSalonLabels, resolveSalonProfile } from '../pos/salon/salon-profile.util';
-import { computeBusinessMembershipBilling, computeBusinessCoverage, resolveBusinessCoverage } from '../superadmin/utils/membership-billing.util';
+import { computeBusinessMembershipBilling, computeBusinessCoverage, resolveBusinessCoverage, isNonBillingAccountType } from '../superadmin/utils/membership-billing.util';
 
 @Injectable()
 export class AuthService {
@@ -260,9 +260,13 @@ export class AuthService {
             productType: BusinessProductType.POS,
           },
         },
+        include: {
+          business: { select: { accountType: true } },
+        },
       });
 
-      if (posSub && posSub.trialHours !== null && posSub.trialHours >= 1) {
+      const isNonBillingLogin = isNonBillingAccountType(posSub?.business?.accountType);
+      if (!isNonBillingLogin && posSub && posSub.trialHours !== null && posSub.trialHours >= 1) {
         const now = new Date();
 
         if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {
@@ -408,9 +412,13 @@ export class AuthService {
             productType: BusinessProductType.POS,
           },
         },
+        include: {
+          business: { select: { accountType: true } },
+        },
       });
 
-      if (posSub && posSub.trialHours !== null && posSub.trialHours >= 1) {
+      const isNonBillingSwitch = isNonBillingAccountType(posSub?.business?.accountType);
+      if (!isNonBillingSwitch && posSub && posSub.trialHours !== null && posSub.trialHours >= 1) {
         const now = new Date();
         if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {
           const coverage = await resolveBusinessCoverage(this.prisma, targetBusinessId, now);
@@ -737,9 +745,13 @@ export class AuthService {
               productType: BusinessProductType.POS,
             },
           },
+          include: {
+            business: { select: { accountType: true } },
+          },
         });
 
-        if (posSub && posSub.trialHours !== null && posSub.trialHours >= 1) {
+        const isNonBillingRefresh = isNonBillingAccountType(posSub?.business?.accountType);
+        if (!isNonBillingRefresh && posSub && posSub.trialHours !== null && posSub.trialHours >= 1) {
           const now = new Date();
 
           if (posSub.trialEndsAt && now >= posSub.trialEndsAt) {

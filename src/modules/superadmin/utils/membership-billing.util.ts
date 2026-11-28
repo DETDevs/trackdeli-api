@@ -18,6 +18,33 @@ export function isNonBillingAccountType(value?: string | null): boolean {
 }
 
 /**
+ * 314a — Determina si una suscripción de producto (POS, DELIVERY, CARTERA_COBRO, CITAS)
+ * cuenta como activa para cuentas DEMO o INTERNO:
+ * - ACTIVE => activa sin depender de fechas ni pagos.
+ * - INACTIVE con deactivatedAt != null y deactivatedBy == null => vencida automáticamente
+ *   por el cron previo al 307a (system-auto-expiration), por lo que cuenta como activa.
+ * - INACTIVE con deactivatedBy != null => desactivada a mano en Superadmin => sigue inactiva.
+ * - INACTIVE sin deactivatedAt (o sin fila) => nunca contratada => inactiva.
+ */
+export function isSubscriptionActiveForNonBilling(
+  sub:
+    | {
+        status?: string | null;
+        deactivatedAt?: Date | string | null;
+        deactivatedBy?: string | null;
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!sub) return false;
+  if (sub.status === 'ACTIVE') return true;
+  if (sub.status === 'INACTIVE' && sub.deactivatedAt != null && !sub.deactivatedBy) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Normaliza un teléfono de contacto con código de país (+505 por defecto si trae 8 dígitos).
  */
 export function normalizeContactPhone(raw?: string | null): string | null {
