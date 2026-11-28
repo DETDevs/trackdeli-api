@@ -9,6 +9,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PosDevicesModule } from '../pos/devices/pos-devices.module';
+import { BusinessProductsModule } from '../business-products/business-products.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { PosDevicesModule } from '../pos/devices/pos-devices.module';
     PassportModule,
     NotificationsModule,
     PosDevicesModule,
+    BusinessProductsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => ({

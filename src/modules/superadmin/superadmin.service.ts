@@ -149,6 +149,8 @@ export class SuperAdminService {
               maxMobileDevices: true,
               carteraMonthlyFee: true,
               citasMonthlyFee: true,
+              preventaMonthlyFee: true,
+              maxRouteSellers: true,
               deliveryMonthlyFee: true,
               autoRenew: true,
               renewalCanceledAt: true,
@@ -316,6 +318,8 @@ export class SuperAdminService {
                 monthlyAmount += Number(sub.carteraMonthlyFee || 0);
               } else if (sub.productType === 'CITAS') {
                 monthlyAmount += Number(sub.citasMonthlyFee || 0);
+              } else if (sub.productType === 'PREVENTA') {
+                monthlyAmount += Number(sub.preventaMonthlyFee ?? 30);
               }
             }
           }
@@ -334,6 +338,8 @@ export class SuperAdminService {
           fee = Number(s.carteraMonthlyFee || 0);
         } else if (s.productType === 'CITAS') {
           fee = Number(s.citasMonthlyFee || 0);
+        } else if (s.productType === 'PREVENTA') {
+          fee = Number(s.preventaMonthlyFee ?? 30);
         }
 
         const name =
@@ -345,6 +351,8 @@ export class SuperAdminService {
             ? 'Cartera de Cobro'
             : s.productType === 'CITAS'
             ? 'Citas'
+            : s.productType === 'PREVENTA'
+            ? 'Preventa'
             : s.productType;
 
         const resolvedStatus = isNonBilling
@@ -1217,9 +1225,38 @@ export class SuperAdminService {
     const hasCitasActive = resolvedProductSubscriptions.some(
       (s) => s.productType === BusinessProductType.CITAS && s.status === BusinessProductStatus.ACTIVE,
     );
+    const hasPreventaActive = resolvedProductSubscriptions.some(
+      (s) => s.productType === BusinessProductType.PREVENTA && s.status === BusinessProductStatus.ACTIVE,
+    );
 
     const posSub = resolvedProductSubscriptions.find(
       (s) => s.productType === BusinessProductType.POS,
+    );
+    const preventaSub = resolvedProductSubscriptions.find(
+      (s) => s.productType === BusinessProductType.PREVENTA,
+    );
+    const maxRouteSellers = (preventaSub as any)?.maxRouteSellers ?? 4;
+    const preventaMonthlyFee = (preventaSub as any)?.preventaMonthlyFee != null
+      ? Number((preventaSub as any).preventaMonthlyFee)
+      : 30;
+    const routeSellersUsed = await this.prisma.user.count({
+      where: {
+        businessId: id,
+        role: UserRole.PREVENTISTA,
+        isActive: true,
+      },
+    });
+    const enrichedProductSubscriptions = resolvedProductSubscriptions.map((sub) =>
+      sub.productType === BusinessProductType.PREVENTA
+        ? {
+            ...sub,
+            preventaMonthlyFee: (sub as any).preventaMonthlyFee != null
+              ? Number((sub as any).preventaMonthlyFee)
+              : 30,
+            maxRouteSellers: (sub as any).maxRouteSellers ?? 4,
+            routeSellersUsed,
+          }
+        : sub,
     );
     const maxDevices = posSub?.maxDevices ?? null;
     const maxMobileDevices = (posSub as any)?.maxMobileDevices ?? 0;
@@ -1297,11 +1334,15 @@ export class SuperAdminService {
         ordersCancelled: ordersCancelledMonth,
         deliveryRate: deliveryRateMonth,
       },
-      productSubscriptions: resolvedProductSubscriptions,
+      productSubscriptions: enrichedProductSubscriptions,
       hasPOS: hasPOSActive,
       hasTrackDeli: hasTrackDeliActive,
       hasCarteraCobro: hasCarteraActive,
       hasCitas: hasCitasActive,
+      hasPreventa: hasPreventaActive,
+      preventaMonthlyFee,
+      maxRouteSellers,
+      routeSellersUsed,
       maxDevices,
       maxMobileDevices,
       activeMobileDevices,
@@ -1729,8 +1770,56 @@ export class SuperAdminService {
         });
       }
 
-      // Asegurar que existan los 4 registros de suscripción para el negocio (INACTIVE si no se seleccionaron)
-      for (const prodType of [BusinessProductType.DELIVERY, BusinessProductType.POS, BusinessProductType.CARTERA_COBRO, BusinessProductType.CITAS]) {
+      // E) PREVENTA (320a)
+      if (dto.hasPreventa) {
+        const preventaFee = dto.preventaMonthlyFee !== undefined && dto.preventaMonthlyFee !== null
+          ? Number(dto.preventaMonthlyFee)
+          : 30.00;
+        const maxRouteSellers = dto.maxRouteSellers !== undefined && dto.maxRouteSellers !== null
+          ? Number(dto.maxRouteSellers)
+          : 4;
+
+        const preventaSub = await tx.businessProductSubscription.create({
+          data: {
+            businessId: business.id,
+            productType: BusinessProductType.PREVENTA,
+            status: BusinessProductStatus.ACTIVE,
+            preventaMonthlyFee: new Prisma.Decimal(preventaFee),
+            maxRouteSellers,
+            activatedAt: now,
+            activatedBy: createdBy,
+          },
+        });
+
+        await tx.posPreventaSettings.upsert({
+          where: { businessId: business.id },
+          create: { businessId: business.id },
+          update: {},
+        });
+
+        await tx.businessProductAuditLog.create({
+          data: {
+            businessId: business.id,
+            productType: BusinessProductType.PREVENTA,
+            action: BusinessProductAction.ACTIVATED,
+            performedBy: createdBy,
+            reason: 'Activación inicial al crear negocio',
+            metadata: {
+              preventaMonthlyFee: preventaFee,
+              maxRouteSellers,
+            },
+          },
+        });
+
+        membershipPaymentProducts.push({
+          businessProductSubscriptionId: preventaSub.id,
+          amountAttributed: preventaFee,
+          productType: BusinessProductType.PREVENTA,
+        });
+      }
+
+      // Asegurar que existan los registros de suscripción para el negocio (INACTIVE si no se seleccionaron)
+      for (const prodType of [BusinessProductType.DELIVERY, BusinessProductType.POS, BusinessProductType.CARTERA_COBRO, BusinessProductType.CITAS, BusinessProductType.PREVENTA]) {
         const exists = await tx.businessProductSubscription.findUnique({
           where: { businessId_productType: { businessId: business.id, productType: prodType } },
         });
@@ -3153,6 +3242,12 @@ export class SuperAdminService {
               await tx.business.update({ where: { id: dto.businessId }, data: { hasCitas: true } });
             } else if (sub.productType === BusinessProductType.DELIVERY) {
               await tx.business.update({ where: { id: dto.businessId }, data: { hasTrackDeli: true } });
+            } else if (sub.productType === BusinessProductType.PREVENTA) {
+              await tx.posPreventaSettings.upsert({
+                where: { businessId: dto.businessId },
+                create: { businessId: dto.businessId },
+                update: {},
+              });
             }
           }
         }
@@ -4528,6 +4623,84 @@ export class SuperAdminService {
       }
     }
 
+    // 320a: Permitir al Superadmin editar tarifa y cupo de vendedores de PREVENTA
+    let updatedPreventaSub: any = null;
+    if (dto.preventaMonthlyFee !== undefined || dto.maxRouteSellers !== undefined) {
+      const existingPreventa = await this.prisma.businessProductSubscription.findUnique({
+        where: {
+          businessId_productType: {
+            businessId,
+            productType: BusinessProductType.PREVENTA,
+          },
+        },
+      });
+      const nextFee =
+        dto.preventaMonthlyFee !== undefined && dto.preventaMonthlyFee !== null
+          ? new Prisma.Decimal(dto.preventaMonthlyFee)
+          : (existingPreventa?.preventaMonthlyFee ?? new Prisma.Decimal(30));
+      const nextMaxSellers =
+        dto.maxRouteSellers !== undefined && dto.maxRouteSellers !== null
+          ? dto.maxRouteSellers
+          : (existingPreventa?.maxRouteSellers ?? 4);
+
+      updatedPreventaSub = await this.prisma.businessProductSubscription.upsert({
+        where: {
+          businessId_productType: {
+            businessId,
+            productType: BusinessProductType.PREVENTA,
+          },
+        },
+        update: {
+          preventaMonthlyFee: nextFee,
+          maxRouteSellers: nextMaxSellers,
+        },
+        create: {
+          businessId,
+          productType: BusinessProductType.PREVENTA,
+          status: BusinessProductStatus.INACTIVE,
+          preventaMonthlyFee: nextFee,
+          maxRouteSellers: nextMaxSellers,
+        },
+      });
+
+      await this.prisma.businessProductAuditLog.create({
+        data: {
+          businessId,
+          productType: BusinessProductType.PREVENTA,
+          action: BusinessProductAction.CONFIG_UPDATED,
+          performedBy: actorUser?.sub || 'system-superadmin',
+          reason: 'Actualización de tarifa o cupo de vendedores de preventa',
+          metadata: {
+            previousConfig: {
+              preventaMonthlyFee: existingPreventa?.preventaMonthlyFee != null ? Number(existingPreventa.preventaMonthlyFee) : null,
+              maxRouteSellers: existingPreventa?.maxRouteSellers ?? null,
+            },
+            newConfig: {
+              preventaMonthlyFee: Number(nextFee),
+              maxRouteSellers: nextMaxSellers,
+            },
+          },
+        },
+      });
+
+      await this.auditService.record({
+        businessId,
+        userId: actorUser?.sub || 'system-superadmin',
+        userRole: actorUser?.role || 'SUPERADMIN',
+        action: 'PREVENTA_CONFIG_UPDATED',
+        entityType: 'BusinessProductSubscription',
+        entityId: updatedPreventaSub.id,
+        before: {
+          preventaMonthlyFee: existingPreventa?.preventaMonthlyFee != null ? Number(existingPreventa.preventaMonthlyFee) : null,
+          maxRouteSellers: existingPreventa?.maxRouteSellers ?? null,
+        },
+        after: {
+          preventaMonthlyFee: Number(nextFee),
+          maxRouteSellers: nextMaxSellers,
+        },
+      });
+    }
+
     return {
       ...updatedSub,
       salonProfile: updatedSalonProfile,
@@ -4536,6 +4709,12 @@ export class SuperAdminService {
       trialHours: (updatedSub as any).trialHours ?? null,
       trialStartedAt: (updatedSub as any).trialStartedAt ?? null,
       trialEndsAt: (updatedSub as any).trialEndsAt ?? null,
+      ...(updatedPreventaSub
+        ? {
+            preventaMonthlyFee: Number(updatedPreventaSub.preventaMonthlyFee ?? 30),
+            maxRouteSellers: updatedPreventaSub.maxRouteSellers ?? 4,
+          }
+        : {}),
     };
   }
 

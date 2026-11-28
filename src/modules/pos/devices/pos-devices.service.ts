@@ -47,7 +47,11 @@ export class PosDevicesService {
       return;
     }
 
-    if (user.role === UserRole.SUPERADMIN || user.role === UserRole.REPARTIDOR) {
+    if (
+      user.role === UserRole.SUPERADMIN ||
+      user.role === UserRole.REPARTIDOR ||
+      user.role === UserRole.PREVENTISTA
+    ) {
       return;
     }
 

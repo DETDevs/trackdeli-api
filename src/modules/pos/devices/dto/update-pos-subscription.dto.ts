@@ -56,4 +56,17 @@ export class UpdatePosSubscriptionDto {
   @IsInt()
   @Min(1)
   extendHours?: number;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsNumber()
+  @Min(0)
+  preventaMonthlyFee?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  maxRouteSellers?: number | null;
 }

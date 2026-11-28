@@ -178,6 +178,20 @@ export class CreateBusinessSuperAdminDto {
 
   @IsOptional()
   @IsBoolean()
+  hasPreventa?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  preventaMonthlyFee?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxRouteSellers?: number;
+
+  @IsOptional()
+  @IsBoolean()
   tracksBatches?: boolean;
 
   @IsOptional()

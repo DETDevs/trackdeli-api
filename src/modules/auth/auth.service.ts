@@ -11,6 +11,7 @@ import { JwtPayload } from '../../common/types/jwt-payload.interface';
 import { User, AuthProvider, BusinessProductType, UserRole } from '@prisma/client';
 import { FirebaseService } from '../notifications/firebase.service';
 import { PosDevicesService } from '../pos/devices/pos-devices.service';
+import { BusinessProductsService } from '../business-products/business-products.service';
 import { getSalonLabels, resolveSalonProfile } from '../pos/salon/salon-profile.util';
 import { computeBusinessMembershipBilling, computeBusinessCoverage, resolveBusinessCoverage, isNonBillingAccountType } from '../superadmin/utils/membership-billing.util';
 
@@ -24,6 +25,7 @@ export class AuthService {
     private configService: ConfigService,
     private firebaseService: FirebaseService,
     private posDevicesService: PosDevicesService,
+    private businessProductsService: BusinessProductsService,
   ) {}
 
   async validateUser(email: string, password: string): Promise<User | null> {
@@ -248,11 +250,26 @@ export class AuthService {
       activeBusinessId = dto.businessId;
     }
 
+    // 320a: Si es PREVENTISTA, validar que el módulo PREVENTA esté activo en el negocio
+    if (user.role === UserRole.PREVENTISTA) {
+      const isPreventaActive = activeBusinessId
+        ? await this.businessProductsService.isActive(activeBusinessId, BusinessProductType.PREVENTA)
+        : false;
+      if (!isPreventaActive) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'PREVENTA_INACTIVE',
+          message: 'El módulo de preventa no está activo en este negocio. Hablá con tu encargado.',
+        });
+      }
+    }
+
     let posSub: any = null;
     let trialData: { endsAt: string | null; serverNow: string; remainingSeconds: number | null } | null = null;
     let maxExpiresAt: Date | null = null;
 
-    if (activeBusinessId && user.role !== UserRole.SUPERADMIN) {
+    if (activeBusinessId && user.role !== UserRole.SUPERADMIN && user.role !== UserRole.PREVENTISTA) {
       posSub = await this.prisma.businessProductSubscription.findUnique({
         where: {
           businessId_productType: {
@@ -347,7 +364,12 @@ export class AuthService {
     if (activeBusinessId) {
       const bRes = await this.buildBusinessData(activeBusinessId);
       if (bRes) {
-        businessData = bRes.businessData;
+        if (user.role === UserRole.PREVENTISTA) {
+          const { defaultMarkupPct, useListPrice, autoUpdatePriceOnPurchase, ...safeBizData } = bRes.businessData;
+          businessData = safeBizData;
+        } else {
+          businessData = bRes.businessData;
+        }
         salonProfile = bRes.salonProfile;
         salonLabels = bRes.salonLabels;
       }

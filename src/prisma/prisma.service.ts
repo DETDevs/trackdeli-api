@@ -2330,6 +2330,7 @@ WHERE a."customerId" = c."id"
       await this.ensureMembershipTypeSchema();
       await this.ensureTipsSchema();
       await this.ensureTipsControlSchema();
+      await this.ensurePreventaBaseSchema();
       await this.ensureCustomerDeliveryReferenceSchema();
       await this.ensureQuotesSchema();
       await this.ensureQuoteReceiptLinksSchema();
@@ -4651,6 +4652,59 @@ WHERE a."customerId" = c."id"
       }
     } catch (err: any) {
       this.logger.warn(`[PrismaService] ⚠️ 319a - Advertencia sincronizando esquema de control de propinas: ${err.message}`);
+    }
+  }
+
+  /**
+   * 320a - Base de Preventa: enum BusinessProductType.PREVENTA, UserRole.PREVENTISTA,
+   * columnas preventaMonthlyFee/maxRouteSellers en business_product_subscriptions y tabla pos_preventa_settings.
+   * DDL idempotente con advisory lock 320001 (cada ALTER TYPE corre fuera de transacción).
+   */
+  private async ensurePreventaBaseSchema(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`SELECT pg_advisory_lock(320001)`);
+      try {
+        await this.$executeRawUnsafe(`ALTER TYPE "BusinessProductType" ADD VALUE IF NOT EXISTS 'PREVENTA'`);
+        await this.$executeRawUnsafe(`ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'PREVENTISTA'`);
+        await this.$executeRawUnsafe(`
+          ALTER TABLE "business_product_subscriptions"
+            ADD COLUMN IF NOT EXISTS "preventaMonthlyFee" DECIMAL(10,2) DEFAULT 30,
+            ADD COLUMN IF NOT EXISTS "maxRouteSellers" INTEGER DEFAULT 4;
+        `);
+        await this.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "pos_preventa_settings" (
+            "businessId" TEXT NOT NULL,
+            "defaultDeliveryDaysOffset" INTEGER NOT NULL DEFAULT 2,
+            "allowSellerPriceEdit" BOOLEAN NOT NULL DEFAULT false,
+            "allowSellerDiscounts" BOOLEAN NOT NULL DEFAULT false,
+            "creditPolicyOnOverdue" VARCHAR(10) NOT NULL DEFAULT 'WARN',
+            "creditPolicyOnLimitExceeded" VARCHAR(10) NOT NULL DEFAULT 'WARN',
+            "allowSellerCreditPayments" BOOLEAN NOT NULL DEFAULT false,
+            "allowSellerCreateCustomers" BOOLEAN NOT NULL DEFAULT true,
+            "requireGpsOnVisit" BOOLEAN NOT NULL DEFAULT false,
+            "allowCreditDeliveryWithoutShift" BOOLEAN NOT NULL DEFAULT true,
+            "preorderNumberPrefix" VARCHAR(10) NOT NULL DEFAULT 'PV',
+            "reservationExpireDays" INTEGER,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "pos_preventa_settings_pkey" PRIMARY KEY ("businessId")
+          );
+        `);
+        await this.$executeRawUnsafe(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pos_preventa_settings_businessId_fkey') THEN
+              ALTER TABLE "pos_preventa_settings"
+                ADD CONSTRAINT "pos_preventa_settings_businessId_fkey"
+                FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+            END IF;
+          END $$;
+        `);
+      } finally {
+        await this.$executeRawUnsafe(`SELECT pg_advisory_unlock(320001)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[PrismaService] ⚠️ 320a - Advertencia sincronizando esquema base de preventa: ${err.message}`);
     }
   }
 

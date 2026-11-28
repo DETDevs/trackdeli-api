@@ -33,6 +33,11 @@ export class RolesGuard implements CanActivate {
       return !!requiredRoles && requiredRoles.includes(UserRole.VENDEDOR);
     }
 
+    // Role PREVENTISTA has strictly limited access (320a): ONLY endpoints explicitly marked with PREVENTISTA are accessible
+    if (user.role === UserRole.PREVENTISTA) {
+      return !!requiredRoles && requiredRoles.includes(UserRole.PREVENTISTA);
+    }
+
     if (!requiredRoles) {
       return true;
     }

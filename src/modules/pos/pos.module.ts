@@ -41,6 +41,7 @@ import { PosNotificationsCenterModule } from './notifications-center/pos-notific
 import { UnitsModule } from './units/units.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { PushModule } from './push/push.module';
+import { PreventaModule } from './preventa/preventa.module';
 
 @Module({
   imports: [
@@ -82,10 +83,11 @@ import { PushModule } from './push/push.module';
     PosNotificationsCenterModule,
     PromotionsModule,
     PushModule,
+    PreventaModule,
   ],
   controllers: [PosUsersController],
   providers: [PosUsersService],
-  exports: [ProductFieldsModule, UnitsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule, PrintAuditModule, BatchesModule, ReceiptLinksModule, PresaleTicketsModule, BanksModule, ChannelsModule, PosQuotesModule, PromotionsModule, PushModule],
+  exports: [ProductFieldsModule, UnitsModule, PosPermissionsModule, AuditModule, PoliciesModule, ApprovalsModule, IdempotencyModule, ExchangeRateModule, PosDevicesModule, WorkshopModule, KitchenModule, PayablesModule, ExpensesModule, PrintAuditModule, BatchesModule, ReceiptLinksModule, PresaleTicketsModule, BanksModule, ChannelsModule, PosQuotesModule, PromotionsModule, PushModule, PreventaModule],
 })
 export class PosModule {}
 

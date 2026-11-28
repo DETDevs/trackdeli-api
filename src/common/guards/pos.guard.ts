@@ -31,6 +31,15 @@ export class PosGuard implements CanActivate {
       throw new ForbiddenException('Acceso denegado - el modulo POS no esta disponible para repartidores');
     }
 
+    if (user.role === UserRole.PREVENTISTA) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'PREVENTISTA_ACCESS_DENIED',
+        message: 'Acceso denegado: tu rol solo puede usar el módulo de preventa.',
+      });
+    }
+
     if (user.role === UserRole.SUPERADMIN) {
       return true;
     }

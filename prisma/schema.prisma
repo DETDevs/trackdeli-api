@@ -14,6 +14,7 @@ enum UserRole {
   CAJERO
   WAITER
   VENDEDOR
+  PREVENTISTA
 }
 
 enum PosDeviceStatus {
@@ -231,6 +232,7 @@ enum BusinessProductType {
   POS
   CARTERA_COBRO
   CITAS
+  PREVENTA
 }
 
 enum BusinessProductStatus {
@@ -442,6 +444,9 @@ model Business {
 
   // 303a - Contador de códigos de barras internos EAN-13 por negocio
   barcodeSequence              PosBarcodeSequence?
+
+  // 320a - Configuración del módulo de preventa (1 a 1)
+  preventaSettings             PosPreventaSettings?
 
   // 307a - Tipo de cuenta (CLIENTE | DEMO | INTERNO) y datos de contacto del cliente para NEXOL
   accountType                  String                  @default("CLIENTE") @map("account_type") @db.VarChar(20)
@@ -2335,6 +2340,9 @@ model BusinessProductSubscription {
   carteraMonthlyFee       Decimal?               @db.Decimal(10, 2)
   // CITAS:
   citasMonthlyFee         Decimal?               @db.Decimal(10, 2)
+  // PREVENTA (320a):
+  preventaMonthlyFee      Decimal?               @default(30) @db.Decimal(10, 2)
+  maxRouteSellers         Int?                   @default(4)
 
   activatedAt             DateTime?
   activatedBy             String?                // userId del SuperAdmin que activó
@@ -2352,6 +2360,26 @@ model BusinessProductSubscription {
   @@unique([businessId, productType])
   @@index([businessId])
   @@map("business_product_subscriptions")
+}
+
+model PosPreventaSettings {
+  businessId                    String   @id
+  business                      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  defaultDeliveryDaysOffset     Int      @default(2)
+  allowSellerPriceEdit          Boolean  @default(false)
+  allowSellerDiscounts          Boolean  @default(false)
+  creditPolicyOnOverdue         String   @default("WARN") @db.VarChar(10)
+  creditPolicyOnLimitExceeded   String   @default("WARN") @db.VarChar(10)
+  allowSellerCreditPayments     Boolean  @default(false)
+  allowSellerCreateCustomers    Boolean  @default(true)
+  requireGpsOnVisit             Boolean  @default(false)
+  allowCreditDeliveryWithoutShift Boolean @default(true)
+  preorderNumberPrefix          String   @default("PV") @db.VarChar(10)
+  reservationExpireDays         Int?
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
+
+  @@map("pos_preventa_settings")
 }
 
 model BusinessProductAuditLog {

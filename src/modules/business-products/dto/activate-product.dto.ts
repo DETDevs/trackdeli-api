@@ -56,6 +56,16 @@ export class ActivateProductDto {
   citasMonthlyFee?: number;
 
   @IsOptional()
+  @IsNumber()
+  @Min(0)
+  preventaMonthlyFee?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxRouteSellers?: number;
+
+  @IsOptional()
   @IsString()
   reason?: string;
 }

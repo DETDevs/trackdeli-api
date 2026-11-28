@@ -188,6 +188,9 @@ export class BusinessProductsService {
     const citasSub = business.productSubscriptions.find(
       (s) => s.productType === BusinessProductType.CITAS,
     );
+    const preventaSub = business.productSubscriptions.find(
+      (s) => s.productType === BusinessProductType.PREVENTA,
+    );
 
     const now = new Date();
     const coverages = await this.prisma.membershipPaymentProduct.findMany({
@@ -246,6 +249,7 @@ export class BusinessProductsService {
       coveredProductTypes.add(BusinessProductType.DELIVERY);
       coveredProductTypes.add(BusinessProductType.CARTERA_COBRO);
       coveredProductTypes.add(BusinessProductType.CITAS);
+      coveredProductTypes.add(BusinessProductType.PREVENTA);
     }
 
     const isDeliveryMembership = business.businessType === BusinessType.NEGOCIO;
@@ -265,6 +269,18 @@ export class BusinessProductsService {
       ? isSubscriptionActiveForNonBilling(citasSub)
       : citasSub?.status === BusinessProductStatus.ACTIVE &&
         coveredProductTypes.has(BusinessProductType.CITAS);
+    const isPreventaActive = isNonBilling
+      ? isSubscriptionActiveForNonBilling(preventaSub)
+      : preventaSub?.status === BusinessProductStatus.ACTIVE &&
+        coveredProductTypes.has(BusinessProductType.PREVENTA);
+
+    const routeSellersUsed = await this.prisma.user.count({
+      where: {
+        businessId,
+        role: UserRole.PREVENTISTA,
+        isActive: true,
+      },
+    });
 
     const allMemberships = await this.prisma.membership.findMany({
       where: {
@@ -449,6 +465,38 @@ export class BusinessProductsService {
               deactivatedAt: null,
               deactivatedBy: null,
             },
+        PREVENTA: preventaSub
+          ? {
+              id: preventaSub.id,
+              productType: preventaSub.productType,
+              status: isPreventaActive ? BusinessProductStatus.ACTIVE : BusinessProductStatus.INACTIVE,
+              preventaMonthlyFee: (preventaSub as any).preventaMonthlyFee != null
+                ? Number((preventaSub as any).preventaMonthlyFee)
+                : 30,
+              maxRouteSellers: (preventaSub as any).maxRouteSellers ?? 4,
+              routeSellersUsed,
+              autoRenew: (preventaSub as any).autoRenew ?? true,
+              renewalCanceledAt: (preventaSub as any).renewalCanceledAt ?? null,
+              activatedAt: preventaSub.activatedAt,
+              activatedBy: preventaSub.activatedBy,
+              deactivatedAt: preventaSub.deactivatedAt,
+              deactivatedBy: preventaSub.deactivatedBy,
+              createdAt: preventaSub.createdAt,
+              updatedAt: preventaSub.updatedAt,
+            }
+          : {
+              productType: BusinessProductType.PREVENTA,
+              status: BusinessProductStatus.INACTIVE,
+              preventaMonthlyFee: 30,
+              maxRouteSellers: 4,
+              routeSellersUsed,
+              autoRenew: true,
+              renewalCanceledAt: null,
+              activatedAt: null,
+              activatedBy: null,
+              deactivatedAt: null,
+              deactivatedBy: null,
+            },
       },
     };
   }
@@ -495,8 +543,9 @@ export class BusinessProductsService {
 
         const isRiders = business.businessType === BusinessType.EMPRESA_RIDERS;
         const isMembershipProduct = productType !== BusinessProductType.DELIVERY || !isRiders;
+        const isNonBillingBusiness = isNonBillingAccountType((business as any).accountType);
 
-        if (isMembershipProduct) {
+        if (isMembershipProduct && !isNonBillingBusiness) {
           const now = new Date();
           const hasCoverage = await tx.membershipPaymentProduct.findFirst({
             where: {
@@ -589,6 +638,20 @@ export class BusinessProductsService {
               }
             : {};
 
+        const preventaConfig =
+          productType === BusinessProductType.PREVENTA
+            ? {
+                preventaMonthlyFee:
+                  dto.preventaMonthlyFee !== undefined
+                    ? new Prisma.Decimal(dto.preventaMonthlyFee)
+                    : ((existingSub as any)?.preventaMonthlyFee ?? new Prisma.Decimal(30)),
+                maxRouteSellers:
+                  dto.maxRouteSellers !== undefined
+                    ? dto.maxRouteSellers
+                    : ((existingSub as any)?.maxRouteSellers ?? 4),
+              }
+            : {};
+
         if (isAlreadyActive) {
 
           const updatedSub = await tx.businessProductSubscription.update({
@@ -598,8 +661,17 @@ export class BusinessProductsService {
               ...posConfig,
               ...carteraConfig,
               ...citasConfig,
+              ...preventaConfig,
             },
           });
+
+          if (productType === BusinessProductType.PREVENTA) {
+            await tx.posPreventaSettings.upsert({
+              where: { businessId },
+              create: { businessId },
+              update: {},
+            });
+          }
 
           await tx.businessProductAuditLog.create({
             data: {
@@ -626,6 +698,10 @@ export class BusinessProductsService {
                   citasMonthlyFee: (existingSub as any).citasMonthlyFee
                     ? Number((existingSub as any).citasMonthlyFee)
                     : null,
+                  preventaMonthlyFee: (existingSub as any).preventaMonthlyFee != null
+                    ? Number((existingSub as any).preventaMonthlyFee)
+                    : null,
+                  maxRouteSellers: (existingSub as any).maxRouteSellers ?? null,
                 },
                 newConfig: {
                   ...dto,
@@ -662,6 +738,7 @@ export class BusinessProductsService {
             ...posConfig,
             ...carteraConfig,
             ...citasConfig,
+            ...preventaConfig,
           },
           create: {
             businessId,
@@ -675,8 +752,17 @@ export class BusinessProductsService {
             ...posConfig,
             ...carteraConfig,
             ...citasConfig,
+            ...preventaConfig,
           },
         });
+
+        if (productType === BusinessProductType.PREVENTA) {
+          await tx.posPreventaSettings.upsert({
+            where: { businessId },
+            create: { businessId },
+            update: {},
+          });
+        }
 
         await tx.businessProductAuditLog.create({
           data: {

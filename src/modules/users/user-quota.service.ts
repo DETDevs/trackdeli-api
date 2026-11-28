@@ -18,6 +18,7 @@ export class UserQuotaService {
       throw new Error('Business not found for quota check');
     }
 
+    // 320a: PREVENTISTA queda excluido del cupo general de 6 usuarios; usa su propio cupo maxRouteSellers
     const used = await this.prisma.user.count({
       where: {
         businessId,
