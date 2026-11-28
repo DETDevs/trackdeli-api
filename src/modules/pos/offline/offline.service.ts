@@ -246,11 +246,18 @@ export class OfflineService {
           });
           if (!business) throw new NotFoundException("Negocio no encontrado");
 
-          const invoiceNumber = `${business.invoicePrefix}-${String(business.invoiceCounter).padStart(4, "0")}`;
-          await tx.business.update({
-            where: { id: businessId },
-            data: { invoiceCounter: { increment: 1 } },
-          });
+          const invoiceRows = await tx.$queryRaw<
+            Array<{ invoicePrefix: string; invoiceCounter: number }>
+          >`
+            UPDATE "businesses"
+            SET "invoiceCounter" = "invoiceCounter" + 1
+            WHERE "id" = ${businessId}
+            RETURNING "invoicePrefix", "invoiceCounter"
+          `;
+          if (!invoiceRows.length) throw new NotFoundException("Negocio no encontrado");
+
+          const assignedInvoiceCounter = Number(invoiceRows[0].invoiceCounter) - 1;
+          const invoiceNumber = `${invoiceRows[0].invoicePrefix}-${String(assignedInvoiceCounter).padStart(4, "0")}`;
 
           const rawItemsForCalc: RawSaleItemCalculationInput[] = [];
           const lineCostData: Array<{
@@ -1196,11 +1203,12 @@ export class OfflineService {
     }
 
     if (terminal) {
+      const failedCount = results.filter((r) => r.status === "ERROR").length;
       await this.prisma.posTerminal.update({
         where: { id: terminal.id },
         data: {
-          hasPendingOfflineSales: false,
-          pendingSalesCount: 0,
+          hasPendingOfflineSales: failedCount > 0,
+          pendingSalesCount: failedCount,
           lastSeenAt: new Date(),
         },
       });

@@ -1370,6 +1370,7 @@ export class ProductsService {
       list_price,
       min_stock,
       supplier_id,
+      stock: _rawStock,
       ...updateData
     } = dto as any;
 
@@ -1453,12 +1454,13 @@ export class ProductsService {
       (updateData as any).unit = effectiveUnit;
     }
     const unitAllowsDecimals = unitDef?.allowsDecimals;
+    let requestedStock: number | undefined;
     if (dto.stock !== undefined && dto.stock !== null) {
       if (product.isVariantParent && Number(dto.stock) !== Number(product.stock)) {
         assertNotVariantParent(product);
       }
-      dto.stock = validateProductQuantity(effectiveUnit, dto.stock, dto.name || product.name, false, unitAllowsDecimals);
-      (updateData as any).stock = product.isVariantParent ? 0 : dto.stock;
+      requestedStock = validateProductQuantity(effectiveUnit, dto.stock, dto.name || product.name, false, unitAllowsDecimals);
+      dto.stock = requestedStock;
     }
     if (dto.minStock !== undefined && dto.minStock !== null) {
       dto.minStock = validateProductQuantity(effectiveUnit, dto.minStock, dto.name || product.name, false, unitAllowsDecimals);
@@ -1486,9 +1488,41 @@ export class ProductsService {
 
     this.logger.log(`[update] id=${id} businessId=${businessId}`);
     const updated = await this.prisma.$transaction(async (tx) => {
+      let lockedStockBefore: number | null = null;
+      let lockedStockDiff = 0;
+      let lockedTrackStock = trackStock ?? product.trackStock;
+      let lockedCost: Prisma.Decimal | null =
+        product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null;
+      const txUpdateData: any = { ...updateData };
+
+      if (!product.isVariantParent && requestedStock !== undefined) {
+        const lockedRows = await tx.$queryRaw<
+          Array<{ stock: Prisma.Decimal; trackStock: boolean; cost: Prisma.Decimal | null }>
+        >`
+          SELECT "stock", "trackStock", "cost"
+          FROM "pos_products"
+          WHERE "id" = ${id} AND "businessId" = ${businessId}
+          FOR UPDATE
+        `;
+        if (!lockedRows.length) {
+          throw new NotFoundException("Producto no encontrado");
+        }
+        lockedStockBefore = round3(Number(lockedRows[0].stock));
+        lockedTrackStock = trackStock ?? lockedRows[0].trackStock;
+        lockedCost =
+          lockedRows[0].cost != null ? new Prisma.Decimal(lockedRows[0].cost.toString()) : null;
+        lockedStockDiff = round3(requestedStock - lockedStockBefore);
+
+        if (lockedStockDiff > 0) {
+          txUpdateData.stock = { increment: lockedStockDiff };
+        } else if (lockedStockDiff < 0) {
+          txUpdateData.stock = { decrement: round3(Math.abs(lockedStockDiff)) };
+        }
+      }
+
       const saved = await tx.product.update({
         where: { id },
-        data: updateData,
+        data: txUpdateData,
         include: {
           category: true,
           supplier: { select: { id: true, name: true } },
@@ -1499,24 +1533,22 @@ export class ProductsService {
         },
       });
 
-      const currentStock = Number(product.stock);
       if (
         !product.isVariantParent &&
-        dto.stock !== undefined &&
-        dto.stock !== currentStock &&
-        (trackStock ?? product.trackStock)
+        lockedStockBefore !== null &&
+        lockedStockDiff !== 0 &&
+        lockedTrackStock
       ) {
-        const stockDiff = round3(dto.stock - currentStock);
         await tx.stockMovement.create({
           data: {
             businessId,
             productId: product.id,
             userId: userId || 'system',
             type: StockMovementType.AJUSTE,
-            quantity: stockDiff,
-            stockBefore: currentStock,
-            stockAfter: dto.stock,
-            cost: product.cost != null ? new Prisma.Decimal(product.cost.toString()) : null,
+            quantity: lockedStockDiff,
+            stockBefore: lockedStockBefore,
+            stockAfter: round3(lockedStockBefore + lockedStockDiff),
+            cost: lockedCost,
             concept: 'Edición manual de producto',
           },
         });
@@ -1767,6 +1799,14 @@ export class ProductsService {
 
   async adjustStock(productId: string, dto: AdjustStockDto, userId: string, businessId: string) {
     return this.prisma.$transaction(async (tx) => {
+      const lockedRows = await tx.$queryRaw<Array<{ id: string; stock: Prisma.Decimal }>>`
+        SELECT "id", "stock"
+        FROM "pos_products"
+        WHERE "id" = ${productId} AND "businessId" = ${businessId}
+        FOR UPDATE
+      `;
+      if (!lockedRows.length) throw new NotFoundException("Producto no encontrado");
+
       const product = await tx.product.findFirst({ where: { id: productId, businessId } });
       if (!product) throw new NotFoundException("Producto no encontrado");
       assertNotVariantParent(product);
@@ -1774,7 +1814,7 @@ export class ProductsService {
       const unitDef = await this.unitsService.findByCode(businessId, product.unit, tx);
       const qty = validateProductQuantity(product.unit, Math.abs(dto.quantity), product.name, false, unitDef?.allowsDecimals);
       const signedQty = dto.quantity < 0 ? -qty : qty;
-      const currentStock = Number(product.stock);
+      const currentStock = round3(Number(lockedRows[0].stock));
       const stockAfter = round3(currentStock + signedQty);
       if (stockAfter < 0) {
         throw new BadRequestException(
@@ -1796,8 +1836,13 @@ export class ProductsService {
           delta: signedQty,
         });
         if (res) adjustedBatchId = res.batchId;
-      } else {
-        await tx.product.update({ where: { id: productId }, data: { stock: stockAfter } });
+      } else if (signedQty !== 0) {
+        await tx.product.update({
+          where: { id: productId },
+          data: {
+            stock: signedQty > 0 ? { increment: signedQty } : { decrement: round3(Math.abs(signedQty)) },
+          },
+        });
       }
 
       const movement = await tx.stockMovement.create({
