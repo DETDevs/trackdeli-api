@@ -2414,22 +2414,56 @@ export class SalesService {
         pedidosYaSettlementStatus = 'PENDIENTE';
       }
 
-      // 263a: Resolver mesero y propina opcional (sin alterar subtotal/taxAmount/total/payments[])
+      // 263a / 319a: Resolver mesero y propina opcional (sin alterar subtotal/taxAmount/total/payments[])
+      // Regla 319a: si la venta tiene mesero (mesa o dto.waiterId), la propina queda bloqueada para ese mesero.
       let resolvedWaiterId: string | null = null;
       let resolvedWaiterName: string | null = dto.waiterName ? dto.waiterName.trim().substring(0, 100) : null;
-      const candidateWaiterId = dto.tip?.waiterId || dto.waiterId || null;
-      if (candidateWaiterId) {
+      const saleWaiterId = dto.waiterId?.trim() || null;
+      const tipWaiterId = dto.tip?.waiterId?.trim() || null;
+
+      if (saleWaiterId) {
+        if (tipWaiterId && tipWaiterId !== saleWaiterId) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'TIP_WAITER_LOCKED',
+            message: 'La propina queda para el mesero que atendió la mesa.',
+          });
+        }
         const waiter = await tx.waiter.findFirst({
-          where: { id: candidateWaiterId, businessId },
+          where: { id: saleWaiterId, businessId },
           select: { id: true, name: true },
         });
         if (!waiter) {
-          throw new BadRequestException('Mesero inválido o no pertenece a este negocio');
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'INVALID_WAITER',
+            message: 'El mesero seleccionado no existe o no pertenece a este negocio.',
+          });
         }
         resolvedWaiterId = waiter.id;
         if (!resolvedWaiterName) {
           resolvedWaiterName = waiter.name;
         }
+      } else if (tipWaiterId) {
+        const waiter = await tx.waiter.findFirst({
+          where: { id: tipWaiterId, businessId, active: true },
+          select: { id: true, name: true },
+        });
+        if (!waiter) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'INVALID_TIP_WAITER',
+            message: 'El mesero seleccionado no existe o no está activo en este negocio.',
+          });
+        }
+        resolvedWaiterId = waiter.id;
+        resolvedWaiterName = waiter.name;
+      } else {
+        resolvedWaiterId = null;
+        resolvedWaiterName = null;
       }
 
       let tipCreateData: any = undefined;
@@ -2514,6 +2548,7 @@ export class SalesService {
           bankName: tipBankName,
           reference: dto.tip.reference ? dto.tip.reference.toString().substring(0, 100).trim() : null,
           status: 'ACTIVE',
+          createdById: cashierId,
         };
       }
 
@@ -3039,6 +3074,311 @@ export class SalesService {
     return openShift;
   }
 
+  /**
+   * 319a - Edición o anulación de propina por el encargado mientras el turno de la venta siga abierto
+   * y la propina no se haya entregado al mesero. El mesero nunca se cambia aquí.
+   */
+  async updateSaleTip(
+    saleId: string,
+    businessId: string,
+    userId: string,
+    userRole: string,
+    dto: {
+      amount: number;
+      paymentMethod?: string;
+      currency?: string;
+      bankId?: string | null;
+      reference?: string | null;
+      reason: string;
+    },
+  ) {
+    if (userRole !== UserRole.ENCARGADO && userRole !== UserRole.SUPERADMIN) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'TIP_EDIT_FORBIDDEN',
+        message: 'Solo el encargado puede modificar la propina.',
+      });
+    }
+
+    const cleanReason = (dto.reason || '').trim();
+    if (!cleanReason) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'REASON_REQUIRED',
+        message: 'El motivo es obligatorio para modificar la propina.',
+      });
+    }
+
+    const rawAmount = Number(dto.amount);
+    if (!Number.isFinite(rawAmount) || rawAmount < 0) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'INVALID_TIP_AMOUNT',
+        message: 'El monto de la propina debe ser mayor o igual a cero.',
+      });
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM pos_sales WHERE id = ${saleId} AND "businessId" = ${businessId} FOR UPDATE`;
+
+      const sale = await tx.sale.findFirst({
+        where: { id: saleId, businessId },
+        include: {
+          tip: true,
+          cashRegister: { select: { id: true, status: true } },
+        },
+      });
+
+      if (!sale) {
+        throw new NotFoundException({
+          statusCode: 404,
+          error: 'Not Found',
+          code: 'SALE_NOT_FOUND',
+          message: 'Venta no encontrada.',
+        });
+      }
+
+      if (sale.status === 'VOIDED' || sale.status === 'CANCELLED') {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'SALE_VOIDED',
+          message: 'No se puede modificar la propina de una venta anulada.',
+        });
+      }
+
+      if (!sale.cashRegister || sale.cashRegister.status !== 'OPEN') {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'TIP_SHIFT_CLOSED',
+          message: 'El turno de esta venta ya se cerró. La propina no se puede cambiar.',
+        });
+      }
+
+      const existingTip = sale.tip;
+      if (existingTip && (existingTip.paidAt || existingTip.payoutId)) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'TIP_ALREADY_PAID',
+          message: 'Esta propina ya se entregó al mesero.',
+        });
+      }
+
+      if (!existingTip && rawAmount === 0) {
+        throw new NotFoundException({
+          statusCode: 404,
+          error: 'Not Found',
+          code: 'TIP_NOT_FOUND',
+          message: 'Esta venta no tiene propina registrada.',
+        });
+      }
+
+      const now = new Date();
+      const beforeSnapshot = existingTip
+        ? {
+            id: existingTip.id,
+            amount: Number(existingTip.amount),
+            currency: existingTip.currency,
+            amountBase: Number(existingTip.amountBase),
+            paymentMethod: existingTip.paymentMethod,
+            bankId: existingTip.bankId,
+            bankName: existingTip.bankName,
+            reference: existingTip.reference,
+            status: existingTip.status,
+            waiterId: existingTip.waiterId,
+            waiterName: existingTip.waiterName,
+          }
+        : null;
+
+      let updatedTip: any;
+
+      if (rawAmount === 0 && existingTip) {
+        updatedTip = await tx.saleTip.update({
+          where: { id: existingTip.id },
+          data: {
+            amount: new Prisma.Decimal(0),
+            amountBase: new Prisma.Decimal(0),
+            status: 'VOIDED',
+            updatedAt: now,
+            updatedById: userId,
+          },
+        });
+      } else {
+        const nextMethod = (
+          dto.paymentMethod ||
+          existingTip?.paymentMethod ||
+          'EFECTIVO'
+        )
+          .toUpperCase()
+          .trim();
+        if (!['EFECTIVO', 'TARJETA', 'TRANSFERENCIA'].includes(nextMethod)) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'INVALID_TIP_PAYMENT_METHOD',
+            message: 'Método de pago de propina inválido (usa EFECTIVO, TARJETA o TRANSFERENCIA).',
+          });
+        }
+
+        let nextCurrency = (
+          dto.currency ||
+          (nextMethod !== 'EFECTIVO' ? 'NIO' : existingTip?.currency || 'NIO')
+        )
+          .toUpperCase()
+          .trim();
+        if (!['NIO', 'USD'].includes(nextCurrency)) {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'INVALID_TIP_CURRENCY',
+            message: 'Moneda de propina inválida (usa NIO o USD).',
+          });
+        }
+        if (nextCurrency === 'USD' && nextMethod !== 'EFECTIVO') {
+          throw new BadRequestException({
+            statusCode: 400,
+            error: 'Bad Request',
+            code: 'INVALID_TIP_CURRENCY',
+            message: 'La propina con tarjeta o transferencia solo se admite en moneda base (NIO).',
+          });
+        }
+
+        const amountDec = new Prisma.Decimal(rawAmount.toString()).toDecimalPlaces(2);
+        let exchangeRateDec: Prisma.Decimal | null = null;
+        let amountBaseDec = amountDec;
+        if (nextCurrency === 'USD') {
+          if (existingTip?.currency === 'USD' && existingTip.exchangeRate) {
+            exchangeRateDec = new Prisma.Decimal(existingTip.exchangeRate.toString());
+          } else {
+            const rateObj = await this.exchangeRateService.getCurrentRate(businessId, tx);
+            exchangeRateDec = new Prisma.Decimal(rateObj.rate.toString());
+          }
+          amountBaseDec = amountDec.mul(exchangeRateDec).toDecimalPlaces(2);
+        }
+
+        let bankId = existingTip?.bankId ?? null;
+        let bankName = existingTip?.bankName ?? null;
+        if (nextMethod === 'EFECTIVO') {
+          bankId = null;
+          bankName = null;
+        } else if (dto.bankId !== undefined) {
+          if (dto.bankId) {
+            const tipBank = await tx.posBank.findFirst({
+              where: { id: dto.bankId, businessId },
+              select: { id: true, name: true },
+            });
+            if (!tipBank) {
+              throw new BadRequestException({
+                statusCode: 400,
+                error: 'Bad Request',
+                code: 'INVALID_TIP_BANK',
+                message: 'El banco seleccionado no existe o no pertenece a este negocio.',
+              });
+            }
+            bankId = tipBank.id;
+            bankName = tipBank.name;
+          } else {
+            bankId = null;
+            bankName = null;
+          }
+        }
+
+        const reference =
+          dto.reference !== undefined
+            ? dto.reference
+              ? dto.reference.toString().substring(0, 100).trim()
+              : null
+            : existingTip?.reference ?? null;
+
+        if (existingTip) {
+          updatedTip = await tx.saleTip.update({
+            where: { id: existingTip.id },
+            data: {
+              amount: amountDec,
+              currency: nextCurrency,
+              exchangeRate: exchangeRateDec,
+              amountBase: amountBaseDec,
+              paymentMethod: nextMethod,
+              bankId,
+              bankName,
+              reference,
+              status: 'ACTIVE',
+              updatedAt: now,
+              updatedById: userId,
+            },
+          });
+        } else {
+          updatedTip = await tx.saleTip.create({
+            data: {
+              businessId,
+              saleId: sale.id,
+              cashRegisterId: sale.cashRegisterId,
+              waiterId: sale.waiterId || null,
+              waiterName: sale.waiterName || null,
+              amount: amountDec,
+              currency: nextCurrency,
+              exchangeRate: exchangeRateDec,
+              amountBase: amountBaseDec,
+              paymentMethod: nextMethod,
+              bankId,
+              bankName,
+              reference,
+              status: 'ACTIVE',
+              createdById: userId,
+              updatedAt: now,
+              updatedById: userId,
+            },
+          });
+        }
+      }
+
+      const afterSnapshot = {
+        id: updatedTip.id,
+        amount: Number(updatedTip.amount),
+        currency: updatedTip.currency,
+        amountBase: Number(updatedTip.amountBase),
+        paymentMethod: updatedTip.paymentMethod,
+        bankId: updatedTip.bankId,
+        bankName: updatedTip.bankName,
+        reference: updatedTip.reference,
+        status: updatedTip.status,
+        waiterId: updatedTip.waiterId,
+        waiterName: updatedTip.waiterName,
+      };
+
+      await this.auditService.record(
+        {
+          businessId,
+          userId,
+          userRole,
+          action: 'TIP_UPDATED',
+          entityType: 'SaleTip',
+          entityId: updatedTip.id,
+          before: beforeSnapshot,
+          after: afterSnapshot,
+          reason: cleanReason,
+        },
+        tx,
+      );
+
+      return {
+        saleId: sale.id,
+        invoiceNumber: sale.invoiceNumber,
+        tip: {
+          ...updatedTip,
+          amount: Number(updatedTip.amount),
+          amountBase: Number(updatedTip.amountBase),
+          exchangeRate: updatedTip.exchangeRate != null ? Number(updatedTip.exchangeRate) : null,
+        },
+      };
+    });
+  }
+
   async voidSale(
     id: string,
     businessId: string,
@@ -3277,17 +3617,23 @@ export class SalesService {
         netCashPaidDec = new Prisma.Decimal(sale.total != null ? sale.total.toString() : 0);
       }
 
-      // 3.5 Anulación de propina (263a): siempre VOIDED; si fue EFECTIVO se incluye en SALIDA (NIO o USD)
+      // 3.5 Anulación de propina (263a / 319a): siempre VOIDED; si ya se entregó al mesero
+      // NO se genera salida automática de efectivo (queda registrada en reporte para resolución del encargado).
       let tipUsdCashToRefundDec = new Prisma.Decimal(0);
       let tipUsdRateDec = new Prisma.Decimal(1);
       let tipUsdAmountBaseDec = new Prisma.Decimal(0);
       if ((sale as any).tip && (sale as any).tip.status === 'ACTIVE') {
         const saleTip = (sale as any).tip;
+        const alreadyPaidOut = Boolean(saleTip.paidAt || saleTip.payoutId);
         await tx.saleTip.update({
           where: { id: saleTip.id },
-          data: { status: 'VOIDED' },
+          data: {
+            status: 'VOIDED',
+            updatedAt: new Date(),
+            updatedById: userId,
+          },
         });
-        if (saleTip.paymentMethod === 'EFECTIVO') {
+        if (!alreadyPaidOut && saleTip.paymentMethod === 'EFECTIVO') {
           const tipAmtDec = new Prisma.Decimal(saleTip.amount.toString()).toDecimalPlaces(2);
           if ((saleTip.currency || 'NIO').toUpperCase() === 'USD') {
             tipUsdCashToRefundDec = tipAmtDec;

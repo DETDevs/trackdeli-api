@@ -33,6 +33,7 @@ import { CheckoutTableOrderDto } from './dto/checkout-table-order.dto';
 import { CancelTableOrderDto } from './dto/cancel-table-order.dto';
 import { ReceiveVehicleDto } from './dto/receive-vehicle.dto';
 import { UpdateOrderAssignmentDto } from './dto/update-order-assignment.dto';
+import { AssignTableWaiterDto } from './dto/assign-table-waiter.dto';
 import { SendToKitchenDto } from './dto/send-to-kitchen.dto';
 import { VoidOrderItemDto } from './dto/void-order-item.dto';
 import { StartSplitDto } from './dto/start-split.dto';
@@ -285,6 +286,23 @@ export class TablesController {
       resolveBusinessId(user, qBid),
       tableId,
       dto,
+      user,
+    );
+  }
+
+  @Patch(':id/order/waiter')
+  @Roles(UserRole.CAJERO, UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @HttpCode(HttpStatus.OK)
+  assignOrderWaiter(
+    @Param('id') tableId: string,
+    @Body() dto: AssignTableWaiterDto,
+    @CurrentUser() user: JwtPayload,
+    @Query('businessId') qBid?: string,
+  ) {
+    return this.service.assignOrderWaiter(
+      resolveBusinessId(user, qBid),
+      tableId,
+      dto.waiterId,
       user,
     );
   }

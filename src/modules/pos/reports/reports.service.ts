@@ -3892,18 +3892,105 @@ export class ReportsService {
       orderBy: { createdAt: 'desc' },
     });
 
+    // 319a: Propinas ya entregadas cuya venta fue anulada posteriormente
+    const voidedPaidWhere: Prisma.SaleTipWhereInput = {
+      ...where,
+      status: 'VOIDED',
+      paidAt: { not: null },
+    };
+    const voidedPaidTipsRaw = await this.prisma.saleTip.findMany({
+      where: voidedPaidWhere,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        sale: { select: { id: true, invoiceNumber: true } },
+      },
+    });
+
+    // 319a: Entregas de propinas (pos_tip_payouts) en el período
+    const payoutWhere: Prisma.TipPayoutWhereInput = {
+      businessId,
+      createdAt: {
+        gte: range.current.from,
+        lte: range.current.to,
+      },
+    };
+    if (filters.waiterId) {
+      payoutWhere.waiterId = filters.waiterId;
+    }
+    if (filters.cashRegisterId) {
+      payoutWhere.cashRegisterId = filters.cashRegisterId;
+    }
+    const payoutsRaw = await this.prisma.tipPayout.findMany({
+      where: payoutWhere,
+      orderBy: { createdAt: 'desc' },
+    });
+
     let baseTotalDec = new Prisma.Decimal(0);
+    let paidBaseTotalDec = new Prisma.Decimal(0);
+    let pendingBaseTotalDec = new Prisma.Decimal(0);
     const byMethodMap = new Map<string, { paymentMethod: string; count: number; baseTotal: Prisma.Decimal }>();
     const byCurrencyMap = new Map<string, { currency: string; count: number; amount: Prisma.Decimal; baseTotal: Prisma.Decimal }>();
-    const byWaiterMap = new Map<string, { waiterId: string | null; waiterName: string; count: number; baseTotal: Prisma.Decimal }>();
+    const byWaiterMap = new Map<
+      string,
+      {
+        waiterId: string | null;
+        waiterName: string;
+        count: number;
+        baseTotal: Prisma.Decimal;
+        cashNio: Prisma.Decimal;
+        cashUsd: Prisma.Decimal;
+        card: Prisma.Decimal;
+        transfer: Prisma.Decimal;
+        paidBase: Prisma.Decimal;
+        pendingBase: Prisma.Decimal;
+        payouts: Array<{
+          id: string;
+          cashRegisterId: string;
+          amountNio: number;
+          amountUsd: number;
+          cashMovementIds: any;
+          createdById: string;
+          clientRequestId: string;
+          createdAt: Date;
+        }>;
+      }
+    >();
+
+    const getOrCreateWaiterEntry = (waiterId: string | null, waiterName: string | null) => {
+      const wKey = waiterId ? String(waiterId) : 'SIN_MESERO';
+      let wEntry = byWaiterMap.get(wKey);
+      if (!wEntry) {
+        wEntry = {
+          waiterId: waiterId || null,
+          waiterName: waiterId ? (waiterName || 'Mesero') : 'Sin mesero',
+          count: 0,
+          baseTotal: new Prisma.Decimal(0),
+          cashNio: new Prisma.Decimal(0),
+          cashUsd: new Prisma.Decimal(0),
+          card: new Prisma.Decimal(0),
+          transfer: new Prisma.Decimal(0),
+          paidBase: new Prisma.Decimal(0),
+          pendingBase: new Prisma.Decimal(0),
+          payouts: [],
+        };
+        byWaiterMap.set(wKey, wEntry);
+      }
+      return wEntry;
+    };
 
     for (const t of tips) {
       const amtDec = new Prisma.Decimal(t.amount.toString());
       const baseDec = new Prisma.Decimal(t.amountBase.toString());
       const method = (t.paymentMethod || '').toUpperCase();
       const currency = (t.currency || 'NIO').toUpperCase();
+      const isPaid = Boolean(t.paidAt || t.payoutId);
 
       baseTotalDec = baseTotalDec.plus(baseDec);
+      if (isPaid) {
+        paidBaseTotalDec = paidBaseTotalDec.plus(baseDec);
+      } else {
+        pendingBaseTotalDec = pendingBaseTotalDec.plus(baseDec);
+      }
 
       let mEntry = byMethodMap.get(method);
       if (!mEntry) {
@@ -3922,20 +4009,62 @@ export class ReportsService {
       cEntry.amount = cEntry.amount.plus(amtDec);
       cEntry.baseTotal = cEntry.baseTotal.plus(baseDec);
 
-      const wKey = t.waiterId || (t.waiterName ? `name:${t.waiterName}` : 'SIN_MESERO');
-      let wEntry = byWaiterMap.get(wKey);
-      if (!wEntry) {
-        wEntry = {
-          waiterId: t.waiterId || null,
-          waiterName: t.waiterName || 'Sin mesero',
-          count: 0,
-          baseTotal: new Prisma.Decimal(0),
-        };
-        byWaiterMap.set(wKey, wEntry);
-      }
+      const wEntry = getOrCreateWaiterEntry(t.waiterId || null, t.waiterName || null);
       wEntry.count += 1;
       wEntry.baseTotal = wEntry.baseTotal.plus(baseDec);
+      if (method === 'EFECTIVO') {
+        if (currency === 'USD') {
+          wEntry.cashUsd = wEntry.cashUsd.plus(amtDec);
+        } else {
+          wEntry.cashNio = wEntry.cashNio.plus(amtDec);
+        }
+      } else if (method === 'TARJETA') {
+        wEntry.card = wEntry.card.plus(baseDec);
+      } else if (method === 'TRANSFERENCIA') {
+        wEntry.transfer = wEntry.transfer.plus(baseDec);
+      }
+      if (isPaid) {
+        wEntry.paidBase = wEntry.paidBase.plus(baseDec);
+      } else {
+        wEntry.pendingBase = wEntry.pendingBase.plus(baseDec);
+      }
     }
+
+    for (const p of payoutsRaw) {
+      const wEntry = getOrCreateWaiterEntry(p.waiterId || null, p.waiterName || null);
+      wEntry.payouts.push({
+        id: p.id,
+        cashRegisterId: p.cashRegisterId,
+        amountNio: Number(new Prisma.Decimal(p.amountNio.toString()).toDecimalPlaces(2)),
+        amountUsd: Number(new Prisma.Decimal(p.amountUsd.toString()).toDecimalPlaces(2)),
+        cashMovementIds: Array.isArray(p.cashMovementIds) ? p.cashMovementIds : [],
+        createdById: p.createdById,
+        clientRequestId: p.clientRequestId,
+        createdAt: p.createdAt,
+      });
+    }
+
+    let voidedPaidBaseDec = new Prisma.Decimal(0);
+    const voidedPaidTips = voidedPaidTipsRaw.map((t) => {
+      const baseDec = new Prisma.Decimal(t.amountBase.toString());
+      voidedPaidBaseDec = voidedPaidBaseDec.plus(baseDec);
+      return {
+        id: t.id,
+        saleId: t.saleId,
+        invoiceNumber: t.sale?.invoiceNumber || null,
+        waiterId: t.waiterId || null,
+        waiterName: t.waiterId ? (t.waiterName || 'Mesero') : 'Sin mesero',
+        amount: Number(new Prisma.Decimal(t.amount.toString()).toDecimalPlaces(2)),
+        currency: t.currency || 'NIO',
+        amountBase: Number(baseDec.toDecimalPlaces(2)),
+        paymentMethod: t.paymentMethod,
+        status: t.status,
+        statusLabel: 'Entregada de una venta anulada',
+        paidAt: t.paidAt,
+        payoutId: t.payoutId,
+        createdAt: t.createdAt,
+      };
+    });
 
     return {
       period: {
@@ -3945,6 +4074,10 @@ export class ReportsService {
       totals: {
         count: tips.length,
         baseTotal: Number(baseTotalDec.toDecimalPlaces(2)),
+        paidBase: Number(paidBaseTotalDec.toDecimalPlaces(2)),
+        pendingBase: Number(pendingBaseTotalDec.toDecimalPlaces(2)),
+        voidedPaidCount: voidedPaidTips.length,
+        voidedPaidBase: Number(voidedPaidBaseDec.toDecimalPlaces(2)),
         byMethod: Array.from(byMethodMap.values()).map((m) => ({
           paymentMethod: m.paymentMethod,
           count: m.count,
@@ -3963,8 +4096,16 @@ export class ReportsService {
           waiterName: w.waiterName,
           count: w.count,
           baseTotal: Number(w.baseTotal.toDecimalPlaces(2)),
+          cashNio: Number(w.cashNio.toDecimalPlaces(2)),
+          cashUsd: Number(w.cashUsd.toDecimalPlaces(2)),
+          card: Number(w.card.toDecimalPlaces(2)),
+          transfer: Number(w.transfer.toDecimalPlaces(2)),
+          paidBase: Number(w.paidBase.toDecimalPlaces(2)),
+          pendingBase: Number(w.pendingBase.toDecimalPlaces(2)),
+          payouts: w.payouts,
         }))
         .sort((a, b) => b.baseTotal - a.baseTotal),
+      voidedPaidTips,
     };
   }
 

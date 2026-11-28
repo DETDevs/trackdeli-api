@@ -4,6 +4,7 @@ import { PrismaService } from "../../../prisma/prisma.service";
 import { OpenCashRegisterDto } from "./dto/open-register.dto";
 import { CloseCashRegisterDto, CountedBreakdownDto } from "./dto/close-register.dto";
 import { CashMovementDto } from "./dto/cash-movement.dto";
+import { CreateTipPayoutDto } from "./dto/create-tip-payout.dto";
 import { MovementType, Prisma, UserRole } from "@prisma/client";
 import { getSalePaymentBreakdown, parseCountedMethod } from "./pos-cash.utils";
 import { PoliciesService } from '../policies/policies.service';
@@ -42,6 +43,21 @@ export class CashRegisterService {
     const byBankMap = new Map<
       string,
       { bankId: string | null; bankName: string; card: Prisma.Decimal; transfer: Prisma.Decimal; totalBase: Prisma.Decimal }
+    >();
+
+    const byWaiterMap = new Map<
+      string,
+      {
+        waiterId: string | null;
+        waiterName: string;
+        cashNio: Prisma.Decimal;
+        cashUsd: Prisma.Decimal;
+        card: Prisma.Decimal;
+        transfer: Prisma.Decimal;
+        totalBase: Prisma.Decimal;
+        paidBase: Prisma.Decimal;
+        pendingBase: Prisma.Decimal;
+      }
     >();
 
     for (const t of tips || []) {
@@ -89,6 +105,41 @@ export class CashRegisterService {
           if (method === 'TRANSFERENCIA') entry.transfer = entry.transfer.plus(amtBase);
           entry.totalBase = entry.totalBase.plus(amtBase);
         }
+
+        // 319a: Desglose por mesero (con "Sin mesero" como fila con waiterId: null)
+        const wKey = t.waiterId ? String(t.waiterId) : 'SIN_MESERO';
+        let wEntry = byWaiterMap.get(wKey);
+        if (!wEntry) {
+          wEntry = {
+            waiterId: t.waiterId || null,
+            waiterName: t.waiterId ? (t.waiterName || 'Mesero') : 'Sin mesero',
+            cashNio: new Prisma.Decimal(0),
+            cashUsd: new Prisma.Decimal(0),
+            card: new Prisma.Decimal(0),
+            transfer: new Prisma.Decimal(0),
+            totalBase: new Prisma.Decimal(0),
+            paidBase: new Prisma.Decimal(0),
+            pendingBase: new Prisma.Decimal(0),
+          };
+          byWaiterMap.set(wKey, wEntry);
+        }
+        if (method === 'EFECTIVO') {
+          if (curr === 'USD') {
+            wEntry.cashUsd = wEntry.cashUsd.plus(amt);
+          } else {
+            wEntry.cashNio = wEntry.cashNio.plus(amt);
+          }
+        } else if (method === 'TARJETA') {
+          wEntry.card = wEntry.card.plus(amtBase);
+        } else if (method === 'TRANSFERENCIA') {
+          wEntry.transfer = wEntry.transfer.plus(amtBase);
+        }
+        wEntry.totalBase = wEntry.totalBase.plus(amtBase);
+        if (t.paidAt || t.payoutId) {
+          wEntry.paidBase = wEntry.paidBase.plus(amtBase);
+        } else {
+          wEntry.pendingBase = wEntry.pendingBase.plus(amtBase);
+        }
       }
     }
 
@@ -105,6 +156,19 @@ export class CashRegisterService {
         transfer: Number(b.transfer.toDecimalPlaces(2)),
         totalBase: Number(b.totalBase.toDecimalPlaces(2)),
       })),
+      byWaiter: Array.from(byWaiterMap.values())
+        .map((w) => ({
+          waiterId: w.waiterId,
+          waiterName: w.waiterName,
+          cashNio: Number(w.cashNio.toDecimalPlaces(2)),
+          cashUsd: Number(w.cashUsd.toDecimalPlaces(2)),
+          card: Number(w.card.toDecimalPlaces(2)),
+          transfer: Number(w.transfer.toDecimalPlaces(2)),
+          totalBase: Number(w.totalBase.toDecimalPlaces(2)),
+          paidBase: Number(w.paidBase.toDecimalPlaces(2)),
+          pendingBase: Number(w.pendingBase.toDecimalPlaces(2)),
+        }))
+        .sort((a, b) => b.totalBase - a.totalBase),
     };
 
     return {
@@ -302,7 +366,9 @@ export class CashRegisterService {
       closingBreakdown: register.closingBreakdown || null,
       tipsSummary: (register.tips && register.tips.length > 0)
         ? tipsCalc.tipsSummary
-        : (closingBreakdown.tipsSummary || tipsCalc.tipsSummary),
+        : (closingBreakdown.tipsSummary
+            ? { byWaiter: [], ...closingBreakdown.tipsSummary }
+            : tipsCalc.tipsSummary),
       recountAttempts: register.recountAttempts ?? 0,
       discrepancyReason: register.discrepancyReason ?? null,
       discrepancyNote: register.discrepancyNote ?? null,
@@ -1678,6 +1744,359 @@ export class CashRegisterService {
     const obfuscated = await this.obfuscateRegister(result, businessId, userRole, userId, deviceId);
     return obfuscated;
   }
+  /**
+   * 319a - Entrega de propinas pendientes a un mesero desde el turno abierto del usuario.
+   * Toma todas las propinas ACTIVE y no entregadas del mesero (de cualquier turno) con bloqueo FOR UPDATE,
+   * crea CashMovement SALIDA (USD para efectivo dólares y NIO para efectivo córdobas + tarjeta + transferencia),
+   * guarda el registro en pos_tip_payouts y marca cada propina como entregada (idempotente por clientRequestId).
+   */
+  async createTipPayout(
+    dto: CreateTipPayoutDto,
+    businessId: string,
+    userId: string,
+    userRole: string,
+    deviceId?: string,
+    clientPlatform?: string,
+  ) {
+    const cleanWaiterId = (dto.waiterId || '').trim();
+    const cleanClientRequestId = (dto.clientRequestId || '').trim();
+    if (!cleanWaiterId) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'WAITER_REQUIRED',
+        message: 'Debes indicar el mesero al que se le entregarán las propinas.',
+      });
+    }
+    if (!cleanClientRequestId) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'CLIENT_REQUEST_ID_REQUIRED',
+        message: 'El identificador de solicitud es obligatorio.',
+      });
+    }
+
+    const formatPayoutResponse = (payout: any, idempotentReplay: boolean) => ({
+      id: payout.id,
+      businessId: payout.businessId,
+      cashRegisterId: payout.cashRegisterId,
+      waiterId: payout.waiterId,
+      waiterName: payout.waiterName,
+      amountNio: Number(new Prisma.Decimal(payout.amountNio.toString()).toDecimalPlaces(2)),
+      amountUsd: Number(new Prisma.Decimal(payout.amountUsd.toString()).toDecimalPlaces(2)),
+      cashMovementIds: Array.isArray(payout.cashMovementIds) ? payout.cashMovementIds : [],
+      createdById: payout.createdById,
+      clientRequestId: payout.clientRequestId,
+      createdAt: payout.createdAt,
+      tipsCount: Array.isArray(payout.tips) ? payout.tips.length : 0,
+      tips: (payout.tips || []).map((t: any) => ({
+        id: t.id,
+        saleId: t.saleId,
+        invoiceNumber: t.sale?.invoiceNumber || null,
+        cashRegisterId: t.cashRegisterId || null,
+        amount: Number(new Prisma.Decimal(t.amount.toString()).toDecimalPlaces(2)),
+        currency: t.currency || 'NIO',
+        amountBase: Number(new Prisma.Decimal(t.amountBase.toString()).toDecimalPlaces(2)),
+        paymentMethod: t.paymentMethod,
+        createdAt: t.createdAt,
+        paidAt: t.paidAt,
+      })),
+      idempotentReplay,
+    });
+
+    const isWeb = this.isWebPlatform(clientPlatform);
+    const cleanDeviceId = deviceId?.trim() || null;
+
+    // Buscar turno abierto del usuario
+    let openShift: any = null;
+    if (isWeb) {
+      openShift = await this.prisma.cashRegister.findFirst({
+        where: { businessId, cashierId: userId, status: 'OPEN', registerSource: 'WEB' },
+        orderBy: { openedAt: 'desc' },
+      });
+    } else {
+      if (cleanDeviceId) {
+        openShift = await this.prisma.cashRegister.findFirst({
+          where: {
+            businessId,
+            cashierId: userId,
+            deviceId: cleanDeviceId,
+            status: 'OPEN',
+            registerSource: { not: 'WEB' },
+          },
+          orderBy: { openedAt: 'desc' },
+        });
+      }
+      if (!openShift) {
+        openShift = await this.prisma.cashRegister.findFirst({
+          where: {
+            businessId,
+            cashierId: userId,
+            status: 'OPEN',
+          },
+          orderBy: { openedAt: 'desc' },
+        });
+      }
+    }
+
+    if (!openShift) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'NO_OPEN_SHIFT',
+        message: 'Debes tener un turno de caja abierto para entregar propinas.',
+      });
+    }
+
+    const executePayout = async () => {
+      return this.prisma.$transaction(async (tx) => {
+        // 1. Verificar idempotencia primero
+        const existingPayout = await tx.tipPayout.findUnique({
+          where: {
+            businessId_clientRequestId: {
+              businessId,
+              clientRequestId: cleanClientRequestId,
+            },
+          },
+          include: {
+            tips: {
+              orderBy: { createdAt: 'asc' },
+              include: {
+                sale: { select: { id: true, invoiceNumber: true } },
+              },
+            },
+          },
+        });
+        if (existingPayout) {
+          return formatPayoutResponse(existingPayout, true);
+        }
+
+        // 2. Validar que el mesero pertenece al negocio
+        const waiter = await tx.waiter.findFirst({
+          where: { id: cleanWaiterId, businessId },
+          select: { id: true, name: true },
+        });
+        if (!waiter) {
+          throw new NotFoundException({
+            statusCode: 404,
+            error: 'Not Found',
+            code: 'WAITER_NOT_FOUND',
+            message: 'El mesero seleccionado no existe en este negocio.',
+          });
+        }
+
+        // 3. Revalidar que el turno sigue abierto
+        const lockedShift = await tx.cashRegister.findFirst({
+          where: { id: openShift.id, businessId, status: 'OPEN' },
+          select: { id: true },
+        });
+        if (!lockedShift) {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            code: 'NO_OPEN_SHIFT',
+            message: 'Debes tener un turno de caja abierto para entregar propinas.',
+          });
+        }
+
+        // 4. Bloquear todas las propinas ACTIVE y no entregadas del mesero (de cualquier turno)
+        const pendingTips = await tx.$queryRaw<
+          Array<{
+            id: string;
+            saleId: string;
+            cashRegisterId: string | null;
+            amount: any;
+            currency: string;
+            exchangeRate: any;
+            amountBase: any;
+            paymentMethod: string;
+            createdAt: Date;
+          }>
+        >`
+          SELECT id, "saleId", "cashRegisterId", amount, currency, "exchangeRate", "amountBase", "paymentMethod", "createdAt"
+          FROM "pos_sale_tips"
+          WHERE "businessId" = ${businessId}
+            AND "waiterId" = ${waiter.id}
+            AND status = 'ACTIVE'
+            AND "paidAt" IS NULL
+            AND "payoutId" IS NULL
+          ORDER BY "createdAt" ASC, id ASC
+          FOR UPDATE
+        `;
+
+        if (!pendingTips || pendingTips.length === 0) {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            code: 'NO_PENDING_TIPS',
+            message: 'Este mesero no tiene propinas pendientes.',
+          });
+        }
+
+        // 5. Calcular totales por moneda:
+        //    - Efectivo USD -> salida en US$ (monto en dólares)
+        //    - Todo lo demás (efectivo NIO, tarjeta, transferencia) -> salida en C$ (monto base)
+        let amountUsdDec = new Prisma.Decimal(0);
+        let amountNioDec = new Prisma.Decimal(0);
+        for (const t of pendingTips) {
+          const method = (t.paymentMethod || '').toUpperCase();
+          const curr = (t.currency || 'NIO').toUpperCase();
+          if (method === 'EFECTIVO' && curr === 'USD') {
+            amountUsdDec = amountUsdDec.plus(new Prisma.Decimal(t.amount.toString()));
+          } else {
+            amountNioDec = amountNioDec.plus(new Prisma.Decimal(t.amountBase.toString()));
+          }
+        }
+        amountUsdDec = amountUsdDec.toDecimalPlaces(2);
+        amountNioDec = amountNioDec.toDecimalPlaces(2);
+
+        const concept = `Entrega de propinas — ${waiter.name}`;
+        const cashMovementIds: string[] = [];
+
+        if (amountUsdDec.greaterThan(0)) {
+          const activeRate = await this.exchangeRateService.getCurrentRate(businessId, tx);
+          const rateDec = new Prisma.Decimal(activeRate.rate.toString());
+          const usdBaseDec = amountUsdDec.times(rateDec).toDecimalPlaces(2);
+          const movUsd = await tx.cashMovement.create({
+            data: {
+              businessId,
+              cashRegisterId: openShift.id,
+              userId,
+              type: MovementType.SALIDA,
+              amount: amountUsdDec,
+              concept,
+              currency: 'USD',
+              exchangeRate: rateDec,
+              amountBase: usdBaseDec,
+            },
+          });
+          cashMovementIds.push(movUsd.id);
+        }
+
+        if (amountNioDec.greaterThan(0)) {
+          const movNio = await tx.cashMovement.create({
+            data: {
+              businessId,
+              cashRegisterId: openShift.id,
+              userId,
+              type: MovementType.SALIDA,
+              amount: amountNioDec,
+              concept,
+              currency: 'NIO',
+              exchangeRate: new Prisma.Decimal(1),
+              amountBase: amountNioDec,
+            },
+          });
+          cashMovementIds.push(movNio.id);
+        }
+
+        const paidAt = new Date();
+        const payout = await tx.tipPayout.create({
+          data: {
+            businessId,
+            cashRegisterId: openShift.id,
+            waiterId: waiter.id,
+            waiterName: waiter.name,
+            amountNio: amountNioDec,
+            amountUsd: amountUsdDec,
+            cashMovementIds,
+            createdById: userId,
+            clientRequestId: cleanClientRequestId,
+          },
+        });
+
+        const tipIds = pendingTips.map((t) => t.id);
+        const updatedCount = await tx.saleTip.updateMany({
+          where: {
+            id: { in: tipIds },
+            status: 'ACTIVE',
+            paidAt: null,
+            payoutId: null,
+          },
+          data: {
+            paidAt,
+            paidById: userId,
+            payoutId: payout.id,
+          },
+        });
+
+        if (updatedCount.count !== tipIds.length) {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'Conflict',
+            code: 'TIP_ALREADY_PAID',
+            message: 'Una o más propinas ya fueron entregadas en otra operación.',
+          });
+        }
+
+        await this.auditService.record(
+          {
+            businessId,
+            userId,
+            userRole,
+            action: 'TIP_PAYOUT_CREATED',
+            entityType: 'TipPayout',
+            entityId: payout.id,
+            after: {
+              waiterId: waiter.id,
+              waiterName: waiter.name,
+              cashRegisterId: openShift.id,
+              amountNio: Number(amountNioDec),
+              amountUsd: Number(amountUsdDec),
+              tipsCount: tipIds.length,
+              tipIds,
+              cashMovementIds,
+              clientRequestId: cleanClientRequestId,
+            },
+          },
+          tx,
+        );
+
+        const fullPayout = await tx.tipPayout.findUnique({
+          where: { id: payout.id },
+          include: {
+            tips: {
+              orderBy: { createdAt: 'asc' },
+              include: {
+                sale: { select: { id: true, invoiceNumber: true } },
+              },
+            },
+          },
+        });
+
+        return formatPayoutResponse(fullPayout, false);
+      });
+    };
+
+    try {
+      return await executePayout();
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        const existingPayout = await this.prisma.tipPayout.findUnique({
+          where: {
+            businessId_clientRequestId: {
+              businessId,
+              clientRequestId: cleanClientRequestId,
+            },
+          },
+          include: {
+            tips: {
+              orderBy: { createdAt: 'asc' },
+              include: {
+                sale: { select: { id: true, invoiceNumber: true } },
+              },
+            },
+          },
+        });
+        if (existingPayout) {
+          return formatPayoutResponse(existingPayout, true);
+        }
+      }
+      throw err;
+    }
+  }
+
   async drawerOpen(registerId: string | null | undefined, reason: string, businessId: string, userId: string, userRole: string, deviceId?: string) {
     let register;
     if (registerId && registerId !== 'current') {

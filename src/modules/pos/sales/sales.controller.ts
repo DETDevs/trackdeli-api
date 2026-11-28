@@ -1,5 +1,5 @@
 import {
-  Body, Controller, ForbiddenException, Get, HttpCode, HttpStatus, Param, Post, Query, Req, UseGuards,
+  Body, Controller, ForbiddenException, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, Req, UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { PosGuard } from "../../../common/guards/pos.guard";
@@ -24,6 +24,7 @@ import { UseInterceptors } from "@nestjs/common";
 
 import { VoidSaleDto } from "./dto/void-sale.dto";
 import { CreateReturnDto } from "./dto/create-return.dto";
+import { UpdateSaleTipDto } from "./dto/update-sale-tip.dto";
 
 @SkipMembershipCheck()
 @UseGuards(JwtAuthGuard, PosGuard, PosPermissionsGuard)
@@ -153,6 +154,18 @@ export class SalesController {
   ) {
     const deviceId = (req.headers['x-device-id'] || req.headers['X-Device-Id'] || null)?.toString().trim() || undefined;
     return this.service.createReturn(id, resolveBusinessId(user, qBid), user.sub, user.role, dto, deviceId);
+  }
+
+  @Patch(":id/tip")
+  @Roles(UserRole.ENCARGADO, UserRole.SUPERADMIN)
+  @HttpCode(HttpStatus.OK)
+  updateTip(
+    @Param("id") id: string,
+    @Body() dto: UpdateSaleTipDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+  ) {
+    return this.service.updateSaleTip(id, resolveBusinessId(user, qBid), user.sub, user.role, dto);
   }
 
   @Get(":id/receipt")

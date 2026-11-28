@@ -425,6 +425,7 @@ model Business {
 
   // 263a - Propinas opcionales
   saleTips                     SaleTip[]
+  tipPayouts                   TipPayout[]
 
   // 266a - Proformas (cotizaciones)
   posQuoteCounters             PosQuoteCounter[]
@@ -1690,6 +1691,7 @@ model CashRegister {
   payments      PosPayment[]
   expenses      Expense[]
   tips          SaleTip[]
+  tipPayouts    TipPayout[]
 
   createdAt     DateTime   @default(now())
 
@@ -1743,12 +1745,43 @@ model SaleTip {
   bankName       String?       @db.VarChar(100)
   reference      String?       @db.VarChar(100)
   status         String        @default("ACTIVE") @db.VarChar(20)
+  createdById    String?
+  updatedAt      DateTime?
+  updatedById    String?
+  paidAt         DateTime?
+  paidById       String?
+  payoutId       String?
+  payout         TipPayout?    @relation(fields: [payoutId], references: [id], onDelete: SetNull)
   createdAt      DateTime      @default(now())
 
   @@index([businessId, createdAt])
   @@index([businessId, waiterId])
   @@index([cashRegisterId])
+  @@index([payoutId])
   @@map("pos_sale_tips")
+}
+
+model TipPayout {
+  id              String       @id @default(uuid())
+  businessId      String
+  business        Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  cashRegisterId  String
+  cashRegister    CashRegister @relation(fields: [cashRegisterId], references: [id], onDelete: Cascade)
+  waiterId        String?
+  waiter          Waiter?      @relation(fields: [waiterId], references: [id], onDelete: SetNull)
+  waiterName      String       @db.VarChar(100)
+  amountNio       Decimal      @db.Decimal(12, 2)
+  amountUsd       Decimal      @db.Decimal(12, 2)
+  cashMovementIds Json
+  createdById     String
+  clientRequestId String       @db.VarChar(100)
+  createdAt       DateTime     @default(now())
+  tips            SaleTip[]
+
+  @@unique([businessId, clientRequestId])
+  @@index([businessId, waiterId])
+  @@index([cashRegisterId])
+  @@map("pos_tip_payouts")
 }
 
 model PedidosYaSettlement {
@@ -2209,6 +2242,7 @@ model Waiter {
   assignedOrders TableOrder[] @relation("AssignedWaiterOrders")
   sales          Sale[]
   saleTips       SaleTip[]
+  tipPayouts     TipPayout[]
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 

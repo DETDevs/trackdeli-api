@@ -2746,6 +2746,114 @@ export class TablesService {
   }
 
   /**
+   * 319a - Asigna o cambia el mesero activo de un pedido de mesa abierto (antes de cobrar).
+   */
+  async assignOrderWaiter(
+    businessId: string,
+    tableId: string,
+    waiterId: string,
+    user: JwtPayload,
+  ) {
+    const cleanWaiterId = (waiterId || '').trim();
+    if (!cleanWaiterId) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'WAITER_REQUIRED',
+        message: 'Debes seleccionar un mesero.',
+      });
+    }
+
+    const table = await this.prisma.restaurantTable.findFirst({
+      where: { id: tableId, businessId, isActive: true },
+    });
+    if (!table) {
+      throw new NotFoundException({
+        statusCode: 404,
+        error: 'Not Found',
+        code: 'TABLE_NOT_FOUND',
+        message: 'Mesa no encontrada.',
+      });
+    }
+
+    const order = await this.prisma.tableOrder.findFirst({
+      where: { tableId, businessId, status: TableOrderStatus.OPEN },
+      include: {
+        assignedWaiter: { select: { id: true, name: true } },
+      },
+    });
+    if (!order) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'TABLE_ORDER_NOT_OPEN',
+        message: 'No hay un pedido abierto para asignar mesero en esta mesa.',
+      });
+    }
+
+    const waiter = await this.prisma.waiter.findFirst({
+      where: { id: cleanWaiterId, businessId, active: true },
+      select: { id: true, name: true },
+    });
+    if (!waiter) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'INVALID_WAITER',
+        message: 'El mesero seleccionado no existe o no está activo en este negocio.',
+      });
+    }
+
+    const updatedOrder = await this.prisma.tableOrder.update({
+      where: { id: order.id },
+      data: { assignedWaiterId: waiter.id },
+      include: {
+        items: {
+          include: {
+            product: {
+              select: { id: true, name: true, imageUrl: true, price: true, unit: true, stock: true },
+            },
+          },
+        },
+        table: {
+          select: {
+            id: true,
+            number: true,
+            capacity: true,
+            shape: true,
+            zoneId: true,
+            zone: { select: { id: true, name: true } },
+          },
+        },
+        assignedWaiter: {
+          select: { id: true, name: true },
+        },
+      },
+    });
+
+    await this.auditService.record({
+      businessId,
+      userId: user.sub,
+      userRole: user.role,
+      action: 'TABLE_WAITER_ASSIGNED',
+      entityType: 'TableOrder',
+      entityId: order.id,
+      before: {
+        tableId,
+        assignedWaiterId: order.assignedWaiterId,
+        assignedWaiterName: order.assignedWaiter?.name || order.openedByWaiterName || null,
+      },
+      after: {
+        tableId,
+        assignedWaiterId: updatedOrder.assignedWaiterId,
+        assignedWaiterName: updatedOrder.assignedWaiter?.name || null,
+      },
+    });
+
+    return this.formatOrderResponse(updatedOrder);
+  }
+
+  /**
    * 170a - Envía a cocina los ítems sin ronda cuyo producto tenga send_to_kitchen = true.
    * Crea una ronda con consecutivo por orden y marca los renglones como enviados.
    * Idempotente por clientRequestId.

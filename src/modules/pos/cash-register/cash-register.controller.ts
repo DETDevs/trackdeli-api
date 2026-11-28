@@ -14,6 +14,7 @@ import { CashRegisterService } from "./cash-register.service";
 import { OpenCashRegisterDto } from "./dto/open-register.dto";
 import { CloseCashRegisterDto } from "./dto/close-register.dto";
 import { CashMovementDto } from "./dto/cash-movement.dto";
+import { CreateTipPayoutDto } from "./dto/create-tip-payout.dto";
 import { PosPermissionsGuard } from "../permissions/permissions.guard";
 import { RequirePosAction } from "../permissions/require-action.decorator";
 import { PosAction } from "../permissions/permissions.service";
@@ -172,6 +173,25 @@ export class CashRegisterController {
     @Headers("x-client-platform") hPlatform?: string,
   ) {
     return this.service.addMovement(id, dto, resolveBusinessId(user, qBid), user.sub, user.role, hDeviceId, hPlatform);
+  }
+
+  @Post("tip-payouts")
+  @UseGuards(WebBillingGuard)
+  createTipPayout(
+    @Body() dto: CreateTipPayoutDto,
+    @CurrentUser() user: JwtPayload,
+    @Query("businessId") qBid?: string,
+    @Headers("x-device-id") hDeviceId?: string,
+    @Headers("x-client-platform") hPlatform?: string,
+  ) {
+    return this.service.createTipPayout(
+      dto,
+      resolveBusinessId(user, qBid),
+      user.sub,
+      user.role,
+      hDeviceId,
+      hPlatform,
+    );
   }
 
   @Get(":id/summary")
